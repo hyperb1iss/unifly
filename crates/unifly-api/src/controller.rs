@@ -9,6 +9,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use secrecy::ExposeSecret;
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -173,7 +174,9 @@ impl Controller {
                     platform,
                     &transport,
                 )?;
-                client.login(username, password).await?;
+                client
+                    .login(username, password, config.totp_token.as_ref().map(|t| t.expose_secret().as_ref()))
+                    .await?;
                 debug!("session authentication successful");
 
                 *self.inner.legacy_client.lock().await = Some(client);
@@ -210,7 +213,7 @@ impl Controller {
                     platform,
                     &transport,
                 ) {
-                    Ok(client) => match client.login(username, password).await {
+                    Ok(client) => match client.login(username, password, config.totp_token.as_ref().map(|t| t.expose_secret().as_ref())).await {
                         Ok(()) => {
                             debug!("legacy session authentication successful (hybrid)");
                             *self.inner.legacy_client.lock().await = Some(client);

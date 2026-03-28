@@ -49,6 +49,10 @@ pub struct GlobalOpts {
     #[arg(long, env = "UNIFI_API_KEY", global = true, hide_env = true)]
     pub api_key: Option<String>,
 
+    /// TOTP token for MFA-enabled controllers
+    #[arg(long, env = "UNIFI_TOTP", global = true, hide_env = true)]
+    pub totp: Option<String>,
+
     /// Output format
     #[arg(
         long,

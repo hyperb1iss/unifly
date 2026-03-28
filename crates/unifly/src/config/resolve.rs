@@ -84,6 +84,13 @@ pub fn resolve_profile(
     // 5. Timeout
     let timeout = Duration::from_secs(global.timeout);
 
+    // 6. TOTP token (CLI flag > profile's totp_env > UNIFI_TOTP env)
+    let totp_token = global
+        .totp
+        .as_ref()
+        .map(|t| SecretString::from(t.clone()))
+        .or_else(|| config::resolve_totp(profile));
+
     Ok(ControllerConfig {
         url,
         auth,
@@ -93,6 +100,7 @@ pub fn resolve_profile(
         refresh_interval_secs: 0,
         websocket_enabled: false,
         polling_interval_secs: 30,
+        totp_token,
     })
 }
 

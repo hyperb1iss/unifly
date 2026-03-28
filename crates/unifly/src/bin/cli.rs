@@ -133,6 +133,7 @@ fn build_controller_config(global: &GlobalOpts) -> Result<unifly_api::Controller
         refresh_interval_secs: 0,
         websocket_enabled: false,
         polling_interval_secs: 30,
+        totp_token: global.totp.as_ref().map(|t| secrecy::SecretString::from(t.clone())),
     })
 }
 

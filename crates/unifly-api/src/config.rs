@@ -83,6 +83,8 @@ pub struct ControllerConfig {
     pub websocket_enabled: bool,
     /// Polling interval when WebSocket is unavailable (seconds).
     pub polling_interval_secs: u64,
+    /// Optional TOTP token for MFA-enabled controllers.
+    pub totp_token: Option<SecretString>,
 }
 
 impl Default for ControllerConfig {
@@ -101,6 +103,7 @@ impl Default for ControllerConfig {
             refresh_interval_secs: 300,
             websocket_enabled: true,
             polling_interval_secs: 10,
+            totp_token: None,
         }
     }
 }

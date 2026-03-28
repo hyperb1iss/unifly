@@ -129,6 +129,15 @@ impl LegacyClient {
         cookies.to_str().ok().map(String::from)
     }
 
+    /// Add a cookie to the shared jar (e.g. the UBIC_2FA cookie for MFA).
+    pub(crate) fn add_cookie(&self, set_cookie_value: &str, url: &url::Url) {
+        if let Some(ref jar) = self.cookie_jar {
+            if let Ok(hv) = set_cookie_value.parse() {
+                jar.set_cookies(&mut std::iter::once(&hv), url);
+            }
+        }
+    }
+
     // ── CSRF token management ─────────────────────────────────────────
 
     /// Store a CSRF token (captured from login response headers).

@@ -149,6 +149,9 @@ pub struct Profile {
 
     /// Override timeout.
     pub timeout: Option<u64>,
+
+    /// Environment variable name containing a TOTP token for MFA.
+    pub totp_env: Option<String>,
 }
 
 fn default_site() -> String {
@@ -310,6 +313,15 @@ pub fn resolve_auth(profile: &Profile, profile_name: &str) -> Result<AuthCredent
     }
 }
 
+/// Resolve a TOTP token from the profile's `totp_env` field.
+pub fn resolve_totp(profile: &Profile) -> Option<SecretString> {
+    profile
+        .totp_env
+        .as_ref()
+        .and_then(|env_name| std::env::var(env_name).ok())
+        .map(SecretString::from)
+}
+
 /// Build a `ControllerConfig` from a profile — no CLI flag overrides.
 ///
 /// Suitable for the TUI and other non-CLI consumers. Sets TUI-friendly
@@ -337,6 +349,7 @@ pub fn profile_to_controller_config(
     };
 
     let timeout = Duration::from_secs(profile.timeout.unwrap_or(30));
+    let totp_token = resolve_totp(profile);
 
     Ok(ControllerConfig {
         url,
@@ -347,5 +360,6 @@ pub fn profile_to_controller_config(
         refresh_interval_secs: 10,
         websocket_enabled: true,
         polling_interval_secs: 10,
+        totp_token,
     })
 }

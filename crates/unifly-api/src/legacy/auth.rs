@@ -21,7 +21,12 @@ impl LegacyClient {
     /// by platform:
     /// - UniFi OS: `POST /api/auth/login`
     /// - Standalone: `POST /api/login`
-    pub async fn login(&self, username: &str, password: &SecretString) -> Result<(), Error> {
+    pub async fn login(
+        &self,
+        username: &str,
+        password: &SecretString,
+        totp_token: Option<&str>,
+    ) -> Result<(), Error> {
         let login_path = self
             .platform()
             .login_path()
@@ -43,7 +48,7 @@ impl LegacyClient {
 
         let resp = self
             .http()
-            .post(url)
+            .post(url.clone())
             .json(&body)
             .send()
             .await
@@ -51,9 +56,65 @@ impl LegacyClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let resp_body = resp.text().await.unwrap_or_default();
+
+            // HTTP 499 with MFA_AUTH_REQUIRED — attempt TOTP completion
+            if status.as_u16() == 499 && resp_body.contains("MFA_AUTH_REQUIRED") {
+                let totp = totp_token.ok_or(Error::TwoFactorRequired)?;
+
+                // Extract the UBIC_2FA cookie from the MFA challenge response
+                let mfa_cookie: String = serde_json::from_str::<serde_json::Value>(&resp_body)
+                    .ok()
+                    .and_then(|v| v["data"]["mfaCookie"].as_str().map(String::from))
+                    .ok_or_else(|| Error::Authentication {
+                        message: "MFA challenge response missing mfaCookie".into(),
+                    })?;
+
+                debug!("MFA required, retrying with TOTP token");
+
+                let mfa_body = json!({
+                    "username": username,
+                    "password": password.expose_secret(),
+                    "token": totp,
+                });
+
+                // Inject the UBIC_2FA cookie into the shared cookie jar.
+                // The mfaCookie from the challenge response is formatted as
+                // a Set-Cookie header value (e.g. "UBIC_2FA=eyJ...").
+                self.add_cookie(&mfa_cookie, &url);
+
+                let mfa_resp = self
+                    .http()
+                    .post(url)
+                    .json(&mfa_body)
+                    .send()
+                    .await
+                    .map_err(Error::Transport)?;
+
+                let mfa_status = mfa_resp.status();
+                if !mfa_status.is_success() {
+                    let err_body = mfa_resp.text().await.unwrap_or_default();
+                    return Err(Error::Authentication {
+                        message: format!("MFA login failed (HTTP {mfa_status}): {err_body}"),
+                    });
+                }
+
+                // Capture CSRF token from MFA login response
+                if let Some(token) = mfa_resp
+                    .headers()
+                    .get("X-CSRF-Token")
+                    .or_else(|| mfa_resp.headers().get("x-csrf-token"))
+                    .and_then(|v| v.to_str().ok())
+                {
+                    self.set_csrf_token(token.to_owned());
+                }
+
+                debug!("MFA login successful");
+                return Ok(());
+            }
+
             return Err(Error::Authentication {
-                message: format!("login failed (HTTP {status}): {body}"),
+                message: format!("login failed (HTTP {status}): {resp_body}"),
             });
         }
 

@@ -263,6 +263,7 @@ impl OnboardingScreen {
             ca_cert: None,
             insecure: Some(true), // Local controllers are typically self-signed
             timeout: None,
+            totp_env: None,
         }
     }
 

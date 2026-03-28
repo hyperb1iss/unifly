@@ -48,3 +48,7 @@ coverage/
 
 # ── Insta snapshots pending review ──
 *.snap.new
+.devenv
+devenv.nix
+devenv.yaml
+devenv.lock

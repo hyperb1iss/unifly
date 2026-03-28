@@ -266,6 +266,7 @@ pub fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), CliError> {
                 ca_cert: None,
                 insecure: None,
                 timeout: None,
+                totp_env: None,
             };
 
             let mut profiles = HashMap::new();
@@ -316,6 +317,7 @@ pub fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), CliError> {
                     ca_cert: None,
                     insecure: None,
                     timeout: None,
+                    totp_env: None,
                 });
 
             match key.as_str() {

@@ -108,6 +108,7 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
         refresh_interval_secs: 10,
         websocket_enabled: true,
         polling_interval_secs: 10,
+        totp_token: global.totp.as_ref().map(|t| secrecy::SecretString::from(t.clone())),
     };
 
     Some(Controller::new(controller_config))

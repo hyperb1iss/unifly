@@ -315,6 +315,7 @@ impl SettingsScreen {
             ca_cert: None,
             insecure: Some(self.insecure),
             timeout: None,
+            totp_env: None,
         }
     }
 
