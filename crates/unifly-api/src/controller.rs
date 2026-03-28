@@ -514,18 +514,17 @@ impl Controller {
                     .collect()
             };
             let wifi: Vec<WifiBroadcast> = wifi_res?.into_iter().map(WifiBroadcast::from).collect();
-            let policies: Vec<FirewallPolicy> = policies_res?
-                .into_iter()
-                .map(FirewallPolicy::from)
-                .collect();
-            let zones: Vec<FirewallZone> = zones_res?.into_iter().map(FirewallZone::from).collect();
+
             let sites: Vec<Site> = sites_res?.into_iter().map(Site::from).collect();
             let traffic_matching_lists: Vec<TrafficMatchingList> = tml_res?
                 .into_iter()
                 .map(TrafficMatchingList::from)
                 .collect();
 
-            // Optional endpoints — 404 means the controller doesn't support them
+            // Optional endpoints — errors (404, not-configured, etc.) are non-fatal
+            let policies: Vec<FirewallPolicy> =
+                unwrap_or_empty("firewall/policies", policies_res);
+            let zones: Vec<FirewallZone> = unwrap_or_empty("firewall/zones", zones_res);
             let acls: Vec<AclRule> = unwrap_or_empty("acl/rules", acls_res);
             let dns: Vec<DnsPolicy> = unwrap_or_empty("dns/policies", dns_res);
             let vouchers: Vec<Voucher> = unwrap_or_empty("vouchers", vouchers_res);
