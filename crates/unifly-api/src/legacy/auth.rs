@@ -75,8 +75,9 @@ impl LegacyClient {
 
     /// Authenticate, using a cached session if available.
     ///
-    /// Tries to restore a cached session first. If no valid cache exists,
-    /// performs a fresh login and saves the resulting session to disk.
+    /// Tries to restore a cached session first and validates it with a
+    /// lightweight probe. If the session is invalid (e.g. server-side
+    /// revocation), clears the cache and falls back to a fresh login.
     pub async fn login_with_cache(
         &self,
         username: &str,
@@ -88,9 +89,18 @@ impl LegacyClient {
             if session.controller_url == self.base_url().as_str() {
                 debug!("restoring session from cache");
                 self.restore_session(&session.token, session.csrf_token.as_deref());
-                return Ok(());
+
+                // Validate the session with a lightweight probe.
+                if self.validate_session().await {
+                    debug!("cached session is valid");
+                    return Ok(());
+                }
+
+                debug!("cached session rejected by controller, clearing cache");
+                cache.clear();
+            } else {
+                debug!("cached session URL mismatch, performing fresh login");
             }
-            debug!("cached session URL mismatch, performing fresh login");
         }
 
         // Fresh login.
@@ -100,6 +110,18 @@ impl LegacyClient {
         self.save_session_to_cache(cache);
 
         Ok(())
+    }
+
+    /// Check whether the current session cookie is still accepted.
+    async fn validate_session(&self) -> bool {
+        let Some(prefix) = self.platform().legacy_prefix() else {
+            return false;
+        };
+        let probe_path = format!("{prefix}/api/s/default/self");
+        let Ok(url) = self.base_url().join(&probe_path) else {
+            return false;
+        };
+        matches!(self.http().get(url).send().await, Ok(resp) if resp.status().is_success())
     }
 
     /// Extract the current session state and write it to the cache.
