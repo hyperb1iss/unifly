@@ -82,6 +82,10 @@ pub struct GlobalOpts {
     /// Request timeout in seconds
     #[arg(long, env = "UNIFI_TIMEOUT", default_value = "30", global = true)]
     pub timeout: u64,
+
+    /// Skip session cache (force fresh login)
+    #[arg(long, global = true)]
+    pub no_cache: bool,
 }
 
 // ── Output & Color Enums ─────────────────────────────────────────────

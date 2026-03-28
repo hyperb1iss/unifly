@@ -108,6 +108,8 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
         refresh_interval_secs: 10,
         websocket_enabled: true,
         polling_interval_secs: 10,
+        profile_name: global.profile.clone(),
+        no_session_cache: global.no_cache,
     };
 
     Some(Controller::new(controller_config))

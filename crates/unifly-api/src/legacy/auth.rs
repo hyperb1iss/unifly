@@ -12,6 +12,7 @@ use url::Url;
 use crate::auth::ControllerPlatform;
 use crate::error::Error;
 use crate::legacy::client::LegacyClient;
+use crate::legacy::session_cache::{CachedSession, SessionCache, jwt_expiry};
 
 impl LegacyClient {
     /// Authenticate with the controller using username/password.
@@ -70,6 +71,61 @@ impl LegacyClient {
 
         debug!("login successful");
         Ok(())
+    }
+
+    /// Authenticate, using a cached session if available.
+    ///
+    /// Tries to restore a cached session first. If no valid cache exists,
+    /// performs a fresh login and saves the resulting session to disk.
+    pub async fn login_with_cache(
+        &self,
+        username: &str,
+        password: &SecretString,
+        cache: &SessionCache,
+    ) -> Result<(), Error> {
+        // Try cached session first.
+        if let Some(session) = cache.load() {
+            if session.controller_url == self.base_url().as_str() {
+                debug!("restoring session from cache");
+                self.restore_session(&session.token, session.csrf_token.as_deref());
+                return Ok(());
+            }
+            debug!("cached session URL mismatch, performing fresh login");
+        }
+
+        // Fresh login.
+        self.login(username, password).await?;
+
+        // Save the session for next time.
+        self.save_session_to_cache(cache);
+
+        Ok(())
+    }
+
+    /// Extract the current session state and write it to the cache.
+    pub fn save_session_to_cache(&self, cache: &SessionCache) {
+        let Some(token) = self.extract_token() else {
+            debug!("no TOKEN cookie to cache");
+            return;
+        };
+
+        let expires_at = jwt_expiry(&token).unwrap_or_else(|| {
+            // Fallback: assume 12-hour validity if we can't parse the JWT.
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() + 12 * 3600)
+                .unwrap_or(0)
+        });
+
+        let session = CachedSession {
+            token,
+            csrf_token: self.csrf_token(),
+            controller_url: self.base_url().to_string(),
+            expires_at,
+        };
+
+        cache.save(&session);
     }
 
     /// End the current session.

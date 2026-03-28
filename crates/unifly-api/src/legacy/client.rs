@@ -129,6 +129,41 @@ impl LegacyClient {
         cookies.to_str().ok().map(String::from)
     }
 
+    // ── Session cache support ─────────────────────────────────────────
+
+    /// Restore a cached session by injecting the TOKEN cookie into the
+    /// cookie jar and setting the CSRF token.
+    pub fn restore_session(&self, token: &str, csrf_token: Option<&str>) {
+        if let Some(ref jar) = self.cookie_jar {
+            let cookie_str = format!("TOKEN={token}");
+            jar.add_cookie_str(&cookie_str, &self.base_url);
+            debug!("restored TOKEN cookie from cache");
+        }
+        if let Some(csrf) = csrf_token {
+            self.set_csrf_token(csrf.to_owned());
+        }
+    }
+
+    /// Extract the current TOKEN cookie value from the cookie jar.
+    pub fn extract_token(&self) -> Option<String> {
+        let jar = self.cookie_jar.as_ref()?;
+        let header = jar.cookies(&self.base_url)?;
+        let header_str = header.to_str().ok()?;
+        // Parse "TOKEN=value" from the cookie header (may contain multiple cookies).
+        for part in header_str.split(';') {
+            let trimmed = part.trim();
+            if let Some(value) = trimmed.strip_prefix("TOKEN=") {
+                return Some(value.to_owned());
+            }
+        }
+        None
+    }
+
+    /// Read the current CSRF token.
+    pub fn csrf_token(&self) -> Option<String> {
+        self.csrf_token.read().expect("CSRF lock poisoned").clone()
+    }
+
     // ── CSRF token management ─────────────────────────────────────────
 
     /// Store a CSRF token (captured from login response headers).

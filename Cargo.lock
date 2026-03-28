@@ -4407,9 +4407,11 @@ version = "0.6.0"
 dependencies = [
  "arc-swap",
  "async-stream",
+ "base64",
  "bytes",
  "chrono",
  "dashmap",
+ "directories",
  "futures-core",
  "futures-util",
  "insta",

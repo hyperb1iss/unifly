@@ -347,5 +347,7 @@ pub fn profile_to_controller_config(
         refresh_interval_secs: 10,
         websocket_enabled: true,
         polling_interval_secs: 10,
+        profile_name: None,
+        no_session_cache: false,
     })
 }

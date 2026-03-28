@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod session_cache;
 pub mod clients;
 pub mod devices;
 pub mod events;

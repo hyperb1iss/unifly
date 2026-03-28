@@ -26,6 +26,7 @@ use crate::model::{
 use crate::store::DataStore;
 use crate::stream::EntityStream;
 
+use crate::legacy::session_cache::SessionCache;
 use crate::transport::{TlsMode, TransportConfig};
 use crate::websocket::{ReconnectConfig, WebSocketHandle};
 use crate::{IntegrationClient, LegacyClient};
@@ -173,7 +174,21 @@ impl Controller {
                     platform,
                     &transport,
                 )?;
-                client.login(username, password).await?;
+
+                let cache = if config.no_session_cache {
+                    None
+                } else {
+                    config
+                        .profile_name
+                        .as_deref()
+                        .and_then(|name| SessionCache::new(name, config.url.as_str()))
+                };
+
+                if let Some(ref cache) = cache {
+                    client.login_with_cache(username, password, cache).await?;
+                } else {
+                    client.login(username, password).await?;
+                }
                 debug!("session authentication successful");
 
                 *self.inner.legacy_client.lock().await = Some(client);
@@ -204,25 +219,42 @@ impl Controller {
                 // Legacy API client — attempt login but degrade gracefully
                 // if it fails. The Integration API is the primary surface;
                 // Legacy adds events, stats, and admin ops.
+                let cache = if config.no_session_cache {
+                    None
+                } else {
+                    config
+                        .profile_name
+                        .as_deref()
+                        .and_then(|name| SessionCache::new(name, config.url.as_str()))
+                };
+
                 match LegacyClient::new(
                     config.url.clone(),
                     config.site.clone(),
                     platform,
                     &transport,
                 ) {
-                    Ok(client) => match client.login(username, password).await {
-                        Ok(()) => {
-                            debug!("legacy session authentication successful (hybrid)");
-                            *self.inner.legacy_client.lock().await = Some(client);
+                    Ok(client) => {
+                        let login_result = if let Some(ref cache) = cache {
+                            client.login_with_cache(username, password, cache).await
+                        } else {
+                            client.login(username, password).await
+                        };
+
+                        match login_result {
+                            Ok(()) => {
+                                debug!("legacy session authentication successful (hybrid)");
+                                *self.inner.legacy_client.lock().await = Some(client);
+                            }
+                            Err(e) => {
+                                let msg = format!(
+                                    "Legacy login failed: {e} — events, health stats, and client traffic will be unavailable"
+                                );
+                                warn!("{msg}");
+                                self.inner.warnings.lock().await.push(msg);
+                            }
                         }
-                        Err(e) => {
-                            let msg = format!(
-                                "Legacy login failed: {e} — events, health stats, and client traffic will be unavailable"
-                            );
-                            warn!("{msg}");
-                            self.inner.warnings.lock().await.push(msg);
-                        }
-                    },
+                    }
                     Err(e) => {
                         let msg = format!("Legacy client setup failed: {e}");
                         warn!("{msg}");

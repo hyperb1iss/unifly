@@ -93,6 +93,8 @@ pub fn resolve_profile(
         refresh_interval_secs: 0,
         websocket_enabled: false,
         polling_interval_secs: 30,
+        profile_name: Some(profile_name.to_owned()),
+        no_session_cache: global.no_cache,
     })
 }
 

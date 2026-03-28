@@ -83,6 +83,10 @@ pub struct ControllerConfig {
     pub websocket_enabled: bool,
     /// Polling interval when WebSocket is unavailable (seconds).
     pub polling_interval_secs: u64,
+    /// Profile name used as session cache key. `None` disables caching.
+    pub profile_name: Option<String>,
+    /// When `true`, skip loading/saving session cache entirely.
+    pub no_session_cache: bool,
 }
 
 impl Default for ControllerConfig {
@@ -101,6 +105,8 @@ impl Default for ControllerConfig {
             refresh_interval_secs: 300,
             websocket_enabled: true,
             polling_interval_secs: 10,
+            profile_name: None,
+            no_session_cache: false,
         }
     }
 }
