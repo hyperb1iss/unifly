@@ -230,18 +230,13 @@ fn handle_list(
     Ok(())
 }
 
-fn handle_get(
-    controller: &Controller,
-    id: &str,
-    global: &GlobalOpts,
-) -> Result<(), CliError> {
+fn handle_get(controller: &Controller, id: &str, global: &GlobalOpts) -> Result<(), CliError> {
     let snapshot = controller.nat_policies_snapshot();
     let found = snapshot.iter().find(|p| p.id.to_string() == id);
     match found {
         Some(policy) => {
-            let out = output::render_single(&global.output, policy, nat_detail, |p| {
-                p.id.to_string()
-            });
+            let out =
+                output::render_single(&global.output, policy, nat_detail, |p| p.id.to_string());
             output::print_output(&out, global.quiet);
         }
         None => {

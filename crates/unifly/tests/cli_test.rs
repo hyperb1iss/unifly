@@ -887,7 +887,9 @@ fn test_nat_policies_update_rejects_bare_id() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("config") || stderr.contains("Configuration") || stderr.contains("at least one"),
+        stderr.contains("config")
+            || stderr.contains("Configuration")
+            || stderr.contains("at least one"),
         "Expected config-load or validation error, got: {stderr}"
     );
 }
@@ -908,8 +910,7 @@ fn test_nat_policies_update_name_conflicts_with_description() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("--name")
-                .and(predicate::str::contains("cannot be used with")),
+            predicate::str::contains("--name").and(predicate::str::contains("cannot be used with")),
         );
 }
 
