@@ -234,15 +234,11 @@ in `commands/mod.rs::dispatch()` via match on `Command`.
 ### Access Gate Gotcha
 
 `crates/unifly/src/cli/commands/util/access.rs` defines
-**`ensure_integration_access`** and **only that**. There is no
-`ensure_session_access` function. Session commands fail naturally when the
-auth mode cannot reach Session endpoints.
-
-Not every Integration-only command actually calls `ensure_integration_access`
-either. The gate is only invoked by 7 handlers (acl, dns, firewall,
-hotspot, networks, traffic_lists, wifi). New Integration-only commands
-should add the gate call for clean error messages. `nat` and `events`
-notably do not, and they should.
+**`ensure_integration_access`** and **`ensure_session_access`**. The
+Integration gate is called by 7 handlers (acl, dns, firewall, hotspot,
+networks, traffic_lists, wifi). The Session gate is called by `nat` and
+`events`. New commands should add the appropriate gate call for clean
+error messages when the auth mode is insufficient.
 
 ### Output Formats
 
@@ -600,7 +596,9 @@ workflow.
   **not `EVT_*` glob patterns**. The matching logic is in
   `cli/commands/events.rs::watch_events`.
 - **`admin revoke <ADMIN>` is positional**, not a `--email` flag.
-- **`nat policies` has no `update` subcommand.** Delete and recreate.
+- **`nat policies update`** uses `--name` or `--description` (mutually
+  exclusive) for the display label. Both map to the v2 API `description`
+  field. The `--name` flag is the user-friendly alias.
 - **`firewall policies patch`** is a fast partial-update path for toggling
   `enabled`/`logging`; use it instead of `update` when only those fields
   change.

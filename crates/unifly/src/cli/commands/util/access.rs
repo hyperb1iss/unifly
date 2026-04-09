@@ -26,6 +26,6 @@ pub async fn ensure_session_access(
 
     Err(CliError::Unsupported {
         operation: operation.into(),
-        required: "Session API".into(),
+        required: "session or hybrid authentication".into(),
     })
 }

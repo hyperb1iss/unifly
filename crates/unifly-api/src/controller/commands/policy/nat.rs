@@ -137,6 +137,20 @@ async fn apply_nat_update(
             "source" | "source_nat" | "snat" => "SNAT",
             _ => "DNAT",
         };
+        // When changing direction (DNAT <-> SNAT/MASQUERADE), clear the
+        // stale interface key so the controller doesn't receive both
+        // in_interface and out_interface simultaneously.
+        let old_type = body["type"].as_str().unwrap_or("");
+        let was_dnat = old_type == "DNAT";
+        let is_dnat = mapped == "DNAT";
+        if was_dnat != is_dnat {
+            let stale_key = if was_dnat {
+                "in_interface"
+            } else {
+                "out_interface"
+            };
+            body.as_object_mut().map(|m| m.remove(stale_key));
+        }
         body["type"] = json!(mapped);
     }
     if let Some(ref protocol) = update.protocol {

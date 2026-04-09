@@ -95,8 +95,8 @@ pub enum NatPoliciesCommand {
         /// NAT policy ID (UUID or legacy _id)
         id: String,
 
-        /// Policy name
-        #[arg(long)]
+        /// Policy name (the display label; mutually exclusive with --description)
+        #[arg(long, conflicts_with = "description")]
         name: Option<String>,
 
         /// NAT type: masquerade, source, or destination
@@ -139,8 +139,8 @@ pub enum NatPoliciesCommand {
         #[arg(long, action = clap::ArgAction::Set)]
         enabled: Option<bool>,
 
-        /// Policy description
-        #[arg(long)]
+        /// Policy description (the display label; mutually exclusive with --name)
+        #[arg(long, conflicts_with = "name")]
         description: Option<String>,
 
         /// Load full payload from JSON/JSONC file

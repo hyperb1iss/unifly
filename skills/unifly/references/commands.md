@@ -223,8 +223,10 @@ unifly nat policies delete <id>
 
 **Gotchas:**
 
-- **There is no `update` subcommand for NAT policies.** Delete and
-  recreate to modify.
+- **`nat policies update <id>`** fetches the existing rule and merges
+  only the changed fields. Use `--name` or `--description` (mutually
+  exclusive) for the display label, plus any combination of `--type`,
+  `--protocol`, `--enabled`, address/port flags, or `--from-file`.
 - `masquerade` is source NAT using the outgoing interface address (most
   common for Internet-bound traffic).
 - `destination` is how port forwarding works on UniFi: specify

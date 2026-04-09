@@ -858,6 +858,70 @@ fn test_vpn_magic_site_to_site_subcommands_exist() {
         .stdout(predicate::str::contains("list").and(predicate::str::contains("get")));
 }
 
+// ── NAT ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_nat_policies_subcommands_exist() {
+    unifly_cmd()
+        .args(["nat", "policies", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("list")
+                .and(predicate::str::contains("get"))
+                .and(predicate::str::contains("create"))
+                .and(predicate::str::contains("update"))
+                .and(predicate::str::contains("delete")),
+        );
+}
+
+#[test]
+fn test_nat_policies_update_rejects_bare_id() {
+    // With no update flags and no config, the CLI fails at config load
+    // before reaching the "at least one flag" validation. This test
+    // verifies the command parses but does not silently succeed.
+    unifly_cmd()
+        .args(["nat", "policies", "update", "test-id"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_nat_policies_update_name_conflicts_with_description() {
+    let output = unifly_cmd()
+        .args([
+            "nat",
+            "policies",
+            "update",
+            "test-id",
+            "--name",
+            "foo",
+            "--description",
+            "bar",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "Expected failure when --name and --description are both provided"
+    );
+}
+
+#[test]
+fn test_nat_policies_update_command_parses_with_name() {
+    unifly_cmd()
+        .args(["nat", "policies", "update", "test-id", "--name", "new-name"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("config")
+                .or(predicate::str::contains("Configuration"))
+                .or(predicate::str::contains("controller"))
+                .or(predicate::str::contains("profile"))
+                .or(predicate::str::contains("session")),
+        );
+}
+
 #[test]
 fn test_config_subcommands_exist() {
     unifly_cmd()

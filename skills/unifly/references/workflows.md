@@ -152,8 +152,8 @@ unifly nat policies create \
   --translated-port 8443
 ```
 
-To modify a NAT policy, **delete and recreate it**: there is no `nat
-policies update` subcommand.
+To modify a NAT policy, use `nat policies update <ID>` with any
+combination of flags. Only the specified fields are changed.
 
 ## Real-Time Event Streaming
 

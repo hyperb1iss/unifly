@@ -427,6 +427,7 @@ Common failures and how to diagnose them:
   UniFi-to-UniFi auto flows are still not wrapped.
 - **Port forwarding** lives under `nat policies` with destination NAT, not
   a dedicated command.
-- **No `nat policies update`.** Delete and recreate to modify a NAT policy.
+- **`nat policies update`** is now available. It fetches the existing
+  rule and merges only the changed fields via the Session v2 API.
 - **DeviceFilter lacks a `BySite` variant.** Filter client-side after
   fetching if cross-site device filtering is required.

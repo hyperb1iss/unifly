@@ -153,9 +153,9 @@ unifly nat policies create -F nat.json
 unifly nat policies delete <ID>
 ```
 
-::: warning
-There is no `nat policies update`. Delete and recreate to modify a NAT rule.
-:::
+Use `nat policies update <ID>` to modify an existing rule. Pass any
+combination of `--name`, `--type`, `--enabled`, address/port flags, or
+`--from-file`. Only the specified fields are changed.
 
 NAT types: `masquerade` (outgoing interface address), `source` (explicit rewrite), `destination` (port forwarding/DNAT). NAT routes through the Session v2 API, so credentials are required even in Hybrid mode.
 

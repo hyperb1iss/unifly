@@ -196,7 +196,7 @@ UNIFI_TOTP=$(op read "op://Vault/UniFi/one-time password") unifly devices list
 ## 🎭 Common Gotchas
 
 - **`events watch --types`** takes category names (`Device`, `Client`, `Network`), not `EVT_*` glob patterns
-- **`nat policies`** has no `update` subcommand. Delete and recreate to modify a NAT rule
+- **`nat policies update`** uses `--name` or `--description` (mutually exclusive) for the display label
 - **`firewall policies patch`** is the fast path for toggling `enabled`/`logging`. Use it instead of `update` when only those fields change
 - **`networks refs <id>`** checks what depends on a network before you delete it. No equivalent exists for other entities yet
 - **`admin revoke`** takes a positional admin ID, not a `--email` flag
