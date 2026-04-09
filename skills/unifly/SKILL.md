@@ -83,7 +83,7 @@ All commands follow `unifly [global-flags] <command> <action> [args]`.
 | `networks`      | `net`, `n` | list, get, create, update, delete, refs                                                                        |
 | `wifi`          | `w`        | list, get, neighbors, channels, create, update, delete                                                        |
 | `firewall`      | `fw`       | policies {list, get, create, update, patch, delete, reorder}, zones {list, get, create, update, delete}        |
-| `nat`           |            | policies {list, get, create, delete}                                                                           |
+| `nat`           |            | policies {list, get, create, update, delete}                                                                   |
 | `acl`           |            | list, get, create, update, delete, reorder                                                                     |
 | `dns`           |            | list, get, create, update, delete                                                                              |
 | `traffic-lists` |            | list, get, create, update, delete                                                                              |

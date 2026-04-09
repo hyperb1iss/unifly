@@ -144,7 +144,11 @@ pub enum NatPoliciesCommand {
         description: Option<String>,
 
         /// Load full payload from JSON/JSONC file
-        #[arg(long, short = 'F')]
+        #[arg(long, short = 'F', conflicts_with_all = &[
+            "name", "nat_type", "interface_id", "protocol",
+            "src_address", "src_port", "dst_address", "dst_port",
+            "translated_address", "translated_port", "enabled", "description",
+        ])]
         from_file: Option<PathBuf>,
     },
 

@@ -149,7 +149,9 @@ async fn apply_nat_update(
             } else {
                 "out_interface"
             };
-            body.as_object_mut().map(|m| m.remove(stale_key));
+            if let Some(m) = body.as_object_mut() {
+                m.remove(stale_key);
+            }
         }
         body["type"] = json!(mapped);
     }

@@ -150,6 +150,7 @@ unifly nat policies list
 unifly nat policies get <ID>
 unifly nat policies create --name "Masquerade" --type masquerade --interface-id <ID>
 unifly nat policies create -F nat.json
+unifly nat policies update <ID> --name "New Name" --enabled true
 unifly nat policies delete <ID>
 ```
 

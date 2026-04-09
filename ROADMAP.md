@@ -10,7 +10,8 @@ Issues that exist in the current release and are documented so nobody wastes tim
 - **Device `radios` field is always empty.** Parsing radio data from the `interfaces` JSON is not implemented.
 - **TUI has no test coverage.** The 10 screens and widgets are untested. Adding tests here is welcomed.
 - **CLI test coverage is growing.** `cli_test.rs` and the new `e2e_test.rs` suite cover many commands, but coverage is not yet comprehensive.
-- **`nat` and `events` commands now have session access gates.** ~~Workaround: delete and recreate.~~
+- **~~NAT policies have no `update` subcommand.~~** Resolved: `nat policies update` is now available.
+- **~~`nat` and `events` skip access gates.~~** Resolved: both now use `ensure_session_access`.
 - **Plugin manifest version sync is manual.** `.claude-plugin/` and `.cursor-plugin/` manifests must be bumped by hand during releases.
 - **ClawHub skill publish is manual.** Not yet wired into the release workflow.
 - **AUR package update is manual.** Requires `just aur-update <version>` after each release.
