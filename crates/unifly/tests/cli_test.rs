@@ -880,15 +880,21 @@ fn test_nat_policies_update_rejects_bare_id() {
     // With no update flags and no config, the CLI fails at config load
     // before reaching the "at least one flag" validation. This test
     // verifies the command parses but does not silently succeed.
-    unifly_cmd()
+    let output = unifly_cmd()
         .args(["nat", "policies", "update", "test-id"])
-        .assert()
-        .failure();
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("config") || stderr.contains("Configuration") || stderr.contains("at least one"),
+        "Expected config-load or validation error, got: {stderr}"
+    );
 }
 
 #[test]
 fn test_nat_policies_update_name_conflicts_with_description() {
-    let output = unifly_cmd()
+    unifly_cmd()
         .args([
             "nat",
             "policies",
@@ -899,12 +905,12 @@ fn test_nat_policies_update_name_conflicts_with_description() {
             "--description",
             "bar",
         ])
-        .output()
-        .unwrap();
-    assert!(
-        !output.status.success(),
-        "Expected failure when --name and --description are both provided"
-    );
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("--name")
+                .and(predicate::str::contains("cannot be used with")),
+        );
 }
 
 #[test]

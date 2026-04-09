@@ -210,7 +210,7 @@ crates/unifly/src/cli/
   commands/
     mod.rs                   # dispatch() router
     util/
-      access.rs              # ensure_integration_access (the ONLY gate)
+      access.rs              # ensure_integration_access / ensure_session_access
     <entity>.rs              # handler per entity
     <entity>/                # for entities with multiple subhandlers
   error.rs                   # CliError (thiserror + miette)

@@ -126,7 +126,6 @@ pub async fn handle(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn handle_policies(
     controller: &Controller,
     cmd: NatPoliciesCommand,
@@ -134,42 +133,8 @@ async fn handle_policies(
     painter: &output::Painter,
 ) -> Result<(), CliError> {
     match cmd {
-        NatPoliciesCommand::List(list) => {
-            let all = controller.nat_policies_snapshot();
-            let snapshot = util::apply_list_args(all.iter().cloned(), &list, |policy, filter| {
-                util::matches_json_filter(policy, filter)
-            });
-            let out = output::render_list(
-                &global.output,
-                &snapshot,
-                |policy| nat_row(policy, painter),
-                |policy| policy.id.to_string(),
-            );
-            output::print_output(&out, global.quiet);
-            Ok(())
-        }
-
-        NatPoliciesCommand::Get { id } => {
-            let snapshot = controller.nat_policies_snapshot();
-            let found = snapshot.iter().find(|p| p.id.to_string() == id);
-            match found {
-                Some(policy) => {
-                    let out = output::render_single(&global.output, policy, nat_detail, |p| {
-                        p.id.to_string()
-                    });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "NAT policy".into(),
-                        identifier: id,
-                        list_command: "nat policies list".into(),
-                    });
-                }
-            }
-            Ok(())
-        }
-
+        NatPoliciesCommand::List(list) => handle_list(controller, &list, global, painter),
+        NatPoliciesCommand::Get { id } => handle_get(controller, &id, global),
         NatPoliciesCommand::Create {
             from_file,
             name,
@@ -185,34 +150,25 @@ async fn handle_policies(
             enabled,
             description,
         } => {
-            let req: CreateNatPolicyRequest = if let Some(path) = from_file.as_ref() {
-                serde_json::from_value(util::read_json_file(path)?)?
-            } else {
-                CreateNatPolicyRequest {
-                    name: name.unwrap_or_default(),
-                    nat_type: nat_type.unwrap_or_default(),
-                    description,
-                    enabled,
-                    interface_id: interface_id.map(EntityId::from),
-                    protocol,
-                    src_address,
-                    src_port,
-                    dst_address,
-                    dst_port,
-                    translated_address,
-                    translated_port,
-                }
-            };
-
-            controller
-                .execute(CoreCommand::CreateNatPolicy(req))
-                .await?;
-            if !global.quiet {
-                eprintln!("NAT policy created");
-            }
-            Ok(())
+            handle_create(
+                controller,
+                from_file,
+                name,
+                nat_type,
+                interface_id,
+                protocol,
+                src_address,
+                src_port,
+                dst_address,
+                dst_port,
+                translated_address,
+                translated_port,
+                enabled,
+                description,
+                global,
+            )
+            .await
         }
-
         NatPoliciesCommand::Update {
             id,
             name,
@@ -229,70 +185,207 @@ async fn handle_policies(
             description,
             from_file,
         } => {
-            let update: UpdateNatPolicyRequest = if let Some(path) = from_file.as_ref() {
-                serde_json::from_value(util::read_json_file(path)?)?
-            } else {
-                if name.is_none()
-                    && nat_type.is_none()
-                    && interface_id.is_none()
-                    && protocol.is_none()
-                    && src_address.is_none()
-                    && src_port.is_none()
-                    && dst_address.is_none()
-                    && dst_port.is_none()
-                    && translated_address.is_none()
-                    && translated_port.is_none()
-                    && enabled.is_none()
-                    && description.is_none()
-                {
-                    return Err(CliError::Validation {
-                        field: "update".into(),
-                        reason: "at least one update flag or --from-file is required".into(),
-                    });
-                }
-
-                UpdateNatPolicyRequest {
-                    name,
-                    nat_type,
-                    description,
-                    enabled,
-                    interface_id: interface_id.map(EntityId::from),
-                    protocol,
-                    src_address,
-                    src_port,
-                    dst_address,
-                    dst_port,
-                    translated_address,
-                    translated_port,
-                }
-            };
-
-            controller
-                .execute(CoreCommand::UpdateNatPolicy {
-                    id: EntityId::from(id),
-                    update,
-                })
-                .await?;
-            if !global.quiet {
-                eprintln!("NAT policy updated");
-            }
-            Ok(())
+            handle_update(
+                controller,
+                id,
+                from_file,
+                name,
+                nat_type,
+                interface_id,
+                protocol,
+                src_address,
+                src_port,
+                dst_address,
+                dst_port,
+                translated_address,
+                translated_port,
+                enabled,
+                description,
+                global,
+            )
+            .await
         }
+        NatPoliciesCommand::Delete { id } => handle_delete(controller, &id, global).await,
+    }
+}
 
-        NatPoliciesCommand::Delete { id } => {
-            if !util::confirm(&format!("Delete NAT policy {id}?"), global.yes)? {
-                return Ok(());
-            }
+#[allow(clippy::unnecessary_wraps)]
+fn handle_list(
+    controller: &Controller,
+    list: &crate::cli::args::ListArgs,
+    global: &GlobalOpts,
+    painter: &output::Painter,
+) -> Result<(), CliError> {
+    let all = controller.nat_policies_snapshot();
+    let snapshot = util::apply_list_args(all.iter().cloned(), list, |policy, filter| {
+        util::matches_json_filter(policy, filter)
+    });
+    let out = output::render_list(
+        &global.output,
+        &snapshot,
+        |policy| nat_row(policy, painter),
+        |policy| policy.id.to_string(),
+    );
+    output::print_output(&out, global.quiet);
+    Ok(())
+}
 
-            controller
-                .execute(CoreCommand::DeleteNatPolicy {
-                    id: EntityId::from(id.clone()),
-                })
-                .await?;
-            if !global.quiet {
-                eprintln!("NAT policy deleted");
-            }
-            Ok(())
+fn handle_get(
+    controller: &Controller,
+    id: &str,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    let snapshot = controller.nat_policies_snapshot();
+    let found = snapshot.iter().find(|p| p.id.to_string() == id);
+    match found {
+        Some(policy) => {
+            let out = output::render_single(&global.output, policy, nat_detail, |p| {
+                p.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
+        }
+        None => {
+            return Err(CliError::NotFound {
+                resource_type: "NAT policy".into(),
+                identifier: id.to_string(),
+                list_command: "nat policies list".into(),
+            });
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_create(
+    controller: &Controller,
+    from_file: Option<std::path::PathBuf>,
+    name: Option<String>,
+    nat_type: Option<String>,
+    interface_id: Option<String>,
+    protocol: Option<String>,
+    src_address: Option<String>,
+    src_port: Option<String>,
+    dst_address: Option<String>,
+    dst_port: Option<String>,
+    translated_address: Option<String>,
+    translated_port: Option<String>,
+    enabled: bool,
+    description: Option<String>,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    let req: CreateNatPolicyRequest = if let Some(path) = from_file.as_ref() {
+        serde_json::from_value(util::read_json_file(path)?)?
+    } else {
+        CreateNatPolicyRequest {
+            name: name.unwrap_or_default(),
+            nat_type: nat_type.unwrap_or_default(),
+            description,
+            enabled,
+            interface_id: interface_id.map(EntityId::from),
+            protocol,
+            src_address,
+            src_port,
+            dst_address,
+            dst_port,
+            translated_address,
+            translated_port,
+        }
+    };
+
+    controller
+        .execute(CoreCommand::CreateNatPolicy(req))
+        .await?;
+    if !global.quiet {
+        eprintln!("NAT policy created");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_update(
+    controller: &Controller,
+    id: String,
+    from_file: Option<std::path::PathBuf>,
+    name: Option<String>,
+    nat_type: Option<String>,
+    interface_id: Option<String>,
+    protocol: Option<String>,
+    src_address: Option<String>,
+    src_port: Option<String>,
+    dst_address: Option<String>,
+    dst_port: Option<String>,
+    translated_address: Option<String>,
+    translated_port: Option<String>,
+    enabled: Option<bool>,
+    description: Option<String>,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    let update: UpdateNatPolicyRequest = if let Some(path) = from_file.as_ref() {
+        serde_json::from_value(util::read_json_file(path)?)?
+    } else {
+        if name.is_none()
+            && nat_type.is_none()
+            && interface_id.is_none()
+            && protocol.is_none()
+            && src_address.is_none()
+            && src_port.is_none()
+            && dst_address.is_none()
+            && dst_port.is_none()
+            && translated_address.is_none()
+            && translated_port.is_none()
+            && enabled.is_none()
+            && description.is_none()
+        {
+            return Err(CliError::Validation {
+                field: "update".into(),
+                reason: "at least one update flag or --from-file is required".into(),
+            });
+        }
+
+        UpdateNatPolicyRequest {
+            name,
+            nat_type,
+            description,
+            enabled,
+            interface_id: interface_id.map(EntityId::from),
+            protocol,
+            src_address,
+            src_port,
+            dst_address,
+            dst_port,
+            translated_address,
+            translated_port,
+        }
+    };
+
+    controller
+        .execute(CoreCommand::UpdateNatPolicy {
+            id: EntityId::from(id),
+            update,
+        })
+        .await?;
+    if !global.quiet {
+        eprintln!("NAT policy updated");
+    }
+    Ok(())
+}
+
+async fn handle_delete(
+    controller: &Controller,
+    id: &str,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    if !util::confirm(&format!("Delete NAT policy {id}?"), global.yes)? {
+        return Ok(());
+    }
+
+    controller
+        .execute(CoreCommand::DeleteNatPolicy {
+            id: EntityId::from(id.to_string()),
+        })
+        .await?;
+    if !global.quiet {
+        eprintln!("NAT policy deleted");
+    }
+    Ok(())
 }

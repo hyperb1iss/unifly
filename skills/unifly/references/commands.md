@@ -218,6 +218,11 @@ unifly nat policies create --name NAME --nat-type masquerade|source|destination 
   [--src-port N] [--dst-port N] \
   [--translated-address IP] [--translated-port N] \
   [--protocol tcp|udp|all] [-F payload.json]
+unifly nat policies update <id> [--name NAME | --description DESC] \
+  [--type masquerade|source|destination] [--protocol tcp|udp|all] \
+  [--enabled true|false] [--src-address CIDR] [--dst-address CIDR] \
+  [--src-port N] [--dst-port N] \
+  [--translated-address IP] [--translated-port N] [-F payload.json]
 unifly nat policies delete <id>
 ```
 

@@ -183,12 +183,18 @@ async fn apply_nat_update(
     }
 
     if update.src_address.is_some() || update.src_port.is_some() {
-        body["source_filter"] =
-            build_filter(update.src_address.as_deref(), update.src_port.as_deref());
+        body["source_filter"] = merge_filter(
+            body.get("source_filter"),
+            update.src_address.as_deref(),
+            update.src_port.as_deref(),
+        );
     }
     if update.dst_address.is_some() || update.dst_port.is_some() {
-        body["destination_filter"] =
-            build_filter(update.dst_address.as_deref(), update.dst_port.as_deref());
+        body["destination_filter"] = merge_filter(
+            body.get("destination_filter"),
+            update.dst_address.as_deref(),
+            update.dst_port.as_deref(),
+        );
     }
 
     session
@@ -196,6 +202,22 @@ async fn apply_nat_update(
         .await
         .map_err(CoreError::from)?;
     Ok(())
+}
+
+/// Merge new address/port values with an existing filter, preserving fields
+/// that were not explicitly supplied in the update.
+fn merge_filter(
+    existing: Option<&serde_json::Value>,
+    new_addr: Option<&str>,
+    new_port: Option<&str>,
+) -> serde_json::Value {
+    let existing_addr = existing
+        .and_then(|f| f.get("address"))
+        .and_then(serde_json::Value::as_str);
+    let existing_port = existing
+        .and_then(|f| f.get("port"))
+        .and_then(serde_json::Value::as_str);
+    build_filter(new_addr.or(existing_addr), new_port.or(existing_port))
 }
 
 /// Build a v2 NAT filter object (source_filter or destination_filter).

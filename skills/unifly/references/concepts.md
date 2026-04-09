@@ -140,6 +140,7 @@ matrix to pick the right `auth_mode`.
 - `vpn settings` (list/get/set/patch): `/rest/setting`
 - `wifi neighbors`: `/stat/rogueap`
 - `wifi channels`: `/stat/current-channel`
+- `nat policies` (list/get/create/update/delete): Session v2 API
 
 ### Session WebSocket required (session-backed auth)
 
