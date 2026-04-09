@@ -19,9 +19,10 @@ pub use requests::{
     CreateTrafficMatchingListRequest, CreateVouchersRequest, CreateVpnClientProfileRequest,
     CreateWifiBroadcastRequest, CreateWireGuardPeerRequest, TrafficFilterSpec,
     UpdateAclRuleRequest, UpdateDnsPolicyRequest, UpdateFirewallPolicyRequest,
-    UpdateFirewallZoneRequest, UpdateNetworkRequest, UpdateRemoteAccessVpnServerRequest,
-    UpdateSiteToSiteVpnRequest, UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest,
-    UpdateWifiBroadcastRequest, UpdateWireGuardPeerRequest,
+    UpdateFirewallZoneRequest, UpdateNatPolicyRequest, UpdateNetworkRequest,
+    UpdateRemoteAccessVpnServerRequest, UpdateSiteToSiteVpnRequest,
+    UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest, UpdateWifiBroadcastRequest,
+    UpdateWireGuardPeerRequest,
 };
 
 /// A command envelope sent through the command channel.
@@ -147,6 +148,10 @@ pub enum Command {
 
     // ── NAT ──────────────────────────────────────────────────────────
     CreateNatPolicy(CreateNatPolicyRequest),
+    UpdateNatPolicy {
+        id: EntityId,
+        update: UpdateNatPolicyRequest,
+    },
     DeleteNatPolicy {
         id: EntityId,
     },

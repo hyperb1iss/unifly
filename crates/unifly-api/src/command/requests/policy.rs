@@ -189,6 +189,40 @@ pub struct CreateNatPolicyRequest {
     pub translated_port: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateNatPolicyRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// masquerade | source | destination
+    #[serde(
+        rename = "type",
+        alias = "nat_type",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub nat_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface_id: Option<EntityId>,
+    /// tcp | udp | tcp_udp | all
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src_port: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dst_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dst_port: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translated_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translated_port: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CreateAclRuleRequest, UpdateAclRuleRequest};

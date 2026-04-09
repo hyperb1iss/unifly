@@ -26,9 +26,9 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         cmd @ (Command::CreateDnsPolicy(_)
         | Command::UpdateDnsPolicy { .. }
         | Command::DeleteDnsPolicy { .. }) => dns::route(ctx, cmd).await,
-        cmd @ (Command::CreateNatPolicy(_) | Command::DeleteNatPolicy { .. }) => {
-            nat::route(ctx, cmd).await
-        }
+        cmd @ (Command::CreateNatPolicy(_)
+        | Command::UpdateNatPolicy { .. }
+        | Command::DeleteNatPolicy { .. }) => nat::route(ctx, cmd).await,
         cmd @ (Command::CreateTrafficMatchingList(_)
         | Command::UpdateTrafficMatchingList { .. }
         | Command::DeleteTrafficMatchingList { .. }) => traffic_lists::route(ctx, cmd).await,

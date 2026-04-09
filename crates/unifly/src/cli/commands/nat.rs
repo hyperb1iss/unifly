@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use tabled::Tabled;
 use unifly_api::model::NatPolicy;
-use unifly_api::{Command as CoreCommand, Controller, CreateNatPolicyRequest, EntityId};
+use unifly_api::{
+    Command as CoreCommand, Controller, CreateNatPolicyRequest, EntityId, UpdateNatPolicyRequest,
+};
 
 use crate::cli::args::{GlobalOpts, NatArgs, NatCommand, NatPoliciesCommand};
 use crate::cli::error::CliError;
@@ -114,6 +116,7 @@ pub async fn handle(
     args: NatArgs,
     global: &GlobalOpts,
 ) -> Result<(), CliError> {
+    util::ensure_session_access(controller, "nat").await?;
     let painter = output::Painter::new(global);
 
     match args.command {
@@ -123,6 +126,7 @@ pub async fn handle(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_policies(
     controller: &Controller,
     cmd: NatPoliciesCommand,
@@ -205,6 +209,72 @@ async fn handle_policies(
                 .await?;
             if !global.quiet {
                 eprintln!("NAT policy created");
+            }
+            Ok(())
+        }
+
+        NatPoliciesCommand::Update {
+            id,
+            name,
+            nat_type,
+            interface_id,
+            protocol,
+            src_address,
+            src_port,
+            dst_address,
+            dst_port,
+            translated_address,
+            translated_port,
+            enabled,
+            description,
+            from_file,
+        } => {
+            let update: UpdateNatPolicyRequest = if let Some(path) = from_file.as_ref() {
+                serde_json::from_value(util::read_json_file(path)?)?
+            } else {
+                if name.is_none()
+                    && nat_type.is_none()
+                    && interface_id.is_none()
+                    && protocol.is_none()
+                    && src_address.is_none()
+                    && src_port.is_none()
+                    && dst_address.is_none()
+                    && dst_port.is_none()
+                    && translated_address.is_none()
+                    && translated_port.is_none()
+                    && enabled.is_none()
+                    && description.is_none()
+                {
+                    return Err(CliError::Validation {
+                        field: "update".into(),
+                        reason: "at least one update flag or --from-file is required".into(),
+                    });
+                }
+
+                UpdateNatPolicyRequest {
+                    name,
+                    nat_type,
+                    description,
+                    enabled,
+                    interface_id: interface_id.map(EntityId::from),
+                    protocol,
+                    src_address,
+                    src_port,
+                    dst_address,
+                    dst_port,
+                    translated_address,
+                    translated_port,
+                }
+            };
+
+            controller
+                .execute(CoreCommand::UpdateNatPolicy {
+                    id: EntityId::from(id),
+                    update,
+                })
+                .await?;
+            if !global.quiet {
+                eprintln!("NAT policy updated");
             }
             Ok(())
         }

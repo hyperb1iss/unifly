@@ -11,6 +11,8 @@ use crate::cli::args::{EventsArgs, EventsCommand, GlobalOpts, OutputFormat};
 use crate::cli::error::CliError;
 use crate::cli::output;
 
+use super::util;
+
 // ── Table row ───────────────────────────────────────────────────────
 
 #[derive(Tabled)]
@@ -46,7 +48,7 @@ pub async fn handle(
 
     match args.command {
         EventsCommand::List { limit, within } => {
-            ensure_session_access(controller, "events list").await?;
+            util::ensure_session_access(controller, "events list").await?;
             let snap = controller.events_snapshot();
             let cutoff = Utc::now() - chrono::TimeDelta::hours(i64::from(within));
             let filtered: Vec<_> = snap
@@ -70,17 +72,6 @@ pub async fn handle(
             watch_events(controller, &global.output, types.as_deref()).await
         }
     }
-}
-
-async fn ensure_session_access(controller: &Controller, operation: &str) -> Result<(), CliError> {
-    if controller.has_session_access().await {
-        return Ok(());
-    }
-
-    Err(CliError::Unsupported {
-        operation: operation.into(),
-        required: "session or hybrid authentication".into(),
-    })
 }
 
 async fn ensure_live_event_access(
