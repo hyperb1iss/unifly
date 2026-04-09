@@ -910,7 +910,9 @@ fn test_nat_policies_update_name_conflicts_with_description() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("--name").and(predicate::str::contains("cannot be used with")),
+            predicate::str::contains("--name")
+                .and(predicate::str::contains("--description"))
+                .and(predicate::str::contains("cannot be used with")),
         );
 }
 
