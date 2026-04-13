@@ -94,7 +94,7 @@ opaline            = { workspace = true, optional = true }
 ratatui            = { workspace = true, optional = true }
 ratatui-macros     = { workspace = true, optional = true }
 crossterm          = { workspace = true, optional = true }
-tachyonfx          = { workspace = true, optional = true }
+tachyonfx          = { workspace = true, optional = true, features = ["sendable"] }
 tui-input          = { workspace = true, optional = true }
 tui-scrollview     = { workspace = true, optional = true }
 tui-widget-list    = { workspace = true, optional = true }
