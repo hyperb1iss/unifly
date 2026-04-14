@@ -237,7 +237,7 @@ pub enum PortItem {
         #[serde(deserialize_with = "deserialize_port_value")]
         value: String,
     },
-    #[serde(rename = "PORT_RANGE")]
+    #[serde(rename = "PORT_NUMBER_RANGE", alias = "PORT_RANGE")]
     Range {
         #[serde(rename = "startPort", deserialize_with = "deserialize_port_value")]
         start_port: String,
@@ -604,5 +604,41 @@ mod tests {
         .unwrap();
 
         assert!(matches!(filter, IpAddressFilter::Specific { .. }));
+    }
+
+    #[test]
+    fn port_item_range_serializes_as_port_number_range() {
+        let item = PortItem::Range {
+            start_port: "49152".into(),
+            end_port: "65535".into(),
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(
+            json.get("type").and_then(serde_json::Value::as_str),
+            Some("PORT_NUMBER_RANGE"),
+            "Range must serialize as PORT_NUMBER_RANGE, not PORT_RANGE"
+        );
+        assert_eq!(
+            json.get("startPort").and_then(serde_json::Value::as_str),
+            Some("49152")
+        );
+        assert_eq!(
+            json.get("endPort").and_then(serde_json::Value::as_str),
+            Some("65535")
+        );
+    }
+
+    #[test]
+    fn port_item_range_deserializes_from_port_range_alias() {
+        let item: PortItem = serde_json::from_value(serde_json::json!({
+            "type": "PORT_RANGE",
+            "startPort": "8000",
+            "endPort": "9000"
+        }))
+        .unwrap();
+        assert!(
+            matches!(item, PortItem::Range { .. }),
+            "PORT_RANGE alias must still deserialize"
+        );
     }
 }
