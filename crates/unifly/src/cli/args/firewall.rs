@@ -101,6 +101,22 @@ pub enum FirewallPoliciesCommand {
         #[arg(long, value_delimiter = ',')]
         dst_port: Option<Vec<String>>,
 
+        /// Source port group name (resolves to firewall group)
+        #[arg(long)]
+        src_port_group: Option<String>,
+
+        /// Destination port group name (resolves to firewall group)
+        #[arg(long)]
+        dst_port_group: Option<String>,
+
+        /// Source address group name (resolves to firewall group)
+        #[arg(long)]
+        src_address_group: Option<String>,
+
+        /// Destination address group name (resolves to firewall group)
+        #[arg(long)]
+        dst_address_group: Option<String>,
+
         /// Connection states to match (comma-separated: NEW, ESTABLISHED, RELATED, INVALID)
         #[arg(long, value_delimiter = ',')]
         states: Option<Vec<String>>,
@@ -150,6 +166,22 @@ pub enum FirewallPoliciesCommand {
         /// Destination ports
         #[arg(long, value_delimiter = ',')]
         dst_port: Option<Vec<String>>,
+
+        /// Source port group name (resolves to firewall group)
+        #[arg(long)]
+        src_port_group: Option<String>,
+
+        /// Destination port group name (resolves to firewall group)
+        #[arg(long)]
+        dst_port_group: Option<String>,
+
+        /// Source address group name (resolves to firewall group)
+        #[arg(long)]
+        src_address_group: Option<String>,
+
+        /// Destination address group name (resolves to firewall group)
+        #[arg(long)]
+        dst_address_group: Option<String>,
 
         /// Connection states to match
         #[arg(long, value_delimiter = ',')]

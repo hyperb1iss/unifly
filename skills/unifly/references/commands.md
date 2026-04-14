@@ -195,6 +195,8 @@ unifly firewall policies create --name NAME --action allow|block|reject \
   --source-zone ZID --dest-zone ZID \
   [--src-ip IP,CIDR,RANGE] [--dst-ip ...] [--src-port N,N] [--dst-port ...] \
   [--src-network ID] [--dst-network ID] \
+  [--src-port-group NAME] [--dst-port-group NAME] \
+  [--src-address-group NAME] [--dst-address-group NAME] \
   [--states NEW,ESTABLISHED] [--ip-version IPV4_ONLY|IPV6_ONLY|BOTH] \
   [--description TEXT] [--logging] [--after-system] [-F payload.json]
 unifly firewall policies update <id> [flags...]
@@ -219,9 +221,9 @@ unifly firewall policies reorder --source-zone ZID --dest-zone ZID (--get | --se
   (`--logging true`) work.
 - `--description` exists on `create` and `update`.
 - `--from-file` supports shorthand fields: `dst_ip`, `dst_port`, `src_ip`,
-  `src_port`, `dst_network`, `src_network` (and `src_*` variants). These
-  are resolved into `source_filter` / `destination_filter` before
-  submission.
+  `src_port`, `dst_network`, `src_network`, `dst_port_group`,
+  `dst_address_group` (and `src_*` variants). These are resolved into
+  `source_filter` / `destination_filter` before submission.
 
 ### Zones
 
@@ -237,6 +239,33 @@ unifly firewall zones delete <id>
 
 - `--networks` accepts comma-separated network IDs or names.
 - `--from-file` is now supported on zones (recent addition).
+
+### Groups `[S]`
+
+```bash
+unifly firewall groups list [--type port-group|address-group|ipv6-address-group] [--all]
+unifly firewall groups get <id>
+unifly firewall groups create --name NAME [--type port-group|address-group] --members 80,443,8000-8002 [-F payload.json]
+unifly firewall groups update <id> [--name NAME] [--members ...] [-F payload.json]
+unifly firewall groups delete <id>
+```
+
+**Gotchas:**
+
+- Groups use the **Session API** (`rest/firewallgroup`), not Integration.
+  Requires `ensure_session_access` — API key mode on UniFi OS is sufficient.
+- `--type` defaults to `port-group` on create. Possible types:
+  `port-group`, `address-group`, `ipv6-address-group`.
+- `--members` is comma-separated: `"80,443,8000-8002"` for port groups,
+  `"10.0.30.0/24,10.0.40.1"` for address groups.
+- The response includes both `_id` (Session) and `external_id` (UUID) —
+  the `external_id` is what firewall policies reference when using group
+  filters.
+- Policies can reference groups by name using `--dst-port-group`,
+  `--src-port-group`, `--dst-address-group`, `--src-address-group` flags
+  or `dst_port_group` / `dst_address_group` fields in `--from-file` JSON.
+  The CLI resolves the name to the group's `external_id` at create/update
+  time.
 
 ## NAT `[I]`
 

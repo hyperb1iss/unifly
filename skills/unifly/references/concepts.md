@@ -117,6 +117,7 @@ matrix to pick the right `auth_mode`.
 
 ### Session HTTP-backed (username + password, or API key on UniFi OS)
 
+- `firewall groups` (list/get/create/update/delete): `/rest/firewallgroup`
 - `admin` (list/invite/revoke/update): `/rest/admin`
 - `alarms` (list/archive/archive-all)
 - `clients reservations`, `clients set-ip`, `clients remove-ip`: `/rest/user`

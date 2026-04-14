@@ -150,9 +150,10 @@ operations live in submodules:
 
 - `EntityCollection<T>`: `DashMap` for lookup, `tokio::watch::Sender<Vec<T>>`
   for broadcast
-- `DataStore` -- aggregate of 13 `EntityCollection`s (devices, clients,
-  networks, wifi_broadcasts, firewall_policies, firewall_zones, nat_policies,
-  acl_rules, dns_policies, traffic_matching_lists, vouchers, sites, events)
+- `DataStore` -- aggregate of 14 `EntityCollection`s (devices, clients,
+  networks, wifi_broadcasts, firewall_policies, firewall_zones, firewall_groups,
+  nat_policies, acl_rules, dns_policies, traffic_matching_lists, vouchers,
+  sites, events)
   plus `watch::Sender` fields for site_health, last_full_refresh, and
   last_ws_event
 - `EntityStream<T>`: subscriber handle wrapping `watch::Receiver`; provides
@@ -242,10 +243,12 @@ in `commands/mod.rs::dispatch()` via match on `Command`.
 
 `crates/unifly/src/cli/commands/util/access.rs` defines
 **`ensure_integration_access`** and **`ensure_session_access`**. The
-Integration gate is called by 7 handlers (acl, dns, firewall, hotspot,
-networks, traffic_lists, wifi). The Session gate is called by `nat` and
-`events`. New commands should add the appropriate gate call for clean
-error messages when the auth mode is insufficient.
+Integration gate is called by 7 handlers (acl, dns, firewall policies,
+firewall zones, hotspot, networks, traffic_lists, wifi). The Session
+gate is called by `nat`, `events`, and `firewall groups`. The
+`firewall` handler dispatches the gate per-subcommand rather than at
+the top level. New commands should add the appropriate gate call for
+clean error messages when the auth mode is insufficient.
 
 ### Output Formats
 
@@ -606,6 +609,12 @@ workflow.
 - **`firewall policies patch`** is a fast partial-update path for toggling
   `enabled`/`logging`; use it instead of `update` when only those fields
   change.
+- **`firewall groups`** uses the Session API (`rest/firewallgroup`), not
+  Integration. The `external_id` (UUID) in group responses is what
+  firewall policies reference. Policy create/update supports
+  `--dst-port-group` / `--dst-address-group` flags (and `dst_port_group`
+  / `dst_address_group` shorthand fields in `--from-file` JSON) to
+  resolve group names to `external_id` UUIDs automatically.
 - **`networks refs <id>`** is the only command that answers "what depends
   on this entity before I delete it." No equivalent exists for other
   entities yet.

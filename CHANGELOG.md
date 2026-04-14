@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   policy JSON files are now resolved into the canonical
   `source_filter`/`destination_filter` before submission. Combined IP +
   port filters correctly nest `portFilter` inside `ipAddressFilter`.
+- **`firewall groups`** CRUD commands for managing port groups, address
+  groups, and IPv6 address groups via the Session API (`rest/firewallgroup`).
+  Supports `list` (with `--type` filter), `get`, `create`, `update`, and
+  `delete`.
+- **Port/address group references in firewall policies**: `--dst-port-group`,
+  `--src-port-group`, `--dst-address-group`, `--src-address-group` CLI flags
+  and corresponding `dst_port_group` / `dst_address_group` shorthand fields
+  in `--from-file` JSON. Group names are resolved to `external_id` UUIDs at
+  create/update time.
 - **`config cloud-setup`** guided onboarding for Site Manager profiles with
   API key validation, console selection, site discovery, and profile writing
 - **`cloud` command group** for Site Manager fleet visibility: `hosts`,

@@ -118,6 +118,26 @@ pub(in super::super) fn build_endpoint_json(
                 "type": "PORT",
                 "portFilter": build_port_filter_json(ports)?,
             }),
+            TrafficFilterSpec::IpMatchingList {
+                list_id,
+                match_opposite,
+                ports,
+            } => {
+                let mut v = serde_json::json!({
+                    "type": "IP_ADDRESS",
+                    "ipAddressFilter": {
+                        "type": "TRAFFIC_MATCHING_LIST",
+                        "trafficMatchingListId": list_id,
+                        "matchOpposite": match_opposite,
+                    }
+                });
+                if let Some(port_spec) = ports {
+                    v.as_object_mut()
+                        .expect("json! produces object")
+                        .insert("portFilter".into(), build_port_filter_json(port_spec));
+                }
+                v
+            }
         };
         obj.as_object_mut()
             .expect("json! produces object")
@@ -191,6 +211,53 @@ mod tests {
         let port_item = &port_filter["items"][0];
         assert_eq!(port_item["type"].as_str(), Some("PORT_NUMBER"));
         assert_eq!(port_item["value"].as_u64(), Some(80));
+    }
+
+    #[test]
+    fn build_endpoint_json_port_matching_list() {
+        let spec = TrafficFilterSpec::Port {
+            ports: PortSpec::MatchingList {
+                list_id: "24740a56-9cb9-4890-a5ac-589d30914a55".into(),
+                match_opposite: false,
+            },
+        };
+        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let tf = result.get("trafficFilter").expect("trafficFilter present");
+        assert_eq!(tf.get("type").and_then(|v| v.as_str()), Some("PORT"));
+        let pf = tf.get("portFilter").expect("portFilter present");
+        assert_eq!(
+            pf.get("type").and_then(|v| v.as_str()),
+            Some("TRAFFIC_MATCHING_LIST")
+        );
+        assert_eq!(
+            pf.get("trafficMatchingListId").and_then(|v| v.as_str()),
+            Some("24740a56-9cb9-4890-a5ac-589d30914a55")
+        );
+        assert_eq!(
+            pf.get("matchOpposite").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn build_endpoint_json_ip_matching_list() {
+        let spec = TrafficFilterSpec::IpMatchingList {
+            list_id: "b777b27c-410c-4b40-8489-a61bf1a536d4".into(),
+            match_opposite: false,
+            ports: None,
+        };
+        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let tf = result.get("trafficFilter").expect("trafficFilter present");
+        assert_eq!(tf.get("type").and_then(|v| v.as_str()), Some("IP_ADDRESS"));
+        let ipf = tf.get("ipAddressFilter").expect("ipAddressFilter present");
+        assert_eq!(
+            ipf.get("type").and_then(|v| v.as_str()),
+            Some("TRAFFIC_MATCHING_LIST")
+        );
+        assert_eq!(
+            ipf.get("trafficMatchingListId").and_then(|v| v.as_str()),
+            Some("b777b27c-410c-4b40-8489-a61bf1a536d4")
+        );
     }
 
     #[test]

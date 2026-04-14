@@ -413,3 +413,88 @@ pub fn firewall_group_from_session(v: &serde_json::Value) -> Option<FirewallGrou
         source: DataSource::SessionApi,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn firewall_group_from_session_parses_port_group() {
+        let raw = json!({
+            "_id": "69de8b58259db29f6591fb11",
+            "external_id": "24740a56-9cb9-4890-a5ac-589d30914a55",
+            "name": "HA",
+            "group_type": "port-group",
+            "group_members": ["80", "8000-8002", "49152-65535"],
+            "site_id": "69c9360d0b7006701f3fa23f"
+        });
+        let group = firewall_group_from_session(&raw).expect("should parse");
+        assert_eq!(group.name, "HA");
+        assert_eq!(group.group_type, FirewallGroupType::PortGroup);
+        assert_eq!(
+            group.external_id.as_deref(),
+            Some("24740a56-9cb9-4890-a5ac-589d30914a55")
+        );
+        assert_eq!(group.group_members, vec!["80", "8000-8002", "49152-65535"]);
+    }
+
+    #[test]
+    fn firewall_group_from_session_parses_address_group() {
+        let raw = json!({
+            "_id": "69de9bea259db29f65921b92",
+            "external_id": "b777b27c-410c-4b40-8489-a61bf1a536d4",
+            "name": "Cloud IOT",
+            "group_type": "address-group",
+            "group_members": ["10.0.30.0/24"],
+            "site_id": "69c9360d0b7006701f3fa23f"
+        });
+        let group = firewall_group_from_session(&raw).expect("should parse");
+        assert_eq!(group.name, "Cloud IOT");
+        assert_eq!(group.group_type, FirewallGroupType::AddressGroup);
+        assert_eq!(group.group_members, vec!["10.0.30.0/24"]);
+    }
+
+    #[test]
+    fn firewall_group_from_session_returns_none_without_id() {
+        let raw = json!({
+            "name": "No ID",
+            "group_type": "port-group",
+            "group_members": ["80"]
+        });
+        assert!(firewall_group_from_session(&raw).is_none());
+    }
+
+    #[test]
+    fn firewall_group_from_session_returns_none_without_name() {
+        let raw = json!({
+            "_id": "abc123",
+            "group_type": "port-group",
+            "group_members": ["80"]
+        });
+        assert!(firewall_group_from_session(&raw).is_none());
+    }
+
+    #[test]
+    fn firewall_group_from_session_defaults_to_port_group() {
+        let raw = json!({
+            "_id": "abc123",
+            "name": "Unknown Type",
+            "group_members": ["80"]
+        });
+        let group = firewall_group_from_session(&raw).expect("should parse");
+        assert_eq!(group.group_type, FirewallGroupType::PortGroup);
+    }
+
+    #[test]
+    fn firewall_group_from_session_handles_empty_members() {
+        let raw = json!({
+            "_id": "abc123",
+            "name": "Empty",
+            "group_type": "port-group",
+            "group_members": []
+        });
+        let group = firewall_group_from_session(&raw).expect("should parse");
+        assert!(group.group_members.is_empty());
+    }
+}
