@@ -282,6 +282,41 @@ pub struct NatPolicy {
     pub(crate) data_source: DataSource,
 }
 
+// ── Firewall Group types ───────────────────────────────────────────
+
+/// Type of firewall group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirewallGroupType {
+    PortGroup,
+    AddressGroup,
+    Ipv6AddressGroup,
+}
+
+impl std::fmt::Display for FirewallGroupType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PortGroup => write!(f, "port-group"),
+            Self::AddressGroup => write!(f, "address-group"),
+            Self::Ipv6AddressGroup => write!(f, "ipv6-address-group"),
+        }
+    }
+}
+
+/// Firewall Group -- port group, address group, or IPv6 address group
+/// managed via the legacy Session API `rest/firewallgroup`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallGroup {
+    pub id: EntityId,
+    pub external_id: Option<String>,
+    pub name: String,
+    pub group_type: FirewallGroupType,
+    pub group_members: Vec<String>,
+
+    #[serde(skip)]
+    #[allow(dead_code)]
+    pub(crate) source: DataSource,
+}
+
 /// ACL Rule action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AclAction {

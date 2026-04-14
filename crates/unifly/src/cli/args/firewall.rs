@@ -18,6 +18,9 @@ pub enum FirewallCommand {
 
     /// Manage firewall zones
     Zones(FirewallZonesArgs),
+
+    /// Manage firewall groups (port groups, address groups)
+    Groups(FirewallGroupsArgs),
 }
 
 // --- Firewall Policies ---
@@ -268,6 +271,90 @@ pub enum FirewallZonesCommand {
     /// Delete a custom firewall zone
     Delete {
         /// Zone ID (UUID)
+        id: String,
+    },
+}
+
+// --- Firewall Groups ---
+
+#[derive(Debug, Args)]
+pub struct FirewallGroupsArgs {
+    #[command(subcommand)]
+    pub command: FirewallGroupsCommand,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+#[allow(clippy::enum_variant_names)]
+pub enum FirewallGroupTypeArg {
+    PortGroup,
+    AddressGroup,
+    Ipv6AddressGroup,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FirewallGroupsCommand {
+    /// List all firewall groups
+    #[command(alias = "ls")]
+    List {
+        #[command(flatten)]
+        list: ListArgs,
+
+        /// Filter by group type
+        #[arg(long, value_enum, rename_all = "kebab-case")]
+        r#type: Option<FirewallGroupTypeArg>,
+    },
+
+    /// Get a specific firewall group
+    Get {
+        /// Firewall group ID
+        id: String,
+    },
+
+    /// Create a firewall group
+    Create {
+        /// Group name
+        #[arg(long, required_unless_present = "from_file")]
+        name: Option<String>,
+
+        /// Group type: port-group, address-group, ipv6-address-group
+        #[arg(
+            long,
+            value_enum,
+            rename_all = "kebab-case",
+            default_value = "port-group"
+        )]
+        r#type: FirewallGroupTypeArg,
+
+        /// Members (comma-separated ports/ranges or IPs/CIDRs)
+        #[arg(long, value_delimiter = ',')]
+        members: Option<Vec<String>>,
+
+        /// Create from JSON file
+        #[arg(long, short = 'F', conflicts_with_all = &["name"])]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Update a firewall group
+    Update {
+        /// Firewall group ID
+        id: String,
+
+        /// Group name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Members (replaces existing, comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        members: Option<Vec<String>>,
+
+        /// Load update payload from JSON file
+        #[arg(long, short = 'F')]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Delete a firewall group
+    Delete {
+        /// Firewall group ID
         id: String,
     },
 }

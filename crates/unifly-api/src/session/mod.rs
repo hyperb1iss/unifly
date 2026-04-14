@@ -9,6 +9,7 @@ pub mod client;
 pub mod clients;
 pub mod devices;
 pub mod events;
+pub mod firewallgroup;
 pub mod models;
 pub mod nat;
 pub mod networkconf;

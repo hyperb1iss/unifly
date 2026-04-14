@@ -491,6 +491,30 @@ pub struct UpdateNatPolicyRequest {
     pub translated_port: Option<String>,
 }
 
+// ── Firewall Group ───────────────────────────────────────────
+
+use crate::model::FirewallGroupType;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateFirewallGroupRequest {
+    pub name: String,
+    #[serde(default = "default_port_group")]
+    pub group_type: FirewallGroupType,
+    pub group_members: Vec<String>,
+}
+
+fn default_port_group() -> FirewallGroupType {
+    FirewallGroupType::PortGroup
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateFirewallGroupRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_members: Option<Vec<String>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

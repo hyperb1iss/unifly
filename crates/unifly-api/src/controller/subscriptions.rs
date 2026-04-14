@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 
 use crate::model::{
-    AclRule, Client, Device, DnsPolicy, Event, FirewallPolicy, FirewallZone, HealthSummary,
-    NatPolicy, Network, Site, TrafficMatchingList, Voucher, WifiBroadcast,
+    AclRule, Client, Device, DnsPolicy, Event, FirewallGroup, FirewallPolicy, FirewallZone,
+    HealthSummary, NatPolicy, Network, Site, TrafficMatchingList, Voucher, WifiBroadcast,
 };
 use crate::session::SessionAuth;
 use crate::stream::EntityStream;
@@ -78,6 +78,10 @@ impl Controller {
         self.inner.store.traffic_matching_lists_snapshot()
     }
 
+    pub fn firewall_groups_snapshot(&self) -> Arc<Vec<Arc<FirewallGroup>>> {
+        self.inner.store.firewall_groups_snapshot()
+    }
+
     // ── Stream accessors (delegate to DataStore) ─────────────────
 
     pub fn devices(&self) -> EntityStream<Device> {
@@ -126,6 +130,10 @@ impl Controller {
 
     pub fn traffic_matching_lists(&self) -> EntityStream<TrafficMatchingList> {
         self.inner.store.subscribe_traffic_matching_lists()
+    }
+
+    pub fn firewall_groups(&self) -> EntityStream<FirewallGroup> {
+        self.inner.store.subscribe_firewall_groups()
     }
 
     /// Subscribe to site health updates (WAN IP, latency, bandwidth rates).

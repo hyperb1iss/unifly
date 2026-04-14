@@ -8,9 +8,9 @@ use tracing::{debug, info, warn};
 
 use crate::core_error::CoreError;
 use crate::model::{
-    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallPolicy, FirewallZone,
-    HealthSummary, MacAddress, NatPolicy, Network, Site, TrafficMatchingList, Voucher,
-    WifiBroadcast,
+    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallGroup, FirewallPolicy,
+    FirewallZone, HealthSummary, MacAddress, NatPolicy, Network, Site, TrafficMatchingList,
+    Voucher, WifiBroadcast,
 };
 use crate::store::{DataStore, event_storage_key};
 
@@ -152,6 +152,7 @@ impl Controller {
                 session_devices,
                 session_users,
                 nat,
+                firewall_groups,
             ): (
                 Vec<Event>,
                 Vec<HealthSummary>,
@@ -159,15 +160,25 @@ impl Controller {
                 Vec<crate::session::models::SessionDevice>,
                 Vec<crate::session::models::SessionUserEntry>,
                 Vec<NatPolicy>,
+                Vec<FirewallGroup>,
             ) = match self.inner.session_client.lock().await.clone() {
                 Some(session) => {
-                    let (events_res, health_res, clients_res, devices_res, users_res, nat_res) = tokio::join!(
+                    let (
+                        events_res,
+                        health_res,
+                        clients_res,
+                        devices_res,
+                        users_res,
+                        nat_res,
+                        fwg_res,
+                    ) = tokio::join!(
                         session.list_events(Some(100)),
                         session.get_health(),
                         session.list_clients(),
                         session.list_devices(),
                         session.list_users(),
                         session.list_nat_rules(),
+                        session.list_firewall_groups(),
                     );
 
                     let events = match events_res {
@@ -233,6 +244,17 @@ impl Controller {
                         }
                     };
 
+                    let firewall_groups = match fwg_res {
+                        Ok(raw) => raw
+                            .iter()
+                            .filter_map(crate::convert::firewall_group_from_session)
+                            .collect(),
+                        Err(error) => {
+                            warn!(error = %error, "firewall group fetch failed (non-fatal)");
+                            Vec::new()
+                        }
+                    };
+
                     (
                         events,
                         health,
@@ -240,9 +262,11 @@ impl Controller {
                         session_devices,
                         session_users,
                         nat,
+                        firewall_groups,
                     )
                 }
                 None => (
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -389,6 +413,7 @@ impl Controller {
                     sites,
                     events: session_events,
                     traffic_matching_lists,
+                    firewall_groups,
                 });
 
             for event in fresh_legacy_events {
@@ -432,6 +457,7 @@ impl Controller {
                     sites,
                     events,
                     traffic_matching_lists: Vec::new(),
+                    firewall_groups: Vec::new(),
                 });
 
             for event in fresh_events {

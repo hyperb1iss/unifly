@@ -6,6 +6,7 @@ use super::CommandContext;
 mod acl;
 mod dns;
 mod firewall;
+mod firewall_groups;
 mod nat;
 mod traffic_lists;
 
@@ -32,6 +33,9 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         cmd @ (Command::CreateTrafficMatchingList(_)
         | Command::UpdateTrafficMatchingList { .. }
         | Command::DeleteTrafficMatchingList { .. }) => traffic_lists::route(ctx, cmd).await,
+        cmd @ (Command::CreateFirewallGroup(_)
+        | Command::UpdateFirewallGroup { .. }
+        | Command::DeleteFirewallGroup { .. }) => firewall_groups::route(ctx, cmd).await,
         _ => unreachable!("policy::route received non-policy command"),
     }
 }

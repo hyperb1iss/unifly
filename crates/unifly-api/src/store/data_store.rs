@@ -10,9 +10,9 @@ use tokio::sync::watch;
 
 use super::collection::EntityCollection;
 use crate::model::{
-    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallPolicy, FirewallZone,
-    HealthSummary, MacAddress, NatPolicy, Network, Site, TrafficMatchingList, Voucher,
-    WifiBroadcast,
+    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallGroup, FirewallPolicy,
+    FirewallZone, HealthSummary, MacAddress, NatPolicy, Network, Site, TrafficMatchingList,
+    Voucher, WifiBroadcast,
 };
 use crate::stream::EntityStream;
 
@@ -35,6 +35,7 @@ pub struct DataStore {
     pub(crate) sites: EntityCollection<Site>,
     pub(crate) events: EntityCollection<Event>,
     pub(crate) traffic_matching_lists: EntityCollection<TrafficMatchingList>,
+    pub(crate) firewall_groups: EntityCollection<FirewallGroup>,
     pub(crate) site_health: watch::Sender<Arc<Vec<HealthSummary>>>,
     pub(crate) last_full_refresh: watch::Sender<Option<DateTime<Utc>>>,
     pub(crate) last_ws_event: watch::Sender<Option<DateTime<Utc>>>,
@@ -60,6 +61,7 @@ impl DataStore {
             sites: EntityCollection::new(),
             events: EntityCollection::new(),
             traffic_matching_lists: EntityCollection::new(),
+            firewall_groups: EntityCollection::new(),
             site_health,
             last_full_refresh,
             last_ws_event,
@@ -118,6 +120,10 @@ impl DataStore {
 
     pub fn traffic_matching_lists_snapshot(&self) -> Arc<Vec<Arc<TrafficMatchingList>>> {
         self.traffic_matching_lists.snapshot()
+    }
+
+    pub fn firewall_groups_snapshot(&self) -> Arc<Vec<Arc<FirewallGroup>>> {
+        self.firewall_groups.snapshot()
     }
 
     // ── Single-entity lookups ────────────────────────────────────────
@@ -208,6 +214,10 @@ impl DataStore {
 
     pub fn subscribe_traffic_matching_lists(&self) -> EntityStream<TrafficMatchingList> {
         EntityStream::new(self.traffic_matching_lists.subscribe())
+    }
+
+    pub fn subscribe_firewall_groups(&self) -> EntityStream<FirewallGroup> {
+        EntityStream::new(self.firewall_groups.subscribe())
     }
 
     // ── Site health ──────────────────────────────────────────────────

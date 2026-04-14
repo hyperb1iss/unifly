@@ -13,14 +13,14 @@ use crate::model::{
 };
 
 pub use requests::{
-    CreateAclRuleRequest, CreateDnsPolicyRequest, CreateFirewallPolicyRequest,
-    CreateFirewallZoneRequest, CreateNatPolicyRequest, CreateNetworkRequest,
-    CreateRemoteAccessVpnServerRequest, CreateSiteToSiteVpnRequest,
+    CreateAclRuleRequest, CreateDnsPolicyRequest, CreateFirewallGroupRequest,
+    CreateFirewallPolicyRequest, CreateFirewallZoneRequest, CreateNatPolicyRequest,
+    CreateNetworkRequest, CreateRemoteAccessVpnServerRequest, CreateSiteToSiteVpnRequest,
     CreateTrafficMatchingListRequest, CreateVouchersRequest, CreateVpnClientProfileRequest,
     CreateWifiBroadcastRequest, CreateWireGuardPeerRequest, PortSpec, TrafficFilterSpec,
-    UpdateAclRuleRequest, UpdateDnsPolicyRequest, UpdateFirewallPolicyRequest,
-    UpdateFirewallZoneRequest, UpdateNatPolicyRequest, UpdateNetworkRequest,
-    UpdateRemoteAccessVpnServerRequest, UpdateSiteToSiteVpnRequest,
+    UpdateAclRuleRequest, UpdateDnsPolicyRequest, UpdateFirewallGroupRequest,
+    UpdateFirewallPolicyRequest, UpdateFirewallZoneRequest, UpdateNatPolicyRequest,
+    UpdateNetworkRequest, UpdateRemoteAccessVpnServerRequest, UpdateSiteToSiteVpnRequest,
     UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest, UpdateWifiBroadcastRequest,
     UpdateWireGuardPeerRequest,
 };
@@ -143,6 +143,16 @@ pub enum Command {
         update: UpdateFirewallZoneRequest,
     },
     DeleteFirewallZone {
+        id: EntityId,
+    },
+
+    // ── Firewall Groups (Session) ────────────────────────────────────
+    CreateFirewallGroup(CreateFirewallGroupRequest),
+    UpdateFirewallGroup {
+        id: EntityId,
+        update: UpdateFirewallGroupRequest,
+    },
+    DeleteFirewallGroup {
         id: EntityId,
     },
 

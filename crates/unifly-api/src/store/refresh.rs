@@ -10,8 +10,8 @@ use chrono::Utc;
 use super::DataStore;
 use super::collection::EntityCollection;
 use crate::model::{
-    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallPolicy, FirewallZone, NatPolicy,
-    Network, Site, TrafficMatchingList, Voucher, WifiBroadcast,
+    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallGroup, FirewallPolicy,
+    FirewallZone, NatPolicy, Network, Site, TrafficMatchingList, Voucher, WifiBroadcast,
 };
 
 /// Upsert all incoming entities, then prune any existing keys not in the
@@ -50,6 +50,7 @@ pub(crate) struct RefreshSnapshot {
     pub sites: Vec<Site>,
     pub events: Vec<Event>,
     pub traffic_matching_lists: Vec<TrafficMatchingList>,
+    pub firewall_groups: Vec<FirewallGroup>,
 }
 
 pub(crate) fn event_storage_key(event: &Event) -> String {
@@ -253,6 +254,18 @@ impl DataStore {
                 .collect(),
         );
 
+        upsert_and_prune(
+            &self.firewall_groups,
+            snap.firewall_groups
+                .into_iter()
+                .map(|g| {
+                    let key = format!("fwg:{}", g.id);
+                    let id = g.id.clone();
+                    (key, id, g)
+                })
+                .collect(),
+        );
+
         let _ = self.last_full_refresh.send(Some(Utc::now()));
     }
 }
@@ -332,6 +345,7 @@ mod tests {
                 },
             ],
             traffic_matching_lists: Vec::new(),
+            firewall_groups: Vec::new(),
         });
 
         assert_eq!(store.events_snapshot().len(), 2);

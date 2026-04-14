@@ -2,8 +2,8 @@ use crate::integration_types;
 use crate::model::common::DataSource;
 use crate::model::entity_id::EntityId;
 use crate::model::firewall::{
-    AclAction, AclRule, AclRuleType, FirewallAction, FirewallPolicy, FirewallZone, IpSpec,
-    PolicyEndpoint, PortSpec, TrafficFilter,
+    AclAction, AclRule, AclRuleType, FirewallAction, FirewallGroup, FirewallGroupType,
+    FirewallPolicy, FirewallZone, IpSpec, PolicyEndpoint, PortSpec, TrafficFilter,
 };
 
 use super::helpers::origin_from_metadata;
@@ -373,4 +373,43 @@ impl From<integration_types::AclRuleResponse> for AclRule {
             source: DataSource::IntegrationApi,
         }
     }
+}
+
+// ── Firewall Group ──────────────────────────────────────────────
+
+/// Parse a firewall group from a `rest/firewallgroup` Session API response.
+pub fn firewall_group_from_session(v: &serde_json::Value) -> Option<FirewallGroup> {
+    let id_str = v.get("_id").and_then(|v| v.as_str())?;
+    let name = v.get("name").and_then(|v| v.as_str())?.to_owned();
+    let group_type_str = v
+        .get("group_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("port-group");
+    let group_type = match group_type_str {
+        "address-group" => FirewallGroupType::AddressGroup,
+        "ipv6-address-group" => FirewallGroupType::Ipv6AddressGroup,
+        _ => FirewallGroupType::PortGroup,
+    };
+    let group_members = v
+        .get("group_members")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let external_id = v
+        .get("external_id")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    Some(FirewallGroup {
+        id: EntityId::from(id_str.to_owned()),
+        external_id,
+        name,
+        group_type,
+        group_members,
+        source: DataSource::SessionApi,
+    })
 }

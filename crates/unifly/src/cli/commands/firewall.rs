@@ -1,5 +1,6 @@
-//! Firewall command handlers (policies + zones).
+//! Firewall command handlers (policies + zones + groups).
 
+mod groups;
 mod policies;
 mod shared;
 mod zones;
@@ -17,15 +18,20 @@ pub async fn handle(
     args: FirewallArgs,
     global: &GlobalOpts,
 ) -> Result<(), CliError> {
-    util::ensure_integration_access(controller, "firewall").await?;
     let painter = output::Painter::new(global);
 
     match args.command {
         FirewallCommand::Policies(args) => {
+            util::ensure_integration_access(controller, "firewall policies").await?;
             policies::handle(controller, args.command, global, &painter).await
         }
         FirewallCommand::Zones(args) => {
+            util::ensure_integration_access(controller, "firewall zones").await?;
             zones::handle(controller, args.command, global, &painter).await
+        }
+        FirewallCommand::Groups(args) => {
+            util::ensure_session_access(controller, "firewall groups").await?;
+            groups::handle(controller, args.command, global, &painter).await
         }
     }
 }

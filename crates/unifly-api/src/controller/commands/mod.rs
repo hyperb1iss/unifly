@@ -90,7 +90,10 @@ pub(super) async fn route_command(
         | Command::DeleteDnsPolicy { .. }
         | Command::CreateTrafficMatchingList(_)
         | Command::UpdateTrafficMatchingList { .. }
-        | Command::DeleteTrafficMatchingList { .. }) => policy::route(&ctx, cmd).await,
+        | Command::DeleteTrafficMatchingList { .. }
+        | Command::CreateFirewallGroup(_)
+        | Command::UpdateFirewallGroup { .. }
+        | Command::DeleteFirewallGroup { .. }) => policy::route(&ctx, cmd).await,
         cmd @ (Command::CreateSiteToSiteVpn(_)
         | Command::UpdateSiteToSiteVpn { .. }
         | Command::DeleteSiteToSiteVpn { .. }
