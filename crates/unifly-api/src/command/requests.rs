@@ -17,8 +17,8 @@ pub use network::{
 };
 pub use policy::{
     CreateAclRuleRequest, CreateFirewallPolicyRequest, CreateFirewallZoneRequest,
-    CreateNatPolicyRequest, TrafficFilterSpec, UpdateAclRuleRequest, UpdateFirewallPolicyRequest,
-    UpdateFirewallZoneRequest, UpdateNatPolicyRequest,
+    CreateNatPolicyRequest, PortSpec, TrafficFilterSpec, UpdateAclRuleRequest,
+    UpdateFirewallPolicyRequest, UpdateFirewallZoneRequest, UpdateNatPolicyRequest,
 };
 pub use traffic::{CreateTrafficMatchingListRequest, UpdateTrafficMatchingListRequest};
 pub use vouchers::CreateVouchersRequest;

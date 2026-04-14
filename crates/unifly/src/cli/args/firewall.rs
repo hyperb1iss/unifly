@@ -109,6 +109,10 @@ pub enum FirewallPoliciesCommand {
         /// Create from JSON file (complex policies)
         #[arg(long, short = 'F', conflicts_with_all = &["name", "action", "source_zone", "dest_zone"])]
         from_file: Option<PathBuf>,
+
+        /// Place policy after system-defined rules (index ~40000 instead of ~10000)
+        #[arg(long)]
+        after_system: bool,
     },
 
     /// Update a firewall policy

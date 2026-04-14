@@ -196,7 +196,7 @@ unifly firewall policies create --name NAME --action allow|block|reject \
   [--src-ip IP,CIDR,RANGE] [--dst-ip ...] [--src-port N,N] [--dst-port ...] \
   [--src-network ID] [--dst-network ID] \
   [--states NEW,ESTABLISHED] [--ip-version IPV4_ONLY|IPV6_ONLY|BOTH] \
-  [--description TEXT] [--logging] [-F payload.json]
+  [--description TEXT] [--logging] [--after-system] [-F payload.json]
 unifly firewall policies update <id> [flags...]
 unifly firewall policies patch <id> [--enabled true|false] [--logging true|false]
 unifly firewall policies delete <id>
@@ -212,10 +212,16 @@ unifly firewall policies reorder --source-zone ZID --dest-zone ZID (--get | --se
   (`10.0.0.1-10.0.0.100`), comma-separated.
 - `reorder --get` prints the current order. `reorder --set` writes a new
   order. Round-trip pattern: get, edit, set.
+- `--after-system` on `create` places the new policy after system-defined
+  rules in one step (creates then reorders).
 - `reorder --after-system` places user policies after system-defined rules.
 - `--logging` is a boolean; both bare form (`--logging`) and explicit
   (`--logging true`) work.
 - `--description` exists on `create` and `update`.
+- `--from-file` supports shorthand fields: `dst_ip`, `dst_port`, `src_ip`,
+  `src_port`, `dst_network`, `src_network` (and `src_*` variants). These
+  are resolved into `source_filter` / `destination_filter` before
+  submission.
 
 ### Zones
 

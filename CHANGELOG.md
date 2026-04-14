@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`--after-system` on `firewall policies create`** to place a newly
+  created policy after system-defined rules in one step (previously only
+  available on `reorder`).
+- **`--from-file` shorthand fields** for firewall policies: `dst_ip`,
+  `dst_port`, `src_ip`, `src_port`, `dst_network`, `src_network` in
+  policy JSON files are now resolved into the canonical
+  `source_filter`/`destination_filter` before submission. Combined IP +
+  port filters correctly nest `portFilter` inside `ipAddressFilter`.
 - **`config cloud-setup`** guided onboarding for Site Manager profiles with
   API key validation, console selection, site discovery, and profile writing
 - **`cloud` command group** for Site Manager fleet visibility: `hosts`,
@@ -71,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `docs/guide/**` updated to reflect the new nomenclature.
   - `EntityId::Legacy(String)` is **kept** — that variant names an ID
     format (MongoDB ObjectId string vs UUID), not the API surface.
+
+### Fixed
+
+- Port range items in firewall policy payloads now serialize as
+  `PORT_NUMBER_RANGE` instead of `PORT_RANGE`, which the UDM API rejects.
+  `PORT_RANGE` is still accepted on read for backward compatibility.
 
 ## [0.8.0] - 2026-04-05
 
