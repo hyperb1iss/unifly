@@ -422,7 +422,7 @@ async fn handle_create(
     enabled: bool,
     description: Option<String>,
     logging: bool,
-    allow_return_traffic: bool,
+    allow_return_traffic: Option<bool>,
     src_network: Option<Vec<String>>,
     src_ip: Option<Vec<String>>,
     src_port: Option<Vec<String>>,
@@ -496,6 +496,19 @@ async fn handle_create(
     {
         util::ensure_session_access(controller, "firewall policy with group references").await?;
         resolve_group_refs_create(controller, &mut req)?;
+    }
+
+    // allow_return_traffic is only valid for Allow actions — reject if explicitly set
+    if req.action != unifly_api::model::FirewallAction::Allow
+        && req.allow_return_traffic == Some(true)
+    {
+        return Err(CliError::Validation {
+            field: "allow_return_traffic".into(),
+            reason: format!(
+                "allow_return_traffic is not supported for {:?} actions (only Allow)",
+                req.action
+            ),
+        });
     }
 
     let source_zone_id = req.source_zone_id.clone();

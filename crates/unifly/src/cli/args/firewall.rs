@@ -73,9 +73,9 @@ pub enum FirewallPoliciesCommand {
         #[arg(long)]
         logging: bool,
 
-        /// Allow return traffic (default: true)
-        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
-        allow_return_traffic: bool,
+        /// Allow return traffic (defaults to true for Allow actions; ignored for Block/Reject)
+        #[arg(long, action = clap::ArgAction::Set)]
+        allow_return_traffic: Option<bool>,
 
         /// Source network IDs or names (comma-separated)
         #[arg(long, value_delimiter = ',')]

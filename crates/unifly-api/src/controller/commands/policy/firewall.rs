@@ -25,7 +25,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             )?;
             let ip_version = req.ip_version.as_deref().unwrap_or("IPV4_AND_IPV6");
             let action = if req.action == FirewallAction::Allow {
-                serde_json::json!({ "type": action_str, "allowReturnTraffic": req.allow_return_traffic })
+                let allow_return = req.allow_return_traffic.unwrap_or(true);
+                serde_json::json!({ "type": action_str, "allowReturnTraffic": allow_return })
             } else {
                 serde_json::json!({ "type": action_str })
             };
