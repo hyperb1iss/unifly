@@ -14,7 +14,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             let (ic, sid) = require_integration(integration, site_id, "CreateFirewallPolicy")?;
             let action_str = match req.action {
                 FirewallAction::Allow => "ALLOW",
-                FirewallAction::Block => "DROP",
+                FirewallAction::Block => "BLOCK",
                 FirewallAction::Reject => "REJECT",
             };
             let source =
@@ -24,11 +24,16 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 req.destination_filter.as_ref(),
             );
             let ip_version = req.ip_version.as_deref().unwrap_or("IPV4_AND_IPV6");
+            let action = if req.action == FirewallAction::Allow {
+                serde_json::json!({ "type": action_str, "allowReturnTraffic": req.allow_return_traffic })
+            } else {
+                serde_json::json!({ "type": action_str })
+            };
             let body = crate::integration_types::FirewallPolicyCreateUpdate {
                 name: req.name,
                 description: req.description,
                 enabled: req.enabled,
-                action: serde_json::json!({ "type": action_str, "allowReturnTraffic": req.allow_return_traffic }),
+                action,
                 source,
                 destination,
                 ip_protocol_scope: serde_json::json!({ "ipVersion": ip_version }),
@@ -72,32 +77,45 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             };
 
             let action = if update.action.is_some() || update.allow_return_traffic.is_some() {
-                let action_type = update.action.map_or_else(
-                    || {
+                // Determine the action type to send. If the user supplied
+                // `update.action`, use it. Otherwise inspect the existing
+                // policy's wire-level action type and pass it through —
+                // including `DROP` (the legacy block alias from older
+                // unifly versions, normalized to `BLOCK` here) and any
+                // other unrecognized type. Falling back to `ALLOW` would
+                // silently turn a block rule into an allow rule.
+                let action_type: String = if let Some(action) = update.action {
+                    match action {
+                        FirewallAction::Allow => "ALLOW",
+                        FirewallAction::Block => "BLOCK",
+                        FirewallAction::Reject => "REJECT",
+                    }
+                    .to_owned()
+                } else {
+                    let existing_type = existing
+                        .action
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("ALLOW");
+                    if existing_type == "DROP" {
+                        "BLOCK".to_owned()
+                    } else {
+                        existing_type.to_owned()
+                    }
+                };
+
+                if action_type == "ALLOW" {
+                    let allow_return = update.allow_return_traffic.unwrap_or_else(|| {
                         existing
                             .action
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("ALLOW")
-                            .to_owned()
-                    },
-                    |a| {
-                        match a {
-                            FirewallAction::Allow => "ALLOW",
-                            FirewallAction::Block => "DROP",
-                            FirewallAction::Reject => "REJECT",
-                        }
-                        .to_owned()
-                    },
-                );
-                let allow_return = update.allow_return_traffic.unwrap_or_else(|| {
-                    existing
-                        .action
-                        .get("allowReturnTraffic")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(true)
-                });
-                serde_json::json!({ "type": action_type, "allowReturnTraffic": allow_return })
+                            .get("allowReturnTraffic")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(true)
+                    });
+                    serde_json::json!({ "type": action_type, "allowReturnTraffic": allow_return })
+                } else {
+                    serde_json::json!({ "type": action_type })
+                }
             } else {
                 existing.action
             };
