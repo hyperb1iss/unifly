@@ -13,7 +13,7 @@ pub struct CreateFirewallPolicyRequest {
     pub destination_zone_id: EntityId,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, alias = "logging")]
     pub logging_enabled: bool,
     #[serde(default = "default_true")]
     pub allow_return_traffic: bool,
@@ -67,7 +67,7 @@ pub struct UpdateFirewallPolicyRequest {
     pub source_filter: Option<TrafficFilterSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_filter: Option<TrafficFilterSpec>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "logging")]
     pub logging_enabled: Option<bool>,
 
     // Shorthand fields for --from-file convenience (map to source/destination_filter)
