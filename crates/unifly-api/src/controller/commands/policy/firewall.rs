@@ -165,24 +165,19 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         }
         Command::ReorderFirewallPolicies {
             zone_pair,
-            ordered_ids,
-            after_system,
+            before_system_ids,
+            after_system_ids,
         } => {
             let (ic, sid) = require_integration(integration, site_id, "ReorderFirewallPolicies")?;
             let source_zone_uuid = require_uuid(&zone_pair.0)?;
             let destination_zone_uuid = require_uuid(&zone_pair.1)?;
-            let uuids: Result<Vec<uuid::Uuid>, _> = ordered_ids.iter().map(require_uuid).collect();
-            let uuids = uuids?;
-            let body = if after_system {
-                crate::integration_types::FirewallPolicyOrdering {
-                    before_system_defined: Vec::new(),
-                    after_system_defined: uuids,
-                }
-            } else {
-                crate::integration_types::FirewallPolicyOrdering {
-                    before_system_defined: uuids,
-                    after_system_defined: Vec::new(),
-                }
+            let before: Result<Vec<uuid::Uuid>, _> =
+                before_system_ids.iter().map(require_uuid).collect();
+            let after: Result<Vec<uuid::Uuid>, _> =
+                after_system_ids.iter().map(require_uuid).collect();
+            let body = crate::integration_types::FirewallPolicyOrdering {
+                before_system_defined: before?,
+                after_system_defined: after?,
             };
             ic.set_firewall_policy_ordering(&sid, &source_zone_uuid, &destination_zone_uuid, &body)
                 .await?;

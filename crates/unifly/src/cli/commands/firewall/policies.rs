@@ -282,12 +282,42 @@ pub(super) async fn handle(
                 parse_reorder_zone_pair(Some(source_zone.as_str()), Some(dest_zone.as_str()))?;
 
             if let Some(ids) = set {
-                let ordered_ids: Vec<EntityId> = ids.into_iter().map(EntityId::from).collect();
+                let new_ids = ids
+                    .into_iter()
+                    .map(|s| match EntityId::from(s.clone()) {
+                        id @ EntityId::Uuid(_) => Ok(id),
+                        EntityId::Legacy(_) => Err(CliError::Validation {
+                            field: "set".into(),
+                            reason: format!("\"{s}\" is not a valid policy UUID"),
+                        }),
+                    })
+                    .collect::<Result<Vec<EntityId>, _>>()?;
+                let ordering = controller
+                    .get_firewall_policy_ordering(&zone_pair.0, &zone_pair.1)
+                    .await?;
+                let preserved: Vec<EntityId> = if after_system {
+                    ordering
+                        .before_system_defined
+                        .into_iter()
+                        .map(EntityId::Uuid)
+                        .collect()
+                } else {
+                    ordering
+                        .after_system_defined
+                        .into_iter()
+                        .map(EntityId::Uuid)
+                        .collect()
+                };
+                let (before_system_ids, after_system_ids) = if after_system {
+                    (preserved, new_ids)
+                } else {
+                    (new_ids, preserved)
+                };
                 controller
                     .execute(CoreCommand::ReorderFirewallPolicies {
                         zone_pair,
-                        ordered_ids,
-                        after_system,
+                        before_system_ids,
+                        after_system_ids,
                     })
                     .await?;
                 if !global.quiet {
@@ -501,12 +531,16 @@ async fn move_policy_after_system(
         controller
             .execute(CoreCommand::ReorderFirewallPolicies {
                 zone_pair: (source_zone_id, destination_zone_id),
-                ordered_ids: ordering
+                before_system_ids: ordering
+                    .before_system_defined
+                    .into_iter()
+                    .map(EntityId::Uuid)
+                    .collect(),
+                after_system_ids: ordering
                     .after_system_defined
                     .into_iter()
                     .map(EntityId::Uuid)
                     .collect(),
-                after_system: true,
             })
             .await?;
     }
