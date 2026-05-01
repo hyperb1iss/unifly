@@ -437,58 +437,35 @@ async fn handle_create(
     ip_version: Option<String>,
     after_system: bool,
 ) -> Result<(), CliError> {
-    let mut req = if let Some(path) = from_file.as_ref() {
-        let mut req: CreateFirewallPolicyRequest =
-            serde_json::from_value(util::read_json_file(path)?)?;
-        // Fold the inline shorthand fields into source/destination_filter
-        // first so resolve_group_refs sees the canonical filter shape and
-        // can merge group references as companions.
-        req.resolve_filters()
-            .map_err(|reason| CliError::Validation {
-                field: "filter".into(),
-                reason,
-            })?;
-        if req.src_port_group.is_some()
-            || req.dst_port_group.is_some()
-            || req.src_address_group.is_some()
-            || req.dst_address_group.is_some()
-        {
-            util::ensure_session_access(controller, "firewall policy with group references")
-                .await?;
-            resolve_group_refs_create(controller, &mut req)?;
-        }
-        req
-    } else {
-        CreateFirewallPolicyRequest {
-            name: name.unwrap_or_default(),
-            action: action
-                .as_ref()
-                .map_or(unifly_api::model::FirewallAction::Block, map_fw_action),
-            source_zone_id: EntityId::from(source_zone.unwrap_or_default()),
-            destination_zone_id: EntityId::from(dest_zone.unwrap_or_default()),
-            enabled,
-            logging_enabled: logging,
-            allow_return_traffic,
-            description,
-            ip_version,
-            connection_states: states,
-            source_filter: build_filter_spec("src", src_network, src_ip, src_port)?,
-            destination_filter: build_filter_spec("dst", dst_network, dst_ip, dst_port)?,
-            src_network: None,
-            src_ip: None,
-            src_port: None,
-            dst_network: None,
-            dst_ip: None,
-            dst_port: None,
-            src_port_group,
-            dst_port_group,
-            src_address_group,
-            dst_address_group,
-        }
-    };
+    let mut req = build_create_request(
+        controller,
+        from_file,
+        name,
+        action,
+        source_zone,
+        dest_zone,
+        enabled,
+        description,
+        logging,
+        allow_return_traffic,
+        src_network,
+        src_ip,
+        src_port,
+        dst_network,
+        dst_ip,
+        dst_port,
+        src_port_group,
+        dst_port_group,
+        src_address_group,
+        dst_address_group,
+        states,
+        ip_version,
+    )
+    .await?;
 
     // Resolve group references (from CLI flags). The from-file path resolves
-    // and consumes its own group fields above; this catches CLI-flag inputs.
+    // and consumes its own group fields inside build_create_request; this
+    // catches CLI-flag inputs.
     if req.src_port_group.is_some()
         || req.dst_port_group.is_some()
         || req.src_address_group.is_some()
@@ -531,26 +508,119 @@ async fn handle_create(
         None
     };
 
-    if !global.quiet {
-        match (after_system, &reorder_err, &created_id) {
-            (true, Some(err), Some(id)) => {
-                eprintln!(
-                    "Firewall policy created (id {id}); reorder after system-defined rules failed: {err}"
-                );
-                eprintln!(
-                    "Use `unifly firewall policies reorder --source-zone <ID> --dest-zone <ID> --set ... --after-system` to retry."
-                );
-            }
-            (true, Some(err), None) => {
-                eprintln!(
-                    "Firewall policy created; reorder after system-defined rules failed: {err}"
-                );
-            }
-            (true, None, _) => eprintln!("Firewall policy created (after system-defined rules)"),
-            (false, _, _) => eprintln!("Firewall policy created"),
-        }
-    }
+    report_create_outcome(
+        global,
+        after_system,
+        reorder_err.as_ref(),
+        created_id.as_deref(),
+    );
     Ok(())
+}
+
+/// Construct a `CreateFirewallPolicyRequest` from either a `--from-file`
+/// payload or the CLI-flag inputs. For the from-file path, runs
+/// `resolve_filters` and (if any group fields are set) merges group
+/// references into the canonical filter shape.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+async fn build_create_request(
+    controller: &Controller,
+    from_file: Option<std::path::PathBuf>,
+    name: Option<String>,
+    action: Option<crate::cli::args::FirewallAction>,
+    source_zone: Option<String>,
+    dest_zone: Option<String>,
+    enabled: bool,
+    description: Option<String>,
+    logging: bool,
+    allow_return_traffic: Option<bool>,
+    src_network: Option<Vec<String>>,
+    src_ip: Option<Vec<String>>,
+    src_port: Option<Vec<String>>,
+    dst_network: Option<Vec<String>>,
+    dst_ip: Option<Vec<String>>,
+    dst_port: Option<Vec<String>>,
+    src_port_group: Option<String>,
+    dst_port_group: Option<String>,
+    src_address_group: Option<String>,
+    dst_address_group: Option<String>,
+    states: Option<Vec<String>>,
+    ip_version: Option<String>,
+) -> Result<CreateFirewallPolicyRequest, CliError> {
+    if let Some(path) = from_file.as_ref() {
+        let mut req: CreateFirewallPolicyRequest =
+            serde_json::from_value(util::read_json_file(path)?)?;
+        // Fold inline shorthand fields into source/destination_filter
+        // first so resolve_group_refs sees the canonical filter shape and
+        // can merge group references as companions.
+        req.resolve_filters()
+            .map_err(|reason| CliError::Validation {
+                field: "filter".into(),
+                reason,
+            })?;
+        if req.src_port_group.is_some()
+            || req.dst_port_group.is_some()
+            || req.src_address_group.is_some()
+            || req.dst_address_group.is_some()
+        {
+            util::ensure_session_access(controller, "firewall policy with group references")
+                .await?;
+            resolve_group_refs_create(controller, &mut req)?;
+        }
+        Ok(req)
+    } else {
+        Ok(CreateFirewallPolicyRequest {
+            name: name.unwrap_or_default(),
+            action: action
+                .as_ref()
+                .map_or(unifly_api::model::FirewallAction::Block, map_fw_action),
+            source_zone_id: EntityId::from(source_zone.unwrap_or_default()),
+            destination_zone_id: EntityId::from(dest_zone.unwrap_or_default()),
+            enabled,
+            logging_enabled: logging,
+            allow_return_traffic,
+            description,
+            ip_version,
+            connection_states: states,
+            source_filter: build_filter_spec("src", src_network, src_ip, src_port)?,
+            destination_filter: build_filter_spec("dst", dst_network, dst_ip, dst_port)?,
+            src_network: None,
+            src_ip: None,
+            src_port: None,
+            dst_network: None,
+            dst_ip: None,
+            dst_port: None,
+            src_port_group,
+            dst_port_group,
+            src_address_group,
+            dst_address_group,
+        })
+    }
+}
+
+fn report_create_outcome(
+    global: &GlobalOpts,
+    after_system: bool,
+    reorder_err: Option<&CliError>,
+    created_id: Option<&str>,
+) {
+    if global.quiet {
+        return;
+    }
+    match (after_system, reorder_err, created_id) {
+        (true, Some(err), Some(id)) => {
+            eprintln!(
+                "Firewall policy created (id {id}); reorder after system-defined rules failed: {err}"
+            );
+            eprintln!(
+                "Use `unifly firewall policies reorder --source-zone <ID> --dest-zone <ID> --set ... --after-system` to retry."
+            );
+        }
+        (true, Some(err), None) => {
+            eprintln!("Firewall policy created; reorder after system-defined rules failed: {err}");
+        }
+        (true, None, _) => eprintln!("Firewall policy created (after system-defined rules)"),
+        (false, _, _) => eprintln!("Firewall policy created"),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
