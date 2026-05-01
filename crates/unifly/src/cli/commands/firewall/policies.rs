@@ -449,15 +449,36 @@ async fn handle_create(
         .execute(CoreCommand::CreateFirewallPolicy(req))
         .await?;
 
-    if after_system {
-        move_policy_after_system(controller, result, source_zone_id, destination_zone_id).await?;
-    }
+    let created_id = match &result {
+        unifly_api::CommandResult::CreatedId(id) => Some(id.to_string()),
+        _ => None,
+    };
+
+    let reorder_err = if after_system {
+        move_policy_after_system(controller, result, source_zone_id, destination_zone_id)
+            .await
+            .err()
+    } else {
+        None
+    };
 
     if !global.quiet {
-        if after_system {
-            eprintln!("Firewall policy created (after system-defined rules)");
-        } else {
-            eprintln!("Firewall policy created");
+        match (after_system, &reorder_err, &created_id) {
+            (true, Some(err), Some(id)) => {
+                eprintln!(
+                    "Firewall policy created (id {id}); reorder after system-defined rules failed: {err}"
+                );
+                eprintln!(
+                    "Use `unifly firewall policies reorder --source-zone <ID> --dest-zone <ID> --set ... --after-system` to retry."
+                );
+            }
+            (true, Some(err), None) => {
+                eprintln!(
+                    "Firewall policy created; reorder after system-defined rules failed: {err}"
+                );
+            }
+            (true, None, _) => eprintln!("Firewall policy created (after system-defined rules)"),
+            (false, _, _) => eprintln!("Firewall policy created"),
         }
     }
     Ok(())
