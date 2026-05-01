@@ -256,6 +256,10 @@ pub struct Device {
     // Uplink
     pub uplink_device_id: Option<EntityId>,
     pub uplink_device_mac: Option<MacAddress>,
+    /// 1-based switch port index this device is uplinked through, if the
+    /// uplink is wired and the upstream switch reported the remote port.
+    /// `None` for wireless uplinks and root devices.
+    pub uplink_port_idx: Option<u32>,
 
     // Features (from Integration API)
     pub has_switching: bool,

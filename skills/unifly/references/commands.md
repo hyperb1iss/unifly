@@ -96,14 +96,17 @@ unifly devices tags [subcommands]
   is non-destructive: `ports-export | port-set -F` preserves all
   per-port settings.
 - `--with-clients` (on `ports` and `ports-export`): annotates each port
-  with the wired clients currently observed on it. On `ports`, adds a
-  `connected_clients` array (mac, ip, name, vlan_id) in JSON output and
-  a count column in the table view. On `ports-export`, prepends
-  `// last-seen <ISO8601>: <mac> (<name>)` comment lines before each
-  port's `{`. Stable parse anchor: `// last-seen ` (with trailing
-  space). Markers are sorted by MAC; one timestamp per export run.
-  Useful for drift detection — re-export and `git diff` to see when
-  the client on a labelled port has changed.
+  with end-user clients **and adopted devices** (APs, downstream
+  switches) currently observed on it. On `ports`, adds a `connections`
+  array in JSON output and a `Conns` count column (`<clients>/<devices>`)
+  in the table view. Each entry has a `kind` discriminator (`"client"`
+  or `"device"`) plus `mac`, `name`, and (for clients) `ip` / `vlan_id`.
+  On `ports-export`, prepends
+  `// last-seen <ISO8601>: <mac> (<name>, <kind>)` comment lines before
+  each port's `{`. Stable parse anchor: `// last-seen ` (with trailing
+  space). Markers sort clients before devices then by MAC; one
+  timestamp per export run. Useful for drift detection — re-export and
+  `git diff` to see when the AP or client on a labelled port changed.
 - All device _commands_ (adopt, remove, restart, locate, port-cycle,
   port-set, upgrade, provision, speedtest) require Session API access.
   Only `list`/`get`/`ports` read paths are Hybrid-safe; `port-set`

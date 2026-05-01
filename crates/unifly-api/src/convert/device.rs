@@ -54,6 +54,24 @@ fn map_device_state(code: i32) -> DeviceState {
     }
 }
 
+fn parse_session_uplink(
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> (Option<MacAddress>, Option<u32>) {
+    let Some(uplink) = extra.get("uplink").and_then(|v| v.as_object()) else {
+        return (None, None);
+    };
+    let mac = uplink
+        .get("uplink_mac")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(MacAddress::new);
+    let port = uplink
+        .get("uplink_remote_port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok());
+    (mac, port)
+}
+
 impl From<SessionDevice> for Device {
     fn from(d: SessionDevice) -> Self {
         let device_type = infer_device_type(&d.device_type, d.model.as_ref());
@@ -63,6 +81,7 @@ impl From<SessionDevice> for Device {
         } else {
             d.id.clone()
         };
+        let (uplink_device_mac, uplink_port_idx) = parse_session_uplink(&d.extra);
 
         let device_stats = {
             let mut s = DeviceStats {
@@ -105,7 +124,8 @@ impl From<SessionDevice> for Device {
             ports: parse_session_ports(&d.extra),
             radios: parse_session_radios(&d.extra),
             uplink_device_id: None,
-            uplink_device_mac: None,
+            uplink_device_mac,
+            uplink_port_idx,
             has_switching: device_type == DeviceType::Switch || device_type == DeviceType::Gateway,
             has_access_point: device_type == DeviceType::AccessPoint,
             stats: device_stats,
@@ -182,6 +202,7 @@ impl From<integration_types::DeviceResponse> for Device {
             radios: parse_integration_radios(&d.interfaces),
             uplink_device_id: None,
             uplink_device_mac: None,
+            uplink_port_idx: None,
             has_switching: d.features.iter().any(|f| f == "switching"),
             has_access_point: d.features.iter().any(|f| f == "accessPoint"),
             stats: DeviceStats::default(),
@@ -305,5 +326,44 @@ mod tests {
         assert_eq!(device.id.to_string(), "dc:9f:db:00:00:01");
         assert_eq!(device.mac.to_string(), "dc:9f:db:00:00:01");
         assert_eq!(device.state, DeviceState::PendingAdoption);
+    }
+
+    #[test]
+    fn session_device_carries_wired_uplink_mac_and_remote_port() {
+        let raw = json!({
+            "mac": "6c:63:f8:36:53:42",
+            "type": "uap",
+            "name": "U7-Pro-Wall",
+            "state": 1,
+            "uplink": {
+                "type": "wire",
+                "uplink_mac": "58:d6:1f:62:33:01",
+                "uplink_remote_port": 4
+            }
+        });
+
+        let session_device: SessionDevice = serde_json::from_value(raw).expect("deserialize");
+        let device: Device = session_device.into();
+
+        assert_eq!(
+            device.uplink_device_mac.as_ref().map(ToString::to_string),
+            Some("58:d6:1f:62:33:01".into())
+        );
+        assert_eq!(device.uplink_port_idx, Some(4));
+    }
+
+    #[test]
+    fn session_device_with_no_uplink_block_has_none() {
+        let raw = json!({
+            "mac": "58:d6:1f:62:33:01",
+            "type": "usw",
+            "state": 1
+        });
+
+        let session_device: SessionDevice = serde_json::from_value(raw).expect("deserialize");
+        let device: Device = session_device.into();
+
+        assert!(device.uplink_device_mac.is_none());
+        assert!(device.uplink_port_idx.is_none());
     }
 }

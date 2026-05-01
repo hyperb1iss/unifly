@@ -99,8 +99,11 @@ pub enum DevicesCommand {
         /// Device ID (UUID) or MAC address
         device: String,
 
-        /// Include connected wired clients per port. Adds a `connected_clients`
-        /// array in JSON output and a count column in the table view.
+        /// Include the wired clients and adopted devices (APs, downstream
+        /// switches) currently observed on each port. Adds a `connections`
+        /// array in JSON output (with a `kind` discriminator per entry —
+        /// `"client"` or `"device"`) and a `Conns` count column
+        /// (`<clients>/<devices>`) in the table view.
         #[arg(long)]
         with_clients: bool,
     },
@@ -118,12 +121,13 @@ pub enum DevicesCommand {
         #[arg(long)]
         all: bool,
 
-        /// Annotate each port with `// last-seen <ISO8601>: <mac> (<name>)`
-        /// comments for currently-connected wired clients. Useful for
-        /// drift detection — the comment block records which client was
-        /// observed on each labelled port at export time. The marker
-        /// prefix `// last-seen ` is a stable parse anchor (don't
-        /// hand-edit those lines).
+        /// Annotate each port with `// last-seen <ISO8601>: <mac> (<name>, <kind>)`
+        /// comments for currently-connected wired clients and adopted
+        /// devices. `<kind>` is `client` or `device`. Useful for drift
+        /// detection — the comment block records what was observed on
+        /// each labelled port at export time. The marker prefix
+        /// `// last-seen ` is a stable parse anchor (don't hand-edit
+        /// those lines).
         #[arg(long)]
         with_clients: bool,
     },

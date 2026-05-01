@@ -12,7 +12,7 @@ use crate::cli::output;
 
 use super::render::{
     build_last_seen_markers, detail, device_row, device_tag_identity, device_tag_row,
-    enrich_with_clients, enriched_port_row, inject_last_seen_markers, pending_device_identity,
+    enrich_with_connections, enriched_port_row, inject_last_seen_markers, pending_device_identity,
     pending_device_row, port_row, stats_detail,
 };
 
@@ -366,7 +366,8 @@ async fn handle_ports(
     let profiles = controller.list_device_ports(&mac).await?;
     if with_clients {
         let clients = controller.clients_snapshot();
-        let enriched = enrich_with_clients(&profiles, &clients, &mac);
+        let devices = controller.devices_snapshot();
+        let enriched = enrich_with_connections(&profiles, &clients, &devices, &mac);
         let out = output::render_list(
             &global.output,
             &enriched,
@@ -400,7 +401,8 @@ async fn handle_ports_export(
     let output = if with_clients {
         let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%MZ").to_string();
         let clients = controller.clients_snapshot();
-        let markers = build_last_seen_markers(&clients, &mac, &timestamp);
+        let devices = controller.devices_snapshot();
+        let markers = build_last_seen_markers(&clients, &devices, &mac, &timestamp);
         inject_last_seen_markers(&json, &markers)
     } else {
         let mut s = json;
