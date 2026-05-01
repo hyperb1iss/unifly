@@ -11,8 +11,8 @@ use crate::cli::error::CliError;
 use crate::cli::output;
 
 use super::render::{
-    detail, device_row, device_tag_identity, device_tag_row, pending_device_identity,
-    pending_device_row, port_row, stats_detail,
+    detail, device_row, device_tag_identity, device_tag_row, enrich_with_clients,
+    enriched_port_row, pending_device_identity, pending_device_row, port_row, stats_detail,
 };
 
 fn find_device(controller: &Controller, needle: &str) -> Option<Arc<Device>> {
@@ -213,19 +213,10 @@ pub(super) async fn handle(
             Ok(())
         }
 
-        DevicesCommand::Ports { device } => {
-            util::ensure_session_access(controller, "devices ports").await?;
-            let mac = util::resolve_device_mac(controller, &device)?;
-            let profiles = controller.list_device_ports(&mac).await?;
-            let out = output::render_list(
-                &global.output,
-                &profiles,
-                |profile| port_row(profile, &painter),
-                |profile| profile.index.to_string(),
-            );
-            output::print_output(&out, global.quiet);
-            Ok(())
-        }
+        DevicesCommand::Ports {
+            device,
+            with_clients,
+        } => handle_ports(controller, global, &painter, &device, with_clients).await,
 
         DevicesCommand::PortsExport { device, all } => {
             handle_ports_export(controller, &device, all).await
@@ -356,6 +347,38 @@ async fn handle_port_set(
     controller.update_device_port(&mac, port, &update).await?;
     if !global.quiet {
         eprintln!("Port {port} updated on device {device}");
+    }
+    Ok(())
+}
+
+async fn handle_ports(
+    controller: &Controller,
+    global: &GlobalOpts,
+    painter: &output::Painter,
+    device: &str,
+    with_clients: bool,
+) -> Result<(), CliError> {
+    util::ensure_session_access(controller, "devices ports").await?;
+    let mac = util::resolve_device_mac(controller, device)?;
+    let profiles = controller.list_device_ports(&mac).await?;
+    if with_clients {
+        let clients = controller.clients_snapshot();
+        let enriched = enrich_with_clients(&profiles, &clients, &mac);
+        let out = output::render_list(
+            &global.output,
+            &enriched,
+            |port| enriched_port_row(port, painter),
+            |port| port.profile.index.to_string(),
+        );
+        output::print_output(&out, global.quiet);
+    } else {
+        let out = output::render_list(
+            &global.output,
+            &profiles,
+            |profile| port_row(profile, painter),
+            |profile| profile.index.to_string(),
+        );
+        output::print_output(&out, global.quiet);
     }
     Ok(())
 }

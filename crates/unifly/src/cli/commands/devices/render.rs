@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use serde::Serialize;
 use tabled::Tabled;
-use unifly_api::{Device, PoeMode, PortMode, PortProfile, PortSpeedSetting, PortState, StpState};
+use unifly_api::{
+    Client, Device, PoeMode, PortMode, PortProfile, PortSpeedSetting, PortState, StpState,
+};
 
 use crate::cli::output::Painter;
 
@@ -324,6 +327,141 @@ pub(super) fn device_tag_identity(value: &serde_json::Value) -> String {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_owned()
+}
+
+// ── Port enrichment with connected clients (`--with-clients`) ──────
+
+/// One client currently observed on a switch port.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct ConnectedClientSummary {
+    pub mac: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan_id: Option<u16>,
+}
+
+/// `PortProfile` plus the wired clients seen on it. `connected_clients`
+/// flattens cleanly into the JSON shape expected by `devices ports
+/// --with-clients` consumers.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct EnrichedPortProfile {
+    #[serde(flatten)]
+    pub profile: PortProfile,
+    pub connected_clients: Vec<ConnectedClientSummary>,
+}
+
+#[derive(Tabled)]
+pub(super) struct EnrichedPortRow {
+    #[tabled(rename = "#")]
+    index: String,
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Link")]
+    link: String,
+    #[tabled(rename = "Mode")]
+    mode: String,
+    #[tabled(rename = "Native VLAN")]
+    native: String,
+    #[tabled(rename = "Tagged VLANs")]
+    tagged: String,
+    #[tabled(rename = "PoE")]
+    poe: String,
+    #[tabled(rename = "Speed")]
+    speed: String,
+    #[tabled(rename = "STP")]
+    stp: String,
+    #[tabled(rename = "Clients")]
+    clients: String,
+}
+
+pub(super) fn enriched_port_row(
+    enriched: &EnrichedPortProfile,
+    painter: &Painter,
+) -> EnrichedPortRow {
+    let base = port_row(&enriched.profile, painter);
+    EnrichedPortRow {
+        index: base.index,
+        name: base.name,
+        link: base.link,
+        mode: base.mode,
+        native: base.native,
+        tagged: base.tagged,
+        poe: base.poe,
+        speed: base.speed,
+        stp: base.stp,
+        clients: painter.muted(&format_client_count(&enriched.connected_clients)),
+    }
+}
+
+fn format_client_count(clients: &[ConnectedClientSummary]) -> String {
+    match clients.len() {
+        0 => "-".into(),
+        1 => format!(
+            "1: {}",
+            clients[0]
+                .name
+                .as_deref()
+                .unwrap_or(clients[0].mac.as_str())
+        ),
+        n => {
+            let head = clients[0]
+                .name
+                .as_deref()
+                .unwrap_or(clients[0].mac.as_str());
+            format!("{n}: {head}, …")
+        }
+    }
+}
+
+/// Pair each port profile with the wired clients currently seen on it.
+/// `device_mac` filters the clients_snapshot to this device.
+pub(super) fn enrich_with_clients(
+    profiles: &[PortProfile],
+    clients: &[Arc<Client>],
+    device_mac: &unifly_api::MacAddress,
+) -> Vec<EnrichedPortProfile> {
+    use std::collections::HashMap;
+
+    let mut by_port: HashMap<u32, Vec<ConnectedClientSummary>> = HashMap::new();
+    for client in clients {
+        let Some(uplink) = client.uplink_device_mac.as_ref() else {
+            continue;
+        };
+        if uplink.as_str() != device_mac.as_str() {
+            continue;
+        }
+        let Some(port) = client.switch_port else {
+            continue;
+        };
+        by_port
+            .entry(port)
+            .or_default()
+            .push(ConnectedClientSummary {
+                mac: client.mac.to_string(),
+                ip: client.ip.map(|ip| ip.to_string()),
+                name: client.name.clone().or_else(|| client.hostname.clone()),
+                vlan_id: client.vlan,
+            });
+    }
+
+    for entries in by_port.values_mut() {
+        entries.sort_by(|a, b| a.mac.cmp(&b.mac));
+    }
+
+    profiles
+        .iter()
+        .cloned()
+        .map(|profile| {
+            let connected_clients = by_port.remove(&profile.index).unwrap_or_default();
+            EnrichedPortProfile {
+                profile,
+                connected_clients,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

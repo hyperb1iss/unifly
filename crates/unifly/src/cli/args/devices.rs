@@ -98,6 +98,11 @@ pub enum DevicesCommand {
     Ports {
         /// Device ID (UUID) or MAC address
         device: String,
+
+        /// Include connected wired clients per port. Adds a `connected_clients`
+        /// array in JSON output and a count column in the table view.
+        #[arg(long)]
+        with_clients: bool,
     },
 
     /// Export switch port configuration as JSONC for `port-set --from-file`
