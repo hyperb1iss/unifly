@@ -1,0 +1,43 @@
+// Example for `unifly devices port-set <DEVICE> -F switch-ports.jsonc`.
+// Splice semantics: ports not listed below are left untouched on the
+// device. Per-port `"reset": true` removes that port's override entry
+// and returns it to controller defaults.
+{
+  "ports": [
+    // Trunk uplink with all VLANs (the controller's tagged_vlan_mgmt=auto).
+    {
+      "index": 1,
+      "name": "uplink",
+      "mode": "trunk",
+      "native_vlan": "infra",
+      "tagged_all": true,
+      "poe": "off"
+    },
+
+    // Access port pinned to a specific VLAN, PoE auto-negotiated.
+    {
+      "index": 9,
+      "name": "mac-mini",
+      "mode": "access",
+      "native_vlan": "personal",
+      "poe": "auto"
+    },
+
+    // Restricted trunk — explicit list of tagged networks. Empty
+    // `tagged_vlans` would clear the list (JSON Merge Patch); omitting
+    // the field leaves it untouched.
+    {
+      "index": 12,
+      "name": "lab-switch",
+      "mode": "trunk",
+      "native_vlan": "infra",
+      "tagged_vlans": ["personal", "iot"]
+    },
+
+    // Drop the override on port 16 — controller defaults take over.
+    {
+      "index": 16,
+      "reset": true
+    }
+  ]
+}

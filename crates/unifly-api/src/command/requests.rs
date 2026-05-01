@@ -6,6 +6,7 @@
 mod dns;
 mod network;
 mod policy;
+mod ports;
 mod traffic;
 mod vouchers;
 mod vpn;
@@ -21,6 +22,7 @@ pub use policy::{
     UpdateAclRuleRequest, UpdateFirewallGroupRequest, UpdateFirewallPolicyRequest,
     UpdateFirewallZoneRequest, UpdateNatPolicyRequest,
 };
+pub use ports::{ApplyPortEntry, ApplyPortsRequest};
 pub use traffic::{CreateTrafficMatchingListRequest, UpdateTrafficMatchingListRequest};
 pub use vouchers::CreateVouchersRequest;
 pub use vpn::{

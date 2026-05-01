@@ -28,7 +28,7 @@ mod session_queries;
 mod subscriptions;
 mod support;
 
-pub use ports::PortProfileUpdate;
+pub use ports::{ApplyPortsSummary, PortProfileUpdate};
 
 use self::support::{
     client_mac, device_mac, integration_client_context, integration_site_context,

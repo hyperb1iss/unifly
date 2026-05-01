@@ -13,6 +13,7 @@ use tracing::debug;
 
 use super::Controller;
 use super::support::require_session;
+use crate::command::requests::{ApplyPortEntry, ApplyPortsRequest};
 use crate::core_error::CoreError;
 use crate::model::{
     MacAddress, PoeMode, PortMode, PortProfile, PortSpeedSetting, PortState, StpState,
@@ -236,6 +237,401 @@ impl Controller {
             .update_device_port_overrides(device.id.as_str(), overrides)
             .await?;
         Ok(())
+    }
+
+    /// Apply a batch of port overrides to a device in a single round-trip.
+    ///
+    /// Splice semantics: ports not listed in `request.ports` keep their
+    /// existing override entry untouched. Per-port `reset: true` removes
+    /// that port's entry from `port_overrides` entirely (back to controller
+    /// defaults). Network names in the request are resolved to Session
+    /// `_id`s up-front so the device PUT only happens after every entry
+    /// validates.
+    ///
+    /// Requires Session API access.
+    pub async fn apply_device_ports(
+        &self,
+        device_mac: &MacAddress,
+        request: &ApplyPortsRequest,
+    ) -> Result<ApplyPortsSummary, CoreError> {
+        let guard = self.inner.session_client.lock().await;
+        let session = require_session(guard.as_ref())?;
+
+        // Fetch device + network list once. resolve_network_session_id
+        // would re-fetch the network list per call.
+        let device = session
+            .get_device(device_mac.as_str())
+            .await?
+            .ok_or_else(|| CoreError::DeviceNotFound {
+                identifier: device_mac.to_string(),
+            })?;
+        let networks = session.list_network_conf().await?;
+
+        // Validate every entry and convert to (port_idx, op) before any
+        // mutation — bail out cleanly on the first invalid entry.
+        let mut ops: Vec<(u32, EntryOp)> = Vec::with_capacity(request.ports.len());
+        for entry in &request.ports {
+            let op = if entry.reset {
+                EntryOp::Reset
+            } else {
+                EntryOp::Update(entry_to_update(entry, &networks)?)
+            };
+            ops.push((entry.index, op));
+        }
+
+        let mut overrides: Vec<Value> = device
+            .extra
+            .get("port_overrides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut summary = ApplyPortsSummary::default();
+        for (port_idx_target, op) in ops {
+            match op {
+                EntryOp::Reset => {
+                    let before = overrides.len();
+                    overrides.retain(|entry| port_idx(entry) != Some(port_idx_target));
+                    if overrides.len() != before {
+                        summary.reset += 1;
+                    }
+                }
+                EntryOp::Update(update) => {
+                    let slot = overrides
+                        .iter_mut()
+                        .find(|entry| port_idx(entry) == Some(port_idx_target));
+                    let existing = slot.as_ref().map(|value| match value {
+                        Value::Object(map) => map.clone(),
+                        _ => Map::new(),
+                    });
+                    let mut next = existing.unwrap_or_default();
+                    next.insert("port_idx".into(), json!(port_idx_target));
+                    apply_update(&mut next, &update);
+                    match slot {
+                        Some(entry) => *entry = Value::Object(next),
+                        None => overrides.push(Value::Object(next)),
+                    }
+                    summary.applied += 1;
+                }
+            }
+        }
+
+        debug!(
+            device = %device_mac,
+            applied = summary.applied,
+            reset = summary.reset,
+            "applying batch port_overrides",
+        );
+        session
+            .update_device_port_overrides(device.id.as_str(), overrides)
+            .await?;
+        Ok(summary)
+    }
+}
+
+/// Counts of operations performed by [`Controller::apply_device_ports`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ApplyPortsSummary {
+    /// Ports that had an override applied or refreshed.
+    pub applied: usize,
+    /// Ports whose override entry was removed (`reset: true`).
+    pub reset: usize,
+}
+
+impl Controller {
+    /// Build an [`ApplyPortsRequest`] reflecting the device's current
+    /// `port_overrides`. Suitable for piping into
+    /// [`Controller::apply_device_ports`] to round-trip a switch's port
+    /// configuration through a JSONC file.
+    ///
+    /// When `include_all` is `false` (the default), only ports with an
+    /// active override entry are emitted (sparse — best for diffable
+    /// config-as-code files). When `true`, ports without an override are
+    /// emitted as placeholder entries with `index` and `name` only, so a
+    /// user can bootstrap an apply file covering every port.
+    pub async fn export_device_ports(
+        &self,
+        device_mac: &MacAddress,
+        include_all: bool,
+    ) -> Result<ApplyPortsRequest, CoreError> {
+        let guard = self.inner.session_client.lock().await;
+        let session = require_session(guard.as_ref())?;
+
+        let device = session
+            .get_device(device_mac.as_str())
+            .await?
+            .ok_or_else(|| CoreError::DeviceNotFound {
+                identifier: device_mac.to_string(),
+            })?;
+
+        let overrides: Vec<Value> = device
+            .extra
+            .get("port_overrides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut entries: Vec<ApplyPortEntry> = overrides
+            .iter()
+            .filter_map(|raw| port_idx(raw).map(|idx| override_to_entry(idx, raw)))
+            .collect();
+
+        if include_all {
+            let covered: std::collections::HashSet<u32> = entries.iter().map(|e| e.index).collect();
+            let port_table: Vec<Value> = device
+                .extra
+                .get("port_table")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for row in &port_table {
+                if let Some(idx) = port_idx(row)
+                    && !covered.contains(&idx)
+                {
+                    entries.push(ApplyPortEntry {
+                        index: idx,
+                        name: row.get("name").and_then(Value::as_str).map(str::to_owned),
+                        ..ApplyPortEntry::default()
+                    });
+                }
+            }
+        }
+
+        entries.sort_by_key(|e| e.index);
+        Ok(ApplyPortsRequest { ports: entries })
+    }
+}
+
+fn override_to_entry(index: u32, raw: &Value) -> ApplyPortEntry {
+    let name = raw
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    let op_mode = raw.get("op_mode").and_then(Value::as_str);
+    let tagged_mgmt = raw.get("tagged_vlan_mgmt").and_then(Value::as_str);
+    let mode = match (op_mode, tagged_mgmt) {
+        (Some("mirror"), _) => Some("mirror".to_owned()),
+        (Some("switch") | None, Some("block_all")) => Some("access".to_owned()),
+        (Some("switch") | None, Some("auto" | "custom")) => Some("trunk".to_owned()),
+        _ => None,
+    };
+
+    let native_network_id = raw
+        .get("native_networkconf_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    let tagged_list: Option<Vec<String>> = raw
+        .get("tagged_networkconf_ids")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        });
+    let tagged_network_ids = tagged_list.filter(|list| !list.is_empty());
+
+    let tagged_all = if mode.as_deref() == Some("trunk") && tagged_mgmt == Some("auto") {
+        Some(true)
+    } else {
+        None
+    };
+
+    let poe = raw
+        .get("poe_mode")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    // autoneg=true is the canonical form for "auto" on the wire — no
+    // `speed` field. Skip emitting `speed` in that case so the round-trip
+    // doesn't trip the controller's pinned-speed validation pattern.
+    let speed = match (
+        raw.get("autoneg").and_then(Value::as_bool),
+        raw.get("speed").and_then(Value::as_str),
+    ) {
+        (Some(false), Some(s)) if !s.is_empty() => Some(s.to_owned()),
+        _ => None,
+    };
+
+    ApplyPortEntry {
+        index,
+        name,
+        mode,
+        native_network_id,
+        tagged_network_ids,
+        tagged_all,
+        poe,
+        speed,
+        reset: false,
+    }
+}
+
+enum EntryOp {
+    Reset,
+    Update(PortProfileUpdate),
+}
+
+fn entry_to_update(
+    entry: &ApplyPortEntry,
+    networks: &[Value],
+) -> Result<PortProfileUpdate, CoreError> {
+    if let (Some(true), Some(list)) = (entry.tagged_all, entry.tagged_network_ids.as_deref())
+        && !list.is_empty()
+    {
+        return Err(CoreError::ValidationFailed {
+            message: format!(
+                "port {}: tagged_all=true conflicts with a non-empty tagged_network_ids list",
+                entry.index
+            ),
+        });
+    }
+
+    let mode = entry
+        .mode
+        .as_deref()
+        .map(parse_apply_mode)
+        .transpose()
+        .map_err(|e| context_err(entry.index, e))?;
+
+    // tagged_all=true forces mode=Trunk and clears tagged_network_ids
+    // (apply_update will then write tagged_vlan_mgmt=auto).
+    let mode = if entry.tagged_all == Some(true) {
+        Some(PortMode::Trunk)
+    } else {
+        mode
+    };
+
+    let native_network_id = entry
+        .native_network_id
+        .as_deref()
+        .map(|id| resolve_network_to_id(id, networks))
+        .transpose()
+        .map_err(|e| context_err(entry.index, e))?;
+
+    let tagged_network_ids = if entry.tagged_all == Some(true) {
+        None
+    } else if let Some(list) = entry.tagged_network_ids.as_deref() {
+        let resolved: Result<Vec<String>, _> = list
+            .iter()
+            .map(|id| resolve_network_to_id(id, networks))
+            .collect();
+        Some(resolved.map_err(|e| context_err(entry.index, e))?)
+    } else {
+        None
+    };
+
+    let poe_mode = entry
+        .poe
+        .as_deref()
+        .map(parse_apply_poe)
+        .transpose()
+        .map_err(|e| context_err(entry.index, e))?;
+
+    let speed_setting = entry
+        .speed
+        .as_deref()
+        .map(parse_apply_speed)
+        .transpose()
+        .map_err(|e| context_err(entry.index, e))?;
+
+    Ok(PortProfileUpdate {
+        name: entry.name.clone(),
+        mode,
+        native_network_id,
+        tagged_network_ids,
+        poe_mode,
+        speed_setting,
+    })
+}
+
+fn context_err(port_index: u32, err: CoreError) -> CoreError {
+    if let CoreError::ValidationFailed { message } = &err {
+        CoreError::ValidationFailed {
+            message: format!("port {port_index}: {message}"),
+        }
+    } else {
+        err
+    }
+}
+
+fn resolve_network_to_id(identifier: &str, networks: &[Value]) -> Result<String, CoreError> {
+    if networks
+        .iter()
+        .any(|r| r.get("_id").and_then(Value::as_str) == Some(identifier))
+    {
+        return Ok(identifier.to_owned());
+    }
+    let matches: Vec<&Value> = networks
+        .iter()
+        .filter(|r| {
+            r.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| n.eq_ignore_ascii_case(identifier))
+        })
+        .collect();
+    match matches.len() {
+        0 => Err(CoreError::NetworkNotFound {
+            identifier: identifier.to_owned(),
+        }),
+        1 => matches[0]
+            .get("_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| CoreError::NetworkNotFound {
+                identifier: identifier.to_owned(),
+            }),
+        _ => Err(CoreError::ValidationFailed {
+            message: format!(
+                "network name {identifier:?} is ambiguous ({} matches); specify the session _id instead",
+                matches.len()
+            ),
+        }),
+    }
+}
+
+fn parse_apply_mode(raw: &str) -> Result<PortMode, CoreError> {
+    match raw {
+        "access" => Ok(PortMode::Access),
+        "trunk" => Ok(PortMode::Trunk),
+        "mirror" => Ok(PortMode::Mirror),
+        _ => Err(CoreError::ValidationFailed {
+            message: format!("invalid mode {raw:?}, expected access | trunk | mirror"),
+        }),
+    }
+}
+
+fn parse_apply_poe(raw: &str) -> Result<PoeMode, CoreError> {
+    match raw {
+        "on" | "auto" => Ok(PoeMode::Auto),
+        "off" => Ok(PoeMode::Off),
+        "pasv24" => Ok(PoeMode::Passive24V),
+        "passthrough" => Ok(PoeMode::Passthrough),
+        _ => Err(CoreError::ValidationFailed {
+            message: format!(
+                "invalid poe {raw:?}, expected on | off | auto | pasv24 | passthrough"
+            ),
+        }),
+    }
+}
+
+fn parse_apply_speed(raw: &str) -> Result<PortSpeedSetting, CoreError> {
+    match raw {
+        "auto" => Ok(PortSpeedSetting::Auto),
+        "10" => Ok(PortSpeedSetting::Mbps10),
+        "100" => Ok(PortSpeedSetting::Mbps100),
+        "1000" => Ok(PortSpeedSetting::Mbps1000),
+        "2500" => Ok(PortSpeedSetting::Mbps2500),
+        "5000" => Ok(PortSpeedSetting::Mbps5000),
+        "10000" => Ok(PortSpeedSetting::Mbps10000),
+        _ => Err(CoreError::ValidationFailed {
+            message: format!(
+                "invalid speed {raw:?}, expected auto | 10 | 100 | 1000 | 2500 | 5000 | 10000"
+            ),
+        }),
     }
 }
 
@@ -522,8 +918,12 @@ fn apply_update(target: &mut Map<String, Value>, update: &PortProfileUpdate) {
     if let Some(speed) = update.speed_setting {
         match speed {
             PortSpeedSetting::Auto => {
+                // The controller validates `speed` against `10|100|...|100000`.
+                // For autoneg ports the wire stores `autoneg: true` with no
+                // `speed` field — so we drop any pinned speed rather than
+                // sending `"speed": "auto"` (which fails validation).
                 target.insert("autoneg".into(), json!(true));
-                target.insert("speed".into(), json!("auto"));
+                target.remove("speed");
             }
             other => {
                 target.insert("autoneg".into(), json!(false));
@@ -672,5 +1072,94 @@ mod tests {
         );
         assert_eq!(target.get("autoneg"), Some(&json!(false)));
         assert_eq!(target.get("speed"), Some(&json!("2500")));
+    }
+
+    /// The controller's pinned-speed validation pattern is
+    /// `10|100|...|100000` — `"auto"` is not in it. apply_update must
+    /// represent Auto as `autoneg: true` only and remove any stale
+    /// `speed` field rather than emitting `"speed": "auto"`.
+    #[test]
+    fn apply_update_speed_auto_omits_speed_field() {
+        let mut target = Map::new();
+        target.insert("speed".into(), json!("1000"));
+        apply_update(
+            &mut target,
+            &PortProfileUpdate {
+                speed_setting: Some(PortSpeedSetting::Auto),
+                ..PortProfileUpdate::default()
+            },
+        );
+        assert_eq!(target.get("autoneg"), Some(&json!(true)));
+        assert_eq!(target.get("speed"), None);
+    }
+
+    #[test]
+    fn override_to_entry_round_trips_basic_fields() {
+        let raw = json!({
+            "port_idx": 1,
+            "name": "uplink",
+            "op_mode": "switch",
+            "tagged_vlan_mgmt": "auto",
+            "native_networkconf_id": "n1",
+            "poe_mode": "auto",
+            "autoneg": true,
+        });
+        let entry = override_to_entry(1, &raw);
+        assert_eq!(entry.index, 1);
+        assert_eq!(entry.name.as_deref(), Some("uplink"));
+        assert_eq!(entry.mode.as_deref(), Some("trunk"));
+        assert_eq!(entry.native_network_id.as_deref(), Some("n1"));
+        assert_eq!(entry.tagged_all, Some(true));
+        assert_eq!(entry.poe.as_deref(), Some("auto"));
+        // autoneg=true → speed is None (avoids round-trip validation error)
+        assert!(entry.speed.is_none());
+    }
+
+    #[test]
+    fn override_to_entry_pinned_speed_emits_value() {
+        let raw = json!({
+            "port_idx": 4,
+            "autoneg": false,
+            "speed": "1000",
+        });
+        let entry = override_to_entry(4, &raw);
+        assert_eq!(entry.speed.as_deref(), Some("1000"));
+    }
+
+    #[test]
+    fn override_to_entry_access_mode_from_block_all() {
+        let raw = json!({
+            "port_idx": 2,
+            "op_mode": "switch",
+            "tagged_vlan_mgmt": "block_all",
+        });
+        let entry = override_to_entry(2, &raw);
+        assert_eq!(entry.mode.as_deref(), Some("access"));
+        assert!(entry.tagged_all.is_none());
+    }
+
+    #[test]
+    fn entry_to_update_rejects_invalid_strings() {
+        let networks: Vec<Value> = vec![];
+        let entry = ApplyPortEntry {
+            index: 1,
+            mode: Some("bogus".into()),
+            ..ApplyPortEntry::default()
+        };
+        let err = entry_to_update(&entry, &networks).expect_err("invalid mode should error");
+        assert!(matches!(err, CoreError::ValidationFailed { .. }));
+    }
+
+    #[test]
+    fn entry_to_update_rejects_tagged_all_with_non_empty_list() {
+        let networks: Vec<Value> = vec![json!({ "_id": "n1", "name": "infra" })];
+        let entry = ApplyPortEntry {
+            index: 1,
+            tagged_all: Some(true),
+            tagged_network_ids: Some(vec!["infra".into()]),
+            ..ApplyPortEntry::default()
+        };
+        let err = entry_to_update(&entry, &networks).expect_err("conflict should error");
+        assert!(matches!(err, CoreError::ValidationFailed { .. }));
     }
 }

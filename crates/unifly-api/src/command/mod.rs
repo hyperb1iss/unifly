@@ -13,16 +13,16 @@ use crate::model::{
 };
 
 pub use requests::{
-    CreateAclRuleRequest, CreateDnsPolicyRequest, CreateFirewallGroupRequest,
-    CreateFirewallPolicyRequest, CreateFirewallZoneRequest, CreateNatPolicyRequest,
-    CreateNetworkRequest, CreateRemoteAccessVpnServerRequest, CreateSiteToSiteVpnRequest,
-    CreateTrafficMatchingListRequest, CreateVouchersRequest, CreateVpnClientProfileRequest,
-    CreateWifiBroadcastRequest, CreateWireGuardPeerRequest, PortSpec, TrafficFilterSpec,
-    UpdateAclRuleRequest, UpdateDnsPolicyRequest, UpdateFirewallGroupRequest,
-    UpdateFirewallPolicyRequest, UpdateFirewallZoneRequest, UpdateNatPolicyRequest,
-    UpdateNetworkRequest, UpdateRemoteAccessVpnServerRequest, UpdateSiteToSiteVpnRequest,
-    UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest, UpdateWifiBroadcastRequest,
-    UpdateWireGuardPeerRequest,
+    ApplyPortEntry, ApplyPortsRequest, CreateAclRuleRequest, CreateDnsPolicyRequest,
+    CreateFirewallGroupRequest, CreateFirewallPolicyRequest, CreateFirewallZoneRequest,
+    CreateNatPolicyRequest, CreateNetworkRequest, CreateRemoteAccessVpnServerRequest,
+    CreateSiteToSiteVpnRequest, CreateTrafficMatchingListRequest, CreateVouchersRequest,
+    CreateVpnClientProfileRequest, CreateWifiBroadcastRequest, CreateWireGuardPeerRequest,
+    PortSpec, TrafficFilterSpec, UpdateAclRuleRequest, UpdateDnsPolicyRequest,
+    UpdateFirewallGroupRequest, UpdateFirewallPolicyRequest, UpdateFirewallZoneRequest,
+    UpdateNatPolicyRequest, UpdateNetworkRequest, UpdateRemoteAccessVpnServerRequest,
+    UpdateSiteToSiteVpnRequest, UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest,
+    UpdateWifiBroadcastRequest, UpdateWireGuardPeerRequest,
 };
 
 /// A command envelope sent through the command channel.

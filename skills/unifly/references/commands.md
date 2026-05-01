@@ -45,10 +45,12 @@ unifly devices restart <id|mac>
 unifly devices locate <mac> [--on true|false]
 unifly devices port-cycle <id|mac> <port_idx>
 unifly devices ports <id|mac>
-unifly devices port-set <id|mac> <port_idx> [--mode access|trunk|mirror]
+unifly devices ports-export <id|mac> [--all]
+unifly devices port-set <id|mac> [<port_idx>] [--mode access|trunk|mirror]
     [--native-vlan <network>] [--tagged-vlans <network,...>]
     [--name <label>] [--poe on|off|auto|pasv24|passthrough]
     [--speed auto|10|100|1000|2500|5000|10000]
+    [-F <FILE> | --from-file <FILE>]
 unifly devices stats <id|mac>
 unifly devices pending
 unifly devices upgrade <mac> [--url <firmware-url>]
@@ -63,17 +65,36 @@ unifly devices tags [subcommands]
   `--on false` clears. Idempotent for automation.
 - `upgrade --url` allows side-loading custom firmware URLs.
 - `port-cycle` port index is zero-based.
-- `ports` / `port-set` use **Session API routes** (the Integration API
-  does not expose port VLAN configuration), but they are reachable using
-  a UniFi OS Integration API key — the session client sends `X-API-KEY`
-  on UniFi OS session HTTP endpoints, so `port-set` works in ApiKey mode
-  on UniFi OS controllers without a username/password. `--native-vlan` /
-  `--tagged-vlans` accept network names or session `_id`s; names are
-  resolved via `rest/networkconf`, so ambiguous names error out rather
-  than pick one. `--mode trunk` without `--tagged-vlans` trunks all
-  VLANs (UniFi's `tagged_vlan_mgmt=auto`); passing `--tagged-vlans`
-  switches to `custom`. `port-set` preserves every other port's
-  overrides — only the target port's fields are merged.
+- `ports` / `port-set` / `ports-export` use **Session API routes** (the
+  Integration API does not expose port VLAN configuration), but they
+  are reachable using a UniFi OS Integration API key — the session
+  client sends `X-API-KEY` on UniFi OS session HTTP endpoints, so
+  these work in ApiKey mode on UniFi OS controllers without a
+  username/password. `--native-vlan` / `--tagged-vlans` accept network
+  names or session `_id`s; names are resolved via `rest/networkconf`,
+  so ambiguous names error out rather than pick one. `--mode trunk`
+  without `--tagged-vlans` trunks all VLANs (UniFi's
+  `tagged_vlan_mgmt=auto`); passing `--tagged-vlans` switches to
+  `custom`. `port-set` preserves every other port's overrides — only
+  the target port's fields are merged.
+- `port-set -F <FILE>` applies a JSONC file describing one or more
+  ports for a single device. Schema:
+  `{"ports": [{"index": N, "name": "...", "mode": "trunk", ...}]}`
+  with these per-port fields: `name`, `mode`, `native_network_id` (or
+  `native_vlan` alias), `tagged_network_ids` (or `tagged_vlans`),
+  `tagged_all`, `poe`, `speed`, `reset`. Splice semantics: ports not
+  listed keep their existing override. Per-port `"reset": true` removes
+  that port's entry from `port_overrides` (back to controller defaults).
+  Empty `tagged_network_ids: []` clears the tagged list (JSON Merge
+  Patch); missing field = no change. PORT_IDX positional becomes
+  optional when `-F` is set; flag-style `--mode`/etc. conflict with
+  `-F`.
+- `ports-export <id|mac>` emits the device's current port configuration
+  as a JSONC file suitable for `port-set -F`. Sparse by default — only
+  ports with active overrides. Pass `--all` to include every port (with
+  just `index` and `name` for ports that have no override). Round-trip
+  is non-destructive: `ports-export | port-set -F` preserves all
+  per-port settings.
 - All device _commands_ (adopt, remove, restart, locate, port-cycle,
   port-set, upgrade, provision, speedtest) require Session API access.
   Only `list`/`get`/`ports` read paths are Hybrid-safe; `port-set`

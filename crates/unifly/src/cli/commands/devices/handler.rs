@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use unifly_api::{
-    Command as CoreCommand, Controller, Device, MacAddress, PoeMode, PortMode, PortProfileUpdate,
-    PortSpeedSetting,
+    ApplyPortsRequest, Command as CoreCommand, Controller, Device, MacAddress, PoeMode, PortMode,
+    PortProfileUpdate, PortSpeedSetting,
 };
 
 use crate::cli::args::{DevicesArgs, DevicesCommand, GlobalOpts, PoeArg, PortModeArg, SpeedArg};
@@ -227,6 +227,10 @@ pub(super) async fn handle(
             Ok(())
         }
 
+        DevicesCommand::PortsExport { device, all } => {
+            handle_ports_export(controller, &device, all).await
+        }
+
         DevicesCommand::PortSet {
             device,
             port,
@@ -236,11 +240,12 @@ pub(super) async fn handle(
             name,
             poe,
             speed,
+            from_file,
         } => {
-            handle_port_set(
+            dispatch_port_set(
                 controller,
                 global,
-                &device,
+                device,
                 port,
                 mode,
                 native_vlan,
@@ -248,9 +253,47 @@ pub(super) async fn handle(
                 name,
                 poe,
                 speed,
+                from_file,
             )
             .await
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_port_set(
+    controller: &Controller,
+    global: &GlobalOpts,
+    device: String,
+    port: Option<u32>,
+    mode: Option<PortModeArg>,
+    native_vlan: Option<String>,
+    tagged_vlans: Option<Vec<String>>,
+    name: Option<String>,
+    poe: Option<PoeArg>,
+    speed: Option<SpeedArg>,
+    from_file: Option<std::path::PathBuf>,
+) -> Result<(), CliError> {
+    if let Some(path) = from_file {
+        handle_port_set_from_file(controller, global, &device, &path).await
+    } else {
+        let port = port.ok_or_else(|| CliError::Validation {
+            field: "port-set".into(),
+            reason: "PORT_IDX is required (or pass --from-file)".into(),
+        })?;
+        handle_port_set(
+            controller,
+            global,
+            &device,
+            port,
+            mode,
+            native_vlan,
+            tagged_vlans,
+            name,
+            poe,
+            speed,
+        )
+        .await
     }
 }
 
@@ -313,6 +356,54 @@ async fn handle_port_set(
     controller.update_device_port(&mac, port, &update).await?;
     if !global.quiet {
         eprintln!("Port {port} updated on device {device}");
+    }
+    Ok(())
+}
+
+async fn handle_ports_export(
+    controller: &Controller,
+    device: &str,
+    all: bool,
+) -> Result<(), CliError> {
+    util::ensure_session_access(controller, "devices ports-export").await?;
+    let mac = util::resolve_device_mac(controller, device)?;
+
+    let request = controller.export_device_ports(&mac, all).await?;
+    let json = serde_json::to_string_pretty(&request)?;
+    println!("{json}");
+    Ok(())
+}
+
+async fn handle_port_set_from_file(
+    controller: &Controller,
+    global: &GlobalOpts,
+    device: &str,
+    path: &std::path::Path,
+) -> Result<(), CliError> {
+    util::ensure_session_access(controller, "devices port-set --from-file").await?;
+    let mac = util::resolve_device_mac(controller, device)?;
+
+    let request: ApplyPortsRequest = serde_json::from_value(util::read_json_file(path)?)?;
+    if request.ports.is_empty() {
+        return Err(CliError::Validation {
+            field: "ports".into(),
+            reason: "ports array is empty; nothing to apply".into(),
+        });
+    }
+
+    let summary = controller.apply_device_ports(&mac, &request).await?;
+    if !global.quiet {
+        let plural_applied = if summary.applied == 1 { "" } else { "s" };
+        let plural_reset = if summary.reset == 1 { "" } else { "s" };
+        eprintln!(
+            "Applied {applied} port override{plural_applied}{maybe_reset} on device {device}",
+            applied = summary.applied,
+            maybe_reset = if summary.reset > 0 {
+                format!(", reset {} port{plural_reset}", summary.reset)
+            } else {
+                String::new()
+            },
+        );
     }
     Ok(())
 }
