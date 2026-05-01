@@ -316,7 +316,11 @@ pub(super) async fn handle(
                 let preserved_set: std::collections::HashSet<&EntityId> =
                     preserved.iter().collect();
                 if let Some(overlap) = new_ids.iter().find(|id| preserved_set.contains(id)) {
-                    let side = if after_system { "before-system" } else { "after-system" };
+                    let side = if after_system {
+                        "before-system"
+                    } else {
+                        "after-system"
+                    };
                     return Err(CliError::Validation {
                         field: "set".into(),
                         reason: format!(

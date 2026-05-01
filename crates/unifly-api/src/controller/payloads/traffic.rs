@@ -2,9 +2,11 @@ use crate::command::requests::{PortSpec, TrafficFilterSpec};
 use crate::core_error::CoreError;
 
 fn parse_port(value: &str) -> Result<u16, CoreError> {
-    value.parse::<u16>().map_err(|_| CoreError::ValidationFailed {
-        message: format!("invalid port number {value:?} (expected 0-65535)"),
-    })
+    value
+        .parse::<u16>()
+        .map_err(|_| CoreError::ValidationFailed {
+            message: format!("invalid port number {value:?} (expected 0-65535)"),
+        })
 }
 
 fn build_port_item_json(p: &str) -> Result<serde_json::Value, CoreError> {
