@@ -134,7 +134,7 @@ pub(in super::super) fn build_endpoint_json(
                 if let Some(port_spec) = ports {
                     v.as_object_mut()
                         .expect("json! produces object")
-                        .insert("portFilter".into(), build_port_filter_json(port_spec));
+                        .insert("portFilter".into(), build_port_filter_json(port_spec)?);
                 }
                 v
             }
@@ -221,7 +221,7 @@ mod tests {
                 match_opposite: false,
             },
         };
-        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let result = build_endpoint_json("zone-uuid", Some(&spec)).expect("build endpoint json");
         let tf = result.get("trafficFilter").expect("trafficFilter present");
         assert_eq!(tf.get("type").and_then(|v| v.as_str()), Some("PORT"));
         let pf = tf.get("portFilter").expect("portFilter present");
@@ -246,7 +246,7 @@ mod tests {
             match_opposite: false,
             ports: None,
         };
-        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let result = build_endpoint_json("zone-uuid", Some(&spec)).expect("build endpoint json");
         let tf = result.get("trafficFilter").expect("trafficFilter present");
         assert_eq!(tf.get("type").and_then(|v| v.as_str()), Some("IP_ADDRESS"));
         let ipf = tf.get("ipAddressFilter").expect("ipAddressFilter present");
