@@ -565,6 +565,7 @@ pub struct CreateFirewallGroupRequest {
     pub name: String,
     #[serde(default = "default_port_group")]
     pub group_type: FirewallGroupType,
+    #[serde(alias = "members")]
     pub group_members: Vec<String>,
 }
 
@@ -576,15 +577,16 @@ fn default_port_group() -> FirewallGroupType {
 pub struct UpdateFirewallGroupRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "members")]
     pub group_members: Option<Vec<String>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CreateAclRuleRequest, CreateFirewallPolicyRequest, PortSpec, TrafficFilterSpec,
-        UpdateAclRuleRequest, UpdateFirewallPolicyRequest,
+        CreateAclRuleRequest, CreateFirewallGroupRequest, CreateFirewallPolicyRequest, PortSpec,
+        TrafficFilterSpec, UpdateAclRuleRequest, UpdateFirewallGroupRequest,
+        UpdateFirewallPolicyRequest,
     };
     use crate::model::FirewallAction;
 
@@ -920,6 +922,36 @@ mod tests {
         .expect("update group shorthand should deserialize");
 
         assert_eq!(req.dst_port_group.as_deref(), Some("HA"));
+    }
+
+    /// Firewall-group `--from-file` JSON should accept `members` (mirroring
+    /// the CLI flag name) as well as the wire-level `group_members`.
+    /// Otherwise serde silently drops the CLI-style field and a file
+    /// written from `--help` output PUTs an unchanged group while
+    /// reporting success.
+    #[test]
+    fn create_firewall_group_request_accepts_members_alias() {
+        let req: CreateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
+            "name": "HA",
+            "members": ["80", "8000-8002"]
+        }))
+        .expect("members alias should deserialize");
+
+        assert_eq!(req.name, "HA");
+        assert_eq!(req.group_members, vec!["80", "8000-8002"]);
+    }
+
+    #[test]
+    fn update_firewall_group_request_accepts_members_alias() {
+        let req: UpdateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
+            "members": ["80", "443"]
+        }))
+        .expect("members alias should deserialize");
+
+        assert_eq!(
+            req.group_members.as_deref(),
+            Some(&["80".into(), "443".into()][..])
+        );
     }
 
     // ── TrafficFilterSpec matching list variants ───────────────────
