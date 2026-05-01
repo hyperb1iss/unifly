@@ -76,48 +76,42 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 serde_json::to_value(&existing.destination).unwrap_or_default()
             };
 
-            let action = if update.action.is_some() || update.allow_return_traffic.is_some() {
-                // Determine the action type to send. If the user supplied
-                // `update.action`, use it. Otherwise inspect the existing
-                // policy's wire-level action type and pass it through —
-                // including `DROP` (the legacy block alias from older
-                // unifly versions, normalized to `BLOCK` here) and any
-                // other unrecognized type. Falling back to `ALLOW` would
-                // silently turn a block rule into an allow rule.
-                let action_type: String = if let Some(action) = update.action {
-                    match action {
-                        FirewallAction::Allow => "ALLOW",
-                        FirewallAction::Block => "BLOCK",
-                        FirewallAction::Reject => "REJECT",
-                    }
-                    .to_owned()
-                } else {
-                    let existing_type = existing
-                        .action
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("ALLOW");
-                    if existing_type == "DROP" {
-                        "BLOCK".to_owned()
-                    } else {
-                        existing_type.to_owned()
-                    }
-                };
-
-                if action_type == "ALLOW" {
-                    let allow_return = update.allow_return_traffic.unwrap_or_else(|| {
-                        existing
-                            .action
-                            .get("allowReturnTraffic")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(true)
-                    });
-                    serde_json::json!({ "type": action_type, "allowReturnTraffic": allow_return })
-                } else {
-                    serde_json::json!({ "type": action_type })
+            // Always reconstruct the action payload so that legacy `DROP`
+            // values from older unifly versions are normalized to `BLOCK`
+            // even when the caller did not touch the action field. Echoing
+            // back `existing.action` verbatim would re-send `DROP`, which
+            // the integration API rejects.
+            let action_type: String = if let Some(action) = update.action {
+                match action {
+                    FirewallAction::Allow => "ALLOW",
+                    FirewallAction::Block => "BLOCK",
+                    FirewallAction::Reject => "REJECT",
                 }
+                .to_owned()
             } else {
-                existing.action
+                let existing_type = existing
+                    .action
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ALLOW");
+                if existing_type == "DROP" {
+                    "BLOCK".to_owned()
+                } else {
+                    existing_type.to_owned()
+                }
+            };
+
+            let action = if action_type == "ALLOW" {
+                let allow_return = update.allow_return_traffic.unwrap_or_else(|| {
+                    existing
+                        .action
+                        .get("allowReturnTraffic")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true)
+                });
+                serde_json::json!({ "type": action_type, "allowReturnTraffic": allow_return })
+            } else {
+                serde_json::json!({ "type": action_type })
             };
 
             let ip_protocol_scope = if let Some(ref version) = update.ip_version {
