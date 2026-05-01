@@ -11,8 +11,9 @@ use crate::cli::error::CliError;
 use crate::cli::output;
 
 use super::render::{
-    detail, device_row, device_tag_identity, device_tag_row, enrich_with_clients,
-    enriched_port_row, pending_device_identity, pending_device_row, port_row, stats_detail,
+    build_last_seen_markers, detail, device_row, device_tag_identity, device_tag_row,
+    enrich_with_clients, enriched_port_row, inject_last_seen_markers, pending_device_identity,
+    pending_device_row, port_row, stats_detail,
 };
 
 fn find_device(controller: &Controller, needle: &str) -> Option<Arc<Device>> {
@@ -218,9 +219,11 @@ pub(super) async fn handle(
             with_clients,
         } => handle_ports(controller, global, &painter, &device, with_clients).await,
 
-        DevicesCommand::PortsExport { device, all } => {
-            handle_ports_export(controller, &device, all).await
-        }
+        DevicesCommand::PortsExport {
+            device,
+            all,
+            with_clients,
+        } => handle_ports_export(controller, &device, all, with_clients).await,
 
         DevicesCommand::PortSet {
             device,
@@ -387,13 +390,24 @@ async fn handle_ports_export(
     controller: &Controller,
     device: &str,
     all: bool,
+    with_clients: bool,
 ) -> Result<(), CliError> {
     util::ensure_session_access(controller, "devices ports-export").await?;
     let mac = util::resolve_device_mac(controller, device)?;
 
     let request = controller.export_device_ports(&mac, all).await?;
     let json = serde_json::to_string_pretty(&request)?;
-    println!("{json}");
+    let output = if with_clients {
+        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%MZ").to_string();
+        let clients = controller.clients_snapshot();
+        let markers = build_last_seen_markers(&clients, &mac, &timestamp);
+        inject_last_seen_markers(&json, &markers)
+    } else {
+        let mut s = json;
+        s.push('\n');
+        s
+    };
+    print!("{output}");
     Ok(())
 }
 

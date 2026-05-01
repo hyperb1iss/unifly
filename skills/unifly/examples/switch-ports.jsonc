@@ -11,7 +11,7 @@
       "mode": "trunk",
       "native_vlan": "infra",
       "tagged_all": true,
-      "poe": "off"
+      "poe": "off",
     },
 
     // Access port pinned to a specific VLAN, PoE auto-negotiated.
@@ -20,7 +20,7 @@
       "name": "mac-mini",
       "mode": "access",
       "native_vlan": "personal",
-      "poe": "auto"
+      "poe": "auto",
     },
 
     // Restricted trunk — explicit list of tagged networks. Empty
@@ -31,13 +31,13 @@
       "name": "lab-switch",
       "mode": "trunk",
       "native_vlan": "infra",
-      "tagged_vlans": ["personal", "iot"]
+      "tagged_vlans": ["personal", "iot"],
     },
 
     // Drop the override on port 16 — controller defaults take over.
     {
       "index": 16,
-      "reset": true
-    }
-  ]
+      "reset": true,
+    },
+  ],
 }

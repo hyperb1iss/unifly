@@ -44,8 +44,8 @@ unifly devices remove <id|mac>
 unifly devices restart <id|mac>
 unifly devices locate <mac> [--on true|false]
 unifly devices port-cycle <id|mac> <port_idx>
-unifly devices ports <id|mac>
-unifly devices ports-export <id|mac> [--all]
+unifly devices ports <id|mac> [--with-clients]
+unifly devices ports-export <id|mac> [--all] [--with-clients]
 unifly devices port-set <id|mac> [<port_idx>] [--mode access|trunk|mirror]
     [--native-vlan <network>] [--tagged-vlans <network,...>]
     [--name <label>] [--poe on|off|auto|pasv24|passthrough]
@@ -95,6 +95,15 @@ unifly devices tags [subcommands]
   just `index` and `name` for ports that have no override). Round-trip
   is non-destructive: `ports-export | port-set -F` preserves all
   per-port settings.
+- `--with-clients` (on `ports` and `ports-export`): annotates each port
+  with the wired clients currently observed on it. On `ports`, adds a
+  `connected_clients` array (mac, ip, name, vlan_id) in JSON output and
+  a count column in the table view. On `ports-export`, prepends
+  `// last-seen <ISO8601>: <mac> (<name>)` comment lines before each
+  port's `{`. Stable parse anchor: `// last-seen ` (with trailing
+  space). Markers are sorted by MAC; one timestamp per export run.
+  Useful for drift detection — re-export and `git diff` to see when
+  the client on a labelled port has changed.
 - All device _commands_ (adopt, remove, restart, locate, port-cycle,
   port-set, upgrade, provision, speedtest) require Session API access.
   Only `list`/`get`/`ports` read paths are Hybrid-safe; `port-set`

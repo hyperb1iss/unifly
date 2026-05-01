@@ -21,11 +21,6 @@
     "wifi"
   ],
   "category": "developer-tools",
-  "tags": [
-    "networking",
-    "cli",
-    "tui",
-    "infrastructure"
-  ],
+  "tags": ["networking", "cli", "tui", "infrastructure"],
   "skills": "./skills/"
 }

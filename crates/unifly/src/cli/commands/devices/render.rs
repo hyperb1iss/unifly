@@ -464,6 +464,89 @@ pub(super) fn enrich_with_clients(
         .collect()
 }
 
+// ── ports-export --with-clients marker injection ───────────────────
+
+/// Build a per-port-index map of `// last-seen ...` comment lines
+/// suitable for injection into the JSONC output of `ports-export`.
+///
+/// `timestamp` is shared across all entries (one timestamp per export
+/// run, for diff stability). Markers within a port are sorted by MAC.
+pub(super) fn build_last_seen_markers(
+    clients: &[Arc<Client>],
+    device_mac: &unifly_api::MacAddress,
+    timestamp: &str,
+) -> std::collections::HashMap<u32, Vec<String>> {
+    use std::collections::HashMap;
+
+    let mut by_port: HashMap<u32, Vec<(String, Option<String>)>> = HashMap::new();
+    for client in clients {
+        let Some(uplink) = client.uplink_device_mac.as_ref() else {
+            continue;
+        };
+        if uplink.as_str() != device_mac.as_str() {
+            continue;
+        }
+        let Some(port) = client.switch_port else {
+            continue;
+        };
+        let mac = client.mac.to_string();
+        let name = client.name.clone().or_else(|| client.hostname.clone());
+        by_port.entry(port).or_default().push((mac, name));
+    }
+
+    by_port
+        .into_iter()
+        .map(|(port, mut entries)| {
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let lines = entries
+                .into_iter()
+                .map(|(mac, name)| match name {
+                    Some(n) => format!("// last-seen {timestamp}: {mac} ({n})"),
+                    None => format!("// last-seen {timestamp}: {mac}"),
+                })
+                .collect();
+            (port, lines)
+        })
+        .collect()
+}
+
+/// Inject `// last-seen ...` comment lines into `serde_json::to_string_pretty`
+/// output. Looks for each port object's opening `{` (detected by an
+/// immediately-following `"index": N,` field) and prepends the matching
+/// markers at the same indent.
+pub(super) fn inject_last_seen_markers(
+    pretty_json: &str,
+    markers: &std::collections::HashMap<u32, Vec<String>>,
+) -> String {
+    let lines: Vec<&str> = pretty_json.lines().collect();
+    let mut out = String::with_capacity(pretty_json.len());
+
+    for i in 0..lines.len() {
+        let line = lines[i];
+        if line.trim_end().ends_with('{')
+            && let Some(next) = lines.get(i + 1)
+            && let Some(idx) = parse_index_field(next.trim_start())
+            && let Some(comments) = markers.get(&idx)
+        {
+            let indent_len = line.len() - line.trim_start().len();
+            let indent = &line[..indent_len];
+            for comment in comments {
+                out.push_str(indent);
+                out.push_str(comment);
+                out.push('\n');
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn parse_index_field(s: &str) -> Option<u32> {
+    s.strip_prefix("\"index\":")
+        .and_then(|rest| rest.trim_start().trim_end_matches(',').trim().parse().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{pending_device_identity, pending_device_row};
@@ -521,5 +604,97 @@ mod tests {
             "ipAddress": "10.0.0.20"
         }));
         assert_eq!(identity, "aa:bb:cc:dd:ee:ff");
+    }
+
+    #[test]
+    fn inject_last_seen_prepends_markers_at_port_indent() {
+        use std::collections::HashMap;
+
+        use super::inject_last_seen_markers;
+
+        let pretty = "{
+  \"ports\": [
+    {
+      \"index\": 1,
+      \"name\": \"uplink\"
+    },
+    {
+      \"index\": 9,
+      \"name\": \"mac-mini\"
+    }
+  ]
+}";
+        let mut markers: HashMap<u32, Vec<String>> = HashMap::new();
+        markers.insert(
+            9,
+            vec!["// last-seen 2026-05-01T14:22Z: aa:bb:cc:dd:ee:ff (Mac Mini)".into()],
+        );
+
+        let out = inject_last_seen_markers(pretty, &markers);
+        // Marker is inserted before the port-9 `{`, at the same indent.
+        let expected = "{
+  \"ports\": [
+    {
+      \"index\": 1,
+      \"name\": \"uplink\"
+    },
+    // last-seen 2026-05-01T14:22Z: aa:bb:cc:dd:ee:ff (Mac Mini)
+    {
+      \"index\": 9,
+      \"name\": \"mac-mini\"
+    }
+  ]
+}
+";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn inject_last_seen_emits_one_line_per_client() {
+        use std::collections::HashMap;
+
+        use super::inject_last_seen_markers;
+
+        let pretty = "{
+  \"ports\": [
+    {
+      \"index\": 12,
+      \"name\": \"trunk\"
+    }
+  ]
+}";
+        let mut markers: HashMap<u32, Vec<String>> = HashMap::new();
+        markers.insert(
+            12,
+            vec![
+                "// last-seen 2026-05-01T14:22Z: 11:22:33:44:55:66 (sonos)".into(),
+                "// last-seen 2026-05-01T14:22Z: aa:bb:cc:dd:ee:ff".into(),
+            ],
+        );
+        let out = inject_last_seen_markers(pretty, &markers);
+        assert!(out.contains("// last-seen 2026-05-01T14:22Z: 11:22:33:44:55:66 (sonos)"));
+        assert!(out.contains("// last-seen 2026-05-01T14:22Z: aa:bb:cc:dd:ee:ff"));
+        // Both markers appear before the port-12 opening brace.
+        let sonos_pos = out.find("11:22:33:44:55:66").expect("marker present");
+        let port_pos = out.find("\"index\": 12").expect("port object present");
+        assert!(sonos_pos < port_pos);
+    }
+
+    #[test]
+    fn inject_last_seen_is_noop_when_port_has_no_markers() {
+        use std::collections::HashMap;
+
+        use super::inject_last_seen_markers;
+
+        let pretty = "{
+  \"ports\": [
+    {
+      \"index\": 1
+    }
+  ]
+}";
+        let markers: HashMap<u32, Vec<String>> = HashMap::new();
+        let out = inject_last_seen_markers(pretty, &markers);
+        assert_eq!(out, format!("{pretty}\n"));
     }
 }

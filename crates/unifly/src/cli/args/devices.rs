@@ -117,6 +117,15 @@ pub enum DevicesCommand {
         /// Emit every port, including those without an override entry
         #[arg(long)]
         all: bool,
+
+        /// Annotate each port with `// last-seen <ISO8601>: <mac> (<name>)`
+        /// comments for currently-connected wired clients. Useful for
+        /// drift detection — the comment block records which client was
+        /// observed on each labelled port at export time. The marker
+        /// prefix `// last-seen ` is a stable parse anchor (don't
+        /// hand-edit those lines).
+        #[arg(long)]
+        with_clients: bool,
     },
 
     /// Configure a switch port (session API)
