@@ -428,17 +428,28 @@ impl Controller {
                 .clone()
                 .ok_or(CoreError::ControllerDisconnected)?;
 
-            let (devices_res, clients_res, events_res, sites_res) = tokio::join!(
+            let (devices_res, clients_res, events_res, sites_res, fwg_res) = tokio::join!(
                 session.list_devices(),
                 session.list_clients(),
                 session.list_events(Some(100)),
                 session.list_sites(),
+                session.list_firewall_groups(),
             );
 
             let devices: Vec<Device> = devices_res?.into_iter().map(Device::from).collect();
             let clients: Vec<Client> = clients_res?.into_iter().map(Client::from).collect();
             let events: Vec<Event> = events_res?.into_iter().map(Event::from).collect();
             let sites: Vec<Site> = sites_res?.into_iter().map(Site::from).collect();
+            let firewall_groups = match fwg_res {
+                Ok(raw) => raw
+                    .iter()
+                    .filter_map(crate::convert::firewall_group_from_session)
+                    .collect(),
+                Err(error) => {
+                    warn!(error = %error, "firewall group fetch failed (non-fatal)");
+                    Vec::new()
+                }
+            };
             let fresh_events = unseen_events(self.store(), &events);
 
             self.inner
@@ -457,7 +468,7 @@ impl Controller {
                     sites,
                     events,
                     traffic_matching_lists: Vec::new(),
-                    firewall_groups: Vec::new(),
+                    firewall_groups,
                 });
 
             for event in fresh_events {
