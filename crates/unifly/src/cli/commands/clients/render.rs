@@ -55,6 +55,9 @@ pub(super) fn detail(client: &Arc<Client>) -> String {
         format!("Guest:     {}", client.is_guest),
         format!("Blocked:   {}", client.blocked),
     ];
+    if let Some(port) = client.switch_port {
+        lines.push(format!("Switch Port: {port}"));
+    }
     if client.use_fixedip {
         lines.push(format!(
             "Fixed IP:  {}",

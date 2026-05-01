@@ -313,6 +313,10 @@ impl Controller {
                             };
                             client.uplink_device_mac = uplink.map(MacAddress::new);
                         }
+                        if client.switch_port.is_none() && session_client.is_wired.unwrap_or(true) {
+                            client.switch_port =
+                                session_client.sw_port.and_then(|p| u32::try_from(p).ok());
+                        }
                         merged += 1;
                     }
                 }

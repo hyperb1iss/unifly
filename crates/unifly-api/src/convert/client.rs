@@ -63,6 +63,12 @@ impl From<SessionClientEntry> for Client {
             c.ap_mac.as_deref().map(MacAddress::new)
         };
 
+        let switch_port = if is_wired {
+            c.sw_port.and_then(|port| u32::try_from(port).ok())
+        } else {
+            None
+        };
+
         let connected_at = c.uptime.and_then(|secs| {
             let duration = chrono::Duration::seconds(secs);
             Utc::now().checked_sub_signed(duration)
@@ -78,6 +84,7 @@ impl From<SessionClientEntry> for Client {
             connected_at,
             uplink_device_id: None,
             uplink_device_mac,
+            switch_port,
             network_id: c.network_id.map(EntityId::from),
             vlan: None,
             wireless,
@@ -126,6 +133,7 @@ impl From<integration_types::ClientResponse> for Client {
             connected_at: c.connected_at.as_deref().and_then(parse_iso),
             uplink_device_id: None,
             uplink_device_mac: None,
+            switch_port: None,
             network_id: None,
             vlan: None,
             wireless: None,
@@ -155,5 +163,33 @@ mod tests {
         assert_eq!(channel_to_frequency(Some(36)), Some(5.0));
         assert_eq!(channel_to_frequency(Some(149)), Some(5.0));
         assert_eq!(channel_to_frequency(None), None);
+    }
+
+    #[test]
+    fn wired_session_client_carries_switch_port() {
+        let entry: SessionClientEntry = serde_json::from_value(serde_json::json!({
+            "_id": "abc",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "is_wired": true,
+            "sw_mac": "11:22:33:44:55:66",
+            "sw_port": 9
+        }))
+        .expect("deserialize");
+        let client: Client = entry.into();
+        assert_eq!(client.switch_port, Some(9));
+        assert_eq!(client.client_type, ClientType::Wired);
+    }
+
+    #[test]
+    fn wireless_session_client_drops_switch_port() {
+        let entry: SessionClientEntry = serde_json::from_value(serde_json::json!({
+            "_id": "abc",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "is_wired": false,
+            "sw_port": 9
+        }))
+        .expect("deserialize");
+        let client: Client = entry.into();
+        assert!(client.switch_port.is_none());
     }
 }

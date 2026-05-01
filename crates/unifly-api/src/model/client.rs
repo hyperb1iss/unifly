@@ -57,6 +57,10 @@ pub struct Client {
     pub connected_at: Option<DateTime<Utc>>,
     pub uplink_device_id: Option<EntityId>,
     pub uplink_device_mac: Option<MacAddress>,
+    /// 1-based switch port index for wired clients, matching `devices ports`
+    /// indexing. `None` for wireless clients and any wired client where the
+    /// controller didn't report `sw_port`.
+    pub switch_port: Option<u32>,
     pub network_id: Option<EntityId>,
     pub vlan: Option<u16>,
 
