@@ -18,11 +18,11 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 FirewallAction::Reject => "REJECT",
             };
             let source =
-                build_endpoint_json(&req.source_zone_id.to_string(), req.source_filter.as_ref());
+                build_endpoint_json(&req.source_zone_id.to_string(), req.source_filter.as_ref())?;
             let destination = build_endpoint_json(
                 &req.destination_zone_id.to_string(),
                 req.destination_filter.as_ref(),
-            );
+            )?;
             let ip_version = req.ip_version.as_deref().unwrap_or("IPV4_AND_IPV6");
             let action = if req.action == FirewallAction::Allow {
                 serde_json::json!({ "type": action_str, "allowReturnTraffic": req.allow_return_traffic })
@@ -59,7 +59,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                     .and_then(|s| s.zone_id)
                     .map(|u| u.to_string())
                     .unwrap_or_default();
-                build_endpoint_json(&zone_id, Some(spec))
+                build_endpoint_json(&zone_id, Some(spec))?
             } else {
                 serde_json::to_value(&existing.source).unwrap_or_default()
             };
@@ -71,7 +71,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                     .and_then(|d| d.zone_id)
                     .map(|u| u.to_string())
                     .unwrap_or_default();
-                build_endpoint_json(&zone_id, Some(spec))
+                build_endpoint_json(&zone_id, Some(spec))?
             } else {
                 serde_json::to_value(&existing.destination).unwrap_or_default()
             };

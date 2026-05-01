@@ -1,6 +1,31 @@
 use crate::command::requests::{PortSpec, TrafficFilterSpec};
+use crate::core_error::CoreError;
 
-fn build_port_filter_json(spec: &PortSpec) -> serde_json::Value {
+fn parse_port(value: &str) -> Result<u16, CoreError> {
+    value.parse::<u16>().map_err(|_| CoreError::ValidationFailed {
+        message: format!("invalid port number {value:?} (expected 0-65535)"),
+    })
+}
+
+fn build_port_item_json(p: &str) -> Result<serde_json::Value, CoreError> {
+    if p.contains('-') {
+        let mut parts = p.splitn(2, '-');
+        let start_str = parts.next().unwrap_or("");
+        let end_str = parts.next().unwrap_or("");
+        let start = parse_port(start_str)?;
+        let end = parse_port(end_str)?;
+        Ok(serde_json::json!({
+            "type": "PORT_NUMBER_RANGE",
+            "startPort": start,
+            "endPort": end,
+        }))
+    } else {
+        let port = parse_port(p)?;
+        Ok(serde_json::json!({ "type": "PORT_NUMBER", "value": port }))
+    }
+}
+
+fn build_port_filter_json(spec: &PortSpec) -> Result<serde_json::Value, CoreError> {
     match spec {
         PortSpec::Values {
             items,
@@ -8,43 +33,29 @@ fn build_port_filter_json(spec: &PortSpec) -> serde_json::Value {
         } => {
             let json_items: Vec<serde_json::Value> = items
                 .iter()
-                .map(|p| {
-                    if p.contains('-') {
-                        let range: Vec<&str> = p.splitn(2, '-').collect();
-                        let start: u16 = range[0].parse().unwrap_or(0);
-                        let end: u16 = range.get(1).unwrap_or(&"0").parse().unwrap_or(0);
-                        serde_json::json!({
-                            "type": "PORT_NUMBER_RANGE",
-                            "startPort": start,
-                            "endPort": end,
-                        })
-                    } else {
-                        let port: u16 = p.parse().unwrap_or(0);
-                        serde_json::json!({ "type": "PORT_NUMBER", "value": port })
-                    }
-                })
-                .collect();
-            serde_json::json!({
+                .map(|p| build_port_item_json(p))
+                .collect::<Result<_, _>>()?;
+            Ok(serde_json::json!({
                 "type": "PORTS",
                 "items": json_items,
                 "matchOpposite": match_opposite,
-            })
+            }))
         }
         PortSpec::MatchingList {
             list_id,
             match_opposite,
-        } => serde_json::json!({
+        } => Ok(serde_json::json!({
             "type": "TRAFFIC_MATCHING_LIST",
             "trafficMatchingListId": list_id,
             "matchOpposite": match_opposite,
-        }),
+        })),
     }
 }
 
 pub(in super::super) fn build_endpoint_json(
     zone_id: &str,
     filter: Option<&TrafficFilterSpec>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, CoreError> {
     let mut obj = serde_json::json!({ "zoneId": zone_id });
 
     if let Some(spec) = filter {
@@ -64,7 +75,7 @@ pub(in super::super) fn build_endpoint_json(
                 if let Some(ports) = ports {
                     v.as_object_mut()
                         .expect("json! produces object")
-                        .insert("portFilter".into(), build_port_filter_json(ports));
+                        .insert("portFilter".into(), build_port_filter_json(ports)?);
                 }
                 v
             }
@@ -97,13 +108,13 @@ pub(in super::super) fn build_endpoint_json(
                 if let Some(ports) = ports {
                     v.as_object_mut()
                         .expect("json! produces object")
-                        .insert("portFilter".into(), build_port_filter_json(ports));
+                        .insert("portFilter".into(), build_port_filter_json(ports)?);
                 }
                 v
             }
             TrafficFilterSpec::Port { ports } => serde_json::json!({
                 "type": "PORT",
-                "portFilter": build_port_filter_json(ports),
+                "portFilter": build_port_filter_json(ports)?,
             }),
         };
         obj.as_object_mut()
@@ -111,7 +122,7 @@ pub(in super::super) fn build_endpoint_json(
             .insert("trafficFilter".into(), traffic_filter);
     }
 
-    obj
+    Ok(obj)
 }
 
 pub(in super::super) fn traffic_matching_list_items(
@@ -134,6 +145,7 @@ pub(in super::super) fn traffic_matching_list_items(
 mod tests {
     use super::{build_endpoint_json, traffic_matching_list_items};
     use crate::command::requests::{PortSpec, TrafficFilterSpec};
+    use crate::core_error::CoreError;
     use serde_json::json;
 
     #[test]
@@ -153,7 +165,7 @@ mod tests {
                 match_opposite: false,
             }),
         };
-        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let result = build_endpoint_json("zone-uuid", Some(&spec)).expect("build endpoint json");
         let tf = result.get("trafficFilter").expect("trafficFilter present");
         assert_eq!(tf.get("type").and_then(|v| v.as_str()), Some("IP_ADDRESS"));
         // ipAddressFilter should be present
@@ -186,9 +198,32 @@ mod tests {
             match_opposite: false,
             ports: None,
         };
-        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let result = build_endpoint_json("zone-uuid", Some(&spec)).expect("build endpoint json");
         let tf = result.get("trafficFilter").expect("trafficFilter present");
         assert!(tf.get("portFilter").is_none());
+    }
+
+    #[test]
+    fn build_port_filter_json_rejects_invalid_port_number() {
+        let spec = PortSpec::Values {
+            items: vec!["abc".into()],
+            match_opposite: false,
+        };
+        let err = super::build_port_filter_json(&spec).expect_err("invalid port should error");
+        assert!(
+            matches!(err, CoreError::ValidationFailed { .. }),
+            "expected ValidationFailed, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn build_port_filter_json_rejects_invalid_port_range() {
+        let spec = PortSpec::Values {
+            items: vec!["80-abc".into()],
+            match_opposite: false,
+        };
+        let err = super::build_port_filter_json(&spec).expect_err("invalid range end should error");
+        assert!(matches!(err, CoreError::ValidationFailed { .. }));
     }
 
     /// Full round-trip: a JSONC-style payload using the new tagged PortSpec
@@ -219,7 +254,8 @@ mod tests {
         let wire = build_endpoint_json(
             "5888bc93-aaae-4242-ae2f-2050d76211fd",
             req.destination_filter.as_ref(),
-        );
+        )
+        .expect("build endpoint json");
 
         // Print so `cargo test -- --nocapture` shows the wire shape.
         eprintln!(
@@ -248,7 +284,7 @@ mod tests {
                 match_opposite: false,
             }),
         };
-        let result = build_endpoint_json("zone-uuid", Some(&spec));
+        let result = build_endpoint_json("zone-uuid", Some(&spec)).expect("build endpoint json");
         let port_filter = result["trafficFilter"]
             .get("portFilter")
             .expect("portFilter present");
