@@ -438,14 +438,15 @@ fn format_conn_count(conns: &[ConnectionSummary]) -> String {
     }
 }
 
-/// Pair each port profile with the clients and adopted devices observed
-/// on it. `device_mac` filters both snapshots to this switch.
-pub(super) fn enrich_with_connections(
-    profiles: &[PortProfile],
+/// Walk both snapshots, keep only entries uplinked to `device_mac`,
+/// and group them by switch port. Returned values include every field
+/// either consumer needs; `build_last_seen_markers` ignores the
+/// fields it doesn't render.
+fn group_connections_by_port(
     clients: &[Arc<Client>],
     devices: &[Arc<Device>],
     device_mac: &unifly_api::MacAddress,
-) -> Vec<EnrichedPortProfile> {
+) -> std::collections::HashMap<u32, Vec<ConnectionSummary>> {
     use std::collections::HashMap;
 
     let mut by_port: HashMap<u32, Vec<ConnectionSummary>> = HashMap::new();
@@ -495,6 +496,18 @@ pub(super) fn enrich_with_connections(
         });
     }
 
+    by_port
+}
+
+/// Pair each port profile with the clients and adopted devices observed
+/// on it. `device_mac` filters both snapshots to this switch.
+pub(super) fn enrich_with_connections(
+    profiles: &[PortProfile],
+    clients: &[Arc<Client>],
+    devices: &[Arc<Device>],
+    device_mac: &unifly_api::MacAddress,
+) -> Vec<EnrichedPortProfile> {
+    let mut by_port = group_connections_by_port(clients, devices, device_mac);
     profiles
         .iter()
         .cloned()
@@ -528,58 +541,18 @@ pub(super) fn build_last_seen_markers(
     device_mac: &unifly_api::MacAddress,
     timestamp: &str,
 ) -> std::collections::HashMap<u32, Vec<String>> {
-    use std::collections::HashMap;
-
-    type Entry = (ConnectionKind, String, Option<String>);
-    let mut by_port: HashMap<u32, Vec<Entry>> = HashMap::new();
-
-    for client in clients {
-        let Some(uplink) = client.uplink_device_mac.as_ref() else {
-            continue;
-        };
-        if uplink.as_str() != device_mac.as_str() {
-            continue;
-        }
-        let Some(port) = client.switch_port else {
-            continue;
-        };
-        let mac = client.mac.to_string();
-        let name = client.name.clone().or_else(|| client.hostname.clone());
-        by_port
-            .entry(port)
-            .or_default()
-            .push((ConnectionKind::Client, mac, name));
-    }
-
-    for device in devices {
-        let Some(uplink) = device.uplink_device_mac.as_ref() else {
-            continue;
-        };
-        if uplink.as_str() != device_mac.as_str() {
-            continue;
-        }
-        let Some(port) = device.uplink_port_idx else {
-            continue;
-        };
-        let mac = device.mac.to_string();
-        let name = device.name.clone();
-        by_port
-            .entry(port)
-            .or_default()
-            .push((ConnectionKind::Device, mac, name));
-    }
-
-    by_port
+    group_connections_by_port(clients, devices, device_mac)
         .into_iter()
-        .map(|(port, mut entries)| {
-            entries.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
+        .map(|(port, entries)| {
             let lines = entries
                 .into_iter()
-                .map(|(kind, mac, name)| {
-                    let kind = kind.as_str();
-                    match name {
-                        Some(n) => format!("// last-seen {timestamp}: {mac} ({n}, {kind})"),
-                        None => format!("// last-seen {timestamp}: {mac} ({kind})"),
+                .map(|conn| {
+                    let kind = conn.kind.as_str();
+                    match conn.name {
+                        Some(n) => {
+                            format!("// last-seen {timestamp}: {} ({n}, {kind})", conn.mac)
+                        }
+                        None => format!("// last-seen {timestamp}: {} ({kind})", conn.mac),
                     }
                 })
                 .collect();
