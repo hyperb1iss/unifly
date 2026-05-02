@@ -268,11 +268,19 @@ impl Controller {
         let networks = session.list_network_conf().await?;
 
         // Validate every entry and convert to (port_idx, op) before any
-        // mutation — bail out cleanly on the first invalid entry.
+        // mutation — bail out cleanly on the first invalid entry. A bare
+        // `{"index": N}` entry is the empty JSON Merge Patch — no
+        // fields, no `reset` — and is documented as a no-op. Skip it
+        // here so it doesn't materialize as a `{"port_idx": N}`
+        // override, which the controller would then fill with defaults
+        // (creating exactly the partial-override mess `--reset` exists
+        // to clean up).
         let mut ops: Vec<(u32, EntryOp)> = Vec::with_capacity(request.ports.len());
         for entry in &request.ports {
             let op = if entry.reset {
                 EntryOp::Reset
+            } else if entry_is_empty_patch(entry) {
+                continue;
             } else {
                 EntryOp::Update(entry_to_update(entry, &networks)?)
             };
@@ -484,6 +492,19 @@ fn override_to_entry(index: u32, raw: &Value) -> ApplyPortEntry {
 enum EntryOp {
     Reset,
     Update(PortProfileUpdate),
+}
+
+/// True iff the entry has no mergeable fields and no `reset` flag —
+/// a bare `{"index": N}` entry is the empty JSON Merge Patch.
+fn entry_is_empty_patch(entry: &ApplyPortEntry) -> bool {
+    entry.name.is_none()
+        && entry.mode.is_none()
+        && entry.native_network_id.is_none()
+        && entry.tagged_network_ids.is_none()
+        && entry.tagged_all.is_none()
+        && entry.poe.is_none()
+        && entry.speed.is_none()
+        && !entry.reset
 }
 
 fn entry_to_update(
@@ -1234,6 +1255,42 @@ mod tests {
         };
         let err = entry_to_update(&entry, &networks).expect_err("invalid mode should error");
         assert!(matches!(err, CoreError::ValidationFailed { .. }));
+    }
+
+    #[test]
+    fn entry_is_empty_patch_skips_bare_index_entries() {
+        let bare = ApplyPortEntry {
+            index: 4,
+            ..ApplyPortEntry::default()
+        };
+        assert!(entry_is_empty_patch(&bare));
+
+        let with_name = ApplyPortEntry {
+            index: 4,
+            name: Some("foo".into()),
+            ..ApplyPortEntry::default()
+        };
+        assert!(!entry_is_empty_patch(&with_name));
+
+        let reset = ApplyPortEntry {
+            index: 4,
+            reset: true,
+            ..ApplyPortEntry::default()
+        };
+        assert!(
+            !entry_is_empty_patch(&reset),
+            "reset is a real instruction, not an empty patch"
+        );
+
+        let cleared_tagged = ApplyPortEntry {
+            index: 4,
+            tagged_network_ids: Some(vec![]),
+            ..ApplyPortEntry::default()
+        };
+        assert!(
+            !entry_is_empty_patch(&cleared_tagged),
+            "Some(vec![]) is the explicit clear instruction"
+        );
     }
 
     #[test]
