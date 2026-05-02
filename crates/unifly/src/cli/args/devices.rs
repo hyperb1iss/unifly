@@ -137,8 +137,14 @@ pub enum DevicesCommand {
         /// Device ID (UUID) or MAC address
         device: String,
 
-        /// Port index to configure (1-based). Omit when `--from-file` is set.
-        #[arg(value_name = "PORT_IDX", required_unless_present = "from_file")]
+        /// Port index to configure (1-based). Required for single-port
+        /// updates; mutually exclusive with `--from-file` (which scopes
+        /// to the `index` of each entry in the file).
+        #[arg(
+            value_name = "PORT_IDX",
+            required_unless_present = "from_file",
+            conflicts_with = "from_file"
+        )]
         port: Option<u32>,
 
         /// Operational mode
