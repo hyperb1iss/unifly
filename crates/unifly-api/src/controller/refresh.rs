@@ -305,15 +305,18 @@ impl Controller {
                             let session_client: Client = Client::from((*session_client).clone());
                             client.wireless = session_client.wireless;
                         }
+                        // Match `convert/client.rs`'s default: an absent
+                        // `is_wired` means wireless, not wired.
+                        let session_is_wired = session_client.is_wired.unwrap_or(false);
                         if client.uplink_device_mac.is_none() {
-                            let uplink = if session_client.is_wired.unwrap_or(true) {
+                            let uplink = if session_is_wired {
                                 session_client.sw_mac.as_deref()
                             } else {
                                 session_client.ap_mac.as_deref()
                             };
                             client.uplink_device_mac = uplink.map(MacAddress::new);
                         }
-                        if client.switch_port.is_none() && session_client.is_wired.unwrap_or(true) {
+                        if client.switch_port.is_none() && session_is_wired {
                             client.switch_port =
                                 session_client.sw_port.and_then(|p| u32::try_from(p).ok());
                         }
