@@ -432,7 +432,18 @@ fn override_to_entry(index: u32, raw: &Value) -> ApplyPortEntry {
                 .filter_map(|v| v.as_str().map(str::to_owned))
                 .collect()
         });
-    let tagged_network_ids = tagged_list.filter(|list| !list.is_empty());
+    // For custom trunks, preserve the explicit list — including
+    // `Some(vec![])`, which is how a "trunk that carries only its
+    // native VLAN" round-trips. Dropping it to None makes the file
+    // re-apply as `mode: trunk` with no list, which `apply_update`
+    // treats as `tagged_vlan_mgmt=auto` — silently broadening the
+    // port to all VLANs. For non-custom modes (auto/block_all) the
+    // list is irrelevant, so drop empties to keep the file compact.
+    let tagged_network_ids = if tagged_mgmt == Some("custom") {
+        tagged_list
+    } else {
+        tagged_list.filter(|list| !list.is_empty())
+    };
 
     let tagged_all = if mode.as_deref() == Some("trunk") && tagged_mgmt == Some("auto") {
         Some(true)
@@ -1136,6 +1147,40 @@ mod tests {
         let entry = override_to_entry(2, &raw);
         assert_eq!(entry.mode.as_deref(), Some("access"));
         assert!(entry.tagged_all.is_none());
+    }
+
+    #[test]
+    fn override_to_entry_preserves_empty_custom_trunk_tagged_list() {
+        // A custom trunk with no extra tags (only native VLAN) MUST
+        // round-trip as `Some(vec![])`. Dropping it to None re-applies
+        // as `tagged_vlan_mgmt=auto`, silently broadening the port.
+        let raw = json!({
+            "port_idx": 5,
+            "op_mode": "switch",
+            "tagged_vlan_mgmt": "custom",
+            "native_networkconf_id": "n1",
+            "tagged_networkconf_ids": []
+        });
+        let entry = override_to_entry(5, &raw);
+        assert_eq!(entry.mode.as_deref(), Some("trunk"));
+        assert_eq!(entry.tagged_network_ids.as_deref(), Some(&[][..]));
+        assert!(entry.tagged_all.is_none());
+    }
+
+    #[test]
+    fn override_to_entry_drops_empty_list_for_auto_trunks() {
+        // For auto-mode trunks (carries all VLANs), the list isn't
+        // semantically meaningful, so empty is dropped to keep the
+        // exported file compact.
+        let raw = json!({
+            "port_idx": 6,
+            "op_mode": "switch",
+            "tagged_vlan_mgmt": "auto",
+            "tagged_networkconf_ids": []
+        });
+        let entry = override_to_entry(6, &raw);
+        assert!(entry.tagged_network_ids.is_none());
+        assert_eq!(entry.tagged_all, Some(true));
     }
 
     #[test]
