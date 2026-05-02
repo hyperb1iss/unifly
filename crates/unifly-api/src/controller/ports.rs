@@ -909,7 +909,13 @@ fn apply_update(target: &mut Map<String, Value>, update: &PortProfileUpdate) {
 
     if let Some(tagged) = &update.tagged_network_ids {
         target.insert("tagged_networkconf_ids".into(), json!(tagged));
-        if update.mode.is_some_and(|m| matches!(m, PortMode::Trunk)) {
+        // Supplying a tagged list always implies custom-trunk semantics
+        // — `auto` (all VLANs) and `block_all` (access) both ignore the
+        // list, so the user's request would silently no-op without this.
+        // Skip when the same update explicitly switches to Access or
+        // Mirror, since those branches above already wrote the
+        // appropriate `tagged_vlan_mgmt` value.
+        if !matches!(update.mode, Some(PortMode::Access | PortMode::Mirror)) {
             target.insert("tagged_vlan_mgmt".into(), json!("custom"));
         }
     }
@@ -1069,6 +1075,41 @@ mod tests {
         );
         assert_eq!(target.get("tagged_vlan_mgmt"), Some(&json!("custom")));
         assert_eq!(target.get("tagged_networkconf_ids"), Some(&json!(["n2"])));
+    }
+
+    #[test]
+    fn apply_update_tagged_list_alone_marks_custom() {
+        // Without this fix, `--tagged-vlans foo` (no `--mode`) on an
+        // existing auto-trunk left tagged_vlan_mgmt=auto, so the
+        // restriction was silently a no-op.
+        let mut target = Map::new();
+        target.insert("port_idx".into(), json!(10));
+        target.insert("tagged_vlan_mgmt".into(), json!("auto"));
+        apply_update(
+            &mut target,
+            &PortProfileUpdate {
+                tagged_network_ids: Some(vec!["n2".into()]),
+                ..PortProfileUpdate::default()
+            },
+        );
+        assert_eq!(target.get("tagged_vlan_mgmt"), Some(&json!("custom")));
+        assert_eq!(target.get("tagged_networkconf_ids"), Some(&json!(["n2"])));
+    }
+
+    #[test]
+    fn apply_update_access_mode_keeps_block_all_even_with_tagged_list() {
+        // Contradictory inputs (--mode access + --tagged-vlans): the
+        // explicit mode wins. We do NOT silently flip to custom trunk.
+        let mut target = Map::new();
+        apply_update(
+            &mut target,
+            &PortProfileUpdate {
+                mode: Some(PortMode::Access),
+                tagged_network_ids: Some(vec!["n2".into()]),
+                ..PortProfileUpdate::default()
+            },
+        );
+        assert_eq!(target.get("tagged_vlan_mgmt"), Some(&json!("block_all")));
     }
 
     #[test]
