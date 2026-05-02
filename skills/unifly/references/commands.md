@@ -50,7 +50,7 @@ unifly devices port-set <id|mac> [<port_idx>] [--mode access|trunk|mirror]
     [--native-vlan <network>] [--tagged-vlans <network,...>]
     [--name <label>] [--poe on|off|auto|pasv24|passthrough]
     [--speed auto|10|100|1000|2500|5000|10000]
-    [-F <FILE> | --from-file <FILE>]
+    [-F <FILE> | --from-file <FILE>] [--reset]
 unifly devices stats <id|mac>
 unifly devices pending
 unifly devices upgrade <mac> [--url <firmware-url>]
@@ -95,6 +95,14 @@ unifly devices tags [subcommands]
   just `index` and `name` for ports that have no override). Round-trip
   is non-destructive: `ports-export | port-set -F` preserves all
   per-port settings.
+- `port-set <SWITCH> <PORT_IDX> --reset` removes that port's
+  `port_overrides` entry, returning it to controller defaults. Useful
+  for clearing stale partial overrides (e.g. a port left with
+  `native_network_id` set but no `mode`, which the controller then
+  labels `mode: "unknown"`). Mutually exclusive with the per-field
+  flags (`--mode`, `--native-vlan`, etc.) and `--from-file`. Prompts
+  for confirmation unless `-y` is set. Equivalent to applying
+  `{"ports": [{"index": <PORT_IDX>, "reset": true}]}` via `-F`.
 - `--with-clients` (on `ports` and `ports-export`): annotates each port
   with end-user clients **and adopted devices** (APs, downstream
   switches) currently observed on it. On `ports`, adds a `connections`

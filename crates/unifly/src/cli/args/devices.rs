@@ -148,11 +148,11 @@ pub enum DevicesCommand {
         port: Option<u32>,
 
         /// Operational mode
-        #[arg(long, value_enum, conflicts_with = "from_file")]
+        #[arg(long, value_enum, conflicts_with_all = ["from_file", "reset"])]
         mode: Option<PortModeArg>,
 
         /// Native (untagged) VLAN: network name or session _id
-        #[arg(long, value_name = "NETWORK", conflicts_with = "from_file")]
+        #[arg(long, value_name = "NETWORK", conflicts_with_all = ["from_file", "reset"])]
         native_vlan: Option<String>,
 
         /// Comma-separated list of tagged VLAN networks (names or session _ids)
@@ -160,20 +160,20 @@ pub enum DevicesCommand {
             long,
             value_name = "NETWORK,...",
             value_delimiter = ',',
-            conflicts_with = "from_file"
+            conflicts_with_all = ["from_file", "reset"]
         )]
         tagged_vlans: Option<Vec<String>>,
 
         /// User-facing port label
-        #[arg(long, conflicts_with = "from_file")]
+        #[arg(long, conflicts_with_all = ["from_file", "reset"])]
         name: Option<String>,
 
         /// PoE mode for this port
-        #[arg(long, value_enum, conflicts_with = "from_file")]
+        #[arg(long, value_enum, conflicts_with_all = ["from_file", "reset"])]
         poe: Option<PoeArg>,
 
         /// Configured link speed
-        #[arg(long, value_enum, conflicts_with = "from_file")]
+        #[arg(long, value_enum, conflicts_with_all = ["from_file", "reset"])]
         speed: Option<SpeedArg>,
 
         /// Apply a multi-port configuration from a JSONC file
@@ -182,6 +182,13 @@ pub enum DevicesCommand {
         /// removes that port's override entry.
         #[arg(long, short = 'F', value_name = "FILE")]
         from_file: Option<std::path::PathBuf>,
+
+        /// Remove this port's `port_overrides` entry, returning it to
+        /// controller defaults. Mutually exclusive with the per-field
+        /// flags above. Equivalent to applying
+        /// `{"ports": [{"index": <PORT_IDX>, "reset": true}]}` via `-F`.
+        #[arg(long, conflicts_with = "from_file")]
+        reset: bool,
     },
 }
 

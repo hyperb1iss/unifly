@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use unifly_api::{
-    ApplyPortsRequest, Command as CoreCommand, Controller, Device, MacAddress, PoeMode, PortMode,
-    PortProfileUpdate, PortSpeedSetting,
+    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, Device, MacAddress,
+    PoeMode, PortMode, PortProfileUpdate, PortSpeedSetting,
 };
 
 use crate::cli::args::{DevicesArgs, DevicesCommand, GlobalOpts, PoeArg, PortModeArg, SpeedArg};
@@ -235,6 +235,7 @@ pub(super) async fn handle(
             poe,
             speed,
             from_file,
+            reset,
         } => {
             dispatch_port_set(
                 controller,
@@ -248,6 +249,7 @@ pub(super) async fn handle(
                 poe,
                 speed,
                 from_file,
+                reset,
             )
             .await
         }
@@ -267,9 +269,16 @@ async fn dispatch_port_set(
     poe: Option<PoeArg>,
     speed: Option<SpeedArg>,
     from_file: Option<std::path::PathBuf>,
+    reset: bool,
 ) -> Result<(), CliError> {
     if let Some(path) = from_file {
         handle_port_set_from_file(controller, global, &device, &path).await
+    } else if reset {
+        let port = port.ok_or_else(|| CliError::Validation {
+            field: "port-set".into(),
+            reason: "PORT_IDX is required for --reset".into(),
+        })?;
+        handle_port_reset(controller, global, &device, port).await
     } else {
         let port = port.ok_or_else(|| CliError::Validation {
             field: "port-set".into(),
@@ -410,6 +419,38 @@ async fn handle_ports_export(
         s
     };
     print!("{output}");
+    Ok(())
+}
+
+async fn handle_port_reset(
+    controller: &Controller,
+    global: &GlobalOpts,
+    device: &str,
+    port: u32,
+) -> Result<(), CliError> {
+    util::ensure_session_access(controller, "devices port-set --reset").await?;
+    let mac = util::resolve_device_mac(controller, device)?;
+    if !util::confirm(
+        &format!("Reset port {port} on {device} to controller defaults?"),
+        global.yes,
+    )? {
+        return Ok(());
+    }
+    let request = ApplyPortsRequest {
+        ports: vec![ApplyPortEntry {
+            index: port,
+            reset: true,
+            ..ApplyPortEntry::default()
+        }],
+    };
+    let summary = controller.apply_device_ports(&mac, &request).await?;
+    if !global.quiet {
+        if summary.reset > 0 {
+            eprintln!("Port {port} override removed on device {device}");
+        } else {
+            eprintln!("Port {port} had no override on device {device} (no change)");
+        }
+    }
     Ok(())
 }
 
