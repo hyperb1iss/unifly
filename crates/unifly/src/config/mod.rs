@@ -373,24 +373,36 @@ pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
 // ── Credential resolution (without CLI flags) ───────────────────────
 
 /// Resolve an API key from the credential chain (no CLI flag step).
+///
+/// Precedence: explicit env var (`api_key_env`) → explicit config plaintext
+/// (`api_key`) → system keyring. Explicit config beats the keyring so that
+/// editing `api_key = "..."` in config.toml is not silently overridden by a
+/// stale keyring entry from a previous `config init`.
 pub fn resolve_api_key(profile: &Profile, profile_name: &str) -> Result<SecretString, ConfigError> {
     // 1. Profile's api_key_env → env var lookup
     if let Some(ref env_name) = profile.api_key_env
         && let Ok(val) = std::env::var(env_name)
     {
+        tracing::debug!(
+            profile = profile_name,
+            env = env_name,
+            "resolved api_key from env"
+        );
         return Ok(SecretString::from(val));
     }
 
-    // 2. System keyring
+    // 2. Explicit plaintext in config
+    if let Some(ref key) = profile.api_key {
+        tracing::debug!(profile = profile_name, "resolved api_key from config");
+        return Ok(SecretString::from(key.clone()));
+    }
+
+    // 3. System keyring
     if let Ok(entry) = keyring::Entry::new("unifly", &format!("{profile_name}/api-key"))
         && let Ok(secret) = entry.get_password()
     {
+        tracing::debug!(profile = profile_name, "resolved api_key from keyring");
         return Ok(SecretString::from(secret));
-    }
-
-    // 3. Plaintext in config
-    if let Some(ref key) = profile.api_key {
-        return Ok(SecretString::from(key.clone()));
     }
 
     Err(ConfigError::NoCredentials {
@@ -420,6 +432,11 @@ pub fn resolve_host_id(profile: &Profile) -> Result<String, ConfigError> {
 }
 
 /// Resolve session credentials (username + password) without CLI flags.
+///
+/// Password precedence mirrors api_key: env var → explicit config plaintext
+/// → system keyring. Explicit config beats the keyring so that editing
+/// `password = "..."` in config.toml is not silently overridden by a stale
+/// keyring entry.
 pub fn resolve_session_credentials(
     profile: &Profile,
     profile_name: &str,
@@ -434,19 +451,22 @@ pub fn resolve_session_credentials(
 
     // 1. Env var
     if let Ok(pw) = std::env::var("UNIFI_PASSWORD") {
+        tracing::debug!(profile = profile_name, "resolved password from env");
         return Ok((username, SecretString::from(pw)));
     }
 
-    // 2. Keyring
+    // 2. Explicit plaintext in config
+    if let Some(ref pw) = profile.password {
+        tracing::debug!(profile = profile_name, "resolved password from config");
+        return Ok((username, SecretString::from(pw.clone())));
+    }
+
+    // 3. Keyring
     if let Ok(entry) = keyring::Entry::new("unifly", &format!("{profile_name}/password"))
         && let Ok(pw) = entry.get_password()
     {
+        tracing::debug!(profile = profile_name, "resolved password from keyring");
         return Ok((username, SecretString::from(pw)));
-    }
-
-    // 3. Plaintext in config
-    if let Some(ref pw) = profile.password {
-        return Ok((username, SecretString::from(pw.clone())));
     }
 
     Err(ConfigError::NoCredentials {
@@ -553,8 +573,10 @@ pub fn profile_to_controller_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_CLOUD_CONTROLLER_URL, Profile, profile_to_controller_config, resolve_auth,
+        DEFAULT_CLOUD_CONTROLLER_URL, Profile, profile_to_controller_config, resolve_api_key,
+        resolve_auth,
     };
+    use secrecy::ExposeSecret;
     use unifly_api::{AuthCredentials, TlsVerification};
 
     fn cloud_profile() -> Profile {
@@ -592,6 +614,26 @@ mod tests {
             }
             other => panic!("expected cloud auth, got {other:?}"),
         }
+    }
+
+    /// Regression: config plaintext must beat the keyring so that an
+    /// explicit `api_key = "..."` in config.toml is not silently overridden
+    /// by a stale keyring entry from a previous `config init`. See issue #13.
+    ///
+    /// We can't easily exercise the keyring branch in unit tests (no mock
+    /// backend in keyring 3.x and writing to the real keyring is flaky in
+    /// CI), so this asserts the config branch resolves -- combined with
+    /// the explicit ordering in `resolve_api_key`, that's the precedence
+    /// guarantee.
+    #[test]
+    fn resolve_api_key_prefers_explicit_config_over_fallback() {
+        let mut profile = cloud_profile();
+        profile.api_key = Some("explicit-config-key".into());
+        profile.api_key_env = None;
+
+        let secret = resolve_api_key(&profile, "cloud").expect("config api_key should resolve");
+
+        assert_eq!(secret.expose_secret(), "explicit-config-key");
     }
 
     #[test]
