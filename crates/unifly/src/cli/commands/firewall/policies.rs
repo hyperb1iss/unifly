@@ -309,24 +309,26 @@ pub(super) async fn handle(
                         .collect()
                 };
 
-                // Reject overlap: a policy can't be in both halves at once.
-                // Without this check the controller PUT would have the same
-                // UUID in both lists, which the controller may silently
-                // dedupe or reject ambiguously.
-                let preserved_set: std::collections::HashSet<&EntityId> =
-                    preserved.iter().collect();
-                if let Some(overlap) = new_ids.iter().find(|id| preserved_set.contains(id)) {
-                    let side = if after_system {
+                // A policy can only live in one half of the ordering at a
+                // time. If the user names an ID that's currently in the
+                // opposite half, treat it as a *move*: drop it from the
+                // preserved list so it ends up only in the target half.
+                // Reporting the move keeps the behavior visible.
+                let new_ids_set: std::collections::HashSet<&EntityId> = new_ids.iter().collect();
+                let preserved_len = preserved.len();
+                let preserved: Vec<EntityId> = preserved
+                    .into_iter()
+                    .filter(|id| !new_ids_set.contains(id))
+                    .collect();
+                let moved = preserved_len - preserved.len();
+                if moved > 0 && !global.quiet {
+                    let from_side = if after_system {
                         "before-system"
                     } else {
                         "after-system"
                     };
-                    return Err(CliError::Validation {
-                        field: "set".into(),
-                        reason: format!(
-                            "policy \"{overlap}\" is already in the {side} ordering for this zone-pair"
-                        ),
-                    });
+                    let plural = if moved == 1 { "y" } else { "ies" };
+                    eprintln!("Moved {moved} polic{plural} from {from_side} into the new ordering");
                 }
 
                 let (before_system_ids, after_system_ids) = if after_system {

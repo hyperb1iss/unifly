@@ -89,11 +89,17 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 }
                 .to_owned()
             } else {
+                // Refuse to default to ALLOW if the controller's stored
+                // action shape is unrecognizable. A silent fallback would
+                // promote a Block/Reject policy to Allow on any field-only
+                // update, which is a security-relevant mutation.
                 let existing_type = existing
                     .action
                     .get("type")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("ALLOW");
+                    .ok_or_else(|| CoreError::ValidationFailed {
+                        message: "existing firewall policy has no recognizable action type; specify --action explicitly".into(),
+                    })?;
                 if existing_type == "DROP" {
                     "BLOCK".to_owned()
                 } else {
