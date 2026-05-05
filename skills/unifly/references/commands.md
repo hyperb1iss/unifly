@@ -93,8 +93,8 @@ unifly devices tags [subcommands]
   as a JSONC file suitable for `port-set -F`. Sparse by default — only
   ports with active overrides. Pass `--all` to include every port (with
   just `index` and `name` for ports that have no override). Round-trip
-  is non-destructive: `ports-export | port-set -F` preserves all
-  per-port settings.
+  is non-destructive: write the output to a file, then re-apply with
+  `port-set <id|mac> -F <file>` to restore the same per-port settings.
 - `port-set <SWITCH> <PORT_IDX> --reset` removes that port's
   `port_overrides` entry, returning it to controller defaults. Useful
   for clearing stale partial overrides (e.g. a port left with
@@ -111,8 +111,9 @@ unifly devices tags [subcommands]
   or `"device"`) plus `mac`, `name`, and (for clients) `ip` / `vlan_id`.
   On `ports-export`, prepends
   `// last-seen <ISO8601>: <mac> (<name>, <kind>)` comment lines before
-  each port's `{`. Stable parse anchor: `// last-seen ` (with trailing
-  space). Markers sort clients before devices then by MAC; one
+  each port's `{`. Stable parse anchor: the literal `// last-seen`
+  prefix followed by a single space. Markers sort clients before
+  devices then by MAC; one
   timestamp per export run. Useful for drift detection — re-export and
   `git diff` to see when the AP or client on a labelled port changed.
 - All device _commands_ (adopt, remove, restart, locate, port-cycle,

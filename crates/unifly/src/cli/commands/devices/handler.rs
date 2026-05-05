@@ -471,6 +471,24 @@ async fn handle_port_set_from_file(
         });
     }
 
+    // Mirror the confirmation guard the single-port `--reset` path uses
+    // (see `handle_port_reset`). A from-file batch can wipe overrides on
+    // many ports at once via `"reset": true` entries; without this
+    // prompt a misapplied JSONC silently rewrites a production switch.
+    let n_ports = request.ports.len();
+    let n_resets = request.ports.iter().filter(|p| p.reset).count();
+    let summary_label = if n_resets > 0 {
+        format!("{n_ports} port override(s), including {n_resets} reset(s)")
+    } else {
+        format!("{n_ports} port override(s)")
+    };
+    if !util::confirm(
+        &format!("Apply {summary_label} to device {device}?"),
+        global.yes,
+    )? {
+        return Ok(());
+    }
+
     let summary = controller.apply_device_ports(&mac, &request).await?;
     if !global.quiet {
         let plural_applied = if summary.applied == 1 { "" } else { "s" };

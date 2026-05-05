@@ -38,16 +38,24 @@ pub fn read_json_file(path: &Path) -> Result<serde_json::Value, CliError> {
 /// already stripped upstream) parse cleanly under `serde_json`.
 /// String contents are preserved — a comma inside a quoted string
 /// followed by `]` is left alone.
+///
+/// Operates on raw bytes because every meaningful sigil (`"`, `,`, `\\`,
+/// `]`, `}`, ASCII whitespace) is single-byte. Multi-byte UTF-8 sequences
+/// have the high bit set on every byte, so they never match those sigils
+/// and pass through to the output verbatim. The output buffer is a
+/// `Vec<u8>` (not a `String`) so we never re-encode bytes individually --
+/// the previous implementation used `char::from(byte)` which mangled
+/// non-ASCII labels (`"Café"`, emoji, etc.) into mojibake.
 fn strip_trailing_commas(input: &str) -> String {
     let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut in_string = false;
     let mut escape = false;
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
         if in_string {
-            out.push(char::from(c));
+            out.push(c);
             if escape {
                 escape = false;
             } else if c == b'\\' {
@@ -58,7 +66,7 @@ fn strip_trailing_commas(input: &str) -> String {
             i += 1;
         } else if c == b'"' {
             in_string = true;
-            out.push('"');
+            out.push(b'"');
             i += 1;
         } else if c == b',' {
             // Look ahead through whitespace for `]` or `}`.
@@ -70,15 +78,17 @@ fn strip_trailing_commas(input: &str) -> String {
                 // Skip the comma; whitespace and the closer follow.
                 i += 1;
             } else {
-                out.push(',');
+                out.push(b',');
                 i += 1;
             }
         } else {
-            out.push(char::from(c));
+            out.push(c);
             i += 1;
         }
     }
-    out
+    // Input was valid UTF-8 and we only suppress full ASCII commas, so
+    // the resulting bytes are also valid UTF-8.
+    String::from_utf8(out).expect("strip_trailing_commas preserves UTF-8 boundaries")
 }
 
 #[cfg(test)]
@@ -121,5 +131,25 @@ mod tests {
     fn leaves_non_trailing_commas_alone() {
         let s = "[1, 2, 3]";
         assert_eq!(strip_trailing_commas(s), "[1, 2, 3]");
+    }
+
+    /// Regression: the previous `char::from(byte)` implementation
+    /// rebuilt the output by re-encoding each byte as a single Unicode
+    /// scalar, which corrupted multi-byte UTF-8 sequences in port
+    /// labels (`"Café"`) or any non-ASCII string content.
+    #[test]
+    fn preserves_non_ascii_utf8_strings() {
+        // Café = 0x43 0x61 0x66 0xC3 0xA9 -- the trailing 0xC3 0xA9
+        // pair is é. With trailing commas around it for good measure.
+        let s = "{\"label\": \"Café\", \"ports\": [1, 2,]}";
+        let want = "{\"label\": \"Café\", \"ports\": [1, 2]}";
+        assert_eq!(strip_trailing_commas(s), want);
+    }
+
+    #[test]
+    fn preserves_emoji_in_strings() {
+        let s = "{\"name\": \"ap-living-room 🛋️\",}";
+        let want = "{\"name\": \"ap-living-room 🛋️\"}";
+        assert_eq!(strip_trailing_commas(s), want);
     }
 }
