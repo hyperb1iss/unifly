@@ -5,7 +5,46 @@
 // The `From<crate::error::Error>` impl translates transport-layer errors
 // into domain-appropriate variants.
 
+use std::fmt::Write as _;
+
 use thiserror::Error;
+
+/// Lightweight site descriptor returned with `SiteNotFound` to help the
+/// caller see what slugs/labels the controller actually exposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteHint {
+    pub internal_reference: String,
+    pub display_name: String,
+}
+
+fn format_site_not_found(name: &str, available: &[SiteHint]) -> String {
+    let mut out = format!("Site not found: {name}");
+    if !available.is_empty() {
+        out.push_str(". Available sites:");
+        for hint in available {
+            // safe: writing into a String never errors
+            let _ = write!(
+                &mut out,
+                " {} ({})",
+                hint.internal_reference, hint.display_name
+            );
+        }
+    }
+    out
+}
+
+fn format_site_ambiguous(name: &str, matches: &[SiteHint]) -> String {
+    let mut out = format!("Site '{name}' is ambiguous; multiple sites match:");
+    for hint in matches {
+        let _ = write!(
+            &mut out,
+            " {} ({})",
+            hint.internal_reference, hint.display_name
+        );
+    }
+    out.push_str(". Use the slug or UUID instead");
+    out
+}
 
 /// Unified error type for the core crate.
 #[derive(Debug, Error)]
@@ -33,8 +72,21 @@ pub enum CoreError {
     #[error("Network not found: {identifier}")]
     NetworkNotFound { identifier: String },
 
-    #[error("Site not found: {name}")]
-    SiteNotFound { name: String },
+    #[error("{}", format_site_not_found(.name, .available))]
+    SiteNotFound {
+        name: String,
+        /// Available sites discovered on the controller, used to render a
+        /// helpful "did you mean..." list in the error message.
+        available: Vec<SiteHint>,
+    },
+
+    #[error("{}", format_site_ambiguous(.name, .matches))]
+    SiteAmbiguous {
+        name: String,
+        /// Sites whose `name` (or case-insensitive variants) all matched.
+        /// At least two entries; the user must disambiguate by slug or UUID.
+        matches: Vec<SiteHint>,
+    },
 
     #[error("Entity not found: {entity_type} with id {identifier}")]
     NotFound {
@@ -173,5 +225,62 @@ impl From<crate::error::Error> for CoreError {
                 required: "a newer controller firmware".into(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoreError, SiteHint};
+
+    #[test]
+    fn site_not_found_renders_with_no_candidates() {
+        let err = CoreError::SiteNotFound {
+            name: "ghost".into(),
+            available: Vec::new(),
+        };
+        assert_eq!(err.to_string(), "Site not found: ghost");
+    }
+
+    #[test]
+    fn site_ambiguous_lists_matches_and_recommends_slug() {
+        let err = CoreError::SiteAmbiguous {
+            name: "Home".into(),
+            matches: vec![
+                SiteHint {
+                    internal_reference: "home1".into(),
+                    display_name: "Home".into(),
+                },
+                SiteHint {
+                    internal_reference: "home2".into(),
+                    display_name: "Home".into(),
+                },
+            ],
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("ambiguous"));
+        assert!(rendered.contains("home1 (Home)"));
+        assert!(rendered.contains("home2 (Home)"));
+        assert!(rendered.contains("slug or UUID"));
+    }
+
+    #[test]
+    fn site_not_found_lists_available_sites() {
+        let err = CoreError::SiteNotFound {
+            name: "Default".into(),
+            available: vec![
+                SiteHint {
+                    internal_reference: "default".into(),
+                    display_name: "Main Site".into(),
+                },
+                SiteHint {
+                    internal_reference: "guest".into(),
+                    display_name: "Guest Network".into(),
+                },
+            ],
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("Site not found: Default"));
+        assert!(rendered.contains("default (Main Site)"));
+        assert!(rendered.contains("guest (Guest Network)"));
     }
 }

@@ -17,6 +17,8 @@ use super::util;
 struct SiteRow {
     #[tabled(rename = "ID")]
     id: String,
+    #[tabled(rename = "Internal")]
+    internal: String,
     #[tabled(rename = "Name")]
     name: String,
     #[tabled(rename = "Devices")]
@@ -28,6 +30,7 @@ struct SiteRow {
 fn site_row(s: &Arc<Site>, p: &output::Painter) -> SiteRow {
     SiteRow {
         id: p.id(&s.id.to_string()),
+        internal: p.id(&s.internal_name),
         name: p.name(&s.name),
         devices: p.number(&s.device_count.map(|c| c.to_string()).unwrap_or_default()),
         clients: p.number(&s.client_count.map(|c| c.to_string()).unwrap_or_default()),

@@ -13,7 +13,7 @@ use crate::core_error::CoreError;
 use crate::websocket::{ReconnectConfig, WebSocketHandle};
 use crate::{IntegrationClient, SessionClient};
 
-use super::support::{build_transport, resolve_site_id, tls_to_transport};
+use super::support::{build_transport, resolve_site, tls_to_transport};
 use super::{COMMAND_CHANNEL_SIZE, ConnectionState, Controller, refresh};
 
 impl Controller {
@@ -69,7 +69,7 @@ impl Controller {
                 // A 404 here usually means the controller doesn't expose
                 // the Integration API (older or self-hosted UNA without
                 // Settings > Integrations). Surface a targeted hint.
-                let site_id = resolve_site_id(&integration, &config.site)
+                let resolved = resolve_site(&integration, &config.site)
                     .await
                     .map_err(|e| match &e {
                         CoreError::Api {
@@ -87,10 +87,10 @@ impl Controller {
                         }
                         _ => e,
                     })?;
-                debug!(site_id = %site_id, "resolved Integration API site UUID");
+                debug!(site_id = %resolved.id, slug = %resolved.slug, "resolved Integration API site");
 
                 *self.inner.integration_client.lock().await = Some(Arc::new(integration));
-                *self.inner.site_id.lock().await = Some(site_id);
+                *self.inner.site_id.lock().await = Some(resolved.id);
 
                 // Also create a session client using the same API key.
                 // UniFi OS accepts X-API-KEY on session endpoints, which
@@ -110,7 +110,7 @@ impl Controller {
                 let session = SessionClient::with_client(
                     legacy_http,
                     config.url.clone(),
-                    config.site.clone(),
+                    resolved.slug,
                     platform,
                     crate::session::client::SessionAuth::ApiKey,
                 );
@@ -159,7 +159,7 @@ impl Controller {
                     platform,
                 )?;
 
-                let site_id = resolve_site_id(&integration, &config.site)
+                let resolved = resolve_site(&integration, &config.site)
                     .await
                     .map_err(|e| match &e {
                         CoreError::Api {
@@ -177,20 +177,15 @@ impl Controller {
                         }
                         _ => e,
                     })?;
-                debug!(site_id = %site_id, "resolved Integration API site UUID");
+                debug!(site_id = %resolved.id, slug = %resolved.slug, "resolved Integration API site");
 
                 *self.inner.integration_client.lock().await = Some(Arc::new(integration));
-                *self.inner.site_id.lock().await = Some(site_id);
+                *self.inner.site_id.lock().await = Some(resolved.id);
 
                 // Session API client — attempt login but degrade gracefully
                 // if it fails. The Integration API is the primary surface;
                 // Session adds events, stats, and admin ops.
-                match SessionClient::new(
-                    config.url.clone(),
-                    config.site.clone(),
-                    platform,
-                    &transport,
-                ) {
+                match SessionClient::new(config.url.clone(), resolved.slug, platform, &transport) {
                     Ok(client) => {
                         let cache = build_session_cache(config);
                         let login_result = if let Some(ref cache) = cache {
@@ -242,15 +237,11 @@ impl Controller {
                     crate::ControllerPlatform::Cloud,
                 )?;
 
-                let site_id = if let Ok(uuid) = uuid::Uuid::parse_str(&config.site) {
-                    uuid
-                } else {
-                    resolve_site_id(&integration, &config.site).await?
-                };
-                debug!(site_id = %site_id, "resolved cloud Integration API site UUID");
+                let resolved = resolve_site(&integration, &config.site).await?;
+                debug!(site_id = %resolved.id, slug = %resolved.slug, "resolved cloud Integration API site");
 
                 *self.inner.integration_client.lock().await = Some(Arc::new(integration));
-                *self.inner.site_id.lock().await = Some(site_id);
+                *self.inner.site_id.lock().await = Some(resolved.id);
 
                 let msg =
                     "Cloud connector mode active: events watch, Wi-Fi observability, admin/session features, and live WebSocket data are unavailable"
@@ -309,7 +300,10 @@ impl Controller {
             return;
         };
 
-        let ws_path = ws_path_template.replace("{site}", &self.inner.config.site);
+        // Use the resolved slug stored on the session client, not the
+        // raw `config.site` -- which may be a display name or UUID that
+        // the WebSocket route does not understand.
+        let ws_path = ws_path_template.replace("{site}", session.site());
         let base_url = &self.inner.config.url;
         let scheme = if base_url.scheme() == "https" {
             "wss"

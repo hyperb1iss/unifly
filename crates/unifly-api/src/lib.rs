@@ -67,7 +67,7 @@ pub use command::requests::*;
 pub use command::{Command, CommandResult};
 pub use config::{AuthCredentials, ControllerConfig, TlsVerification};
 pub use controller::{ApplyPortsSummary, ConnectionState, Controller, PortProfileUpdate};
-pub use core_error::CoreError;
+pub use core_error::{CoreError, SiteHint};
 pub use store::DataStore;
 pub use stream::EntityStream;
 

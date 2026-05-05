@@ -96,6 +96,27 @@ pub enum CliError {
         identifier: String,
     },
 
+    #[error("Site '{name}' not found on this controller")]
+    #[diagnostic(
+        code(unifi::site_not_found),
+        help(
+            "Available sites: {available}\n\
+             Set `site = \"<slug>\"` in your profile to one of the slugs above (the part before the parens),\n\
+             or pass --site <slug>. The display name and slug are not always the same."
+        )
+    )]
+    SiteNotFound { name: String, available: String },
+
+    #[error("Site '{name}' is ambiguous on this controller")]
+    #[diagnostic(
+        code(unifi::site_ambiguous),
+        help(
+            "Multiple sites match: {matches}\n\
+             Use the slug or UUID (the part before the parens) to disambiguate."
+        )
+    )]
+    SiteAmbiguous { name: String, matches: String },
+
     // ── API ──────────────────────────────────────────────────────────
     #[error("API error{}: {message}", if code.is_empty() { String::new() } else { format!(" ({code})") })]
     #[diagnostic(code(unifi::api_error))]
@@ -196,10 +217,12 @@ impl CliError {
         match self {
             Self::ConnectionFailed { .. } | Self::TlsError { .. } => exit_code::CONNECTION,
             Self::AuthFailed { .. } | Self::NoCredentials { .. } => exit_code::AUTH,
-            Self::NotFound { .. } => exit_code::NOT_FOUND,
+            Self::NotFound { .. } | Self::SiteNotFound { .. } => exit_code::NOT_FOUND,
             Self::Conflict { .. } => exit_code::CONFLICT,
             Self::Timeout { .. } => exit_code::TIMEOUT,
-            Self::Validation { .. } | Self::NonInteractiveRequiresYes { .. } => exit_code::USAGE,
+            Self::Validation { .. }
+            | Self::NonInteractiveRequiresYes { .. }
+            | Self::SiteAmbiguous { .. } => exit_code::USAGE,
             Self::Unsupported { .. } | Self::NotYetImplemented { .. } => exit_code::PERMISSION,
             _ => exit_code::GENERAL,
         }
@@ -242,10 +265,14 @@ impl From<CoreError> for CliError {
                 list_command: "clients list".into(),
             },
 
-            CoreError::SiteNotFound { name } => CliError::NotFound {
-                resource_type: "site".into(),
-                identifier: name,
-                list_command: "sites list".into(),
+            CoreError::SiteNotFound { name, available } => CliError::SiteNotFound {
+                name,
+                available: render_site_hints(&available),
+            },
+
+            CoreError::SiteAmbiguous { name, matches } => CliError::SiteAmbiguous {
+                name,
+                matches: render_site_hints(&matches),
             },
 
             CoreError::NetworkNotFound { identifier } => CliError::NotFound {
@@ -318,4 +345,15 @@ impl From<CoreError> for CliError {
             },
         }
     }
+}
+
+fn render_site_hints(hints: &[unifly_api::SiteHint]) -> String {
+    if hints.is_empty() {
+        return "(none discovered -- run `unifly sites list` to verify connectivity)".into();
+    }
+    hints
+        .iter()
+        .map(|h| format!("{} ({})", h.internal_reference, h.display_name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

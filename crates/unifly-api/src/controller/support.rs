@@ -113,30 +113,111 @@ pub(super) fn tls_to_transport(tls: &TlsVerification) -> TlsMode {
     }
 }
 
-/// Resolve the Integration API site UUID from a site name or UUID string.
+/// A site resolved against the Integration API: the canonical UUID plus
+/// the slug that the Session API expects in URL paths (`/api/s/<slug>/...`).
+#[derive(Debug)]
+pub(super) struct ResolvedSite {
+    pub id: uuid::Uuid,
+    pub slug: String,
+}
+
+/// Resolve a site identifier to its Integration UUID and Session slug.
 ///
-/// If `site_name` is already a valid UUID, returns it directly.
-/// Otherwise lists all sites and finds the one matching by `internal_reference`.
-pub(super) async fn resolve_site_id(
+/// Matches in priority order:
+/// 1. UUID fast-path (input parses as `Uuid` and matches a known site).
+/// 2. Exact `internal_reference` match (the slug, e.g. `default`).
+/// 3. Exact `name` match (the display label, e.g. `Default` or `Home Network`).
+/// 4. Case-insensitive match on either field.
+///
+/// Falling through to display-name matching avoids the trap where
+/// `unifly sites list` shows the human-readable `name` column and the user
+/// pastes that into config without realizing the slug is the canonical
+/// identifier (issue #16). Both the UUID and the resolved slug are returned
+/// so Session-backed callers can rebuild URLs against the correct slug
+/// instead of the user's raw input.
+pub(super) async fn resolve_site(
     client: &IntegrationClient,
     site_name: &str,
-) -> Result<uuid::Uuid, CoreError> {
-    // Fast path: if the input is already a UUID, use it directly.
-    if let Ok(uuid) = uuid::Uuid::parse_str(site_name) {
-        return Ok(uuid);
-    }
-
+) -> Result<ResolvedSite, CoreError> {
     let sites = client
         .paginate_all(50, |off, lim| client.list_sites(off, lim))
         .await?;
+    resolve_site_in(&sites, site_name)
+}
 
-    sites
-        .into_iter()
-        .find(|site| site.internal_reference == site_name)
-        .map(|site| site.id)
-        .ok_or_else(|| CoreError::SiteNotFound {
-            name: site_name.to_owned(),
+/// Pure matching logic, factored out for direct unit testing without the
+/// network round-trip in [`resolve_site`].
+fn resolve_site_in(
+    sites: &[crate::integration_types::SiteResponse],
+    site_name: &str,
+) -> Result<ResolvedSite, CoreError> {
+    if let Ok(uuid) = uuid::Uuid::parse_str(site_name)
+        && let Some(site) = sites.iter().find(|s| s.id == uuid)
+    {
+        return Ok(ResolvedSite {
+            id: site.id,
+            slug: site.internal_reference.clone(),
+        });
+    }
+
+    // Slug is the canonical identifier; an exact slug match is unambiguous
+    // by definition (UniFi enforces uniqueness server-side).
+    if let Some(site) = sites.iter().find(|s| s.internal_reference == site_name) {
+        return Ok(ResolvedSite {
+            id: site.id,
+            slug: site.internal_reference.clone(),
+        });
+    }
+
+    // Fuzzy matches: collect every site that matches by display name or by
+    // case-insensitive variants. Reject the operation if more than one
+    // distinct site comes back -- silently picking the first hit can route
+    // reads/writes to the wrong site.
+    let fuzzy: Vec<&_> = sites
+        .iter()
+        .filter(|s| {
+            s.name == site_name
+                || s.internal_reference.eq_ignore_ascii_case(site_name)
+                || s.name.eq_ignore_ascii_case(site_name)
         })
+        .collect();
+
+    let unique: std::collections::HashSet<uuid::Uuid> = fuzzy.iter().map(|s| s.id).collect();
+
+    if unique.len() == 1 {
+        let site = fuzzy[0];
+        return Ok(ResolvedSite {
+            id: site.id,
+            slug: site.internal_reference.clone(),
+        });
+    }
+
+    if unique.len() > 1 {
+        let matches = fuzzy
+            .into_iter()
+            .map(|s| crate::core_error::SiteHint {
+                internal_reference: s.internal_reference.clone(),
+                display_name: s.name.clone(),
+            })
+            .collect();
+        return Err(CoreError::SiteAmbiguous {
+            name: site_name.to_owned(),
+            matches,
+        });
+    }
+
+    let available = sites
+        .iter()
+        .map(|s| crate::core_error::SiteHint {
+            internal_reference: s.internal_reference.clone(),
+            display_name: s.name.clone(),
+        })
+        .collect();
+
+    Err(CoreError::SiteNotFound {
+        name: site_name.to_owned(),
+        available,
+    })
 }
 
 /// Extract a `Uuid` from an `EntityId`, or return an error.
@@ -223,4 +304,104 @@ pub(super) fn client_mac(store: &DataStore, id: &EntityId) -> Result<MacAddress,
         .ok_or_else(|| CoreError::ClientNotFound {
             identifier: id.to_string(),
         })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::resolve_site_in;
+    use crate::core_error::CoreError;
+    use crate::integration_types::SiteResponse;
+    use uuid::Uuid;
+
+    fn site(id: &str, internal: &str, name: &str) -> SiteResponse {
+        SiteResponse {
+            id: Uuid::parse_str(id).expect("valid uuid"),
+            internal_reference: internal.into(),
+            name: name.into(),
+        }
+    }
+
+    fn default_site() -> SiteResponse {
+        site(
+            "11111111-1111-1111-1111-111111111111",
+            "default",
+            "Main Site",
+        )
+    }
+
+    fn guest_site() -> SiteResponse {
+        site(
+            "22222222-2222-2222-2222-222222222222",
+            "guest",
+            "Guest Network",
+        )
+    }
+
+    #[test]
+    fn matches_known_uuid_returns_canonical_slug() {
+        let sites = vec![default_site(), guest_site()];
+        let resolved = resolve_site_in(&sites, "11111111-1111-1111-1111-111111111111").unwrap();
+        assert_eq!(resolved.slug, "default");
+    }
+
+    #[test]
+    fn unmatched_uuid_falls_through_to_not_found() {
+        let sites = vec![default_site()];
+        let err = resolve_site_in(&sites, "33333333-3333-3333-3333-333333333333").unwrap_err();
+        assert!(matches!(err, CoreError::SiteNotFound { .. }));
+    }
+
+    #[test]
+    fn exact_slug_match_wins_over_case_insensitive_name_collision() {
+        // Site A has slug "default" + name "Default Site". Site B has slug
+        // "default-backup" + name "default" (a contrived but legal label).
+        // Input "default" must match Site A by exact slug, not Site B by name.
+        let target = site(
+            "44444444-4444-4444-4444-444444444444",
+            "default",
+            "Default Site",
+        );
+        let collision = site(
+            "55555555-5555-5555-5555-555555555555",
+            "default-backup",
+            "default",
+        );
+        let sites = vec![target, collision];
+        let resolved = resolve_site_in(&sites, "default").unwrap();
+        assert_eq!(
+            resolved.id.to_string(),
+            "44444444-4444-4444-4444-444444444444"
+        );
+        assert_eq!(resolved.slug, "default");
+    }
+
+    #[test]
+    fn duplicate_display_names_return_ambiguous() {
+        let a = site("66666666-6666-6666-6666-666666666666", "home1", "Home");
+        let b = site("77777777-7777-7777-7777-777777777777", "home2", "Home");
+        let sites = vec![a, b];
+        let err = resolve_site_in(&sites, "Home").unwrap_err();
+        match err {
+            CoreError::SiteAmbiguous { matches, .. } => assert_eq!(matches.len(), 2),
+            other => panic!("expected SiteAmbiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn case_insensitive_name_match_against_single_site_succeeds() {
+        let sites = vec![default_site(), guest_site()];
+        let resolved = resolve_site_in(&sites, "GUEST NETWORK").unwrap();
+        assert_eq!(resolved.slug, "guest");
+    }
+
+    #[test]
+    fn no_match_returns_not_found_with_full_candidate_list() {
+        let sites = vec![default_site(), guest_site()];
+        let err = resolve_site_in(&sites, "iot").unwrap_err();
+        match err {
+            CoreError::SiteNotFound { available, .. } => assert_eq!(available.len(), 2),
+            other => panic!("expected SiteNotFound, got {other:?}"),
+        }
+    }
 }
