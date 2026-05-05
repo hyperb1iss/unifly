@@ -315,7 +315,7 @@ fn migrate_macos_config(new_dir: &std::path::Path) {
         }
         match std::fs::rename(&old_dir, new_dir) {
             Ok(()) => {
-                eprintln!("unifly: migrated config to {}", new_dir.display(),);
+                eprintln!("unifly: migrated config to {}", new_dir.display());
             }
             Err(e) => {
                 eprintln!(

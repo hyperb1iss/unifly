@@ -345,7 +345,7 @@ fn map_port_mode(mode: PortModeArg) -> PortMode {
 
 fn map_poe(arg: PoeArg) -> PoeMode {
     match arg {
-        PoeArg::On | PoeArg::Auto => PoeMode::Auto,
+        PoeArg::Auto => PoeMode::Auto,
         PoeArg::Off => PoeMode::Off,
         PoeArg::Pasv24 => PoeMode::Passive24V,
         PoeArg::Passthrough => PoeMode::Passthrough,

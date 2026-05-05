@@ -143,10 +143,13 @@ pub enum PortModeArg {
     Mirror,
 }
 
+/// PoE mode for a switch port. UniFi PoE has no separate "on" mode --
+/// `auto` IS the on/negotiate mode -- so the CLI exposes only the four
+/// distinct wire values to keep `port-set --poe X` round-trippable
+/// against `devices ports` output.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 #[value(rename_all = "lower")]
 pub enum PoeArg {
-    On,
     Off,
     Auto,
     Pasv24,

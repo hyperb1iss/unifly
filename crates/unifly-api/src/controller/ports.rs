@@ -188,6 +188,25 @@ impl Controller {
                 identifier: device_mac.to_string(),
             })?;
 
+        // Refuse to write a phantom override for a port the device doesn't
+        // physically have. The controller silently accepts entries for any
+        // index, so without this check `port-set <8-port-switch> 99 ...`
+        // reports success and persists a dangling override forever.
+        let known_ports: Vec<u32> = device
+            .extra
+            .get("port_table")
+            .and_then(Value::as_array)
+            .map(|table| table.iter().filter_map(port_idx).collect())
+            .unwrap_or_default();
+        if !known_ports.is_empty() && !known_ports.contains(&port_idx_target) {
+            let max = known_ports.iter().max().copied().unwrap_or(0);
+            return Err(CoreError::ValidationFailed {
+                message: format!(
+                    "port {port_idx_target} does not exist on this device (valid range 1..={max})"
+                ),
+            });
+        }
+
         let mut overrides: Vec<Value> = device
             .extra
             .get("port_overrides")
