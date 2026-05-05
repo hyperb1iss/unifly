@@ -285,10 +285,18 @@ pub struct NatPolicy {
 // ── Firewall Group types ───────────────────────────────────────────
 
 /// Type of firewall group.
+///
+/// `--from-file` payloads can use either kebab-case (`"port-group"`,
+/// matching the CLI `--type` flag and the controller wire format) or
+/// PascalCase (`"PortGroup"`, the Rust variant names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum FirewallGroupType {
+    #[serde(alias = "PortGroup")]
     PortGroup,
+    #[serde(alias = "AddressGroup")]
     AddressGroup,
+    #[serde(alias = "Ipv6AddressGroup")]
     Ipv6AddressGroup,
 }
 

@@ -563,14 +563,16 @@ use crate::model::FirewallGroupType;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateFirewallGroupRequest {
     pub name: String,
-    #[serde(default = "default_port_group")]
+    /// Group type. Required from `--from-file`; the CLI flag path always
+    /// populates this. Accepts kebab-case (`"port-group"`,
+    /// `"address-group"`, `"ipv6-address-group"`) matching the CLI
+    /// `--type` flag, and PascalCase variant names for backward
+    /// compatibility. Aliased as `type` so JSON files mirroring the
+    /// CLI flag (`{"type": "address-group", ...}`) round-trip cleanly.
+    #[serde(alias = "type")]
     pub group_type: FirewallGroupType,
     #[serde(alias = "members")]
     pub group_members: Vec<String>,
-}
-
-fn default_port_group() -> FirewallGroupType {
-    FirewallGroupType::PortGroup
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -588,7 +590,7 @@ mod tests {
         TrafficFilterSpec, UpdateAclRuleRequest, UpdateFirewallGroupRequest,
         UpdateFirewallPolicyRequest,
     };
-    use crate::model::FirewallAction;
+    use crate::model::{FirewallAction, FirewallGroupType};
 
     /// Bug 1 regression: dst_ip and dst_port in --from-file JSON must
     /// deserialize into the shorthand fields (not be silently dropped).
@@ -933,12 +935,72 @@ mod tests {
     fn create_firewall_group_request_accepts_members_alias() {
         let req: CreateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
             "name": "HA",
+            "type": "port-group",
             "members": ["80", "8000-8002"]
         }))
         .expect("members alias should deserialize");
 
         assert_eq!(req.name, "HA");
         assert_eq!(req.group_members, vec!["80", "8000-8002"]);
+    }
+
+    /// `--from-file` JSON should accept the kebab-case `type` field
+    /// (mirroring the CLI `--type` flag) and deserialize each known
+    /// group type into its Rust variant. Without this, a file like
+    /// `{"type": "address-group", ...}` was silently parsed as a port
+    /// group via the previous default, corrupting the wire payload.
+    #[test]
+    fn create_firewall_group_request_kebab_case_type_alias() {
+        let port: CreateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
+            "name": "HA",
+            "type": "port-group",
+            "members": ["80"]
+        }))
+        .expect("kebab-case port-group should deserialize");
+        assert_eq!(port.group_type, FirewallGroupType::PortGroup);
+
+        let addr: CreateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
+            "name": "Cloud IOT",
+            "type": "address-group",
+            "members": ["10.0.0.1"]
+        }))
+        .expect("kebab-case address-group should deserialize");
+        assert_eq!(addr.group_type, FirewallGroupType::AddressGroup);
+
+        let ipv6: CreateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
+            "name": "ULA",
+            "type": "ipv6-address-group",
+            "members": ["fd00::/8"]
+        }))
+        .expect("kebab-case ipv6-address-group should deserialize");
+        assert_eq!(ipv6.group_type, FirewallGroupType::Ipv6AddressGroup);
+
+        // PascalCase still works for backward compatibility with files
+        // produced before the alias was added.
+        let legacy: CreateFirewallGroupRequest = serde_json::from_value(serde_json::json!({
+            "name": "HA",
+            "group_type": "AddressGroup",
+            "members": ["10.0.0.1"]
+        }))
+        .expect("PascalCase variant should deserialize");
+        assert_eq!(legacy.group_type, FirewallGroupType::AddressGroup);
+    }
+
+    /// Missing type should now error rather than silently default to
+    /// `port-group` -- a payload like `{"name":"x","members":["10.0.0.1"]}`
+    /// was getting silently classified as a port group with addresses
+    /// as members, producing an invalid wire payload.
+    #[test]
+    fn create_firewall_group_request_requires_type() {
+        let result: Result<CreateFirewallGroupRequest, _> =
+            serde_json::from_value(serde_json::json!({
+                "name": "Cloud IOT",
+                "members": ["10.0.0.1"]
+            }));
+        assert!(
+            result.is_err(),
+            "missing `type` / `group_type` should not silently default to PortGroup"
+        );
     }
 
     #[test]

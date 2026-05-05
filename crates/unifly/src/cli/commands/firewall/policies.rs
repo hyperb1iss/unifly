@@ -709,6 +709,23 @@ async fn handle_update(
         resolve_group_refs_update(controller, &mut update)?;
     }
 
+    // Mirror the create-side validation: `allow_return_traffic` only
+    // applies to Allow actions. We can only enforce this when the update
+    // also names the new action (CLI never passes --action on update,
+    // but `--from-file` payloads can). Without this, the field flows
+    // through and the server-side handler silently drops it for
+    // non-Allow actions, leaving the user with no feedback.
+    if let (Some(action), Some(true)) = (update.action, update.allow_return_traffic)
+        && action != unifly_api::model::FirewallAction::Allow
+    {
+        return Err(CliError::Validation {
+            field: "allow_return_traffic".into(),
+            reason: format!(
+                "allow_return_traffic is not supported for {action:?} actions (only Allow)"
+            ),
+        });
+    }
+
     controller
         .execute(CoreCommand::UpdateFirewallPolicy {
             id: EntityId::from(id),
