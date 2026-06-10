@@ -5,6 +5,7 @@ use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
 use super::model::{Baseline, FillStyle, SeriesData, SeriesDirection, XAxis};
+use super::owned_scene::OwnedChartScene;
 use super::scene::{AnnotationKind, ChartScene, PlotBounds};
 use crate::tui::render_caps;
 
@@ -51,8 +52,11 @@ fn queue_graphics_scene(
         width: u32::from(area.width.max(1)).saturating_mul(u32::from(font_size.width.max(1))),
         height: u32::from(area.height.max(1)).saturating_mul(u32::from(font_size.height.max(1))),
     };
-    crate::tui::graphics::queue_chart(slot, key, target, || {
-        DynamicImage::ImageRgba8(rasterize_scene(scene, raster_size))
+    // Snapshot the scene into owned data so rasterization runs on the
+    // graphics worker thread instead of blocking the render loop.
+    let owned = OwnedChartScene::capture(scene);
+    crate::tui::graphics::queue_chart(slot, key, target, move || {
+        DynamicImage::ImageRgba8(rasterize_scene(&owned.as_scene(), raster_size))
     });
 }
 

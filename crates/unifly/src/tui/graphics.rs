@@ -1,7 +1,6 @@
 //! Graphics protocol probing and optional true-pixel chart rendering.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -48,7 +47,7 @@ struct ChartRequest {
     slot: ChartSlotKey,
     key: ChartImageKey,
     picker: Picker,
-    image: DynamicImage,
+    build: Box<dyn FnOnce() -> DynamicImage + Send>,
     target: Size,
 }
 
@@ -62,7 +61,6 @@ struct ChartManager {
     tx: mpsc::SyncSender<ChartRequest>,
     rx: Mutex<mpsc::Receiver<ChartResponse>>,
     cache: Mutex<ChartCache>,
-    ready: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -115,10 +113,14 @@ pub fn current_picker() -> Option<Picker> {
         .and_then(|lock| lock.read().ok().and_then(|guard| guard.clone()))
 }
 
-pub fn has_ready_chart() -> bool {
-    CHARTS
-        .get()
-        .is_some_and(|manager| manager.ready.load(Ordering::SeqCst))
+/// Drain any completed chart encodes into the cache. Returns `true` when at
+/// least one response landed, meaning the next frame should be drawn so the
+/// fresh protocol (or cell-path fallback after a failure) becomes visible.
+/// Called once per render tick by the app loop — keeping consumption here,
+/// independent of which screen is active, means an encode that finishes
+/// after a screen switch can never wedge the render gate open.
+pub fn poll_ready_charts() -> bool {
+    CHARTS.get().is_some_and(ChartManager::drain_responses)
 }
 
 pub fn render_cached_chart(
@@ -130,7 +132,6 @@ pub fn render_cached_chart(
     let Some(manager) = CHARTS.get() else {
         return CachedChart::Missing;
     };
-    manager.drain_responses();
 
     let Ok(cache) = manager.cache.lock() else {
         return CachedChart::Failed;
@@ -174,7 +175,7 @@ pub fn queue_chart(
     slot: ChartSlotKey,
     key: ChartImageKey,
     target: Size,
-    build_image: impl FnOnce() -> DynamicImage,
+    build_image: impl FnOnce() -> DynamicImage + Send + 'static,
 ) -> bool {
     let Some(picker) = current_picker() else {
         return false;
@@ -183,12 +184,11 @@ pub fn queue_chart(
     if !manager.reserve(slot, key) {
         return false;
     }
-    let image = build_image();
     manager.queue(ChartRequest {
         slot,
         key,
         picker,
-        image,
+        build: Box::new(build_image),
         target,
     })
 }
@@ -222,16 +222,15 @@ impl ChartManager {
     fn spawn() -> Self {
         let (tx, rx_worker) = mpsc::sync_channel::<ChartRequest>(CHART_QUEUE_CAPACITY);
         let (tx_main, rx) = mpsc::sync_channel::<ChartResponse>(CHART_QUEUE_CAPACITY);
-        let ready = Arc::new(AtomicBool::new(false));
-        let ready_for_worker = Arc::clone(&ready);
 
         if let Err(error) = thread::Builder::new()
             .name("unifly-chart-graphics".to_string())
             .spawn(move || {
                 while let Ok(request) = rx_worker.recv() {
+                    let image = (request.build)();
                     let result = request
                         .picker
-                        .new_protocol(request.image, request.target, Resize::Fit(None))
+                        .new_protocol(image, request.target, Resize::Fit(None))
                         .map_err(|error| error.to_string());
                     if tx_main
                         .send(ChartResponse {
@@ -243,7 +242,6 @@ impl ChartManager {
                     {
                         break;
                     }
-                    ready_for_worker.store(true, Ordering::SeqCst);
                 }
             })
         {
@@ -254,7 +252,6 @@ impl ChartManager {
             tx,
             rx: Mutex::new(rx),
             cache: Mutex::new(ChartCache::default()),
-            ready,
         }
     }
 
@@ -285,9 +282,9 @@ impl ChartManager {
         }
     }
 
-    fn drain_responses(&self) {
+    fn drain_responses(&self) -> bool {
         let Ok(rx) = self.rx.lock() else {
-            return;
+            return false;
         };
         let mut saw_response = false;
         while let Ok(response) = rx.try_recv() {
@@ -309,10 +306,7 @@ impl ChartManager {
                 }
             }
         }
-
-        if saw_response {
-            self.ready.store(false, Ordering::SeqCst);
-        }
+        saw_response
     }
 }
 

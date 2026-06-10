@@ -27,6 +27,8 @@ mod geometry;
 pub mod heatmap;
 pub mod model;
 #[cfg(feature = "tui-graphics")]
+mod owned_scene;
+#[cfg(feature = "tui-graphics")]
 mod pixel;
 #[cfg(feature = "tui-graphics")]
 pub mod raster;

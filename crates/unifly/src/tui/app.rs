@@ -221,6 +221,10 @@ impl App {
                     self.action_tx.send(Action::Tick)?;
                 }
                 Event::Render => {
+                    #[cfg(feature = "tui-graphics")]
+                    if crate::tui::graphics::poll_ready_charts() {
+                        self.needs_redraw = true;
+                    }
                     self.action_tx.send(Action::Render)?;
                 }
             }
