@@ -1,6 +1,6 @@
 ---
 name: unifly
-version: "0.9.1"
+version: "0.9.2"
 description: >-
   This skill should be used when the user asks to "manage UniFi devices",
   "configure UniFi networks", "create a VLAN", "provision an SSID",
