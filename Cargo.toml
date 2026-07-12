@@ -27,7 +27,7 @@ tokio-stream = { version = "0.1" }
 reqwest = { version = "0.13", default-features = false, features = [
     "json", "cookies", "rustls", "gzip", "brotli", "query",
 ] }
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 url = { version = "2", features = ["serde"] }
 
 # ── Serialization ──
@@ -44,7 +44,7 @@ color-eyre = "0.6"
 # ── CLI framework ──
 clap = { version = "4", features = ["derive", "env", "wrap_help", "string", "color"] }
 clap_complete = "4"
-clap_mangen = "0.2"
+clap_mangen = "0.3"
 
 # ── CLI utilities ──
 dialoguer = "0.12"
@@ -77,14 +77,14 @@ bytesize = "2"
 humantime = "2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
-tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 
 # ── Configuration ──
 figment = { version = "0.10", features = ["toml", "env"] }
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+keyring = "4"
 
 # ── Output formatting (CLI) ──
-tabled = { version = "0.20", features = ["derive", "ansi"] }
+tabled = { version = "0.21", features = ["derive", "ansi"] }
 owo-colors = "4"
 
 # ── Logging / tracing ──
