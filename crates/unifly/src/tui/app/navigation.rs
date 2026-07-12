@@ -9,6 +9,8 @@ impl App {
     /// Map a key event to an action. Global keys are handled here;
     /// screen-specific keys are delegated to the active screen component.
     pub(super) fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        self.needs_redraw = true;
+
         if let Some(action) = self.handle_special_screen_key_event(key)? {
             return Ok(Some(action));
         }
@@ -206,5 +208,18 @@ mod tests {
             .expect("search close should succeed");
         assert!(matches!(action, Some(Action::CloseSearch)));
         assert!(app.search_query.is_empty());
+    }
+
+    #[test]
+    fn onboarding_input_reopens_render_gate() {
+        let mut app = App::new(None, None, false);
+        app.needs_redraw = false;
+
+        let action = app
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("onboarding key handling should succeed");
+
+        assert!(action.is_none());
+        assert!(app.should_draw());
     }
 }
