@@ -350,20 +350,26 @@ impl IntegrationClient {
     {
         let mut all = Vec::new();
         let mut offset: i64 = 0;
+        let mut fetched: i64 = 0;
 
         loop {
             let page = fetch(offset, limit).await?;
-            let received = page.data.len();
+            // Pagination must advance by the number of items the server
+            // returned on the wire, not by `data.len()`: the lenient page
+            // decode drops unparseable items, and a dropped item on a full
+            // page would otherwise fake a short page and truncate the scan.
+            let wire_received = usize::try_from(page.count)
+                .unwrap_or(0)
+                .max(page.data.len());
+            fetched += i64::try_from(wire_received).unwrap_or(i64::MAX);
             all.extend(page.data);
 
             let limit_usize = usize::try_from(limit).unwrap_or(0);
-            if received < limit_usize
-                || i64::try_from(all.len()).unwrap_or(i64::MAX) >= page.total_count
-            {
+            if wire_received < limit_usize || fetched >= page.total_count {
                 break;
             }
 
-            offset += i64::try_from(received).unwrap_or(i64::MAX);
+            offset += i64::try_from(wire_received).unwrap_or(i64::MAX);
         }
 
         Ok(all)
