@@ -2,27 +2,7 @@ use crate::core_error::CoreError;
 use crate::model::DnsPolicyType;
 
 pub(in super::super) fn dns_policy_type_name(policy_type: DnsPolicyType) -> &'static str {
-    match policy_type {
-        DnsPolicyType::ARecord => "A",
-        DnsPolicyType::AaaaRecord => "AAAA",
-        DnsPolicyType::CnameRecord => "CNAME",
-        DnsPolicyType::MxRecord => "MX",
-        DnsPolicyType::TxtRecord => "TXT",
-        DnsPolicyType::SrvRecord => "SRV",
-        DnsPolicyType::ForwardDomain => "FORWARD_DOMAIN",
-    }
-}
-
-fn dns_policy_type_from_name(policy_type: &str) -> DnsPolicyType {
-    match policy_type {
-        "A" => DnsPolicyType::ARecord,
-        "AAAA" => DnsPolicyType::AaaaRecord,
-        "CNAME" => DnsPolicyType::CnameRecord,
-        "MX" => DnsPolicyType::MxRecord,
-        "TXT" => DnsPolicyType::TxtRecord,
-        "SRV" => DnsPolicyType::SrvRecord,
-        _ => DnsPolicyType::ForwardDomain,
-    }
+    policy_type.wire_name()
 }
 
 fn validation_failed(message: impl Into<String>) -> CoreError {
@@ -95,7 +75,7 @@ fn ensure_dns_required_string(
         Ok(())
     } else {
         Err(validation_failed(format!(
-            "{policy_type:?} DNS policy requires `{key}`"
+            "{policy_type} DNS policy requires `{key}`"
         )))
     }
 }
@@ -113,7 +93,7 @@ fn ensure_dns_required_number(
         Ok(())
     } else {
         Err(validation_failed(format!(
-            "{policy_type:?} DNS policy requires `{key}`"
+            "{policy_type} DNS policy requires `{key}`"
         )))
     }
 }
@@ -244,7 +224,12 @@ pub(in super::super) fn build_update_dns_policy_fields(
     existing: &crate::integration_types::DnsPolicyResponse,
     update: &crate::command::UpdateDnsPolicyRequest,
 ) -> Result<serde_json::Map<String, serde_json::Value>, CoreError> {
-    let policy_type = dns_policy_type_from_name(&existing.policy_type);
+    let policy_type = DnsPolicyType::from_wire(&existing.policy_type).ok_or_else(|| {
+        validation_failed(format!(
+            "cannot update DNS policy with unrecognized record type `{}`",
+            existing.policy_type
+        ))
+    })?;
     let mut fields: serde_json::Map<String, serde_json::Value> =
         existing.extra.clone().into_iter().collect();
 
@@ -336,10 +321,31 @@ pub(in super::super) fn build_update_dns_policy_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::build_create_dns_policy_fields;
+    use super::{build_create_dns_policy_fields, dns_policy_type_name};
     use crate::command::CreateDnsPolicyRequest;
     use crate::model::DnsPolicyType;
     use serde_json::json;
+
+    #[test]
+    fn dns_policy_type_names_use_wire_record_tokens() {
+        let cases = [
+            (DnsPolicyType::ARecord, "A_RECORD"),
+            (DnsPolicyType::AaaaRecord, "AAAA_RECORD"),
+            (DnsPolicyType::CnameRecord, "CNAME_RECORD"),
+            (DnsPolicyType::MxRecord, "MX_RECORD"),
+            (DnsPolicyType::TxtRecord, "TXT_RECORD"),
+            (DnsPolicyType::SrvRecord, "SRV_RECORD"),
+            (DnsPolicyType::ForwardDomain, "FORWARD_DOMAIN"),
+        ];
+        for (policy_type, wire) in cases {
+            assert_eq!(dns_policy_type_name(policy_type), wire);
+            assert_eq!(
+                DnsPolicyType::from_wire(wire),
+                Some(policy_type),
+                "round-trip for {wire}"
+            );
+        }
+    }
 
     #[test]
     fn dns_create_fields_use_type_specific_schema_keys() {

@@ -15,6 +15,7 @@ use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use unifly_api::model::DnsPolicyType;
 use unifly_api::{
     AuthCredentials, Controller, ControllerConfig, ControllerPlatform, CoreError, Error,
     MacAddress, SessionClient, TlsVerification, TransportConfig,
@@ -231,7 +232,7 @@ async fn mount_api_key_integration_routes(server: &MockServer) {
         ),
         (
             format!("/proxy/network/integration/v1/sites/{API_KEY_SITE_ID}/dns/policies"),
-            empty_integration_page(200),
+            dns_policies_page(),
         ),
         (
             format!("/proxy/network/integration/v1/sites/{API_KEY_SITE_ID}/vouchers"),
@@ -248,6 +249,34 @@ async fn mount_api_key_integration_routes(server: &MockServer) {
             .mount(server)
             .await;
     }
+}
+
+fn dns_policies_page() -> serde_json::Value {
+    json!({
+        "offset": 0,
+        "limit": 200,
+        "count": 2,
+        "totalCount": 2,
+        "data": [
+            {
+                "type": "A_RECORD",
+                "id": "0ce73be5-f734-4b24-aac2-d91dbe88202d",
+                "enabled": true,
+                "metadata": {"origin": "USER_DEFINED"},
+                "domain": "unifi.example.net",
+                "ipv4Address": "10.0.1.1",
+                "ttlSeconds": 0,
+            },
+            {
+                "type": "FORWARD_DOMAIN",
+                "id": "1df84cf6-0845-4c35-bbd3-e02ecf99313e",
+                "enabled": true,
+                "metadata": {"origin": "USER_DEFINED"},
+                "domain": "corp.example.net",
+                "ipAddress": "10.0.9.53",
+            },
+        ],
+    })
 }
 
 fn api_key_event_envelope() -> serde_json::Value {
@@ -439,6 +468,22 @@ async fn api_key_mode_has_legacy_and_integration_access() {
     assert_eq!(client.hostname.as_deref(), Some("test-host"));
     assert_eq!(client.tx_bytes, Some(1234));
     assert_eq!(client.rx_bytes, Some(5678));
+
+    let dns = controller.dns_policies_snapshot();
+    assert_eq!(dns.len(), 2);
+    let a_record = dns
+        .iter()
+        .find(|d| d.domain == "unifi.example.net")
+        .expect("A record present");
+    assert_eq!(a_record.policy_type, DnsPolicyType::ARecord);
+    assert_eq!(a_record.value, "10.0.1.1");
+    assert_eq!(a_record.ttl_seconds, Some(0));
+    let forward = dns
+        .iter()
+        .find(|d| d.domain == "corp.example.net")
+        .expect("forward domain present");
+    assert_eq!(forward.policy_type, DnsPolicyType::ForwardDomain);
+    assert_eq!(forward.value, "10.0.9.53");
 
     let received = server.received_requests().await.unwrap();
     let legacy_reqs: Vec<_> = received

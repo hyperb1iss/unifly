@@ -93,7 +93,11 @@ pub(super) async fn fetch(
     let policies = unwrap_or_empty("firewall/policies", policies_res);
     let zones = unwrap_or_empty("firewall/zones", zones_res);
     let acls = unwrap_or_empty("acl/rules", acls_res);
-    let dns = unwrap_or_empty("dns/policies", dns_res);
+    let dns = unwrap_or_empty_with(
+        "dns/policies",
+        dns_res,
+        crate::convert::dns_policy_from_integration,
+    );
     let vouchers = unwrap_or_empty("vouchers", vouchers_res);
 
     info!(
@@ -180,8 +184,17 @@ fn unwrap_or_empty<S, D>(endpoint: &str, result: Result<Vec<S>, crate::error::Er
 where
     D: From<S>,
 {
+    unwrap_or_empty_with(endpoint, result, |item| Some(D::from(item)))
+}
+
+/// Like [`unwrap_or_empty`], for conversions that can reject individual items.
+fn unwrap_or_empty_with<S, D>(
+    endpoint: &str,
+    result: Result<Vec<S>, crate::error::Error>,
+    convert: impl Fn(S) -> Option<D>,
+) -> Vec<D> {
     match result {
-        Ok(items) => items.into_iter().map(D::from).collect(),
+        Ok(items) => items.into_iter().filter_map(convert).collect(),
         Err(ref error) if error.is_not_found() => {
             tracing::debug!("{endpoint}: not available (404), treating as empty");
             Vec::new()
