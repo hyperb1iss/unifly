@@ -45,7 +45,7 @@ struct DnsRow {
 fn dns_row(d: &Arc<DnsPolicy>, p: &output::Painter) -> DnsRow {
     DnsRow {
         id: p.id(&d.id.to_string()),
-        record_type: p.muted(&format!("{:?}", d.policy_type)),
+        record_type: p.muted(&d.policy_type.to_string()),
         domain: p.name(&d.domain),
         value: p.ip(&d.value),
         ttl: p.number(&d.ttl_seconds.map(|t| t.to_string()).unwrap_or_default()),
@@ -55,7 +55,7 @@ fn dns_row(d: &Arc<DnsPolicy>, p: &output::Painter) -> DnsRow {
 fn detail(d: &Arc<DnsPolicy>) -> String {
     [
         format!("ID:     {}", d.id),
-        format!("Type:   {:?}", d.policy_type),
+        format!("Type:   {}", d.policy_type),
         format!("Domain: {}", d.domain),
         format!("Value:  {}", d.value),
         format!(
