@@ -79,19 +79,6 @@ pub struct GlobalOpts {
     pub no_effects: bool,
 }
 
-/// Fallback request timeout when neither `--timeout` nor the profile sets one.
-pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
-
-impl GlobalOpts {
-    /// Resolve the effective timeout: flag/env, then profile, then default.
-    #[must_use]
-    pub fn timeout_secs(&self, profile_timeout: Option<u64>) -> u64 {
-        self.timeout
-            .or(profile_timeout)
-            .unwrap_or(DEFAULT_TIMEOUT_SECS)
-    }
-}
-
 #[derive(Debug, Clone, ValueEnum)]
 pub enum OutputFormat {
     /// Pretty table (default, interactive)
