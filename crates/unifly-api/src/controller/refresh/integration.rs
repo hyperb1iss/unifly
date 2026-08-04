@@ -177,9 +177,9 @@ async fn fetch_device_statistics(
     .await
 }
 
-/// Downgrade a paginated result to an empty `Vec` when the endpoint returns 404.
-///
-/// Some Integration API endpoints are optional on older controller firmware.
+/// Downgrade a failed paginated fetch to an empty `Vec` so one optional
+/// endpoint cannot abort the whole refresh. 404s (endpoints missing on older
+/// firmware) log at debug; every other error logs at warn.
 fn unwrap_or_empty<S, D>(endpoint: &str, result: Result<Vec<S>, crate::error::Error>) -> Vec<D>
 where
     D: From<S>,
