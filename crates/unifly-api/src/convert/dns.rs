@@ -73,6 +73,19 @@ fn dns_value_from_extra(policy_type: DnsPolicyType, extra: &HashMap<String, Valu
     }
 }
 
+/// Fallible public conversion for library consumers. Replaces the old
+/// infallible `From` impl, which mislabeled unknown record types as
+/// `ForwardDomain`; an unrecognized `type` token is now an error.
+impl TryFrom<integration_types::DnsPolicyResponse> for DnsPolicy {
+    type Error = String;
+
+    fn try_from(d: integration_types::DnsPolicyResponse) -> Result<Self, Self::Error> {
+        let policy_type = d.policy_type.clone();
+        dns_policy_from_integration(d)
+            .ok_or_else(|| format!("unrecognized DNS record type `{policy_type}`"))
+    }
+}
+
 pub(crate) fn dns_policy_from_integration(
     d: integration_types::DnsPolicyResponse,
 ) -> Option<DnsPolicy> {
