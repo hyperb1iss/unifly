@@ -6,7 +6,7 @@
   "enabled": true,
   "network_id": "REPLACE_WITH_IOT_NETWORK_UUID",
   "hide_ssid": false,
-  "broadcast_type": "iot-optimized",
+  "broadcast_type": "IOT_OPTIMIZED",
   "frequencies_ghz": [2.4],
   "band_steering": false,
   "fast_roaming": false
