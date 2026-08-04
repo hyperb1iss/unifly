@@ -70,13 +70,26 @@ pub struct GlobalOpts {
     #[arg(long, short = 'k', env = "UNIFI_INSECURE", global = true)]
     pub insecure: bool,
 
-    /// Request timeout in seconds
-    #[arg(long, env = "UNIFI_TIMEOUT", default_value = "30", global = true)]
-    pub timeout: u64,
+    /// Request timeout in seconds (default 30, profiles may override)
+    #[arg(long, env = "UNIFI_TIMEOUT", global = true)]
+    pub timeout: Option<u64>,
 
     /// Disable tachyonfx animations in the TUI (honours `NO_EFFECTS=1`)
     #[arg(long, global = true)]
     pub no_effects: bool,
+}
+
+/// Fallback request timeout when neither `--timeout` nor the profile sets one.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+impl GlobalOpts {
+    /// Resolve the effective timeout: flag/env, then profile, then default.
+    #[must_use]
+    pub fn timeout_secs(&self, profile_timeout: Option<u64>) -> u64 {
+        self.timeout
+            .or(profile_timeout)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+    }
 }
 
 #[derive(Debug, Clone, ValueEnum)]

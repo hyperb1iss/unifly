@@ -195,7 +195,7 @@ async fn build_controller_config(
         auth,
         site: global.site.clone().unwrap_or_else(|| "default".into()),
         tls,
-        timeout: std::time::Duration::from_secs(global.timeout),
+        timeout: std::time::Duration::from_secs(global.timeout_secs(None)),
         refresh_interval_secs: 0,
         websocket_enabled: false,
         polling_interval_secs: 30,

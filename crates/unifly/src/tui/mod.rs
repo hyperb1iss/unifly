@@ -166,7 +166,7 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
         auth,
         site,
         tls,
-        timeout: std::time::Duration::from_secs(global.timeout),
+        timeout: std::time::Duration::from_secs(global.timeout_secs(None)),
         refresh_interval_secs: if is_cloud { 60 } else { 10 },
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },

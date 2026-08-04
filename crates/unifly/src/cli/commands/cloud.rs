@@ -107,7 +107,7 @@ pub(crate) fn active_profile(global: &GlobalOpts) -> (String, Option<Profile>) {
 fn cloud_transport(global: &GlobalOpts) -> TransportConfig {
     TransportConfig {
         tls: TlsMode::System,
-        timeout: Duration::from_secs(global.timeout),
+        timeout: Duration::from_secs(global.timeout_secs(None)),
         cookie_jar: None,
     }
 }

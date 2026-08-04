@@ -664,8 +664,11 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
     eprintln!();
 
     let api_key_setup = prompt_cloud_api_key(&ui)?;
-    let site_manager =
-        build_site_manager_client(&controller, &api_key_setup.secret, global.timeout)?;
+    let site_manager = build_site_manager_client(
+        &controller,
+        &api_key_setup.secret,
+        global.timeout_secs(None),
+    )?;
 
     ui.step("Checking which consoles this API key can see...");
     let hosts = site_manager.list_hosts().await.map_err(cloud_api_error)?;
@@ -679,7 +682,7 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
         &controller,
         &host.id,
         &api_key_setup.secret,
-        global.timeout,
+        global.timeout_secs(None),
     )?;
     let sites = integration
         .paginate_all(50, |offset, limit| integration.list_sites(offset, limit))

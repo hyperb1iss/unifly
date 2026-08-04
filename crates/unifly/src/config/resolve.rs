@@ -98,8 +98,8 @@ pub fn resolve_profile(
     // 4. Site (flag > env > profile)
     let site = global.site.as_deref().unwrap_or(&profile.site).to_string();
 
-    // 5. Timeout
-    let timeout = Duration::from_secs(global.timeout);
+    // 5. Timeout (flag/env > profile > default)
+    let timeout = Duration::from_secs(global.timeout_secs(profile.timeout));
 
     // 6. TOTP (flag > env var from profile's totp_env)
     let totp_token = resolve_totp_with_flag(profile, global);
@@ -173,7 +173,7 @@ mod tests {
             no_cache: false,
             demo: false,
             insecure: true,
-            timeout: 30,
+            timeout: None,
             no_effects: false,
         }
     }

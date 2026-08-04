@@ -621,7 +621,7 @@ mod tests {
             quiet: false,
             yes: false,
             insecure: false,
-            timeout: 30,
+            timeout: None,
             no_effects: false,
         })
     }
