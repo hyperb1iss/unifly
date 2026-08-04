@@ -31,8 +31,9 @@ UniFi OS counts). Consult `concepts.md` for the full gate matrix.
     --no-effects        Disable TUI visual effects
 ```
 
-All also accept the matching `UNIFI_*` environment variable (see
-concepts.md).
+Most accept a matching `UNIFI_*` environment variable; the exceptions
+are `--theme` (`UNIFLY_THEME`) and `--no-effects` (`NO_EFFECTS=1`).
+See concepts.md for the complete table.
 
 Hidden but useful for cloud mode:
 
@@ -726,7 +727,7 @@ See `examples/` for payload templates.
 `--filter` on list commands is **client-side** and supports exactly one
 expression — no boolean combinators, no comparison operators:
 
-```
+```text
 field.eq('value')          # case-insensitive equality
 field.contains('substr')   # case-insensitive substring
 field.in('a','b','c')      # membership, quoted args
