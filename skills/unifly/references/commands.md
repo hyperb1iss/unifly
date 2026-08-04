@@ -22,7 +22,7 @@ UniFi OS counts). Consult `concepts.md` for the full gate matrix.
 -v, -vv, -vvv           Verbose logging
 -q, --quiet             Suppress non-error output
 -y, --yes               Skip confirmation prompts
-    --timeout <SECS>    Request timeout (default 30)
+    --timeout <SECS>    Request timeout (default 30, profiles may override)
     --color <MODE>      auto | always | never
     --no-cache          Force fresh login (bypass session cache)
     --api-key <KEY>     One-shot Integration API key override
