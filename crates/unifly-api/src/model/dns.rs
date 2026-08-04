@@ -51,10 +51,17 @@ impl DnsPolicyType {
             "MX_RECORD" | "MX" => Some(Self::MxRecord),
             "TXT_RECORD" | "TXT" => Some(Self::TxtRecord),
             "SRV_RECORD" | "SRV" => Some(Self::SrvRecord),
-            "FORWARD_DOMAIN" | "FORWARD" => Some(Self::ForwardDomain),
+            "FORWARD_DOMAIN" | "FORWARD" | "Forward" => Some(Self::ForwardDomain),
             _ => None,
         }
     }
+}
+
+/// A DNS policy carried a `type` token no known mapping recognizes.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unrecognized DNS record type `{token}`")]
+pub struct UnrecognizedDnsRecordType {
+    pub token: String,
 }
 
 impl fmt::Display for DnsPolicyType {

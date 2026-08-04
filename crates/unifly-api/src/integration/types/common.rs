@@ -32,9 +32,12 @@ where
         .filter_map(|item| match serde_json::from_value::<T>(item) {
             Ok(parsed) => Some(parsed),
             Err(error) => {
+                // Log the error category only: serde_json messages can quote
+                // record field values, and controller records may carry
+                // hostnames or other data that must stay out of logs.
                 tracing::warn!(
                     item_type = std::any::type_name::<T>(),
-                    %error,
+                    category = ?error.classify(),
                     "skipping list item that failed to parse"
                 );
                 None

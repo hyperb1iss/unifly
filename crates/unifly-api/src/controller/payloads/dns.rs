@@ -348,6 +348,32 @@ mod tests {
     }
 
     #[test]
+    fn from_wire_accepts_every_serde_alias() {
+        // The serde alias list on DnsPolicyType and from_wire are two lenient
+        // input surfaces; every token one accepts, the other must too.
+        let aliases = [
+            ("A", DnsPolicyType::ARecord),
+            ("AAAA", DnsPolicyType::AaaaRecord),
+            ("CNAME", DnsPolicyType::CnameRecord),
+            ("MX", DnsPolicyType::MxRecord),
+            ("TXT", DnsPolicyType::TxtRecord),
+            ("SRV", DnsPolicyType::SrvRecord),
+            ("FORWARD", DnsPolicyType::ForwardDomain),
+            ("Forward", DnsPolicyType::ForwardDomain),
+        ];
+        for (token, expected) in aliases {
+            assert_eq!(
+                DnsPolicyType::from_wire(token),
+                Some(expected),
+                "from_wire must accept `{token}`"
+            );
+            let parsed: DnsPolicyType = serde_json::from_value(json!(token))
+                .unwrap_or_else(|_| panic!("serde must accept `{token}`"));
+            assert_eq!(parsed, expected, "serde alias for `{token}`");
+        }
+    }
+
+    #[test]
     fn dns_create_fields_use_type_specific_schema_keys() {
         let fields = build_create_dns_policy_fields(&CreateDnsPolicyRequest {
             name: "example.com".into(),
