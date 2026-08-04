@@ -6,8 +6,10 @@ non-obvious flags, dual-API boundaries, correct argument forms, and the
 cross-cutting patterns listed at the end.
 
 **API legend:** **I** = Integration API required. **L** = Session API
-required (username + password). **H** = Works in any mode, but enriched
-by Hybrid. Consult `concepts.md` for the full gate matrix.
+required (a UniFi OS Integration API key satisfies it for HTTP routes;
+self-hosted controllers need username + password). **H** = Works in any
+mode, but enriched when a session HTTP client exists (API-key mode on
+UniFi OS counts). Consult `concepts.md` for the full gate matrix.
 
 ## Global Flags
 
@@ -24,6 +26,9 @@ by Hybrid. Consult `concepts.md` for the full gate matrix.
     --color <MODE>      auto | always | never
     --no-cache          Force fresh login (bypass session cache)
     --api-key <KEY>     One-shot Integration API key override
+    --theme <NAME>      Color theme for CLI and TUI (env UNIFLY_THEME)
+    --demo              Sanitize PII in output (env UNIFI_DEMO)
+    --no-effects        Disable TUI visual effects
 ```
 
 All also accept the matching `UNIFI_*` environment variable (see
@@ -56,7 +61,7 @@ unifly devices pending
 unifly devices upgrade <mac> [--url <firmware-url>]
 unifly devices provision <mac>
 unifly devices speedtest
-unifly devices tags [subcommands]
+unifly devices tags [--all] [--limit N]
 ```
 
 **Gotchas:**
@@ -128,12 +133,12 @@ unifly devices tags [subcommands]
 ## Clients `[H for list/find/get, L for roams/wifi + commands/reservations]`
 
 ```bash
-unifly clients list [--all] [--type wireless|wired|guest]
+unifly clients list [--all]
 unifly clients find <query>             # case-insensitive substring over IP, name, hostname, MAC
 unifly clients get <mac|id>
 unifly clients roams <client> [--limit N] # accepts name, hostname, IP, or MAC
 unifly clients wifi <client>             # accepts name, hostname, IP, or MAC; aliases: wifi-experience, wifiman
-unifly clients authorize <mac> [--minutes N] [--up-rate N] [--down-rate N]
+unifly clients authorize <client> --minutes N [--data-limit-mb N] [--rx-limit-kbps N] [--tx-limit-kbps N]
 unifly clients unauthorize <mac>
 unifly clients block <mac>
 unifly clients unblock <mac>
@@ -169,7 +174,9 @@ unifly clients remove-ip <mac> [--network <name|id>]
   strength, and the full uplink chain with per-hop experience scores.
 - `wifi` only works for wireless clients. Wired clients return a 404.
 - Band labels are normalized to human-readable: `2.4 GHz`, `5 GHz`, `6 GHz`.
-- `list` wireless/bytes/hostname fields are only populated in Hybrid mode.
+- `list` wireless/bytes/hostname fields are populated whenever a session
+  HTTP client exists — Hybrid mode, or API-key mode on UniFi OS. Only
+  pure-Integration setups (no session access at all) miss them.
 
 ## Networks `[I for CRUD]`
 
@@ -187,7 +194,7 @@ unifly networks refs <id>                # reverse references
 **Gotchas:**
 
 - VLAN range is **1-4009** (enforced).
-- `--management` accepts `gateway`, `switch`, or `vlan-only`.
+- `--management` accepts `gateway`, `switch`, or `unmanaged`.
 - `--dns` is **repeatable** for multiple per-network DNS servers.
 - `refs` is unique to networks: shows which WiFi SSIDs, firewall policies,
   and zones reference a given network. Use before deleting to understand
@@ -210,7 +217,8 @@ unifly wifi delete <id>
 **Gotchas:**
 
 - `--security` values: `open`, `wpa2-personal`, `wpa3-personal`,
-  `wpa2-wpa3-personal`, `wpa2-enterprise`, `wpa3-enterprise`.
+  `wpa2-wpa3-personal`, `wpa2-enterprise`, `wpa3-enterprise`,
+  `wpa2-wpa3-enterprise`.
 - `--broadcast-type iot-optimized` enables IoT optimizations (2.4 GHz-only
   limits, lower beacon power).
 - `neighbors` uses `GET /api/s/{site}/stat/rogueap` and surfaces APs seen by
@@ -241,7 +249,7 @@ unifly firewall policies create --name NAME --action allow|block|reject \
   [--src-network ID] [--dst-network ID] \
   [--src-port-group NAME] [--dst-port-group NAME] \
   [--src-address-group NAME] [--dst-address-group NAME] \
-  [--states NEW,ESTABLISHED] [--ip-version IPV4_ONLY|IPV6_ONLY|BOTH] \
+  [--states NEW,ESTABLISHED] [--ip-version IPV4_ONLY|IPV6_ONLY|IPV4_AND_IPV6] \
   [--description TEXT] [--logging] [--after-system] [-F payload.json]
 unifly firewall policies update <id> [flags...]
 unifly firewall policies patch <id> [--enabled true|false] [--logging true|false]
@@ -284,7 +292,7 @@ unifly firewall zones delete <id>
 - `--networks` accepts comma-separated network IDs or names.
 - `--from-file` is now supported on zones (recent addition).
 
-### Groups `[S]`
+### Groups `[L]`
 
 ```bash
 unifly firewall groups list [--type port-group|address-group|ipv6-address-group] [--all]
@@ -311,18 +319,18 @@ unifly firewall groups delete <id>
   The CLI resolves the name to the group's `external_id` at create/update
   time.
 
-## NAT `[I]`
+## NAT `[L]`
 
 ```bash
 unifly nat policies list
 unifly nat policies get <id>
-unifly nat policies create --name NAME --nat-type masquerade|source|destination \
+unifly nat policies create --name NAME --type masquerade|source|destination \
   [--src-address CIDR] [--dst-address CIDR] \
   [--src-port N] [--dst-port N] \
   [--translated-address IP] [--translated-port N] \
-  [--protocol tcp|udp|all] [-F payload.json]
+  [--protocol tcp|udp|tcp_udp|all] [-F payload.json]
 unifly nat policies update <id> [--name NAME | --description DESC] \
-  [--type masquerade|source|destination] [--protocol tcp|udp|all] \
+  [--type masquerade|source|destination] [--protocol tcp|udp|tcp_udp|all] \
   [--enabled true|false] [--src-address CIDR] [--dst-address CIDR] \
   [--src-port N] [--dst-port N] \
   [--translated-address IP] [--translated-port N] [-F payload.json]
@@ -341,6 +349,9 @@ unifly nat policies delete <id>
   `--dst-port` (the external port), `--translated-address` (internal IP),
   and `--translated-port` (internal port).
 - `--from-file` accepts full payloads.
+- NAT lives on the **Session v2 API**, not Integration — an API key on
+  UniFi OS is sufficient, but pure-Integration setups without session
+  HTTP access cannot manage NAT.
 
 ## ACL `[I]`
 
@@ -360,7 +371,7 @@ Similar reorder semantics to firewall policies.
 ```bash
 unifly dns list
 unifly dns get <id>
-unifly dns create --domain NAME --record-type A|AAAA|CNAME|MX|TXT|SRV|Forward \
+unifly dns create --domain NAME --record-type a|aaaa|cname|mx|txt|srv|forward \
   --value VALUE [--ttl SECS] [-F payload.json]
 unifly dns update <id> [flags...]
 unifly dns delete <id>
@@ -368,15 +379,17 @@ unifly dns delete <id>
 
 **Gotchas:**
 
+- `--record-type` values are **lowercase** (`a`, not `A`); clap rejects
+  uppercase. Table output shows the short uppercase DNS names.
 - `--ttl` range is `0-86400` (enforced).
-- `Forward` record type sets up DNS forwarding for a domain.
+- `forward` record type sets up DNS forwarding for a domain.
 
 ## Traffic Lists `[I]`
 
 ```bash
 unifly traffic-lists list
 unifly traffic-lists get <id>
-unifly traffic-lists create --name NAME --list-type ports|ipv4|ipv6 --values "80,443" [-F payload.json]
+unifly traffic-lists create --name NAME --list-type ports|ipv4|ipv6 --items "80,443" [-F payload.json]
 unifly traffic-lists update <id> [flags...]
 unifly traffic-lists delete <id>
 ```
@@ -384,6 +397,7 @@ unifly traffic-lists delete <id>
 **Gotchas:**
 
 - `--list-type` is required. `ports`, `ipv4`, or `ipv6`.
+- `--items` is required unless `-F` supplies the payload.
 - Referenced by firewall policies, NAT policies, and ACLs. Ideal for
   avoiding rule duplication.
 
@@ -392,7 +406,8 @@ unifly traffic-lists delete <id>
 ```bash
 unifly hotspot list
 unifly hotspot get <id>
-unifly hotspot create --name NAME --count N --minutes N [--quota MB] [--up-rate KBPS] [--down-rate KBPS]
+unifly hotspot create --name NAME --count N --minutes N \
+  [--guest-limit N] [--data-limit-mb MB] [--rx-limit-kbps N] [--tx-limit-kbps N]
 unifly hotspot delete <id>
 unifly hotspot purge --filter "EXPR"
 ```
@@ -400,7 +415,8 @@ unifly hotspot purge --filter "EXPR"
 **Gotchas:**
 
 - `create --count N` generates N voucher codes in one call. Each code
-  inherits the other flags (duration, quota, rate limits).
+  inherits the other flags (duration, data limit, rate limits). There
+  is no `--from-file` on hotspot; flags are the whole surface.
 - `purge --filter` accepts the Integration filter DSL and is unifly's
   only bulk-delete-by-expression operation. Examples:
   `status.eq('UNUSED')`, `name.contains('Conference')`,
@@ -427,20 +443,23 @@ unifly events watch [--types CAT1,CAT2] [-o json]
 ## Stats `[L]`
 
 ```bash
-unifly stats site [--interval 5minute|hourly|daily|monthly] [--start ISO] [--end ISO]
-unifly stats device <mac> [--interval ...] [--attrs attr1,attr2]
-unifly stats client <mac> [--interval ...]
+unifly stats site [--interval 5m|hourly|daily|monthly] [--start ISO] [--end ISO]
+unifly stats device [--macs MAC1,MAC2] [--interval ...] [--attrs attr1,attr2]
+unifly stats client [--macs MAC1,MAC2] [--interval ...]
 unifly stats gateway [--interval ...]
 unifly stats dpi [--group-by by-app|by-cat] [--macs MAC1,MAC2]
 ```
 
 **Gotchas:**
 
+- `--interval` values: `5m` (not `5minute`), `hourly`, `daily`, `monthly`.
+- `stats device` and `stats client` take **`--macs`** (comma-separated),
+  not a positional MAC. Omit it to query all.
 - `--start`/`--end` are ISO 8601 timestamps (`2024-01-01T00:00:00Z`).
 - `--attrs` limits the metrics returned; smaller payloads, faster queries.
-- `stats dpi` requires `--group-by`. `by-app` buckets by application,
-  `by-cat` buckets by category.
-- Session API only; all commands fail without credentials.
+- `stats dpi --group-by` defaults to `by-app`; `by-cat` buckets by
+  category.
+- Session API only; all commands fail without session HTTP access.
 
 ## DPI `[I for apps/categories, L for status/enable/disable]`
 
@@ -501,6 +520,8 @@ unifly system poweroff
 
 **Gotchas:**
 
+- `system info` reads from the **Integration API** (`/v1/info`); the
+  rest of the section is Session API.
 - `backup download --path DIR` writes to a specific directory instead of
   cwd.
 - `backup delete` is scoped to a specific backup file.
@@ -511,9 +532,9 @@ unifly system poweroff
 
 ```bash
 unifly admin list
-unifly admin invite --email EMAIL --role ROLE
+unifly admin invite --name NAME --email EMAIL --role ROLE
 unifly admin revoke <admin_id>
-unifly admin update <admin_id> [--role ROLE]
+unifly admin update <admin_id> --role ROLE
 ```
 
 **Gotchas:**
@@ -521,7 +542,7 @@ unifly admin update <admin_id> [--role ROLE]
 - `revoke` and `update` take a **positional `<admin_id>`**, not
   `--email`. Pre-fetch the ID via `admin list -o json` before revoking.
 
-## Sites `[L]`
+## Sites `[I for list, L for create/delete]`
 
 ```bash
 unifly sites list
@@ -667,10 +688,11 @@ unifly cloud sdwan status <id>
   dashboard. `UNIFLY_THEME` env var also sets the theme.
 - `unifly completions bash|zsh|fish|powershell|elvish`: Emit completion
   script to stdout.
-- `unifly config init | cloud-setup | show | set | profiles | use | set-password`:
+- `unifly config init | cloud-setup | show | set | profiles | use | set-password | theme`:
   Profile management. `cloud-setup` validates a Site Manager API key, lets
   you pick a console and site interactively, and writes a cloud profile.
-  `set-password` stores secrets in the OS keyring.
+  `set-password` stores secrets in the OS keyring. `theme [NAME]` shows or
+  sets the persisted color theme.
 - `unifly countries`: List country codes for WiFi regulatory settings.
 
 ## Cross-Cutting Patterns
@@ -679,11 +701,17 @@ unifly cloud sdwan status <id>
 
 Accepted by: `networks`, `wifi`, `firewall policies`, `firewall zones`,
 `firewall groups`, `nat policies`, `acl`, `dns`, `traffic-lists`,
-`hotspot`, `vpn site-to-site`, `vpn remote-access`, `vpn clients`,
-`vpn peers`, `vpn settings patch`, and `devices port-set` (JSONC for
-switch port config-as-code). The flag mutually excludes inline flags
-on the same field. Prefer `--from-file` for anything beyond a handful
-of flags.
+`vpn site-to-site`, `vpn remote-access`, `vpn clients`, `vpn peers`,
+`vpn settings patch`, and `devices port-set` (JSONC for switch port
+config-as-code). The flag mutually excludes inline flags on the same
+field. Prefer `--from-file` for anything beyond a handful of flags.
+
+JSONC is accepted everywhere: comments and trailing commas are stripped
+before parsing for every `--from-file`, not just `port-set`.
+
+**Typos are silently dropped.** Only `devices port-set` payloads reject
+unknown fields; every other `--from-file` struct ignores unrecognized
+keys without an error. Double-check field names against `examples/`.
 
 ```bash
 unifly networks create -F network.json
@@ -692,47 +720,56 @@ unifly firewall policies create -F policy.json
 
 See `examples/` for payload templates.
 
-### Integration Filter DSL
+### List Filtering (`--filter`)
 
-`--filter` on list commands and `hotspot purge --filter` accepts a small
-expression language:
+`--filter` on list commands is **client-side** and supports exactly one
+expression — no boolean combinators, no comparison operators:
 
 ```
-field.eq('value')
-field.neq('value')
-field.contains('substring')
-field.startswith('prefix')
-field.endswith('suffix')
-field.gt(123), field.lt(123), field.gte, field.lte
-field.in(['a', 'b', 'c'])
+field.eq('value')          # case-insensitive equality
+field.contains('substr')   # case-insensitive substring
+field.in('a','b','c')      # membership, quoted args
 ```
-
-Combine with `&&` and `||`:
 
 ```bash
-unifly devices list --filter "state.eq('ONLINE') && model.startswith('U6')"
+unifly devices list --filter "state.eq('Online')"
 ```
 
-Only Integration API commands respect `--filter`. Session commands filter
-client-side via `jq` after fetching.
+Field paths address the JSON output shape (dot notation for nesting).
+**An unparseable expression matches nothing and exits 0** — a silent
+empty result usually means a typo in the filter, not an empty
+collection.
+
+The full server-side Integration filter DSL (`neq`, `gt/lt`,
+`startswith`, `&&`/`||`) applies **only** to `hotspot purge --filter`,
+which passes the expression to the controller.
 
 ### Default List Limit Is 25
 
-All `list` commands default to `--limit 25` and print a truncation hint
-when results hit the ceiling. For enumeration use `--all` (auto-paginate)
-or `--limit 200` (or higher) explicitly. **Agents running enumeration
-queries should always pass one of these flags to avoid silent truncation.**
+`ListArgs`-based `list` commands default to `--limit 25` and print a
+truncation hint when results hit the ceiling. Exceptions: `hotspot list`,
+`events list`, and `alarms list` default to 100; `clients roams` defaults
+to 50; `wifi neighbors` displays 25. For enumeration use `--all`
+(auto-paginate) or `--limit 200` (or higher) explicitly. **Agents running
+enumeration queries should always pass one of these flags to avoid silent
+truncation.**
 
 ### Output Modes for Pipelines
 
 - `-o json`: Structured output, the default for agent use
 - `-o json-compact`: Single-line JSON per record, great for line-oriented
   processing
-- `-o plain`: Emits IDs one per line, ideal for `xargs`:
-  ```bash
-  unifly clients list -o plain | xargs -n1 unifly clients block
-  ```
+- `-o plain`: Emits record IDs one per line, ideal for `xargs` when the
+  downstream command takes that same ID
 - `-o table`: Human display only, not for parsing
+
+Mind the identifier type: `clients list -o plain` emits client UUIDs,
+but `clients block` takes a MAC. Extract the right field with `jq`
+instead:
+
+```bash
+unifly clients list --all -o json | jq -r '.[].mac' | xargs -n1 unifly clients block
+```
 
 ### Dry-Run-Like Patterns
 

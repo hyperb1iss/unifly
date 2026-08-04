@@ -679,10 +679,6 @@ remote-access suggest-port` and `vpn remote-access download-config
 - **Panic hooks must be installed before terminal setup** so that panics
   restore the terminal state before crashing. `terminal::install_hooks`
   handles this.
-- **Controller reconnect lifecycle is broken.** The internal
-  `CancellationToken` becomes permanent after the first disconnect.
-  Reconnect does not work correctly yet. Known gap, documented so
-  agents do not waste time chasing a fix unless it is the explicit task.
 
 ---
 
