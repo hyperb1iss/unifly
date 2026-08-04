@@ -77,12 +77,11 @@ fn dns_value_from_extra(policy_type: DnsPolicyType, extra: &HashMap<String, Valu
 /// infallible `From` impl, which mislabeled unknown record types as
 /// `ForwardDomain`; an unrecognized `type` token is now an error.
 impl TryFrom<integration_types::DnsPolicyResponse> for DnsPolicy {
-    type Error = String;
+    type Error = crate::model::dns::UnrecognizedDnsRecordType;
 
     fn try_from(d: integration_types::DnsPolicyResponse) -> Result<Self, Self::Error> {
-        let policy_type = d.policy_type.clone();
-        dns_policy_from_integration(d)
-            .ok_or_else(|| format!("unrecognized DNS record type `{policy_type}`"))
+        let token = d.policy_type.clone();
+        dns_policy_from_integration(d).ok_or(crate::model::dns::UnrecognizedDnsRecordType { token })
     }
 }
 
@@ -103,12 +102,11 @@ pub(crate) fn dns_policy_from_integration(
         policy_type,
         domain: d.domain.unwrap_or_default(),
         value: dns_value_from_extra(policy_type, &d.extra),
-        #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
         ttl_seconds: d
             .extra
             .get("ttlSeconds")
             .and_then(serde_json::Value::as_u64)
-            .map(|t| t as u32),
+            .and_then(|t| u32::try_from(t).ok()),
         origin: origin_from_metadata(&d.metadata),
         source: DataSource::IntegrationApi,
     })

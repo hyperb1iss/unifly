@@ -364,8 +364,12 @@ impl IntegrationClient {
             fetched += i64::try_from(wire_received).unwrap_or(i64::MAX);
             all.extend(page.data);
 
+            // A zero-progress page terminates unconditionally: it covers a
+            // non-positive limit and servers that return empty pages with a
+            // positive totalCount, either of which would otherwise loop
+            // forever refetching offset 0.
             let limit_usize = usize::try_from(limit).unwrap_or(0);
-            if wire_received < limit_usize || fetched >= page.total_count {
+            if wire_received == 0 || wire_received < limit_usize || fetched >= page.total_count {
                 break;
             }
 
