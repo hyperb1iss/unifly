@@ -18,6 +18,22 @@ pub use crate::config::{Defaults, config_path, load_config_or_default, save_conf
 
 // ── CLI-specific helpers ────────────────────────────────────────
 
+/// Fallback request timeout when neither `--timeout` nor the profile sets one.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+// This inherent impl lives here rather than in `cli/args/common.rs`
+// because build.rs includes args.rs standalone for man-page generation,
+// and that compilation unit must stay pure clap definitions.
+impl GlobalOpts {
+    /// Resolve the effective timeout: flag/env, then profile, then default.
+    #[must_use]
+    pub fn timeout_secs(&self, profile_timeout: Option<u64>) -> u64 {
+        self.timeout
+            .or(profile_timeout)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+    }
+}
+
 /// Resolve the active profile name from CLI flags and config.
 pub fn active_profile_name(global: &GlobalOpts, cfg: &Config) -> String {
     global
