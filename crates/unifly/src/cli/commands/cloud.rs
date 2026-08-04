@@ -42,7 +42,7 @@ pub(crate) fn build_site_manager_client(
 
     let api_key = resolve_cloud_api_key(profile.as_ref(), &profile_name, global)?;
     let controller = resolve_site_manager_url(profile.as_ref(), global);
-    let transport = cloud_transport(global);
+    let transport = cloud_transport(global, profile.as_ref().and_then(|p| p.timeout));
 
     SiteManagerClient::from_api_key(&controller, &api_key, &transport).map_err(api_error)
 }
@@ -64,7 +64,7 @@ pub(crate) async fn build_cloud_integration_client(
 ) -> Result<IntegrationClient, CliError> {
     let api_key = resolve_cloud_api_key(Some(profile), profile_name, global)?;
     let controller = resolve_site_manager_url(Some(profile), global);
-    let transport = cloud_transport(global);
+    let transport = cloud_transport(global, profile.timeout);
     let host_id = if let Some(host_id) = &global.host_id {
         host_id.clone()
     } else if let Ok(host_id) = config::resolve_host_id(profile) {
@@ -104,10 +104,10 @@ pub(crate) fn active_profile(global: &GlobalOpts) -> (String, Option<Profile>) {
     (profile_name, profile)
 }
 
-fn cloud_transport(global: &GlobalOpts) -> TransportConfig {
+fn cloud_transport(global: &GlobalOpts, profile_timeout: Option<u64>) -> TransportConfig {
     TransportConfig {
         tls: TlsMode::System,
-        timeout: Duration::from_secs(global.timeout_secs(None)),
+        timeout: Duration::from_secs(global.timeout_secs(profile_timeout)),
         cookie_jar: None,
     }
 }

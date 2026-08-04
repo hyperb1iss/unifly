@@ -149,12 +149,20 @@ impl App {
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
             && let Some(reason) = &self.connection_error
         {
-            let max = usize::from(area.width).saturating_sub(60).max(24);
-            let short: String = reason.chars().take(max).collect();
-            spans.push(Span::styled(
-                format!(" ({short})"),
-                Style::default().fg(theme::error()),
-            ));
+            // The reason is best-effort context: it must never displace the
+            // key hints or run under the sponsor button. Budget from the
+            // actual fixed-span widths and drop it when it cannot fit.
+            let donate_width = if self.show_donate { 12 } else { 0 };
+            let fixed: usize =
+                spans.iter().map(Span::width).sum::<usize>() + hints.width() + 3 + donate_width;
+            let budget = usize::from(area.width).saturating_sub(fixed);
+            if budget >= 12 {
+                let short: String = reason.chars().take(budget).collect();
+                spans.push(Span::styled(
+                    format!(" ({short})"),
+                    Style::default().fg(theme::error()),
+                ));
+            }
         }
         spans.push(hints);
         let line = Line::from(spans);
