@@ -78,6 +78,61 @@ async fn test_list_sites_pagination() {
 }
 
 #[tokio::test]
+async fn test_paginate_all_advances_past_dropped_items() {
+    let (server, client) = setup().await;
+
+    let site_a = Uuid::new_v4();
+    let site_b = Uuid::new_v4();
+
+    // Page 1 is full on the wire (count == limit) but one item is malformed
+    // and gets dropped by the lenient decode. Pagination must still fetch
+    // page 2 and advance the offset by the wire count, not the kept count.
+    let page1 = json!({
+        "offset": 0,
+        "limit": 2,
+        "count": 2,
+        "totalCount": 3,
+        "data": [
+            { "id": site_a, "name": "Main", "internalReference": "default" },
+            { "id": "not-a-uuid", "name": 42 },
+        ]
+    });
+    let page2 = json!({
+        "offset": 2,
+        "limit": 2,
+        "count": 1,
+        "totalCount": 3,
+        "data": [
+            { "id": site_b, "name": "Remote", "internalReference": "site2" },
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/integration/v1/sites"))
+        .and(query_param("offset", "0"))
+        .and(query_param("limit", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&page1))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/integration/v1/sites"))
+        .and(query_param("offset", "2"))
+        .and(query_param("limit", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&page2))
+        .mount(&server)
+        .await;
+
+    let sites: Vec<SiteResponse> = client
+        .paginate_all(2, |offset, limit| client.list_sites(offset, limit))
+        .await
+        .unwrap();
+
+    assert_eq!(sites.len(), 2, "good items from both pages must survive");
+    assert_eq!(sites[0].name, "Main");
+    assert_eq!(sites[1].name, "Remote");
+}
+
+#[tokio::test]
 async fn test_get_device() {
     let (server, client) = setup().await;
 
