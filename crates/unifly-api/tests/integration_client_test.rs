@@ -231,6 +231,79 @@ async fn test_list_firewall_policies_accepts_legacy_policy_without_id() {
 }
 
 #[tokio::test]
+async fn test_list_firewall_policies_survives_spec_port_range_and_bad_items() {
+    let (server, client) = setup().await;
+
+    let site_id = Uuid::new_v4();
+    // Policy 2 carries the `start`/`stop` range shape UniFi OS actually sends
+    // (issue #26); policy 3 is malformed and must be dropped, not fatal.
+    let body = json!({
+        "offset": 0,
+        "limit": 25,
+        "count": 3,
+        "totalCount": 3,
+        "data": [
+            {
+                "id": Uuid::new_v4(),
+                "name": "Allow HTTP from Trusted",
+                "enabled": true,
+                "action": {"type": "ALLOW"},
+                "loggingEnabled": false
+            },
+            {
+                "id": Uuid::new_v4(),
+                "name": "Allow range",
+                "enabled": true,
+                "action": {"type": "ALLOW"},
+                "loggingEnabled": false,
+                "destination": {
+                    "zoneId": Uuid::new_v4(),
+                    "trafficFilter": {
+                        "type": "NETWORK",
+                        "networkFilter": {"networkIds": [], "matchOpposite": false},
+                        "portFilter": {
+                            "type": "PORTS",
+                            "matchOpposite": false,
+                            "items": [
+                                {"type": "PORT_NUMBER_RANGE", "start": 8000, "stop": 9000}
+                            ]
+                        }
+                    }
+                }
+            },
+            {
+                "id": Uuid::new_v4(),
+                "enabled": "definitely-not-a-bool"
+            }
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/integration/v1/sites/{site_id}/firewall/policies"
+        )))
+        .and(query_param("offset", "0"))
+        .and(query_param("limit", "25"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&server)
+        .await;
+
+    let page: Page<FirewallPolicyResponse> = client
+        .list_firewall_policies(&site_id, 0, 25)
+        .await
+        .unwrap();
+
+    assert_eq!(page.total_count, 3);
+    assert_eq!(
+        page.data.len(),
+        2,
+        "malformed item must be dropped without failing the page"
+    );
+    assert_eq!(page.data[0].name, "Allow HTTP from Trusted");
+    assert_eq!(page.data[1].name, "Allow range");
+}
+
+#[tokio::test]
 async fn test_get_firewall_policy_ordering_uses_zone_pair_query_params() {
     let (server, client) = setup().await;
 

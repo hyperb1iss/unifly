@@ -8,6 +8,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirewallPolicySource {
+    #[serde(default)]
     pub zone_id: Option<Uuid>,
     #[serde(default)]
     pub traffic_filter: Option<SourceTrafficFilter>,
@@ -17,6 +18,7 @@ pub struct FirewallPolicySource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirewallPolicyDestination {
+    #[serde(default)]
     pub zone_id: Option<Uuid>,
     #[serde(default)]
     pub traffic_filter: Option<DestTrafficFilter>,
@@ -206,6 +208,8 @@ pub enum IpAddressItem {
     Range { start: String, stop: String },
     #[serde(rename = "SUBNET")]
     Subnet { value: String },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,9 +243,20 @@ pub enum PortItem {
     },
     #[serde(rename = "PORT_NUMBER_RANGE", alias = "PORT_RANGE")]
     Range {
-        #[serde(rename = "startPort", deserialize_with = "deserialize_port_value")]
+        // The controller sends `start`/`stop` (per the OpenAPI schema
+        // `Number range port matching`); `startPort`/`endPort` is kept as
+        // the serialization shape the write path has been tested with.
+        #[serde(
+            rename = "startPort",
+            alias = "start",
+            deserialize_with = "deserialize_port_value"
+        )]
         start_port: String,
-        #[serde(rename = "endPort", deserialize_with = "deserialize_port_value")]
+        #[serde(
+            rename = "endPort",
+            alias = "stop",
+            deserialize_with = "deserialize_port_value"
+        )]
         end_port: String,
     },
     #[serde(other)]
@@ -643,5 +658,41 @@ mod tests {
             matches!(item, PortItem::Range { .. }),
             "PORT_RANGE alias must still deserialize"
         );
+    }
+
+    #[test]
+    fn port_item_range_deserializes_from_spec_start_stop_fields() {
+        // The wire shape per the OpenAPI `Number range port matching` schema
+        // and the controller behavior reported in issue #26.
+        let item: PortItem = serde_json::from_value(serde_json::json!({
+            "type": "PORT_NUMBER_RANGE",
+            "start": 8000,
+            "stop": 9000
+        }))
+        .unwrap();
+        assert_eq!(
+            item,
+            PortItem::Range {
+                start_port: "8000".into(),
+                end_port: "9000".into()
+            }
+        );
+    }
+
+    #[test]
+    fn ip_address_item_tolerates_unknown_type() {
+        let filter: IpAddressFilter = serde_json::from_value(serde_json::json!({
+            "type": "SPECIFIC",
+            "items": [{ "type": "GEOIP_FANCY_FUTURE", "value": "whatever" }],
+            "matchOpposite": false
+        }))
+        .unwrap();
+
+        match filter {
+            IpAddressFilter::Specific { items, .. } => {
+                assert_eq!(items, vec![super::IpAddressItem::Unknown]);
+            }
+            other => panic!("unexpected filter: {other:?}"),
+        }
     }
 }

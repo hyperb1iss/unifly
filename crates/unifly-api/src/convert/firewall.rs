@@ -334,6 +334,7 @@ fn convert_ip_address_filter(f: &integration_types::IpAddressFilter) -> Vec<IpSp
                 integration_types::IpAddressItem::Subnet { value } => IpSpec::Subnet {
                     value: value.clone(),
                 },
+                integration_types::IpAddressItem::Unknown => IpSpec::Address { value: "?".into() },
             })
             .collect(),
         integration_types::IpAddressFilter::TrafficMatchingList {
