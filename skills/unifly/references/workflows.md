@@ -279,7 +279,8 @@ unifly hotspot create \
   --rx-limit-kbps 20000 --tx-limit-kbps 5000
 
 # create prints confirmation on stderr only; fetch the batch by name
-VOUCHERS=$(unifly hotspot list --all -o json | \
+# (hotspot list has no --all; it takes --limit up to 1000)
+VOUCHERS=$(unifly hotspot list --limit 1000 -o json | \
   jq --arg name "$BATCH" '[.[] | select(.name == $name)]')
 
 # Extract codes

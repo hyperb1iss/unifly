@@ -520,8 +520,9 @@ unifly system poweroff
 
 **Gotchas:**
 
-- `system info` reads from the **Integration API** (`/v1/info`); the
-  rest of the section is Session API.
+- `system info` prefers the **Integration API** (`/v1/info`) and falls
+  back to Session `sysinfo` when no Integration client exists; the rest
+  of the section is Session API.
 - `backup download --path DIR` writes to a specific directory instead of
   cwd.
 - `backup delete` is scoped to a specific backup file.
@@ -542,7 +543,7 @@ unifly admin update <admin_id> --role ROLE
 - `revoke` and `update` take a **positional `<admin_id>`**, not
   `--email`. Pre-fetch the ID via `admin list -o json` before revoking.
 
-## Sites `[I for list, L for create/delete]`
+## Sites `[H for list, L for create/delete]`
 
 ```bash
 unifly sites list
@@ -747,12 +748,13 @@ which passes the expression to the controller.
 ### Default List Limit Is 25
 
 `ListArgs`-based `list` commands default to `--limit 25` and print a
-truncation hint when results hit the ceiling. Exceptions: `hotspot list`,
-`events list`, and `alarms list` default to 100; `clients roams` defaults
-to 50; `wifi neighbors` displays 25. For enumeration use `--all`
-(auto-paginate) or `--limit 200` (or higher) explicitly. **Agents running
-enumeration queries should always pass one of these flags to avoid silent
-truncation.**
+truncation hint when results hit the ceiling; for enumeration use `--all`
+(auto-paginate) or `--limit 200` (or higher) explicitly. Exceptions
+without an `--all` flag: `hotspot list`, `events list`, and `alarms list`
+default to 100 and take only `--limit` (hotspot caps at 1000); `clients
+roams` defaults to 50; `wifi neighbors` displays 25. **Agents running
+enumeration queries should always pass an explicit limit flag to avoid
+silent truncation.**
 
 ### Output Modes for Pipelines
 
