@@ -217,6 +217,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_profile_honors_insecure_flag_over_unset_profile() {
+        // The TUI launch path resolves profiles through this function; the
+        // -k/--insecure flag must win when the profile leaves TLS unset
+        // (issue #25: flag was dropped, TLS failed, TUI sat disconnected).
+        let mut profile = cloud_profile();
+        profile.auth_mode = "integration".into();
+        profile.controller = "https://10.0.1.1".into();
+        profile.insecure = None;
+
+        let global = base_global();
+        assert!(global.insecure);
+
+        let resolved =
+            resolve_profile(&profile, "default", &global).expect("profile should resolve");
+
+        assert!(matches!(resolved.tls, TlsVerification::DangerAcceptInvalid));
+    }
+
+    #[test]
     fn resolve_profile_cloud_requires_host_id() {
         let profile = cloud_profile();
         let mut global = base_global();

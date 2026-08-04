@@ -55,9 +55,14 @@ impl App {
             }
             Action::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
+                self.connection_error = None;
             }
-            Action::Disconnected(_) => {
+            Action::Disconnected(reason) => {
                 self.connection_status = ConnectionStatus::Disconnected;
+                self.show_notification(crate::tui::action::Notification::error(format!(
+                    "connection failed: {reason}"
+                )));
+                self.connection_error = Some(reason.clone());
             }
             Action::Reconnecting => {
                 self.connection_status = ConnectionStatus::Reconnecting;

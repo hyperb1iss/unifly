@@ -145,7 +145,19 @@ impl App {
             " │ ? help  a about  / search  , settings  q quit",
             theme::key_hint(),
         );
-        let line = Line::from(vec![Span::raw(" "), connection_indicator, hints]);
+        let mut spans = vec![Span::raw(" "), connection_indicator];
+        if matches!(self.connection_status, ConnectionStatus::Disconnected)
+            && let Some(reason) = &self.connection_error
+        {
+            let max = usize::from(area.width).saturating_sub(60).max(24);
+            let short: String = reason.chars().take(max).collect();
+            spans.push(Span::styled(
+                format!(" ({short})"),
+                Style::default().fg(theme::error()),
+            ));
+        }
+        spans.push(hints);
+        let line = Line::from(spans);
 
         frame.render_widget(Paragraph::new(line), area);
 

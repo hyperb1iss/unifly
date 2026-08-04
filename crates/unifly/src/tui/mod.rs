@@ -59,8 +59,8 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
         "starting unifly tui"
     );
 
-    let controller = build_controller_direct(global)
-        .or_else(|| build_controller_from_config(global.profile.as_deref()));
+    let controller =
+        build_controller_direct(global).or_else(|| build_controller_from_config(global));
 
     let sanitizer = resolve_sanitizer(global);
     let effects_enabled = resolve_effects_enabled(global);
@@ -127,7 +127,13 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
             None
         }
     })?;
-    let url = url_str.parse().expect("invalid controller URL");
+    let url = match url_str.parse() {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!(%error, url = url_str, "invalid controller URL, ignoring direct flags");
+            return None;
+        }
+    };
 
     let api_key = SecretString::from(global.api_key.as_ref()?.clone());
 
@@ -137,7 +143,7 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
             host_id: host_id.clone(),
         }
     } else {
-        try_hybrid_from_config(&api_key).unwrap_or(AuthCredentials::ApiKey(api_key))
+        try_hybrid_from_config(&api_key, global).unwrap_or(AuthCredentials::ApiKey(api_key))
     };
 
     let tls = if is_cloud {
@@ -172,9 +178,13 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
     Some(Controller::new(controller_config))
 }
 
-fn try_hybrid_from_config(api_key: &SecretString) -> Option<AuthCredentials> {
+fn try_hybrid_from_config(api_key: &SecretString, global: &GlobalOpts) -> Option<AuthCredentials> {
     let cfg = config::load_config().ok()?;
-    let name = cfg.default_profile.as_deref().unwrap_or("default");
+    let name = global
+        .profile
+        .as_deref()
+        .or(cfg.default_profile.as_deref())
+        .unwrap_or("default");
     let profile = cfg.profiles.get(name)?;
 
     if profile.auth_mode != "hybrid" {
@@ -190,7 +200,7 @@ fn try_hybrid_from_config(api_key: &SecretString) -> Option<AuthCredentials> {
     })
 }
 
-fn build_controller_from_config(profile_name: Option<&str>) -> Option<Controller> {
+fn build_controller_from_config(global: &GlobalOpts) -> Option<Controller> {
     let cfg = match config::load_config() {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -199,7 +209,9 @@ fn build_controller_from_config(profile_name: Option<&str>) -> Option<Controller
         }
     };
 
-    let profile_name = profile_name
+    let profile_name = global
+        .profile
+        .as_deref()
         .or(cfg.default_profile.as_deref())
         .unwrap_or("default");
 
@@ -211,8 +223,17 @@ fn build_controller_from_config(profile_name: Option<&str>) -> Option<Controller
         return None;
     };
 
-    match config::profile_to_controller_config(profile, profile_name) {
-        Ok(controller_config) => Some(Controller::new(controller_config)),
+    // The CLI resolver honors flag/env overrides (--insecure, --site,
+    // --api-key, --totp, --no-cache) that the plain profile translation
+    // does not; dropping them here is how issue #25 happened.
+    match config::resolve::resolve_profile(profile, profile_name, global) {
+        Ok(mut controller_config) => {
+            let is_cloud = matches!(controller_config.auth, AuthCredentials::Cloud { .. });
+            controller_config.refresh_interval_secs = if is_cloud { 60 } else { 10 };
+            controller_config.websocket_enabled = !is_cloud;
+            controller_config.polling_interval_secs = if is_cloud { 30 } else { 10 };
+            Some(Controller::new(controller_config))
+        }
         Err(e) => {
             tracing::warn!("failed to build controller from profile '{profile_name}': {e}");
             None

@@ -53,6 +53,8 @@ pub struct App {
     running: bool,
     /// Connection status indicator.
     connection_status: ConnectionStatus,
+    /// Why the last connect attempt failed, shown next to the indicator.
+    connection_error: Option<String>,
     /// Help overlay visibility.
     help_visible: bool,
     /// About overlay visibility.
@@ -129,6 +131,7 @@ impl App {
             screens,
             running: true,
             connection_status: ConnectionStatus::default(),
+            connection_error: None,
             help_visible: false,
             about_visible: false,
             search_active: false,
