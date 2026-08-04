@@ -21,7 +21,7 @@ pub enum DnsPolicyType {
     TxtRecord,
     #[serde(alias = "SRV_RECORD", alias = "SRV")]
     SrvRecord,
-    #[serde(alias = "FORWARD_DOMAIN", alias = "Forward")]
+    #[serde(alias = "FORWARD_DOMAIN", alias = "FORWARD", alias = "Forward")]
     ForwardDomain,
 }
 
