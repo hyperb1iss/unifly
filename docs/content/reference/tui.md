@@ -1,6 +1,6 @@
 +++
 title = "TUI Dashboard"
-description = "10-screen terminal dashboard with keybindings and screen layouts"
+description = "11-screen terminal dashboard with keybindings and screen layouts"
 weight = 2
 +++
 
@@ -52,18 +52,19 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 
 ### Global
 
-| Key                       | Action                 |
-| ------------------------- | ---------------------- |
-| `1`-`9`, `,`              | Jump to screen         |
-| `Tab` / `Shift+Tab`       | Next / previous screen |
-| `j` / `k` / `Up` / `Down` | Navigate up / down     |
-| `g` / `G`                 | Jump to top / bottom   |
-| `Ctrl+d` / `Ctrl+u`       | Page down / up         |
-| `Enter`                   | Select / expand detail |
-| `Esc`                     | Close detail / go back |
-| `/`                       | Search                 |
-| `?`                       | Help overlay           |
-| `q`                       | Quit                   |
+| Key                       | Action                              |
+| ------------------------- | ----------------------------------- |
+| `1`-`9`, `,`              | Jump to screen                      |
+| `Tab` / `Shift+Tab`       | Next / previous screen              |
+| `j` / `k` / `Up` / `Down` | Navigate up / down                  |
+| `g` / `G`                 | Jump to top / bottom                |
+| `Ctrl+d` / `Ctrl+u`       | Page down / up                      |
+| `Enter`                   | Select / expand detail              |
+| `Esc`                     | Close detail / go back              |
+| `/`                       | Search                              |
+| `?`                       | Help overlay                        |
+| `Ctrl+r`                  | Force reconnect (when disconnected) |
+| `q`                       | Quit                                |
 
 ### Screen-Specific
 
@@ -126,13 +127,16 @@ The TUI works with all authentication modes, but some screens degrade gracefully
 
 | Mode              | Dashboard | Devices  | Clients  | Events   | Stats    | WiFi     |
 | ----------------- | --------- | -------- | -------- | -------- | -------- | -------- |
-| API Key           | Partial   | Full     | Full     | No       | No       | Full     |
+| API Key           | Full      | Full     | Full     | No       | Full     | Full     |
 | Username/Password | Full      | Full     | Full     | Full     | Full     | Full     |
 | **Hybrid**        | **Full**  | **Full** | **Full** | **Full** | **Full** | **Full** |
+| Cloud             | Partial   | Full     | Partial  | No       | No       | No       |
 
 {% tip() %}
 **API Key mode** works for most TUI screens on UniFi OS. Use **Hybrid mode** only when you need live WebSocket event streaming (the Events screen). Statistics and device data are available via Session HTTP endpoints that API Key mode can reach.
 {% end %}
+
+**Cloud mode** routes Integration API traffic through the [Site Manager connector](/guide/cloud), one console at a time. Session-backed screens (Events, Stats, WiFi observability) need direct controller access and stay empty, and client rows miss their Session enrichment fields.
 
 ## Graceful Degradation
 
@@ -142,9 +146,9 @@ When data is unavailable (e.g., API-key-only mode without Session access), panel
 
 The TUI uses the [Opaline](https://crates.io/crates/opaline) theme engine with the SilkCircuit color palette. Press `,` to open Settings and use the theme selector to preview and switch themes. Theme changes take effect immediately and persist to `defaults.theme` in your config file. You can also set the initial theme via the `UNIFLY_THEME` environment variable at launch.
 
-{% warning(title="Known Limitation") %}
-Controller reconnect after a network interruption is currently broken. If the connection drops, restart the TUI to reconnect.
-{% end %}
+## Connection Resilience
+
+When a connection attempt fails or the controller drops mid-session, the TUI reconnects automatically. Retries use exponential backoff starting at 2 seconds and doubling up to a 30-second cap, and they continue indefinitely; the status bar shows the current attempt number while reconnecting. Press `Ctrl+r` while disconnected to retry immediately instead of waiting out the backoff.
 
 ## Next Steps
 

@@ -34,12 +34,16 @@ unifly -k devices list
 unifly config set insecure true
 ```
 
+The `unifly config init` wizard asks whether the controller uses a self-signed certificate and writes `insecure = true` into the profile when you confirm, so fresh profiles usually never hit this error. You can also set `insecure = true` in the `[defaults]` section to apply it to every profile that doesn't decide for itself.
+
 For production, provide a custom CA certificate:
 
 ```toml
 [profiles.production]
 ca_cert = "/path/to/your-ca.pem"
 ```
+
+To force certificate verification for one command regardless of profile or defaults, pass `--insecure=false`. The flag requires the equals form: `--insecure=false` works, `--insecure false` does not parse.
 
 ### "403 Forbidden" on POST/PUT/DELETE
 
@@ -108,13 +112,21 @@ export UNIFI_URL="https://192.168.1.1"
 
 ### Client list missing traffic/hostname/VLAN columns
 
-**Cause**: You're using API Key mode. These fields come from the Session API and require Hybrid mode.
+**Cause**: These fields come from the Session API, and your setup has no session HTTP access. On UniFi OS consoles an API key reaches the Session HTTP endpoints too, so API Key mode gets the enriched data automatically. Only pure-Integration setups miss it: classic standalone controllers that reject API keys on the session surface, or cloud-connector profiles.
 
 ```bash
-# Switch to Hybrid for enriched data
+# On a classic standalone controller, switch to Hybrid
 unifly config set auth_mode hybrid
 unifly config set-password
 ```
+
+Hybrid is otherwise only needed for live WebSocket features such as `events watch`.
+
+### DNS records show the wrong type
+
+**Cause**: Older unifly builds mislabeled unrecognized DNS record types as `Forward`. Current builds parse every type the controller reports and skip records they cannot classify (with a warning in verbose output). Upgrade unifly if `dns list` shows `Forward` for records the web UI shows as something else.
+
+Related gotcha: `dns create --record-type` takes lowercase values (`a`, `aaaa`, `cname`, `mx`, `txt`, `srv`, `forward`). Uppercase `A` is rejected by argument parsing, even though table output displays the familiar uppercase names.
 
 ### "events watch" hangs or shows nothing
 
@@ -135,6 +147,39 @@ unifly devices list --all
 # Or set a higher limit
 unifly clients list --limit 200
 ```
+
+## Cloud / Site Manager
+
+### "multiple cloud consoles are available"
+
+**Cause**: Your Site Manager API key can see more than one console, and the profile doesn't say which one to use. Unifly auto-resolves the console only when the key sees exactly one console, or exactly one that you own.
+
+```bash
+# List consoles and their IDs
+unifly cloud hosts
+
+# Pin one in the profile
+unifly config set host_id <ID>
+
+# Or override per command
+unifly --host-id <ID> networks list
+```
+
+### "no cloud consoles are accessible with the current API key"
+
+**Cause**: The API key exists but its role doesn't grant access to any console. Site Manager keys are permission-scoped; a key created with a restricted role can authenticate and still see nothing.
+
+Check the key's permissions at [unifi.ui.com](https://unifi.ui.com) under your account's API keys, or generate a new key with access to the consoles you need.
+
+### Cloud profile misbehaving in other ways
+
+Re-run the guided setup. It validates the API key against the fleet API, lists the consoles the key can actually see, and writes a clean cloud profile:
+
+```bash
+unifly config cloud-setup
+```
+
+Session-only commands (`events watch`, `stats`, Wi-Fi observability, admin) fail in cloud mode by design; they need direct controller access. See [Cloud & Site Manager](/guide/cloud) for the full boundary.
 
 ## TUI Issues
 
@@ -202,7 +247,8 @@ UNIFI_TOTP=$(op read "op://Vault/UniFi/one-time password") unifly devices list
 - **`firewall policies patch`** is the fast path for toggling `enabled`/`logging`. Use it instead of `update` when only those fields change
 - **`networks refs <id>`** checks what depends on a network before you delete it. No equivalent exists for other entities yet
 - **`admin revoke`** takes a positional admin ID, not a `--email` flag
-- **Controller reconnect** is currently broken in the TUI. If the connection drops, restart the TUI
+- **Create commands print the created entity on stdout** in the requested format, so `create -o json | jq -r .id` captures the new ID directly (the human confirmation goes to stderr). `sites create` is the exception: the controller returns no record
+- **The TUI reconnects automatically** after a connection drop, with exponential backoff (2s doubling to a 30s cap). Press `Ctrl+r` while disconnected to retry immediately
 
 ## Still Stuck?
 
