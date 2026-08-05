@@ -148,7 +148,7 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
 
     let tls = if is_cloud {
         TlsVerification::SystemDefaults
-    } else if global.insecure {
+    } else if global.insecure.unwrap_or(false) {
         TlsVerification::DangerAcceptInvalid
     } else {
         TlsVerification::SystemDefaults

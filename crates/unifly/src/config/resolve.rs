@@ -105,13 +105,20 @@ pub fn resolve_profile(
         }
     };
 
-    // 3. TLS verification (flag > profile > defaults)
+    // 3. TLS verification (flag/env > profile insecure > profile ca_cert
+    //    > defaults insecure). An explicit `--insecure=false` re-enables
+    //    verification, and a profile CA is still verification, so only an
+    //    explicit insecure=true may skip it; [defaults].insecure applies
+    //    when neither flag nor profile decided and no CA is configured.
+    let explicit_insecure = global.insecure.or(profile.insecure);
     let tls = if is_cloud {
         TlsVerification::SystemDefaults
-    } else if global.insecure || profile.insecure.unwrap_or(defaults.insecure) {
+    } else if explicit_insecure.unwrap_or(false) {
         TlsVerification::DangerAcceptInvalid
     } else if let Some(ref ca_path) = profile.ca_cert {
         TlsVerification::CustomCa(ca_path.clone())
+    } else if explicit_insecure.unwrap_or(defaults.insecure) {
+        TlsVerification::DangerAcceptInvalid
     } else {
         TlsVerification::SystemDefaults
     };
@@ -195,7 +202,7 @@ mod tests {
             totp: None,
             no_cache: false,
             demo: false,
-            insecure: true,
+            insecure: Some(true),
             timeout: None,
             no_effects: false,
         }
@@ -256,7 +263,7 @@ mod tests {
         let profile = direct_profile();
 
         let global = base_global();
-        assert!(global.insecure);
+        assert_eq!(global.insecure, Some(true));
 
         let resolved = resolve_profile(&profile, "default", &global, &Defaults::default())
             .expect("profile should resolve");
@@ -268,7 +275,7 @@ mod tests {
     fn resolve_profile_applies_defaults_insecure_when_flag_and_profile_unset() {
         let profile = direct_profile();
         let mut global = base_global();
-        global.insecure = false;
+        global.insecure = None;
 
         let defaults = Defaults {
             insecure: true,
@@ -287,7 +294,7 @@ mod tests {
         profile.insecure = Some(false);
 
         let mut global = base_global();
-        global.insecure = false;
+        global.insecure = None;
 
         let defaults = Defaults {
             insecure: true,
@@ -306,12 +313,50 @@ mod tests {
         profile.insecure = Some(false);
 
         let global = base_global();
-        assert!(global.insecure);
+        assert_eq!(global.insecure, Some(true));
 
         let resolved = resolve_profile(&profile, "default", &global, &Defaults::default())
             .expect("profile should resolve");
 
         assert!(matches!(resolved.tls, TlsVerification::DangerAcceptInvalid));
+    }
+
+    #[test]
+    fn resolve_profile_insecure_flag_false_overrides_profile_and_defaults() {
+        let mut profile = direct_profile();
+        profile.insecure = Some(true);
+
+        let mut global = base_global();
+        global.insecure = Some(false);
+
+        let defaults = Defaults {
+            insecure: true,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert!(matches!(resolved.tls, TlsVerification::SystemDefaults));
+    }
+
+    #[test]
+    fn resolve_profile_profile_ca_cert_beats_defaults_insecure() {
+        let mut profile = direct_profile();
+        profile.ca_cert = Some("/certs/controller-ca.pem".into());
+
+        let mut global = base_global();
+        global.insecure = None;
+
+        let defaults = Defaults {
+            insecure: true,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert!(matches!(resolved.tls, TlsVerification::CustomCa(_)));
     }
 
     #[test]

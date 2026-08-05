@@ -184,7 +184,7 @@ async fn build_controller_config(
 
     let tls = if is_cloud {
         unifly_api::TlsVerification::SystemDefaults
-    } else if global.insecure {
+    } else if global.insecure.unwrap_or(cfg.defaults.insecure) {
         unifly_api::TlsVerification::DangerAcceptInvalid
     } else {
         unifly_api::TlsVerification::SystemDefaults

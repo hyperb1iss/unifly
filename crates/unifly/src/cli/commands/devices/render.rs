@@ -620,7 +620,7 @@ mod tests {
             verbose: 0,
             quiet: false,
             yes: false,
-            insecure: false,
+            insecure: None,
             timeout: None,
             no_effects: false,
         })

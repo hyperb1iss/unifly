@@ -66,9 +66,18 @@ pub struct GlobalOpts {
     #[arg(long, env = "UNIFI_DEMO", global = true)]
     pub demo: bool,
 
-    /// Accept self-signed TLS certificates
-    #[arg(long, short = 'k', env = "UNIFI_INSECURE", global = true)]
-    pub insecure: bool,
+    /// Accept self-signed TLS certificates (--insecure=false forces verification)
+    #[arg(
+        long,
+        short = 'k',
+        env = "UNIFI_INSECURE",
+        global = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        value_name = "BOOL"
+    )]
+    pub insecure: Option<bool>,
 
     /// Request timeout in seconds (default 30, profiles may override)
     #[arg(long, env = "UNIFI_TIMEOUT", global = true)]

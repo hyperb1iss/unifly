@@ -138,7 +138,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The `[defaults]` config fields `insecure` and `timeout` are now honored
   during profile resolution instead of being parsed and ignored. Precedence
-  is CLI flags > env vars > profile > `[defaults]` > builtin.
+  is CLI flags > env vars > profile > `[defaults]` > builtin. A profile's
+  `ca_cert` beats an inherited `[defaults]` `insecure = true`, and
+  `--insecure=false` / `UNIFI_INSECURE=false` explicitly re-enables
+  verification over any profile or defaults setting (bare `--insecure`
+  still means true).
 - `config init` now asks whether the controller uses a self-signed
   certificate (defaulting yes for IPs, `.local`/`.lan`-style hosts, and
   single-label hostnames) and writes `insecure = true` into the profile,
