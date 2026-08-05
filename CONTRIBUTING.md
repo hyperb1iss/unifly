@@ -109,30 +109,46 @@ See `Cargo.toml` `[workspace.lints]` for the full configuration.
 crates/unifly-api/tests/
   integration_client_test.rs     # wiremock-based Integration API tests
   session_client_test.rs         # wiremock-based Session API tests
+  site_manager_client_test.rs    # wiremock-based Site Manager cloud tests
   controller_runtime_test.rs     # Controller lifecycle + refresh loop
 
 crates/unifly/tests/
   cli_test.rs                    # assert_cmd-based CLI tests
-  e2e_test.rs                    # end-to-end tests with simulation controller
+  e2e_test.rs                    # feature-gated e2e suite, dockerized controller
 ```
 
 Unit tests are inline in source files under `#[cfg(test)] mod tests`.
 
 ### Test Libraries
 
-| Library                         | Purpose                                                                |
-| ------------------------------- | ---------------------------------------------------------------------- |
-| **wiremock**                    | Mock HTTP servers for Integration/Session API tests and e2e simulation |
-| **insta**                       | Snapshot tests for output formatting (`just snap-review` to approve)   |
-| **assert_cmd** + **predicates** | End-to-end CLI tests that spawn the built binary                       |
-| **tempfile**                    | Per-test config dir isolation                                          |
-| **tokio-test**                  | Poll-based async unit tests                                            |
-| **pretty_assertions**           | Better diffs on assertion failures                                     |
+| Library                         | Purpose                                                              |
+| ------------------------------- | -------------------------------------------------------------------- |
+| **wiremock**                    | Mock HTTP servers for Integration/Session/Site Manager API tests     |
+| **insta**                       | Snapshot tests for output formatting (`just snap-review` to approve) |
+| **assert_cmd** + **predicates** | End-to-end CLI tests that spawn the built binary                     |
+| **tempfile**                    | Per-test config dir isolation                                        |
+| **tokio-test**                  | Poll-based async unit tests                                          |
+| **pretty_assertions**           | Better diffs on assertion failures                                   |
+
+### End-to-End Tests
+
+The e2e suite (`crates/unifly/tests/e2e_test.rs`) drives the built binary against a real UniFi Network controller running in simulation mode inside Docker (`tests/e2e/docker-compose.yml`). It is feature-gated behind `--features e2e` and never runs in a default `cargo test`.
+
+```bash
+just e2e            # full lifecycle: start controller, wait, test, tear down
+just e2e-up         # start the controller container
+just e2e-wait       # poll until the controller is ready
+just e2e-build      # compile the gated test binary without running it
+just e2e-test       # run the suite against a running controller
+just e2e-down       # stop and remove the container
+```
+
+Connection defaults are overridable via `UNIFLY_E2E_URL`, `UNIFLY_E2E_USERNAME`, `UNIFLY_E2E_PASSWORD`, `UNIFLY_E2E_SITE`, and `UNIFLY_E2E_TIMEOUT_SECS`. CI runs the same lifecycle in `.github/workflows/e2e.yml`.
 
 ### Test Policy
 
 - Unit tests should be pure and deterministic. No real network calls.
-- Integration tests use wiremock or assert_cmd, never a real controller.
+- Integration tests use wiremock or assert_cmd, never a real controller. The feature-gated e2e suite is the one exception: it targets the dockerized controller and only runs through the `just e2e*` recipes or an explicit `--features e2e`.
 - Tests must not require a specific UniFi hardware or firmware version.
 
 ## Pull Request Workflow
