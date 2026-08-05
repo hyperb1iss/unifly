@@ -77,6 +77,9 @@ pub struct App {
     sanitizer: Option<Arc<Sanitizer>>,
     /// Cancellation token for the data bridge task.
     data_cancel: CancellationToken,
+    /// Handle of the newest data bridge task — successors chain on it so
+    /// bridge lifetimes never overlap on the same controller.
+    bridge_handle: Option<tokio::task::JoinHandle<()>>,
     /// Pending confirmation dialog (blocks other input while active).
     pending_confirm: Option<ConfirmAction>,
     /// Active notification toast with display timestamp.
@@ -144,6 +147,7 @@ impl App {
             controller,
             sanitizer,
             data_cancel: CancellationToken::new(),
+            bridge_handle: None,
             pending_confirm: None,
             notification: None,
             stats_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -184,12 +188,7 @@ impl App {
         self.init_screens()?;
 
         if let Some(controller) = self.controller.clone() {
-            let cancel = self.data_cancel.clone();
-            let tx = self.action_tx.clone();
-            let sanitizer = self.sanitizer.clone();
-            tokio::spawn(async move {
-                crate::tui::data_bridge::spawn_data_bridge(controller, tx, cancel, sanitizer).await;
-            });
+            self.spawn_data_bridge(controller);
         }
 
         // Reset the frame clock so the first draw gets a sane delta, then
