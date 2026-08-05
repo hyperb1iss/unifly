@@ -145,6 +145,47 @@ fn bool_arg(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+fn json_str_field<'a>(payload: &'a serde_json::Value, key: &str) -> &'a str {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("expected string field '{key}' in {payload}"))
+}
+
+fn list_firewall_groups(ctx: &E2eContext) -> Vec<serde_json::Value> {
+    let output = ctx.run(&["firewall", "groups", "list", "--all", "-o", "json"]);
+    assert_success(&output, "firewall groups list");
+    let payload = stdout_json(&output);
+    json_array(&payload, "firewall groups list").to_vec()
+}
+
+fn find_firewall_group<'a>(
+    groups: &'a [serde_json::Value],
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    groups.iter().find(|group| {
+        group
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == name)
+    })
+}
+
+fn list_nat_rules_raw(ctx: &E2eContext) -> Vec<serde_json::Value> {
+    let path = format!("v2/api/site/{}/nat", ctx.config.site);
+    let output = ctx.run(&["api", &path, "-o", "json"]);
+    assert_success(&output, "raw api v2 nat list");
+    let payload = stdout_json(&output);
+    json_array(&payload, "raw api v2 nat list").to_vec()
+}
+
+fn strip_jsonc_comments(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 struct RestoreCommand<'a> {
     ctx: &'a E2eContext,
     args: Vec<String>,
@@ -741,6 +782,239 @@ fn session_profile_wrong_credentials_fail_with_auth_exit_code() {
         stderr_text(&output).contains("Authentication failed"),
         "expected auth failure, got:\n{}",
         stderr_text(&output)
+    );
+}
+
+#[test]
+fn session_profile_firewall_group_crud_round_trip() {
+    let ctx = E2eContext::session();
+    let name = "e2e-fwg-crud";
+
+    // A failed earlier run against a still-running container may have left
+    // the group behind; remove it so the create below starts clean.
+    if let Some(stale) = find_firewall_group(&list_firewall_groups(&ctx), name) {
+        let stale_id = json_str_field(stale, "id").to_string();
+        let _ = ctx.run(&["firewall", "groups", "delete", &stale_id, "-y"]);
+    }
+
+    let create = ctx.run(&[
+        "firewall",
+        "groups",
+        "create",
+        "--name",
+        name,
+        "--type",
+        "port-group",
+        "--members",
+        "80,443",
+    ]);
+    assert_success(&create, "firewall groups create");
+    assert!(
+        create.stdout.is_empty(),
+        "expected create to print nothing on stdout (confirmation goes to stderr), got {}",
+        stdout_text(&create)
+    );
+    assert!(
+        stderr_text(&create).contains("Firewall group created"),
+        "expected create confirmation on stderr, got:\n{}",
+        stderr_text(&create)
+    );
+
+    let groups = list_firewall_groups(&ctx);
+    let created = find_firewall_group(&groups, name)
+        .unwrap_or_else(|| panic!("expected created group '{name}' in list, got {groups:?}"));
+    let id = json_str_field(created, "id").to_string();
+    let restore = RestoreCommand::new(&ctx, &["firewall", "groups", "delete", &id, "-y"]);
+
+    assert_eq!(json_str_field(created, "group_type"), "port-group");
+    assert!(
+        !json_str_field(created, "external_id").is_empty(),
+        "expected the controller to assign an external_id UUID, got {created}"
+    );
+    assert_eq!(
+        created.get("group_members"),
+        Some(&serde_json::json!(["80", "443"])),
+        "expected the created group to carry its members"
+    );
+
+    let update = ctx.run(&[
+        "firewall",
+        "groups",
+        "update",
+        &id,
+        "--members",
+        "8080,8443,9000",
+    ]);
+    assert_success(&update, "firewall groups update");
+
+    let get = ctx.run(&["firewall", "groups", "get", &id, "-o", "json"]);
+    assert_success(&get, "firewall groups get after update");
+    let detail = stdout_json(&get);
+    assert_eq!(json_str_field(&detail, "name"), name);
+    assert_eq!(
+        detail.get("group_members"),
+        Some(&serde_json::json!(["8080", "8443", "9000"])),
+        "expected update to replace the member list, got {detail}"
+    );
+
+    let delete = ctx.run(&["firewall", "groups", "delete", &id, "-y"]);
+    assert_success(&delete, "firewall groups delete");
+
+    let after = list_firewall_groups(&ctx);
+    assert!(
+        find_firewall_group(&after, name).is_none(),
+        "expected group '{name}' to be gone after delete, got {after:?}"
+    );
+
+    drop(restore);
+}
+
+// NAT create/update/delete are session-backed and the simulated controller
+// accepts them even though its only gateway sits in PendingAdoption, so
+// this exercises the full lifecycle rather than a rejection contract.
+// `nat policies list` cannot observe the result in session auth mode: the
+// session-only refresh path (`refresh_session_snapshot` in
+// `unifly-api/src/controller/refresh.rs`) fills the NAT collection with an
+// empty vec, so persistence is asserted through the raw v2 endpoint via
+// `unifly api`. Create/update/delete resolve against the live endpoint and
+// are unaffected.
+#[test]
+fn session_profile_nat_policy_lifecycle_persists_via_raw_api() {
+    let ctx = E2eContext::session();
+    let name = "e2e-nat-lifecycle";
+
+    // Remove a stale rule from a failed earlier run against a still-running
+    // container so the create below starts clean.
+    for rule in &list_nat_rules_raw(&ctx) {
+        if rule.get("description").and_then(serde_json::Value::as_str) == Some(name) {
+            let stale_id = json_str_field(rule, "_id").to_string();
+            let _ = ctx.run(&["nat", "policies", "delete", &stale_id, "-y"]);
+        }
+    }
+
+    let create = ctx.run(&[
+        "nat",
+        "policies",
+        "create",
+        "--name",
+        name,
+        "--type",
+        "masquerade",
+        "--protocol",
+        "all",
+        "--src-address",
+        "203.0.113.0/24",
+    ]);
+    assert_success(&create, "nat policies create");
+    assert!(
+        create.stdout.is_empty(),
+        "expected create to print nothing on stdout (confirmation goes to stderr), got {}",
+        stdout_text(&create)
+    );
+    assert!(
+        stderr_text(&create).contains("NAT policy created"),
+        "expected create confirmation on stderr, got:\n{}",
+        stderr_text(&create)
+    );
+
+    let rules = list_nat_rules_raw(&ctx);
+    let created = rules
+        .iter()
+        .find(|rule| rule.get("description").and_then(serde_json::Value::as_str) == Some(name))
+        .unwrap_or_else(|| panic!("expected created NAT rule '{name}' on the wire, got {rules:?}"));
+    assert_eq!(json_str_field(created, "type"), "MASQUERADE");
+    assert!(json_bool(created, "enabled"));
+    let id = json_str_field(created, "_id").to_string();
+    let restore = RestoreCommand::new(&ctx, &["nat", "policies", "delete", &id, "-y"]);
+
+    let update = ctx.run(&["nat", "policies", "update", &id, "--enabled", "false"]);
+    assert_success(&update, "nat policies update");
+
+    let after_update = list_nat_rules_raw(&ctx);
+    let updated = after_update
+        .iter()
+        .find(|rule| rule.get("_id").and_then(serde_json::Value::as_str) == Some(id.as_str()))
+        .unwrap_or_else(|| {
+            panic!("expected NAT rule {id} to survive the update, got {after_update:?}")
+        });
+    assert!(
+        !json_bool(updated, "enabled"),
+        "expected update to disable the rule, got {updated}"
+    );
+
+    let delete = ctx.run(&["nat", "policies", "delete", &id, "-y"]);
+    assert_success(&delete, "nat policies delete");
+
+    let after_delete = list_nat_rules_raw(&ctx);
+    assert!(
+        after_delete
+            .iter()
+            .all(|rule| rule.get("_id").and_then(serde_json::Value::as_str) != Some(id.as_str())),
+        "expected NAT rule {id} to be gone after delete, got {after_delete:?}"
+    );
+
+    drop(restore);
+}
+
+// The simulated switches stay in PendingAdoption and report no port_table,
+// so the port read path yields well-formed empty collections rather than
+// rows. The shape assertions below hold for both the observed empty state
+// and an adopted switch with real port rows.
+#[test]
+fn session_profile_switch_ports_read_path_is_well_formed() {
+    let ctx = E2eContext::session();
+
+    let list_output = ctx.run(&["devices", "list", "--all", "-o", "json"]);
+    assert_success(&list_output, "devices list for switch lookup");
+    let list_payload = stdout_json(&list_output);
+    let devices = json_array(&list_payload, "devices list");
+    let switch = devices
+        .iter()
+        .find(|device| {
+            device
+                .get("device_type")
+                .and_then(serde_json::Value::as_str)
+                == Some("Switch")
+        })
+        .expect("expected simulation mode to expose at least one switch");
+    let mac = json_str_field(switch, "mac").to_string();
+
+    let ports = ctx.run(&["devices", "ports", &mac, "-o", "json"]);
+    assert_success(&ports, "devices ports");
+    let ports_payload = stdout_json(&ports);
+    let port_rows = json_array(&ports_payload, "devices ports");
+    assert!(
+        port_rows.iter().all(|row| {
+            row.get("index")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        }),
+        "expected every port row to carry a numeric index, got {}",
+        stdout_text(&ports)
+    );
+
+    let export = ctx.run(&["devices", "ports-export", &mac, "--all"]);
+    assert_success(&export, "devices ports-export");
+    let stripped = strip_jsonc_comments(&stdout_text(&export));
+    let export_payload: serde_json::Value = serde_json::from_str(&stripped).unwrap_or_else(|err| {
+        panic!(
+            "expected ports-export to parse as JSON after comment stripping ({err}), got:\n{}",
+            stdout_text(&export)
+        )
+    });
+    let exported_ports = export_payload
+        .get("ports")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("expected a top-level ports array, got {export_payload}"));
+    assert!(
+        exported_ports.iter().all(|entry| {
+            entry
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        }),
+        "expected every exported port entry to carry a numeric index, got {}",
+        stdout_text(&export)
     );
 }
 
