@@ -63,13 +63,20 @@ impl App {
         Ok(())
     }
 
-    fn spawn_data_bridge(&self, controller: Controller) {
+    pub(super) fn spawn_data_bridge(&mut self, controller: Controller) {
         let cancel = self.data_cancel.clone();
         let tx = self.action_tx.clone();
         let sanitizer = self.sanitizer.clone();
-        tokio::spawn(async move {
+        // Chain on the previous bridge so its teardown (including the
+        // mid-connect disconnect cleanup) fully completes before the next
+        // bridge touches shared controller state.
+        let predecessor = self.bridge_handle.take();
+        self.bridge_handle = Some(tokio::spawn(async move {
+            if let Some(previous) = predecessor {
+                let _ = previous.await;
+            }
             crate::tui::data_bridge::spawn_data_bridge(controller, tx, cancel, sanitizer).await;
-        });
+        }));
     }
 
     fn reset_data_bridge(&mut self) {

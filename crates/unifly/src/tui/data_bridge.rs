@@ -43,9 +43,28 @@ pub async fn spawn_data_bridge(
 ) {
     let mut attempt: u32 = 1;
     loop {
+        if cancel.is_cancelled() {
+            debug!("data bridge cancelled before connect attempt");
+            return;
+        }
+
         let _ = action_tx.send(Action::Reconnecting { attempt });
 
-        match controller.connect().await {
+        let connect_result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                // The dropped connect may have installed clients or even
+                // spawned background tasks under the controller's current
+                // child token; disconnect reaps them so a successor bridge
+                // starts from a clean controller.
+                debug!("data bridge cancelled mid-connect; cleaning up");
+                controller.disconnect().await;
+                return;
+            }
+            result = controller.connect() => result,
+        };
+
+        match connect_result {
             Ok(()) => break,
             Err(e) => {
                 warn!(error = %e, attempt, "failed to connect to controller");
@@ -248,5 +267,36 @@ mod tests {
         assert_eq!(connect_backoff(5), Duration::from_secs(30));
         assert_eq!(connect_backoff(6), Duration::from_secs(30));
         assert_eq!(connect_backoff(u32::MAX), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn bridge_exits_before_connecting_when_already_cancelled() {
+        // Loopback port 1 so a regression fails on a refused local connect
+        // instead of reaching a plausible real controller address. The
+        // passing path performs no I/O at all: the guard returns first.
+        let config = unifly_api::ControllerConfig {
+            url: "https://127.0.0.1:1"
+                .parse()
+                .expect("loopback URL is valid"),
+            websocket_enabled: false,
+            refresh_interval_secs: 0,
+            ..unifly_api::ControllerConfig::default()
+        };
+        let controller = Controller::new(config);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            spawn_data_bridge(controller, tx, cancel, None),
+        )
+        .await
+        .expect("cancelled bridge should exit immediately");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled bridge must not emit actions or attempt a connect"
+        );
     }
 }
