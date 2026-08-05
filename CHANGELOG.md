@@ -136,6 +136,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The `[defaults]` config fields `insecure` and `timeout` are now honored
+  during profile resolution instead of being parsed and ignored. Precedence
+  is CLI flags > env vars > profile > `[defaults]` > builtin.
+- `config init` now asks whether the controller uses a self-signed
+  certificate (defaulting yes for IPs, `.local`/`.lan`-style hosts, and
+  single-label hostnames) and writes `insecure = true` into the profile,
+  so the canonical UDM/UCG setup no longer produces a profile that fails
+  TLS everywhere `-k` isn't passed.
 - Port range items in firewall policy payloads now serialize as
   `PORT_NUMBER_RANGE` instead of `PORT_RANGE`, which the UDM API rejects.
   `PORT_RANGE` is still accepted on read for backward compatibility.

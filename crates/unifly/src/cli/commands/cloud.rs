@@ -16,7 +16,7 @@ use unifly_api::{
 
 use crate::cli::args::{CloudArgs, CloudCommand, GlobalOpts};
 use crate::cli::error::CliError;
-use crate::config::{self, Profile};
+use crate::config::{self, Defaults, Profile};
 
 pub async fn handle(args: CloudArgs, global: &GlobalOpts) -> Result<(), CliError> {
     match args.command {
@@ -38,11 +38,15 @@ pub async fn handle(args: CloudArgs, global: &GlobalOpts) -> Result<(), CliError
 pub(crate) fn build_site_manager_client(
     global: &GlobalOpts,
 ) -> Result<SiteManagerClient, CliError> {
-    let (profile_name, profile) = active_profile(global);
+    let (profile_name, profile, defaults) = active_profile(global);
 
     let api_key = resolve_cloud_api_key(profile.as_ref(), &profile_name, global)?;
     let controller = resolve_site_manager_url(profile.as_ref(), global);
-    let transport = cloud_transport(global, profile.as_ref().and_then(|p| p.timeout));
+    let transport = cloud_transport(
+        global,
+        profile.as_ref().and_then(|p| p.timeout),
+        Some(defaults.timeout),
+    );
 
     SiteManagerClient::from_api_key(&controller, &api_key, &transport).map_err(api_error)
 }
@@ -64,7 +68,7 @@ pub(crate) async fn build_cloud_integration_client(
 ) -> Result<IntegrationClient, CliError> {
     let api_key = resolve_cloud_api_key(Some(profile), profile_name, global)?;
     let controller = resolve_site_manager_url(Some(profile), global);
-    let transport = cloud_transport(global, profile.timeout);
+    let transport = cloud_transport(global, profile.timeout, None);
     let host_id = if let Some(host_id) = &global.host_id {
         host_id.clone()
     } else if let Ok(host_id) = config::resolve_host_id(profile) {
@@ -97,17 +101,21 @@ pub(crate) async fn load_cloud_connector_sites(
         .map_err(api_error)
 }
 
-pub(crate) fn active_profile(global: &GlobalOpts) -> (String, Option<Profile>) {
+pub(crate) fn active_profile(global: &GlobalOpts) -> (String, Option<Profile>, Defaults) {
     let cfg = config::resolve::load_config_or_default();
     let profile_name = config::resolve::active_profile_name(global, &cfg);
     let profile = cfg.profiles.get(&profile_name).cloned();
-    (profile_name, profile)
+    (profile_name, profile, cfg.defaults)
 }
 
-fn cloud_transport(global: &GlobalOpts, profile_timeout: Option<u64>) -> TransportConfig {
+fn cloud_transport(
+    global: &GlobalOpts,
+    profile_timeout: Option<u64>,
+    defaults_timeout: Option<u64>,
+) -> TransportConfig {
     TransportConfig {
         tls: TlsMode::System,
-        timeout: Duration::from_secs(global.timeout_secs(profile_timeout)),
+        timeout: Duration::from_secs(global.timeout_secs(profile_timeout, defaults_timeout)),
         cookie_jar: None,
     }
 }

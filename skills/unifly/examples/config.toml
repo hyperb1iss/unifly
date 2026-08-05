@@ -4,6 +4,12 @@
 # Default profile to use when --profile is not specified
 default_profile = "home"
 
+# Global fallbacks applied when a profile leaves a value unset.
+# Precedence: CLI flags > env vars > profile > [defaults] > builtin.
+[defaults]
+insecure = false # accept self-signed certificates when true
+timeout = 30     # request timeout in seconds
+
 # Home controller: UDM Pro with hybrid auth
 [profiles.home]
 controller = "https://192.168.1.1"

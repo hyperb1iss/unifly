@@ -133,10 +133,15 @@ async fn build_controller_config(
             let mut resolved_profile = profile.clone();
             resolved_profile.host_id = Some(commands::cloud::auto_resolve_host_id(global).await?);
             resolved_profile.host_id_env = None;
-            return resolve::resolve_profile(&resolved_profile, &profile_name, global);
+            return resolve::resolve_profile(
+                &resolved_profile,
+                &profile_name,
+                global,
+                &cfg.defaults,
+            );
         }
 
-        return resolve::resolve_profile(profile, &profile_name, global);
+        return resolve::resolve_profile(profile, &profile_name, global, &cfg.defaults);
     }
 
     let is_cloud =
@@ -195,7 +200,9 @@ async fn build_controller_config(
         auth,
         site: global.site.clone().unwrap_or_else(|| "default".into()),
         tls,
-        timeout: std::time::Duration::from_secs(global.timeout_secs(None)),
+        timeout: std::time::Duration::from_secs(
+            global.timeout_secs(None, Some(cfg.defaults.timeout)),
+        ),
         refresh_interval_secs: 0,
         websocket_enabled: false,
         polling_interval_secs: 30,

@@ -25,11 +25,15 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 // because build.rs includes args.rs standalone for man-page generation,
 // and that compilation unit must stay pure clap definitions.
 impl GlobalOpts {
-    /// Resolve the effective timeout: flag/env, then profile, then default.
+    /// Resolve the effective timeout: flag/env, then profile, then
+    /// `[defaults]`, then the builtin fallback.
+    ///
+    /// Callers without a loaded config pass `None` for `defaults_timeout`.
     #[must_use]
-    pub fn timeout_secs(&self, profile_timeout: Option<u64>) -> u64 {
+    pub fn timeout_secs(&self, profile_timeout: Option<u64>, defaults_timeout: Option<u64>) -> u64 {
         self.timeout
             .or(profile_timeout)
+            .or(defaults_timeout)
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
     }
 }
@@ -45,11 +49,12 @@ pub fn active_profile_name(global: &GlobalOpts, cfg: &Config) -> String {
 
 /// Translate a `Profile` + global flags into a `ControllerConfig`.
 ///
-/// CLI flag overrides take priority over profile values.
+/// Precedence: CLI flags > env > profile > `[defaults]` > builtin.
 pub fn resolve_profile(
     profile: &Profile,
     profile_name: &str,
     global: &GlobalOpts,
+    defaults: &Defaults,
 ) -> Result<ControllerConfig, CliError> {
     let is_cloud = profile.auth_mode == "cloud";
 
@@ -100,10 +105,10 @@ pub fn resolve_profile(
         }
     };
 
-    // 3. TLS verification
+    // 3. TLS verification (flag > profile > defaults)
     let tls = if is_cloud {
         TlsVerification::SystemDefaults
-    } else if global.insecure || profile.insecure.unwrap_or(false) {
+    } else if global.insecure || profile.insecure.unwrap_or(defaults.insecure) {
         TlsVerification::DangerAcceptInvalid
     } else if let Some(ref ca_path) = profile.ca_cert {
         TlsVerification::CustomCa(ca_path.clone())
@@ -114,8 +119,8 @@ pub fn resolve_profile(
     // 4. Site (flag > env > profile)
     let site = global.site.as_deref().unwrap_or(&profile.site).to_string();
 
-    // 5. Timeout (flag/env > profile > default)
-    let timeout = Duration::from_secs(global.timeout_secs(profile.timeout));
+    // 5. Timeout (flag/env > profile > defaults > builtin)
+    let timeout = Duration::from_secs(global.timeout_secs(profile.timeout, Some(defaults.timeout)));
 
     // 6. TOTP (flag > env var from profile's totp_env)
     let totp_token = resolve_totp_with_flag(profile, global);
@@ -167,9 +172,11 @@ fn resolve_host_id_with_flag(profile: &Profile, global: &GlobalOpts) -> Result<S
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::resolve_profile;
     use crate::cli::args::{ColorMode, GlobalOpts, OutputFormat};
-    use crate::config::Profile;
+    use crate::config::{Defaults, Profile};
     use unifly_api::{AuthCredentials, TlsVerification};
 
     fn base_global() -> GlobalOpts {
@@ -212,13 +219,22 @@ mod tests {
         }
     }
 
+    fn direct_profile() -> Profile {
+        let mut profile = cloud_profile();
+        profile.auth_mode = "integration".into();
+        profile.controller = "https://10.0.1.1".into();
+        profile.insecure = None;
+        profile.timeout = None;
+        profile
+    }
+
     #[test]
     fn resolve_profile_supports_cloud_defaults_and_flag_override() {
         let profile = cloud_profile();
         let global = base_global();
 
-        let resolved =
-            resolve_profile(&profile, "cloud", &global).expect("cloud profile should resolve");
+        let resolved = resolve_profile(&profile, "cloud", &global, &Defaults::default())
+            .expect("cloud profile should resolve");
 
         assert_eq!(resolved.url.as_str(), "https://api.ui.com/");
         assert!(matches!(resolved.tls, TlsVerification::SystemDefaults));
@@ -237,18 +253,119 @@ mod tests {
         // The TUI launch path resolves profiles through this function; the
         // -k/--insecure flag must win when the profile leaves TLS unset
         // (issue #25: flag was dropped, TLS failed, TUI sat disconnected).
-        let mut profile = cloud_profile();
-        profile.auth_mode = "integration".into();
-        profile.controller = "https://10.0.1.1".into();
-        profile.insecure = None;
+        let profile = direct_profile();
 
         let global = base_global();
         assert!(global.insecure);
 
-        let resolved =
-            resolve_profile(&profile, "default", &global).expect("profile should resolve");
+        let resolved = resolve_profile(&profile, "default", &global, &Defaults::default())
+            .expect("profile should resolve");
 
         assert!(matches!(resolved.tls, TlsVerification::DangerAcceptInvalid));
+    }
+
+    #[test]
+    fn resolve_profile_applies_defaults_insecure_when_flag_and_profile_unset() {
+        let profile = direct_profile();
+        let mut global = base_global();
+        global.insecure = false;
+
+        let defaults = Defaults {
+            insecure: true,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert!(matches!(resolved.tls, TlsVerification::DangerAcceptInvalid));
+    }
+
+    #[test]
+    fn resolve_profile_profile_insecure_overrides_defaults() {
+        let mut profile = direct_profile();
+        profile.insecure = Some(false);
+
+        let mut global = base_global();
+        global.insecure = false;
+
+        let defaults = Defaults {
+            insecure: true,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert!(matches!(resolved.tls, TlsVerification::SystemDefaults));
+    }
+
+    #[test]
+    fn resolve_profile_insecure_flag_overrides_profile_and_defaults() {
+        let mut profile = direct_profile();
+        profile.insecure = Some(false);
+
+        let global = base_global();
+        assert!(global.insecure);
+
+        let resolved = resolve_profile(&profile, "default", &global, &Defaults::default())
+            .expect("profile should resolve");
+
+        assert!(matches!(resolved.tls, TlsVerification::DangerAcceptInvalid));
+    }
+
+    #[test]
+    fn resolve_profile_applies_defaults_timeout_when_flag_and_profile_unset() {
+        let profile = direct_profile();
+        let global = base_global();
+        assert!(global.timeout.is_none());
+
+        let defaults = Defaults {
+            timeout: 77,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert_eq!(resolved.timeout, Duration::from_secs(77));
+    }
+
+    #[test]
+    fn resolve_profile_profile_timeout_overrides_defaults() {
+        let mut profile = direct_profile();
+        profile.timeout = Some(45);
+
+        let global = base_global();
+
+        let defaults = Defaults {
+            timeout: 77,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert_eq!(resolved.timeout, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn resolve_profile_timeout_flag_overrides_profile_and_defaults() {
+        let mut profile = direct_profile();
+        profile.timeout = Some(45);
+
+        let mut global = base_global();
+        global.timeout = Some(5);
+
+        let defaults = Defaults {
+            timeout: 77,
+            ..Defaults::default()
+        };
+
+        let resolved = resolve_profile(&profile, "default", &global, &defaults)
+            .expect("profile should resolve");
+
+        assert_eq!(resolved.timeout, Duration::from_secs(5));
     }
 
     #[test]
@@ -257,7 +374,7 @@ mod tests {
         let mut global = base_global();
         global.host_id = None;
 
-        let resolved = resolve_profile(&profile, "cloud", &global)
+        let resolved = resolve_profile(&profile, "cloud", &global, &Defaults::default())
             .expect("profile fallback host id should still resolve");
 
         match resolved.auth {

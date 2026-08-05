@@ -166,7 +166,7 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
         auth,
         site,
         tls,
-        timeout: std::time::Duration::from_secs(global.timeout_secs(None)),
+        timeout: std::time::Duration::from_secs(global.timeout_secs(None, None)),
         refresh_interval_secs: if is_cloud { 60 } else { 10 },
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },
@@ -226,7 +226,7 @@ fn build_controller_from_config(global: &GlobalOpts) -> Option<Controller> {
     // The CLI resolver honors flag/env overrides (--insecure, --site,
     // --api-key, --totp, --no-cache) that the plain profile translation
     // does not; dropping them here is how issue #25 happened.
-    match config::resolve::resolve_profile(profile, profile_name, global) {
+    match config::resolve::resolve_profile(profile, profile_name, global, &cfg.defaults) {
         Ok(mut controller_config) => {
             let is_cloud = matches!(controller_config.auth, AuthCredentials::Cloud { .. });
             controller_config.refresh_interval_secs = if is_cloud { 60 } else { 10 };
