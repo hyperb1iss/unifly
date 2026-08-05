@@ -6,7 +6,7 @@ weight = 1
 
 Every command supports `--help` for exhaustive flag listings. This page documents subcommands, key flags, and gotchas you won't find in `--help`.
 
-**API legend:** **I** = Integration API (API key). **L** = Session API (username/password). **H** = Works in any mode, enriched by Hybrid.
+**API legend:** **I** = Integration API (API key). **L** = Session API (API key on UniFi OS, or username/password). **H** = Works in any mode, enriched when session HTTP access exists.
 
 ## Commands
 
@@ -16,7 +16,7 @@ Every command supports `--help` for exhaustive flag listings. This page document
 | `clients`       | `cl`       | H     | Manage connected clients and DHCP reservations                                                                                                                               |
 | `networks`      | `net`, `n` | I     | Manage networks and VLANs                                                                                                                                                    |
 | `wifi`          | `w`        | I     | Manage WiFi broadcasts (SSIDs)                                                                                                                                               |
-| `firewall`      | `fw`       | I     | Manage firewall policies and zones                                                                                                                                           |
+| `firewall`      | `fw`       | Mixed | Manage firewall policies, zones, and groups                                                                                                                                  |
 | `nat`           |            | L     | Manage NAT policies (masquerade, SNAT, DNAT)                                                                                                                                 |
 | `acl`           |            | I     | Manage ACL rules                                                                                                                                                             |
 | `dns`           |            | I     | Manage DNS policies (local records)                                                                                                                                          |
@@ -29,11 +29,13 @@ Every command supports `--help` for exhaustive flag listings. This page document
 | `sites`         |            | L     | Manage sites                                                                                                                                                                 |
 | `admin`         |            | L     | Administrator management                                                                                                                                                     |
 | `system`        | `sys`      | Mixed | System operations and info                                                                                                                                                   |
+| `settings`      |            | L     | Read and write site-level settings sections                                                                                                                                  |
 | `topology`      | `topo`     | H     | Show network topology tree                                                                                                                                                   |
 | `dpi`           |            | Mixed | DPI reference data and control                                                                                                                                               |
 | `radius`        |            | I     | View RADIUS profiles                                                                                                                                                         |
 | `wans`          |            | I     | View WAN interfaces                                                                                                                                                          |
 | `countries`     |            | I     | List available country codes                                                                                                                                                 |
+| `cloud`         |            | Cloud | Query the Site Manager fleet (consoles, sites, devices, ISP, SD-WAN)                                                                                                         |
 | `config`        |            | Local | Manage CLI configuration                                                                                                                                                     |
 | `completions`   |            | Local | Generate shell completions                                                                                                                                                   |
 | `api`           |            | L     | Raw API passthrough (GET/POST/PUT/PATCH/DELETE any endpoint)                                                                                                                 |
@@ -47,7 +49,7 @@ List commands default to 25 rows. Pass `--all` or `--limit 200` for complete res
 
 ```bash
 unifly devices list                             # All adopted devices
-unifly devices list --filter "state.eq('ONLINE')"  # Filter by status
+unifly devices list --filter "state.eq('Online')"  # Filter by status
 unifly devices get <ID|MAC>                     # Device details
 unifly devices pending                          # Devices awaiting adoption
 unifly devices adopt <MAC>                      # Adopt a pending device
@@ -62,7 +64,21 @@ unifly devices speedtest                        # WAN speed test (gateway only)
 unifly devices tags                             # List device tags
 ```
 
-Gotchas: `restart`, `locate`, `upgrade`, `provision`, `speedtest`, and `port-cycle` require Session API access. `list` and `get` work with any auth mode but return richer data in Hybrid (client count, uplink MAC).
+Gotchas: `restart`, `locate`, `upgrade`, `provision`, `speedtest`, and `port-cycle` require Session API access. `list` and `get` work with any auth mode but return richer data when session HTTP access exists (client count, uplink MAC).
+
+### Switch Ports (config-as-code)
+
+```bash
+unifly devices ports <ID|MAC>                   # Current port config
+unifly devices ports <ID|MAC> --with-clients    # Annotate with connected clients
+unifly devices ports-export <ID|MAC>            # Export overrides as JSONC
+unifly devices ports-export <ID|MAC> --all      # Include every port
+unifly devices port-set <ID|MAC> 5 --mode access --native-vlan IoT
+unifly devices port-set <ID|MAC> -F ports.jsonc # Apply a JSONC file
+unifly devices port-set <ID|MAC> 5 --reset      # Back to controller defaults
+```
+
+Port indices are **1-based**, matching the controller's wire format. `port-set -F` accepts a JSONC payload (comments and trailing commas allowed) with splice semantics: ports not listed keep their existing override, and a per-port `"reset": true` removes that port's override entirely. `--with-clients` adds connection annotations, and on `ports-export` it prepends `// last-seen <timestamp>: <mac>` comment lines for git-diff drift detection. See [Switch Ports](/guide/switch-ports) for the full workflow and payload schema.
 
 ## Clients
 
@@ -147,6 +163,20 @@ unifly firewall zones update <ID> --networks <ID1,ID2>
 unifly firewall zones delete <ID>
 ```
 
+### Groups
+
+```bash
+unifly firewall groups list
+unifly firewall groups list --type port-group
+unifly firewall groups get <ID>
+unifly firewall groups create --name "Web Ports" --type port-group --members "80,443,8000-8002"
+unifly firewall groups create --name "IoT Nets" --type address-group --members "10.0.30.0/24"
+unifly firewall groups update <ID> --members "80,443"
+unifly firewall groups delete <ID>
+```
+
+Gotchas: groups use the **Session API** (`rest/firewallgroup`), not Integration; an API key on UniFi OS is sufficient. Types: `port-group` (default), `address-group`, `ipv6-address-group`. The `external_id` UUID in group responses is what firewall policies reference. Policy `create`/`update` resolve group **names** for you via `--src-port-group` / `--dst-port-group` / `--src-address-group` / `--dst-address-group` flags (or `dst_port_group` / `dst_address_group` shorthand fields in `--from-file` JSON).
+
 ## NAT
 
 ```bash
@@ -162,7 +192,7 @@ Use `nat policies update <ID>` to modify an existing rule. Pass any
 combination of `--name`, `--type`, `--enabled`, address/port flags, or
 `--from-file`. Only the specified fields are changed.
 
-NAT types: `masquerade` (outgoing interface address), `source` (explicit rewrite), `destination` (port forwarding/DNAT). NAT routes through the Session v2 API, so credentials are required even in Hybrid mode.
+NAT types: `masquerade` (outgoing interface address), `source` (explicit rewrite), `destination` (port forwarding/DNAT). NAT routes through the Session v2 API: an API key on UniFi OS is sufficient, and session-only profiles work too (`nat policies list` populates from the session refresh snapshot). Only pure-Integration setups without session HTTP access cannot manage NAT.
 
 ## ACL
 
@@ -183,13 +213,13 @@ unifly acl reorder --set <ID1,ID2,...>          # Apply new order
 ```bash
 unifly dns list
 unifly dns get <ID>
-unifly dns create --record-type A --domain "nas.home" --value "10.0.10.5"
+unifly dns create --record-type a --domain "nas.home" --value "10.0.10.5"
 unifly dns create -F dns.json
 unifly dns update <ID> -F dns.json
 unifly dns delete <ID>
 ```
 
-Supported record types: `A`, `AAAA`, `CNAME`, `MX`, `TXT`, `SRV`, `Forward`.
+Supported record types: `a`, `aaaa`, `cname`, `mx`, `txt`, `srv`, `forward`. The `--record-type` values are **lowercase**; uppercase `A` is rejected by argument parsing. Table output displays the familiar short uppercase names (`A`, `AAAA`, ...).
 
 ## Traffic Lists
 
@@ -294,30 +324,29 @@ unifly system poweroff                          # Power off hardware (UDM only)
 `reboot` and `poweroff` are destructive and require confirmation (`-y` to skip).
 {% end %}
 
-## Other Commands
+## VPN
 
 ```bash
-unifly topology                                 # Network tree visualization
-unifly vpn servers                              # List VPN servers
-unifly vpn tunnels                              # List site-to-site tunnels
-unifly vpn site-to-site list                    # List session site-to-site VPN records
+unifly vpn servers                              # List VPN servers (Integration)
+unifly vpn tunnels                              # List site-to-site tunnels (Integration)
+unifly vpn site-to-site list                    # List site-to-site VPN records
 unifly vpn site-to-site get <ID>                # Inspect one site-to-site VPN record
-unifly vpn site-to-site create -F vpn.json      # Create a session site-to-site VPN
-unifly vpn site-to-site update <ID> -F vpn.json # Update a session site-to-site VPN
-unifly vpn site-to-site delete <ID>             # Delete a session site-to-site VPN
-unifly vpn remote-access list                   # List session remote-access VPN servers
+unifly vpn site-to-site create -F vpn.json      # Create a site-to-site VPN
+unifly vpn site-to-site update <ID> -F vpn.json # Update a site-to-site VPN
+unifly vpn site-to-site delete <ID>             # Delete a site-to-site VPN
+unifly vpn remote-access list                   # List remote-access VPN servers
 unifly vpn remote-access get <ID>               # Inspect one remote-access VPN server
-unifly vpn remote-access create -F vpn.json     # Create a session remote-access VPN server
-unifly vpn remote-access update <ID> -F vpn.json # Update a session remote-access VPN server
+unifly vpn remote-access create -F vpn.json     # Create a remote-access VPN server
+unifly vpn remote-access update <ID> -F vpn.json # Update a remote-access VPN server
 unifly vpn remote-access suggest-port           # Suggest available OpenVPN ports
 unifly vpn remote-access download-config <ID>   # Download an OpenVPN client config
-unifly vpn remote-access delete <ID>            # Delete a session remote-access VPN server
-unifly vpn clients list                         # List configured session VPN clients
+unifly vpn remote-access delete <ID>            # Delete a remote-access VPN server
+unifly vpn clients list                         # List configured VPN clients
 unifly vpn clients get <ID>                     # Inspect one configured VPN client
 unifly vpn clients create -F vpn.json           # Create a configured VPN client
 unifly vpn clients update <ID> -F vpn.json      # Update a configured VPN client
 unifly vpn clients delete <ID>                  # Delete a configured VPN client
-unifly vpn connections list                     # List session VPN client connections
+unifly vpn connections list                     # List VPN client connections
 unifly vpn connections get <ID>                 # Inspect one VPN client connection
 unifly vpn connections restart <ID>             # Restart one VPN client connection
 unifly vpn peers list [SERVER_ID]               # List WireGuard peers, optionally by server
@@ -328,10 +357,44 @@ unifly vpn peers delete <SERVER_ID> <ID>        # Delete a WireGuard peer
 unifly vpn peers subnets                        # List subnets already used by peers
 unifly vpn magic-site-to-site list              # List magic site-to-site VPN configs
 unifly vpn magic-site-to-site get <ID>          # Inspect one magic site-to-site VPN config
-unifly vpn settings list                        # List session VPN-related site settings
+unifly vpn settings list                        # List VPN-related site settings
 unifly vpn settings get teleport                # Inspect one VPN setting
 unifly vpn settings set teleport --enabled true # Toggle a VPN setting
 unifly vpn settings patch peer-to-peer -F peer.json   # Apply a JSON payload
+```
+
+Gotchas: `servers` and `tunnels` are read-only Integration API inventory; everything else is Session-backed and works with an API key on UniFi OS. Create and update for `site-to-site`, `remote-access`, `clients`, and `peers` are payload-driven: build the JSON with `--from-file` (see the [examples/](https://github.com/hyperb1iss/unifly/tree/main/skills/unifly/examples) templates). Sensitive material such as WireGuard private keys and IPsec pre-shared keys is **redacted** in both `get` and `create` output; reconstruct those fields explicitly in update payloads if the controller requires them unchanged. The full walkthrough lives on the [VPN page](/guide/vpn).
+
+## Settings
+
+```bash
+unifly settings list                            # All site setting sections
+unifly settings get dpi                         # One section
+unifly settings set dpi enabled true            # Patch one field
+unifly settings set usg --data '{"mss_clamp": "auto"}'  # Merge a JSON object
+unifly settings export                          # Full JSON dump of every section
+```
+
+Site-level settings live in Session API setting sections. `set` performs a read-modify-write of the whole section, and `get` masks `x_`-prefixed secret fields in table mode (`-o json` shows everything). Session-gated: needs an API key on UniFi OS or session credentials. Details on the [Site Settings page](/guide/settings).
+
+## Cloud (Site Manager)
+
+```bash
+unifly cloud hosts                              # Consoles visible to the API key
+unifly cloud sites                              # Sites across the fleet
+unifly cloud devices                            # Devices across all consoles
+unifly cloud devices --host <ID>                # Scope to one console
+unifly cloud isp                                # ISP metrics
+unifly cloud sdwan                              # SD-WAN configs
+unifly cloud switch <SITE>                      # Point the cloud profile at a site
+```
+
+`cloud` talks directly to the Site Manager fleet API at `api.ui.com` with a Site Manager API key; no controller connection is involved. With `auth_mode = "cloud"`, regular Integration-backed commands (`networks list`, `firewall policies list`, ...) tunnel through the cloud connector to one console. Set up with `unifly config cloud-setup`; the full story is on the [Cloud & Site Manager page](/guide/cloud).
+
+## Other Commands
+
+```bash
+unifly topology                                 # Network tree visualization
 unifly radius profiles                          # List RADIUS profiles
 unifly wans list                                # List WAN interfaces
 unifly sites list                               # List sites
@@ -356,6 +419,7 @@ unifly api integration/v1/sites/<site-id>/hotspot/vouchers/<id> -m DELETE       
 
 ```bash
 unifly config init                              # Interactive setup wizard
+unifly config cloud-setup                       # Guided Site Manager (cloud) profile
 unifly config show                              # Show resolved config
 unifly config set auth_mode hybrid              # Set a config value
 unifly config set-password                      # Store password in keyring
@@ -364,13 +428,15 @@ unifly config profiles                          # List profiles (* = active)
 unifly config use <PROFILE>                     # Switch default profile
 ```
 
-Valid `config set` keys: `controller`, `site`, `auth_mode`, `api_key`, `api_key_env`, `username`, `insecure`, `timeout`, `ca_cert`.
+Valid `config set` keys: `controller`, `site`, `auth_mode`, `api_key`, `api_key_env`, `host_id`, `host_id_env`, `username`, `insecure`, `timeout`, `ca_cert`. `auth_mode` accepts `integration`, `session`, `hybrid`, or `cloud` (`legacy` is normalized to `session`).
 
 ## `--from-file` / `-F`
 
 Most create/update commands accept `-F <file.json>` to read the request body from a JSON file. This is the preferred approach for complex payloads.
 
-Accepted by: `networks`, `wifi`, `firewall policies`, `firewall zones`, `nat policies`, `acl`, `dns`, `traffic-lists`, `hotspot`, `vpn site-to-site`, `vpn remote-access`, `vpn clients`, `vpn peers`.
+Accepted by: `networks`, `wifi`, `firewall policies`, `firewall zones`, `firewall groups`, `nat policies`, `acl`, `dns`, `traffic-lists`, `vpn site-to-site`, `vpn remote-access`, `vpn clients`, `vpn peers`, `vpn settings patch`, and `devices port-set` (JSONC for switch port config-as-code).
+
+JSONC is accepted everywhere: comments and trailing commas are stripped before parsing.
 
 ```bash
 unifly networks create -F network.json
@@ -379,17 +445,33 @@ unifly firewall policies create -F policy.json
 
 See [examples/](https://github.com/hyperb1iss/unifly/tree/main/skills/unifly/examples) for payload templates.
 
-## Integration Filter DSL
+## List Filtering (`--filter`)
 
-`--filter` on list commands accepts a small expression language:
+`--filter` on list commands is evaluated **client-side** and supports exactly one expression, with three operators:
 
 ```bash
-unifly devices list --filter "state.eq('ONLINE') && model.startswith('U6')"
+unifly devices list --filter "state.eq('Online')"
+unifly clients list --filter "name.contains('ring')"
+unifly networks list --filter "vlan.in('20','30','40')"
 ```
 
-Operators: `eq`, `neq`, `contains`, `startswith`, `endswith`, `gt`, `lt`, `gte`, `lte`, `in`. Combine with `&&` and `||`.
+Field paths address the JSON output shape (dot notation for nesting). An unparseable expression matches nothing and exits 0, so a silent empty result usually means a typo in the filter, not an empty collection.
 
-Only Integration API commands respect `--filter`.
+The full server-side Integration filter DSL (`neq`, `gt`/`lt`, `startswith`, `&&`/`||`) applies only to `hotspot purge --filter`, which passes the expression to the controller.
+
+## Capturing Created IDs
+
+Create commands print the created entity on stdout in the requested output format, with the human confirmation line on stderr. That makes ID capture a one-liner:
+
+```bash
+NET_ID=$(unifly networks create --name "IoT" --vlan 30 \
+  --management gateway --ipv4-host "10.0.30.1/24" -o json | jq -r '.id')
+
+# -o plain emits just the new ID
+ZONE_ID=$(unifly firewall zones create --name "IoT Zone" -o plain)
+```
+
+`sites create` is the exception: the controller returns no record to print. VPN create output has sensitive fields (private keys, PSKs) redacted, same as `get`.
 
 ## Global Flags
 
@@ -398,15 +480,17 @@ Only Integration API commands respect `--filter`.
 -c, --controller <URL>   Controller URL (overrides profile)
 -s, --site <SITE>        Site name or UUID
 -o, --output <FORMAT>    Output: table, json, json-compact, yaml, plain
--k, --insecure           Accept self-signed TLS certificates
+-k, --insecure           Accept self-signed TLS certs (--insecure=false forces verification)
 -v, --verbose            Increase verbosity (-v, -vv, -vvv)
 -q, --quiet              Suppress non-error output
 -y, --yes                Skip confirmation prompts
-    --timeout <SECS>     Request timeout (default: 30)
+    --timeout <SECS>     Request timeout (default 30, profiles may override)
     --color <MODE>       Color: auto, always, never
     --no-cache           Force fresh login (bypass session cache)
     --api-key <KEY>      Integration API key (one-shot override)
 ```
+
+`--insecure` is tri-state: absent defers to the profile and `[defaults]`, `-k` / `--insecure` accepts self-signed certificates, and `--insecure=false` forces verification no matter what the config says. The explicit value requires the equals form (`--insecure false` does not parse). `--timeout` has no baked-in flag default; when the flag and `UNIFI_TIMEOUT` are absent, the profile's `timeout` wins, then `[defaults]`, then the built-in 30 seconds.
 
 ## Output Formats
 
@@ -428,4 +512,5 @@ unifly clients list -o plain | xargs -n1 unifly clients get
 - [TUI Dashboard](/reference/tui): real-time monitoring with keybindings
 - [Authentication](/guide/authentication): which auth mode enables which commands
 - [Configuration](/guide/configuration): profiles, environment variables, precedence
+- [VPN](/guide/vpn), [Switch Ports](/guide/switch-ports), [Site Settings](/guide/settings), [Cloud & Site Manager](/guide/cloud): feature deep-dives
 - [Troubleshooting](/troubleshooting): common errors and fixes
