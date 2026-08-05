@@ -133,18 +133,30 @@ impl App {
             ConnectionStatus::Disconnected => {
                 Span::styled("○ disconnected", Style::default().fg(theme::error()))
             }
-            ConnectionStatus::Reconnecting => {
-                Span::styled("◐ reconnecting", Style::default().fg(theme::warning()))
+            ConnectionStatus::Reconnecting { attempt } => {
+                let label = if attempt > 1 {
+                    format!("◐ reconnecting (attempt {attempt})")
+                } else {
+                    "◐ reconnecting".to_string()
+                };
+                Span::styled(label, Style::default().fg(theme::warning()))
             }
             ConnectionStatus::Connecting => {
                 Span::styled("◐ connecting", Style::default().fg(theme::warning()))
             }
         };
 
-        let hints = Span::styled(
-            " │ ? help  a about  / search  , settings  q quit",
-            theme::key_hint(),
-        );
+        let hints = if self.connection_status == ConnectionStatus::Disconnected {
+            Span::styled(
+                " │ ^r retry  ? help  a about  / search  , settings  q quit",
+                theme::key_hint(),
+            )
+        } else {
+            Span::styled(
+                " │ ? help  a about  / search  , settings  q quit",
+                theme::key_hint(),
+            )
+        };
         let mut spans = vec![Span::raw(" "), connection_indicator];
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
             && let Some(reason) = &self.connection_error
@@ -370,7 +382,9 @@ impl App {
             ]),
             Line::from(vec![
                 Span::styled("  q           ", theme::key_hint_key()),
-                Span::styled("Quit", theme::key_hint()),
+                Span::styled("Quit               ", theme::key_hint()),
+                Span::styled("^r ", theme::key_hint_key()),
+                Span::styled("Retry connect", theme::key_hint()),
             ]),
             Line::from(""),
             Line::from(Span::styled(

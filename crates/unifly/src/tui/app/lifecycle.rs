@@ -76,6 +76,20 @@ impl App {
         self.data_cancel.cancel();
         self.data_cancel = CancellationToken::new();
     }
+
+    /// Immediately retry connecting after a failure, replacing the old
+    /// data bridge (and its pending backoff sleep) with a fresh one.
+    pub(super) fn retry_connect(&mut self) {
+        if self.connection_status != super::ConnectionStatus::Disconnected {
+            return;
+        }
+        let Some(controller) = self.controller.clone() else {
+            return;
+        };
+
+        self.reset_data_bridge();
+        self.spawn_data_bridge(controller);
+    }
 }
 
 #[cfg(test)]

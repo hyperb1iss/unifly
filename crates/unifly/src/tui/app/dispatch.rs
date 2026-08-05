@@ -59,13 +59,20 @@ impl App {
             }
             Action::Disconnected(reason) => {
                 self.connection_status = ConnectionStatus::Disconnected;
-                self.show_notification(crate::tui::action::Notification::error(format!(
-                    "connection failed: {reason}"
-                )));
+                // Auto-reconnect resends this action after every failed
+                // attempt; only toast when the failure reason is news.
+                if self.connection_error.as_ref() != Some(reason) {
+                    self.show_notification(crate::tui::action::Notification::error(format!(
+                        "connection failed: {reason}"
+                    )));
+                }
                 self.connection_error = Some(reason.clone());
             }
-            Action::Reconnecting => {
-                self.connection_status = ConnectionStatus::Reconnecting;
+            Action::Reconnecting { attempt } => {
+                self.connection_status = ConnectionStatus::Reconnecting { attempt: *attempt };
+            }
+            Action::RetryConnect => {
+                self.retry_connect();
             }
             Action::Invalidate => {
                 self.needs_redraw = true;

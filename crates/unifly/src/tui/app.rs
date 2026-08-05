@@ -37,7 +37,9 @@ pub enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected,
-    Reconnecting,
+    Reconnecting {
+        attempt: u32,
+    },
 }
 
 /// Top-level application state and event loop.

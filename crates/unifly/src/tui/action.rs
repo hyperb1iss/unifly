@@ -348,7 +348,10 @@ pub enum Action {
     // ── Connection Status ─────────────────────────────────────────
     Connected,
     Disconnected(String),
-    Reconnecting,
+    Reconnecting {
+        attempt: u32,
+    },
+    RetryConnect,
 
     // ── Device Selection ──────────────────────────────────────────
     SelectDevice(usize),

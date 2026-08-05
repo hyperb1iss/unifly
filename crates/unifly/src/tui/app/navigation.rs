@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use super::App;
+use super::{App, ConnectionStatus};
 use crate::tui::action::Action;
 use crate::tui::screen::ScreenId;
 
@@ -48,6 +48,15 @@ impl App {
                 }
                 _ => None,
             });
+        }
+
+        // Intercepted ahead of screen forwarding: screen key handlers match
+        // on the bare key code and would swallow Ctrl+r as a plain 'r'.
+        if key.modifiers == KeyModifiers::CONTROL
+            && key.code == KeyCode::Char('r')
+            && self.connection_status == ConnectionStatus::Disconnected
+        {
+            return Ok(Some(Action::RetryConnect));
         }
 
         if let Ok(Some(action)) = self.forward_key_to_active_screen(key) {
