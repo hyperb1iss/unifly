@@ -329,6 +329,8 @@ unifly system poweroff                          # Power off hardware (UDM only)
 ```bash
 unifly vpn servers                              # List VPN servers (Integration)
 unifly vpn tunnels                              # List site-to-site tunnels (Integration)
+unifly vpn status                               # Live IPsec tunnel status
+unifly vpn health                               # VPN subsystem health
 unifly vpn site-to-site list                    # List site-to-site VPN records
 unifly vpn site-to-site get <ID>                # Inspect one site-to-site VPN record
 unifly vpn site-to-site create -F vpn.json      # Create a site-to-site VPN
