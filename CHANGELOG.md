@@ -95,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Breaking for `unifly-api` consumers:** the lossy
+  `From<DnsPolicyResponse> for DnsPolicy` impl is replaced by `TryFrom`,
+  returning a typed `UnrecognizedDnsRecordType` error instead of
+  mislabeling unknown record types as `ForwardDomain`.
 - **Credential precedence reversed**: when both an explicit `api_key` (or
   `password`) is set in a profile's TOML config and a corresponding keyring
   entry exists, the explicit config value now wins. This is the opposite of
@@ -175,10 +179,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   clap default made every profile timeout dead weight; resolution now
   follows flag/env, then profile, then the 30-second default, including
   cloud transports.
-- **Library consumers get a fallible DNS conversion.** The lossy
-  `From<DnsPolicyResponse>` impl is replaced by `TryFrom` returning a
-  typed `UnrecognizedDnsRecordType` error (breaking change for
-  `unifly-api` users).
 - Port range items in firewall policy payloads now serialize as
   `PORT_NUMBER_RANGE` instead of `PORT_RANGE`, which the UDM API rejects.
   `PORT_RANGE` is still accepted on read for backward compatibility.
