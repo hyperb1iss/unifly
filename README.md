@@ -71,7 +71,7 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 > npx skills add hyperb1iss/unifly
 > ```
 >
-> **Humans** get a gorgeous 10-screen TUI, shell completions, pipe-friendly output, and the quiet satisfaction of never opening the UniFi web UI again. Keep scrolling to [Install](#-install).
+> **Humans** get a gorgeous 11-screen TUI, shell completions, pipe-friendly output, and the quiet satisfaction of never opening the UniFi web UI again. Keep scrolling to [Install](#-install).
 
 ---
 
@@ -80,7 +80,7 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 | Capability                    | What You Get                                                                                                                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 🔮 **Triple-Path API Engine** | Integration API + Session API via a single API key on UniFi OS, plus Site Manager cloud fleet and connector support. Hybrid mode adds WebSocket for live event streaming                                            |
-| ⚡ **Real-Time TUI**          | 10-screen dashboard with SilkCircuit octant traffic charts, CPU/MEM gauges, live client counts, zoomable topology, and auto-detected graphics-protocol charts (Kitty/Sixel/iTerm2)                                  |
+| ⚡ **Real-Time TUI**          | 11-screen dashboard with SilkCircuit octant traffic charts, CPU/MEM gauges, live client counts, zoomable topology, and auto-detected graphics-protocol charts (Kitty/Sixel/iTerm2)                                  |
 | 🦋 **28 Top-Level Commands**  | Devices and switch port config-as-code, clients, networks, WiFi, firewall policies/zones/groups, ACLs, NAT, DNS, full VPN surface, DPI, RADIUS, site settings, topology, cloud fleet, raw API passthrough, `tui`... |
 | 📡 **Wi-Fi Observability**    | Neighboring APs, regulatory channels, per-client Wi-Fi experience scores, roam timelines                                                                                                                            |
 | 💎 **Flexible Output**        | Table, JSON, compact JSON, YAML, and plain text. Pipe-friendly for scripting                                                                                                                                        |
@@ -127,7 +127,7 @@ unifly config init            # Local controller
 unifly config cloud-setup     # Site Manager / cloud controller
 ```
 
-The local wizard walks you through controller URL, authentication method, and site selection. The cloud wizard validates your Site Manager API key, lets you pick a console by name, discovers its sites, and writes a ready-to-use cloud profile. Credentials can be stored in your OS keyring, referenced from `UNIFI_API_KEY`, or saved in plaintext config, depending on the path you choose.
+The local wizard walks you through controller URL, authentication method, and site selection, and asks whether the controller uses a self-signed certificate (defaulting yes for IPs and `.local`-style hostnames, no for public ones). The cloud wizard validates your Site Manager API key, lets you pick a console by name, discovers its sites, and writes a ready-to-use cloud profile. Credentials can be stored in your OS keyring, referenced from `UNIFI_API_KEY`, or saved in plaintext config, depending on the path you choose.
 
 Once configured:
 
@@ -136,6 +136,9 @@ unifly devices list              # All adopted devices
 unifly devices ports my-switch   # Live port states with connected clients
 unifly clients list              # Connected clients
 unifly networks list             # VLANs and subnets
+unifly firewall groups list      # Port and address groups (Session API)
+unifly vpn servers               # VPN server inventory
+unifly settings list             # Site-level setting sections
 unifly wifi neighbors            # Nearby APs your radios can see
 unifly clients wifi 10.0.0.42    # Per-client Wi-Fi experience score
 unifly events watch              # Live event feed (requires Hybrid auth)
@@ -149,6 +152,13 @@ unifly cloud switch default      # Re-target the active cloud profile to another
  a1b2c3d4-e5f6-7890-abcd-ef1234567890 | Office Gateway  | UDM-Pro         | ONLINE
  b2c3d4e5-f6a7-8901-bcde-f12345678901 | Living Room AP  | U6-LR           | ONLINE
  c3d4e5f6-a7b8-9012-cdef-123456789012 | Garage Switch   | USW-Lite-8-PoE  | ONLINE
+```
+
+Create commands print the created entity on stdout in the chosen `--output`
+format, so scripts capture IDs directly:
+
+```bash
+NET_ID=$(unifly networks create --name lab --management switch --vlan 42 -o json | jq -r .id)
 ```
 
 ---
@@ -210,16 +220,24 @@ connector's site names or internal references.
 
 ### Environment Variables
 
-| Variable         | Description                                           |
-| ---------------- | ----------------------------------------------------- |
-| `UNIFI_API_KEY`  | Integration API key                                   |
-| `UNIFI_HOST_ID`  | Site Manager console/host ID for cloud connector mode |
-| `UNIFI_URL`      | Controller URL                                        |
-| `UNIFI_PROFILE`  | Profile name                                          |
-| `UNIFI_SITE`     | Site name or UUID                                     |
-| `UNIFI_OUTPUT`   | Default output format                                 |
-| `UNIFI_INSECURE` | Accept self-signed TLS certs                          |
-| `UNIFI_TIMEOUT`  | Request timeout (seconds)                             |
+| Variable         | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `UNIFI_API_KEY`  | Integration API key                                        |
+| `UNIFI_USERNAME` | Session auth username                                      |
+| `UNIFI_PASSWORD` | Session auth password                                      |
+| `UNIFI_HOST_ID`  | Site Manager console/host ID for cloud connector mode      |
+| `UNIFI_URL`      | Controller URL                                             |
+| `UNIFI_PROFILE`  | Profile name                                               |
+| `UNIFI_SITE`     | Site name or UUID                                          |
+| `UNIFI_OUTPUT`   | Default output format                                      |
+| `UNIFI_INSECURE` | Accept self-signed TLS certs (`false` forces verification) |
+| `UNIFI_TIMEOUT`  | Request timeout (seconds)                                  |
+| `UNIFI_TOTP`     | TOTP code for MFA-enabled controllers                      |
+| `UNIFI_DEMO`     | Sanitize PII for demo recordings                           |
+
+Flags and environment variables override profile values, profiles override
+the `[defaults]` config section, and `[defaults]` overrides the built-in
+fallbacks (30-second timeout, system TLS verification).
 
 ---
 
@@ -270,12 +288,14 @@ still need direct Session API access.
 -p, --profile <NAME>     Controller profile to use
 -c, --controller <URL>   Controller URL (overrides profile)
 -s, --site <SITE>        Site name or UUID
+    --api-key <KEY>      Integration API key
 -o, --output <FORMAT>    Output: table, json, json-compact, yaml, plain
--k, --insecure           Accept self-signed TLS certificates
+-k, --insecure[=BOOL]    Accept self-signed TLS certs (--insecure=false forces verification)
+    --no-cache           Disable session caching (forces fresh login)
 -v, --verbose            Increase verbosity (-v, -vv, -vvv)
 -q, --quiet              Suppress non-error output
 -y, --yes                Skip confirmation prompts
-    --timeout <SECS>     Request timeout (default: 30)
+    --timeout <SECS>     Request timeout in seconds (default 30, profiles may override)
     --color <MODE>       Color: auto, always, never
 ```
 
@@ -299,7 +319,7 @@ unifly completions powershell | Out-String | Invoke-Expression
 
 ## 🖥️ TUI
 
-`unifly tui` launches a 10-screen real-time dashboard for monitoring and managing your network.
+`unifly tui` launches an 11-screen real-time dashboard for monitoring and managing your network.
 
 ```bash
 unifly tui                   # Launch with default profile
@@ -325,6 +345,7 @@ still outside the TUI surface today.
 | **Topology**   | Zoomable network tree with pan, zoom, fit-to-view                                                |
 | **Events**     | Live WebSocket stream with 10K buffer, pause, severity filtering                                 |
 | **Stats**      | WAN bandwidth, client counts, DPI breakdown (1h/24h/7d/30d)                                      |
+| **WiFi**       | Overview, per-client experience (signal, link rates), neighboring APs, and roaming sub-tabs      |
 | **Settings**   | Profile switching, theme selector, display preferences                                           |
 | **Onboarding** | First-run setup wizard                                                                           |
 
@@ -387,7 +408,7 @@ Two crates, clean dependency chain:
 | Crate          | Purpose                                                                                                                                                                          |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **unifly-api** | Async HTTP/WebSocket client, Controller lifecycle, reactive DataStore (`DashMap` + `tokio::watch`), entity models. Published on [crates.io](https://crates.io/crates/unifly-api) |
-| **unifly**     | Single binary: CLI commands + `unifly tui` dashboard via feature flags, profile/keyring config, 10-screen ratatui dashboard with SilkCircuit theme                               |
+| **unifly**     | Single binary: CLI commands + `unifly tui` dashboard via feature flags, profile/keyring config, 11-screen ratatui dashboard with SilkCircuit theme                               |
 
 Deep dive: [Architecture documentation](https://hyperb1iss.github.io/unifly/architecture/)
 
@@ -403,7 +424,16 @@ unifly config use office       # Switch default profile
 unifly -p home devices list    # One-off override
 ```
 
-Named profiles for multiple controllers, OS keyring credential storage, environment variable overrides, and TOML config files. Full details: [Configuration guide](https://hyperb1iss.github.io/unifly/guide/configuration)
+Named profiles for multiple controllers, OS keyring credential storage, environment variable overrides, and TOML config files. A `[defaults]` section supplies fallbacks for any profile that leaves a value unset:
+
+```toml
+# ~/.config/unifly/config.toml
+[defaults]
+insecure = false # accept self-signed certificates when true
+timeout = 30     # request timeout in seconds
+```
+
+CLI flags and environment variables win over profile values, which win over `[defaults]`. Full details: [Configuration guide](https://hyperb1iss.github.io/unifly/guide/configuration)
 
 ---
 
