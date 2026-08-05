@@ -152,6 +152,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   The session-only refresh snapshot omitted NAT entirely, so rules
   created and persisted on the controller were invisible to the list
   command while update and delete still worked against them.
+- **DNS policies parse modern `*_RECORD` type tokens** (#27). Controllers
+  send `A_RECORD`-style identifiers; the old short-name tables mislabeled
+  every non-forward record as `ForwardDomain` with an empty value, and
+  `dns create` / `dns update` emitted tokens the controller rejects. One
+  canonical mapping now covers read and write, unknown record types are
+  skipped with a warning instead of mislabeled, and the CLI shows short
+  DNS names (`A`, `CNAME`, `Forward`).
+- **Firewall policy lists survive real controller payloads** (#26). Port
+  ranges arrive as `start`/`stop` per Ubiquiti's OpenAPI spec; the model
+  demanded invented `startPort`/`endPort` names, and one failing policy
+  blanked the entire list. Integration list pages now also decode
+  per-item, so a single unparseable record can never empty a collection,
+  and pagination advances by the server-reported wire count so dropped
+  items cannot truncate a scan.
+- **The TUI honors CLI flag and env overrides** (#25). The profile path
+  dropped `--insecure`, `--site`, `--api-key`, `--totp`, `--no-cache`,
+  and `--controller`, so `UNIFI_INSECURE=true unifly tui -k` failed TLS
+  against self-signed certs while the CLI worked; connect failures now
+  show the reason in the status bar instead of a silent "disconnected".
+- **Profile `timeout` takes effect.** The `--timeout` flag's baked-in
+  clap default made every profile timeout dead weight; resolution now
+  follows flag/env, then profile, then the 30-second default, including
+  cloud transports.
+- **Library consumers get a fallible DNS conversion.** The lossy
+  `From<DnsPolicyResponse>` impl is replaced by `TryFrom` returning a
+  typed `UnrecognizedDnsRecordType` error (breaking change for
+  `unifly-api` users).
 - Port range items in firewall policy payloads now serialize as
   `PORT_NUMBER_RANGE` instead of `PORT_RANGE`, which the UDM API rejects.
   `PORT_RANGE` is still accepted on read for backward compatibility.
