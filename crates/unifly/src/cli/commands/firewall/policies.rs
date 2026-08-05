@@ -502,6 +502,8 @@ async fn handle_create(
             p.id.to_string()
         });
         crate::cli::output::print_output(&out, global.quiet);
+    } else {
+        crate::cli::output::warn_unrenderable_create(global.quiet);
     }
 
     report_create_outcome(

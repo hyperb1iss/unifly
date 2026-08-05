@@ -240,6 +240,17 @@ where
     }
 }
 
+/// Warn when a create succeeded on the controller but its response could
+/// not be converted for rendering, so stdout stays empty. The mutation is
+/// real; failing the command here would invite duplicate-create retries.
+pub fn warn_unrenderable_create(quiet: bool) {
+    if !quiet {
+        eprintln!(
+            "Warning: created, but the controller response could not be rendered; use the matching list command to fetch the new entity"
+        );
+    }
+}
+
 /// Print the rendered output to stdout, respecting quiet mode.
 pub fn print_output(output: &str, quiet: bool) {
     if quiet || output.is_empty() {

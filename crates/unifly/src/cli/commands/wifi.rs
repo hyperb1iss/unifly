@@ -304,6 +304,8 @@ pub async fn handle(
                 let out =
                     output::render_single(&global.output, &wifi, detail, |w| w.id.to_string());
                 output::print_output(&out, global.quiet);
+            } else {
+                output::warn_unrenderable_create(global.quiet);
             }
             if !global.quiet {
                 eprintln!("WiFi broadcast created");
