@@ -175,7 +175,13 @@ pub async fn handle(
                 }
             };
 
-            controller.execute(CoreCommand::CreateNetwork(req)).await?;
+            let result = controller.execute(CoreCommand::CreateNetwork(req)).await?;
+            if let unifly_api::CommandResult::Network(network) = result {
+                let network = Arc::new(network);
+                let out =
+                    output::render_single(&global.output, &network, detail, |n| n.id.to_string());
+                output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("Network created");
             }

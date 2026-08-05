@@ -108,9 +108,17 @@ pub(super) async fn handle(
                     network_ids,
                 }
             };
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateFirewallZone(req))
                 .await?;
+            if let unifly_api::CommandResult::FirewallZone(zone) = result {
+                let zone = Arc::new(zone);
+                let out =
+                    crate::cli::output::render_single(&global.output, &zone, zone_detail, |z| {
+                        z.id.to_string()
+                    });
+                crate::cli::output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("Firewall zone created");
             }

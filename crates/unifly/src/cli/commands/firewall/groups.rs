@@ -177,9 +177,16 @@ async fn handle_create(
             group_members: members.unwrap_or_default(),
         }
     };
-    controller
+    let result = controller
         .execute(CoreCommand::CreateFirewallGroup(req))
         .await?;
+    if let unifly_api::CommandResult::FirewallGroup(group) = result {
+        let group = Arc::new(group);
+        let out = crate::cli::output::render_single(&global.output, &group, group_detail, |g| {
+            g.id.to_string()
+        });
+        crate::cli::output::print_output(&out, global.quiet);
+    }
     if !global.quiet {
         eprintln!("Firewall group created");
     }

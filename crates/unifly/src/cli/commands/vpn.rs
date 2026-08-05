@@ -232,9 +232,12 @@ async fn handle_site_to_site(
         }
         SiteToSiteVpnCommand::Create { from_file } => {
             let req = serde_json::from_value(util::read_json_file(&from_file)?)?;
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateSiteToSiteVpn(req))
                 .await?;
+            if let unifly_api::CommandResult::Json(record) = result {
+                print_created_record(global, &record);
+            }
             if !global.quiet {
                 eprintln!("Site-to-site VPN created");
             }
@@ -265,6 +268,23 @@ async fn handle_site_to_site(
             Ok(())
         }
     }
+}
+
+/// Render a session record returned by a VPN create on stdout. Sensitive
+/// fields are already redacted at the library layer.
+fn print_created_record(global: &GlobalOpts, value: &serde_json::Value) {
+    let out = output::render_single(
+        &global.output,
+        value,
+        |v| serde_json::to_string_pretty(v).unwrap_or_default(),
+        |v| {
+            v.get("_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        },
+    );
+    output::print_output(&out, global.quiet);
 }
 
 async fn handle_remote_access(
@@ -304,9 +324,12 @@ async fn handle_remote_access(
         }
         RemoteAccessVpnCommand::Create { from_file } => {
             let req = serde_json::from_value(util::read_json_file(&from_file)?)?;
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateRemoteAccessVpnServer(req))
                 .await?;
+            if let unifly_api::CommandResult::Json(record) = result {
+                print_created_record(global, &record);
+            }
             if !global.quiet {
                 eprintln!("Remote-access VPN server created");
             }
@@ -460,9 +483,12 @@ async fn handle_clients(
         }
         VpnClientsCommand::Create { from_file } => {
             let req = serde_json::from_value(util::read_json_file(&from_file)?)?;
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateVpnClientProfile(req))
                 .await?;
+            if let unifly_api::CommandResult::Json(record) = result {
+                print_created_record(global, &record);
+            }
             if !global.quiet {
                 eprintln!("VPN client created");
             }
@@ -583,12 +609,15 @@ async fn handle_peers(
             from_file,
         } => {
             let req = serde_json::from_value(util::read_json_file(&from_file)?)?;
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateWireGuardPeer {
                     server_id: EntityId::Legacy(server_id),
                     peer: req,
                 })
                 .await?;
+            if let unifly_api::CommandResult::Json(record) = result {
+                print_created_record(global, &record);
+            }
             if !global.quiet {
                 eprintln!("WireGuard peer created");
             }

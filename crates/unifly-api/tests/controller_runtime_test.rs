@@ -439,6 +439,76 @@ async fn legacy_mode_rejects_integration_only_surfaces_clearly() {
 }
 
 #[tokio::test]
+async fn create_dns_policy_returns_created_entity() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/proxy/network/integration/v1/sites/{API_KEY_SITE_ID}/dns/policies"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "type": "A_RECORD",
+            "id": "7bd0e8b1-0a44-4c15-93a1-4c0e8f5be7aa",
+            "enabled": true,
+            "metadata": {"origin": "USER_DEFINED"},
+            "domain": "printer.example.net",
+            "ipv4Address": "10.0.1.42",
+            "ttlSeconds": 300,
+        })))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let result = controller
+        .execute(unifly_api::Command::CreateDnsPolicy(
+            unifly_api::CreateDnsPolicyRequest {
+                name: "printer.example.net".into(),
+                policy_type: DnsPolicyType::ARecord,
+                enabled: true,
+                domain: Some("printer.example.net".into()),
+                domains: None,
+                upstream: None,
+                value: Some("10.0.1.42".into()),
+                ttl_seconds: Some(300),
+                priority: None,
+                ipv4_address: None,
+                ipv6_address: None,
+                target_domain: None,
+                mail_server_domain: None,
+                text: None,
+                ip_address: None,
+                server_domain: None,
+                service: None,
+                protocol: None,
+                port: None,
+                weight: None,
+            },
+        ))
+        .await
+        .expect("create should succeed");
+
+    match result {
+        unifly_api::CommandResult::DnsPolicy(policy) => {
+            assert_eq!(policy.policy_type, DnsPolicyType::ARecord);
+            assert_eq!(policy.domain, "printer.example.net");
+            assert_eq!(policy.value, "10.0.1.42");
+            assert_eq!(policy.ttl_seconds, Some(300));
+        }
+        other => panic!("expected CommandResult::DnsPolicy, got {other:?}"),
+    }
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
 async fn api_key_mode_has_legacy_and_integration_access() {
     let server = MockServer::start().await;
     mock_api_key_with_legacy(&server).await;

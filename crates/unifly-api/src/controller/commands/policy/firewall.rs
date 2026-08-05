@@ -44,10 +44,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 connection_state_filter: req.connection_states,
             };
             let resp = ic.create_firewall_policy(&sid, &body).await?;
-            let id = resp.id.ok_or_else(|| CoreError::ValidationFailed {
-                message: "firewall policy create response did not include an id".into(),
-            })?;
-            Ok(CommandResult::CreatedId(crate::model::EntityId::Uuid(id)))
+            Ok(CommandResult::FirewallPolicy(resp.into()))
         }
         Command::UpdateFirewallPolicy { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateFirewallPolicy")?;
@@ -211,8 +208,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 name: req.name,
                 network_ids: network_uuids?,
             };
-            ic.create_firewall_zone(&sid, &body).await?;
-            Ok(CommandResult::Ok)
+            let created = ic.create_firewall_zone(&sid, &body).await?;
+            Ok(CommandResult::FirewallZone(created.into()))
         }
         Command::UpdateFirewallZone { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateFirewallZone")?;

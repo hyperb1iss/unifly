@@ -25,8 +25,11 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 "group_members": req.group_members,
             });
 
-            session.create_firewall_group(&body).await?;
-            Ok(CommandResult::Ok)
+            let created = session.create_firewall_group(&body).await?;
+            Ok(created
+                .first()
+                .and_then(crate::convert::firewall_group_from_session)
+                .map_or(CommandResult::Ok, CommandResult::FirewallGroup))
         }
         Command::UpdateFirewallGroup { id, update } => {
             let session = require_session(session)?;

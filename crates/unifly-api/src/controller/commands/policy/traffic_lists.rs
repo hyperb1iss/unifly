@@ -28,8 +28,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 list_type: req.list_type,
                 fields,
             };
-            ic.create_traffic_matching_list(&sid, &body).await?;
-            Ok(CommandResult::Ok)
+            let created = ic.create_traffic_matching_list(&sid, &body).await?;
+            Ok(CommandResult::TrafficMatchingList(created.into()))
         }
         Command::UpdateTrafficMatchingList { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateTrafficMatchingList")?;

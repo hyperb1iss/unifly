@@ -152,9 +152,15 @@ pub async fn handle(
                 }
             };
 
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateDnsPolicy(req))
                 .await?;
+            if let unifly_api::CommandResult::DnsPolicy(policy) = result {
+                let policy = Arc::new(policy);
+                let out =
+                    output::render_single(&global.output, &policy, detail, |d| d.id.to_string());
+                output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("DNS policy created");
             }

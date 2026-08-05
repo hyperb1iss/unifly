@@ -134,7 +134,17 @@ pub async fn handle(
                 authorized_guest_limit: guest_limit,
             };
 
-            controller.execute(CoreCommand::CreateVouchers(req)).await?;
+            let result = controller.execute(CoreCommand::CreateVouchers(req)).await?;
+            if let unifly_api::CommandResult::Vouchers(vouchers) = result {
+                let vouchers: Vec<Arc<Voucher>> = vouchers.into_iter().map(Arc::new).collect();
+                let out = output::render_list(
+                    &global.output,
+                    &vouchers,
+                    |v| voucher_row(v, &p),
+                    |v| v.id.to_string(),
+                );
+                output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("{count} voucher(s) created");
             }

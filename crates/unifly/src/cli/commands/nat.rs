@@ -288,9 +288,14 @@ async fn handle_create(
         }
     };
 
-    controller
+    let result = controller
         .execute(CoreCommand::CreateNatPolicy(req))
         .await?;
+    if let unifly_api::CommandResult::NatPolicy(policy) = result {
+        let policy = Arc::new(policy);
+        let out = output::render_single(&global.output, &policy, nat_detail, |p| p.id.to_string());
+        output::print_output(&out, global.quiet);
+    }
     if !global.quiet {
         eprintln!("NAT policy created");
     }

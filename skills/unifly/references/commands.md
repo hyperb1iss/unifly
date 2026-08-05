@@ -766,6 +766,12 @@ silent truncation.**
   downstream command takes that same ID
 - `-o table`: Human display only, not for parsing
 
+Create commands print the created entity on stdout in the requested
+format (`-o plain` emits the new ID), plus a human confirmation on
+stderr. `sites create` is the exception: the controller returns no
+record. VPN create output has sensitive fields (private keys, PSKs)
+redacted, same as `get`.
+
 Mind the identifier type: `clients list -o plain` emits client UUIDs,
 but `clients block` takes a MAC. Extract the right field with `jq`
 instead:

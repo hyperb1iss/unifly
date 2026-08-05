@@ -482,24 +482,33 @@ async fn handle_create(
         .execute(CoreCommand::CreateFirewallPolicy(req))
         .await?;
 
-    let created_id = match &result {
-        unifly_api::CommandResult::CreatedId(id) => Some(id.to_string()),
+    let created = match result {
+        unifly_api::CommandResult::FirewallPolicy(policy) => Some(std::sync::Arc::new(policy)),
+        _ => None,
+    };
+    let created_id = created.as_ref().map(|policy| policy.id.clone());
+
+    let reorder_err = match (after_system, created_id.clone()) {
+        (true, Some(id)) => {
+            move_policy_after_system(controller, id, source_zone_id, destination_zone_id)
+                .await
+                .err()
+        }
         _ => None,
     };
 
-    let reorder_err = if after_system {
-        move_policy_after_system(controller, result, source_zone_id, destination_zone_id)
-            .await
-            .err()
-    } else {
-        None
-    };
+    if let Some(policy) = &created {
+        let out = crate::cli::output::render_single(&global.output, policy, policy_detail, |p| {
+            p.id.to_string()
+        });
+        crate::cli::output::print_output(&out, global.quiet);
+    }
 
     report_create_outcome(
         global,
         after_system,
         reorder_err.as_ref(),
-        created_id.as_deref(),
+        created_id.map(|id| id.to_string()).as_deref(),
     );
     Ok(())
 }
@@ -712,33 +721,31 @@ async fn handle_update(
 /// "After System Defined" in the zone-pair ordering.
 async fn move_policy_after_system(
     controller: &Controller,
-    result: unifly_api::CommandResult,
+    created_id: EntityId,
     source_zone_id: EntityId,
     destination_zone_id: EntityId,
 ) -> Result<(), CliError> {
-    if let unifly_api::CommandResult::CreatedId(created_id) = result {
-        let mut ordering = controller
-            .get_firewall_policy_ordering(&source_zone_id, &destination_zone_id)
-            .await?;
-        if let EntityId::Uuid(uuid) = &created_id {
-            ordering.before_system_defined.retain(|id| id != uuid);
-            ordering.after_system_defined.push(*uuid);
-        }
-        controller
-            .execute(CoreCommand::ReorderFirewallPolicies {
-                zone_pair: (source_zone_id, destination_zone_id),
-                before_system_ids: ordering
-                    .before_system_defined
-                    .into_iter()
-                    .map(EntityId::Uuid)
-                    .collect(),
-                after_system_ids: ordering
-                    .after_system_defined
-                    .into_iter()
-                    .map(EntityId::Uuid)
-                    .collect(),
-            })
-            .await?;
+    let mut ordering = controller
+        .get_firewall_policy_ordering(&source_zone_id, &destination_zone_id)
+        .await?;
+    if let EntityId::Uuid(uuid) = &created_id {
+        ordering.before_system_defined.retain(|id| id != uuid);
+        ordering.after_system_defined.push(*uuid);
     }
+    controller
+        .execute(CoreCommand::ReorderFirewallPolicies {
+            zone_pair: (source_zone_id, destination_zone_id),
+            before_system_ids: ordering
+                .before_system_defined
+                .into_iter()
+                .map(EntityId::Uuid)
+                .collect(),
+            after_system_ids: ordering
+                .after_system_defined
+                .into_iter()
+                .map(EntityId::Uuid)
+                .collect(),
+        })
+        .await?;
     Ok(())
 }

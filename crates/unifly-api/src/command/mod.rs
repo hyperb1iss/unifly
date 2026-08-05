@@ -8,8 +8,8 @@ pub mod requests;
 
 use crate::core_error::CoreError;
 use crate::model::{
-    AclRule, Client, Device, DnsPolicy, EntityId, FirewallPolicy, FirewallZone, MacAddress,
-    Network, TrafficMatchingList, Voucher, WifiBroadcast,
+    AclRule, Client, Device, DnsPolicy, EntityId, FirewallGroup, FirewallPolicy, FirewallZone,
+    MacAddress, NatPolicy, Network, TrafficMatchingList, Voucher, WifiBroadcast,
 };
 
 pub use requests::{
@@ -302,4 +302,8 @@ pub enum CommandResult {
     DnsPolicy(DnsPolicy),
     Vouchers(Vec<Voucher>),
     TrafficMatchingList(TrafficMatchingList),
+    FirewallGroup(FirewallGroup),
+    NatPolicy(NatPolicy),
+    /// Raw session-API record for entities without a domain model (VPN CRUD).
+    Json(serde_json::Value),
 }
