@@ -82,7 +82,12 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             let created = session
                 .create_wireguard_peers(require_legacy_id(&server_id)?, &body)
                 .await?;
-            Ok(created_record_result(&[created]))
+            // The batch endpoint answers with an array of created peers;
+            // unwrap it so the caller gets the peer record, not the envelope.
+            Ok(match created {
+                serde_json::Value::Array(items) => created_record_result(&items),
+                other => created_record_result(&[other]),
+            })
         }
         Command::UpdateWireGuardPeer {
             server_id,

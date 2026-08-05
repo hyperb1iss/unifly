@@ -44,6 +44,11 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 connection_state_filter: req.connection_states,
             };
             let resp = ic.create_firewall_policy(&sid, &body).await?;
+            if resp.id.is_none() {
+                return Err(CoreError::ValidationFailed {
+                    message: "firewall policy create response did not include an id".into(),
+                });
+            }
             Ok(CommandResult::FirewallPolicy(resp.into()))
         }
         Command::UpdateFirewallPolicy { id, update } => {
