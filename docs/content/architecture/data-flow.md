@@ -11,17 +11,17 @@ sequenceDiagram
 participant User
 participant Controller
 participant IntegrationAPI
-participant LegacyAPI
+participant SessionAPI
 participant WebSocket
 participant DataStore
 
     User->>Controller: connect()
     Controller->>IntegrationAPI: Authenticate (API key)
-    Controller->>LegacyAPI: Authenticate (cookie + CSRF)
+    Controller->>SessionAPI: Authenticate (cookie + CSRF)
     Controller->>IntegrationAPI: Fetch all entities
     IntegrationAPI-->>DataStore: Store devices, clients, networks...
-    Controller->>LegacyAPI: Fetch events, health
-    LegacyAPI-->>DataStore: Store events, health summaries
+    Controller->>SessionAPI: Fetch events, health
+    SessionAPI-->>DataStore: Store events, health summaries
     Controller->>WebSocket: Connect event stream
     Controller->>Controller: Spawn refresh task (10s)
     Controller->>Controller: Spawn command processor
@@ -68,7 +68,7 @@ Entities can have different IDs depending on the API source:
 | API         | ID Format       | Example                                |
 | ----------- | --------------- | -------------------------------------- |
 | Integration | UUID v4         | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
-| Legacy      | MAC address     | `fc:ec:da:ab:cd:ef`                    |
+| Session     | ObjectId string | `66a1b2c3d4e5f60718293a4b`             |
 | Synthetic   | Prefixed string | `net:a1b2c3d4`, `wifi:e5f6a7b8`        |
 
 The `EntityId` enum handles this transparently:
@@ -76,11 +76,11 @@ The `EntityId` enum handles this transparently:
 ```rust
 enum EntityId {
     Uuid(Uuid),      // Integration API entities
-    Legacy(String),  // Session API entities (MAC-based)
+    Legacy(String),  // Session API entities (`_id` ObjectId strings)
 }
 ```
 
-Non-MAC entities (networks, WiFi, firewall policies) use synthetic keys with a type prefix to avoid collisions in the shared `DashMap`.
+The `Legacy` variant holds the Session API's MongoDB-style `_id` string. Some domain types (clients, devices) key on MAC address as their natural identifier instead, and non-MAC entities (networks, WiFi, firewall policies) use synthetic keys with a type prefix to avoid collisions in the shared `DashMap`.
 
 ## CLI vs TUI Data Patterns
 

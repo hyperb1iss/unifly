@@ -32,13 +32,14 @@ The `DataStore` uses `DashMap` for lock-free concurrent reads and `tokio::watch`
 
 ## Key Types
 
-| Type              | Purpose                                                                              |
-| ----------------- | ------------------------------------------------------------------------------------ |
-| `Controller`      | Main entry point. Wraps `Arc<ControllerInner>` for cheap cloning across async tasks  |
-| `DataStore`       | Entity storage. `DashMap` + `watch` channels for lock-free reactive updates          |
-| `EntityStream<T>` | Reactive subscription. Wraps `watch::Receiver` with `current()`/`changed()` API      |
-| `EntityId`        | Dual-identity. `Uuid(Uuid)` or `Legacy(String)` for entities that exist in both APIs |
-| `AuthCredentials` | Auth mode. `ApiKey`, `Credentials`, `Hybrid`, or `Cloud` variants                    |
+| Type                | Purpose                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| `Controller`        | Main entry point. Wraps `Arc<ControllerInner>` for cheap cloning across async tasks  |
+| `DataStore`         | Entity storage. `DashMap` + `watch` channels for lock-free reactive updates          |
+| `EntityStream<T>`   | Reactive subscription. Wraps `watch::Receiver` with `current()`/`changed()` API      |
+| `EntityId`          | Dual-identity. `Uuid(Uuid)` or `Legacy(String)` for entities that exist in both APIs |
+| `AuthCredentials`   | Auth mode. `ApiKey`, `Credentials`, `Hybrid`, or `Cloud` variants                    |
+| `SiteManagerClient` | Cloud fleet client for `api.ui.com` (consoles, sites, devices, ISP, SD-WAN)          |
 
 ## Next Steps
 

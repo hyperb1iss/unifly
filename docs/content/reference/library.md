@@ -15,7 +15,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-unifly-api = "0.8"
+unifly-api = "0.10"
 secrecy = "0.10"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -131,6 +131,20 @@ end
 | ----------------------- | ------------------------------ | ------------------------------------------------ |
 | `Controller::connect()` | Long-lived apps (TUI, daemons) | Refresh loop (10s), WebSocket, command processor |
 | `Controller::oneshot()` | Fire-and-forget (CLI commands) | None. Single fetch, then done                    |
+
+## Fallible DNS Conversion
+
+Converting a raw Integration DNS response into a `DnsPolicy` is fallible. The `TryFrom<DnsPolicyResponse>` impl returns an `UnrecognizedDnsRecordType` error carrying the offending type token when the controller reports a record type the library doesn't model, instead of silently mislabeling it:
+
+```rust
+use unifly_api::model::DnsPolicy;
+
+let policy = DnsPolicy::try_from(response)?; // Err(UnrecognizedDnsRecordType) on unknown types
+```
+
+{% warning(title="Upgrading from 0.9") %}
+The infallible `From<DnsPolicyResponse> for DnsPolicy` impl is replaced by this `TryFrom`. It is the only breaking change in the 0.10 API for library consumers: switch call sites to `try_from` / `try_into` and handle (or propagate) the error.
+{% end %}
 
 ## Full Documentation
 

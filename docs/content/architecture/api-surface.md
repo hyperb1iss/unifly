@@ -4,7 +4,7 @@ description = "Integration API, Session API, and Site Manager endpoints"
 weight = 3
 +++
 
-Unifly communicates with UniFi controllers through two distinct API interfaces, each with different authentication mechanisms and capabilities.
+Unifly communicates with UniFi infrastructure through three distinct API interfaces, each with different authentication mechanisms and capabilities: the Integration API and Session API on the controller itself, and the Site Manager API in Ubiquiti's cloud.
 
 ## Integration API
 
@@ -27,7 +27,7 @@ Devices, clients, networks, WiFi (WLANs), firewall policies, firewall zones, ACL
 - No historical statistics
 - No alarm management
 
-Legacy still owns the live and historical monitoring surfaces: event streaming, stats/reporting, and admin workflows.
+The Session API still owns the live and historical monitoring surfaces: event streaming, stats/reporting, and admin workflows.
 
 ## Session API
 
@@ -49,10 +49,13 @@ The original UniFi controller API, session-based with cookie authentication.
 - `stat/report/`: Historical bandwidth and client reports
 - `cmd/sitemgr`: Device commands (adopt, restart, upgrade)
 - `stat/admin`: Administrator management
+- `rest/firewallgroup`: Firewall groups (port and address groups)
+- `rest/setting` / `set/setting/{key}`: Site-level settings sections
+- Switch port overrides (`devices ports` / `port-set`): the Integration API does not expose port VLAN configuration
 
 ### v2 Endpoints
 
-Network Application 9+ exposes a second generation of legacy-authenticated endpoints under `/v2/api/site/{site}/`. These return plain JSON (no `{ meta, data }` envelope).
+Network Application 9+ exposes a second generation of session-authenticated endpoints under `/v2/api/site/{site}/`. These return plain JSON (no `{ meta, data }` envelope).
 
 | Endpoint                         | Description                                   |
 | -------------------------------- | --------------------------------------------- |
@@ -93,6 +96,22 @@ When configured with both an API key and credentials, unifly uses each API for w
 | System health (ISP, DNS, gateway)       | Session API                   |
 
 This provides the most complete feature set while using the cleanest API surface available for each operation.
+
+## Site Manager API
+
+Ubiquiti's cloud API for fleets of consoles, spoken by the `SiteManagerClient`.
+
+| Aspect       | Details                                        |
+| ------------ | ---------------------------------------------- |
+| **Auth**     | Site Manager API key via `X-API-KEY` header    |
+| **Base URL** | `https://api.ui.com/v1/`                       |
+| **Format**   | Plain JSON                                     |
+| **Scope**    | Account-wide: every console the key can access |
+
+Two surfaces run on the same key:
+
+- **Fleet endpoints**: hosts (consoles), sites, devices across the fleet, ISP metrics, and SD-WAN configs. These back the `unifly cloud` command group and need no controller connection.
+- **Cloud connector**: `https://api.ui.com/v1/connector/consoles/{host_id}` proxies the console's **Integration API**, so a cloud-mode profile can run the regular Integration-backed commands against a console with no direct network path. Session endpoints are not proxied; session-backed features require direct controller access.
 
 ## Error Handling
 

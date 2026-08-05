@@ -14,6 +14,7 @@ Published on [crates.io](https://crates.io/crates/unifly-api). The engine poweri
 
 - **Integration API client**: RESTful endpoints with API key authentication
 - **Session API client**: Session-based with cookie and CSRF token handling
+- **Site Manager client**: Ubiquiti cloud fleet API (`api.ui.com`) with API key authentication
 - **WebSocket client**: Real-time event streaming
 - **TLS**: Custom `rustls` configuration for self-signed certificates
 
@@ -46,7 +47,7 @@ graphics-protocol charts are opt-in with `tui-graphics`.
 
 ### CLI (`unifly`)
 
-- **clap-derived** command tree with 26 top-level commands
+- **clap-derived** command tree with 28 top-level commands
 - **Output formatting**: Table, JSON, YAML, plain text via `tabled`
 - **Shell completions**: Bash, Zsh, Fish via `clap_complete`
 - **Man pages**: Generated at build time via `clap_mangen`
