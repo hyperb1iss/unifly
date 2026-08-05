@@ -12,20 +12,26 @@ Both are powered by a shared async engine that speaks every UniFi API dialect, s
 
 ## The Problem
 
-UniFi controllers expose two completely different APIs:
+UniFi infrastructure speaks three completely different APIs:
 
 {% mermaid() %}
 graph LR
 subgraph "Integration API"
 I["REST + API Key"]
 I1["Networks, WiFi, Firewall"]
-I2["DNS, ACL, NAT, Traffic Lists"]
+I2["DNS, ACL, Traffic Lists"]
 end
 
     subgraph "Session API"
         S["Cookie + CSRF"]
-        S1["Events, Stats, DPI"]
+        S1["Events, Stats, DPI, NAT"]
         S2["Device Commands, Admin"]
+    end
+
+    subgraph "Site Manager"
+        M["api.ui.com + API Key"]
+        M1["Fleet: Consoles, Sites"]
+        M2["Cloud Connector"]
     end
 
     subgraph unifly
@@ -34,6 +40,7 @@ end
 
     I --> U
     S --> U
+    M --> U
     U --> CLI["CLI Output"]
     U --> TUI["TUI Dashboard"]
 
@@ -41,8 +48,9 @@ end
 
 - **Integration API**: RESTful, API-key authenticated, covers CRUD for most resources
 - **Session API**: Session-based with cookie/CSRF, required for events, statistics, and device commands
+- **Site Manager API**: Ubiquiti's cloud fleet API, for multi-console queries and connector-routed access without a VPN to the controller
 
-Most tools only speak one dialect. The web dashboard is slow and can't be scripted. Unifly handles the routing, authentication, and data merging automatically.
+Most tools speak one dialect, maybe two. The web dashboard is slow and can't be scripted. Unifly handles the routing, authentication, and data merging across all three automatically.
 
 ## What You Can Do
 
@@ -52,8 +60,12 @@ Most tools only speak one dialect. The web dashboard is slow and can't be script
 | **Client Monitoring**     | See connected clients with signal, traffic, and VLAN info                                         |
 | **Network Configuration** | Manage VLANs, subnets, DHCP, and IPv6 settings                                                    |
 | **WiFi Management**       | Create and modify SSIDs, scan neighbors, analyze channels, track client roams and WiFi experience |
-| **Firewall**              | Manage policies, zones, and ACL rules                                                             |
-| **NAT**                   | Masquerade, source NAT, and destination NAT rules (via Legacy v2 API)                             |
+| **Firewall**              | Manage policies, zones, groups, and ACL rules                                                     |
+| **NAT**                   | Masquerade, source NAT, and destination NAT rules (via Session v2 API)                            |
+| **VPN**                   | Site-to-site, remote-access, WireGuard peers, client VPNs, and OpenVPN config export              |
+| **Switch Ports**          | Port profiles as reviewable JSONC files: export, edit, apply, diff                                |
+| **Site Settings**         | Read and write every site-level settings section from the terminal                                |
+| **Cloud Fleet**           | Query consoles, sites, and devices across your whole fleet via Site Manager                       |
 | **Events & Alarms**       | Stream live events, acknowledge and archive alarms                                                |
 | **Statistics**            | Query bandwidth, client counts, and DPI data over time                                            |
 | **Raw API Access**        | Hit any controller endpoint directly with `unifly api`                                            |

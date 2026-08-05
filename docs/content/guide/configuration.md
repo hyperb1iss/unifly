@@ -58,6 +58,7 @@ default_profile = "home"
 output = "table"
 color = "auto"
 timeout = 30
+insecure = false
 
 [profiles.home]
 controller = "https://192.168.1.1"
@@ -83,18 +84,21 @@ timeout = 45
 
 ### Profile Settings Reference
 
-| Setting       | Values                             | Description                                                                                                |
-| ------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `controller`  | URL                                | Controller address (include port if non-standard)                                                          |
-| `site`        | string                             | Site name or UUID. Default: `default`                                                                      |
-| `auth_mode`   | `integration`, `session`, `hybrid` | Which APIs to authenticate against. `"legacy"` is accepted as a backwards-compatible alias for `"session"` |
-| `username`    | string                             | Session/Hybrid login username                                                                              |
-| `api_key`     | string                             | Integration API key (prefer `api_key_env`)                                                                 |
-| `api_key_env` | string                             | Env var name containing the API key                                                                        |
-| `totp_env`    | string                             | Env var name for MFA one-time password                                                                     |
-| `insecure`    | bool                               | Accept self-signed TLS certificates                                                                        |
-| `ca_cert`     | path                               | Custom CA certificate PEM file                                                                             |
-| `timeout`     | seconds                            | Request timeout (default: 30)                                                                              |
+| Setting       | Values                                      | Description                                                                                                |
+| ------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `controller`  | URL                                         | Controller address (include port if non-standard)                                                          |
+| `site`        | string                                      | Site name or UUID. Default: `default`                                                                      |
+| `auth_mode`   | `integration`, `session`, `hybrid`, `cloud` | Which APIs to authenticate against. `"legacy"` is accepted as a backwards-compatible alias for `"session"` |
+| `username`    | string                                      | Session/Hybrid login username                                                                              |
+| `password`    | string                                      | Session/Hybrid password in plaintext (prefer the keyring via `config set-password`)                        |
+| `api_key`     | string                                      | Integration API key (prefer `api_key_env`)                                                                 |
+| `api_key_env` | string                                      | Env var name containing the API key                                                                        |
+| `host_id`     | string                                      | Site Manager console ID for cloud mode                                                                     |
+| `host_id_env` | string                                      | Env var name containing the console ID                                                                     |
+| `totp_env`    | string                                      | Env var name for MFA one-time password                                                                     |
+| `insecure`    | bool                                        | Accept self-signed TLS certificates                                                                        |
+| `ca_cert`     | path                                        | Custom CA certificate PEM file                                                                             |
+| `timeout`     | seconds                                     | Request timeout (default: 30)                                                                              |
 
 {% tip() %}
 Use `api_key_env` instead of `api_key` to avoid putting secrets in the config file. The API key is read from the named environment variable at runtime.
@@ -104,7 +108,7 @@ Use `api_key_env` instead of `api_key` to avoid putting secrets in the config fi
 
 `unifly config set <key> <value>` supports these keys:
 
-`controller`, `site`, `auth_mode`, `api_key`, `api_key_env`, `username`, `insecure`, `timeout`, `ca_cert`
+`controller`, `site`, `auth_mode`, `api_key`, `api_key_env`, `host_id`, `host_id_env`, `username`, `insecure`, `timeout`, `ca_cert`
 
 ```bash
 unifly config set auth_mode hybrid
@@ -132,6 +136,8 @@ All settings can be overridden via environment variables. Useful for CI/CD, scri
 | `UNIFI_INSECURE` | `1` to accept self-signed certs       |
 | `UNIFI_TIMEOUT`  | Request timeout in seconds            |
 | `UNIFI_TOTP`     | One-time password for MFA controllers |
+| `UNIFI_HOST_ID`  | Site Manager console ID (cloud mode)  |
+| `UNIFI_DEMO`     | `1` to sanitize PII in output         |
 | `NO_COLOR`       | Disable colored output (standard)     |
 
 ### Example: CI/CD Pipeline
@@ -165,6 +171,11 @@ A["1. CLI Flags"] --> B["2. Environment Vars"] --> C["3. Profile Config"] --> D[
 3. **Profile config** (`[profiles.home]` section in config.toml)
 4. **Default values** (`[defaults]` section, then built-in defaults)
 
+Two settings deserve a closer look:
+
+- **Timeout** resolves flag/env, then the profile's `timeout`, then `[defaults].timeout`, then the built-in 30 seconds.
+- **TLS** follows a ladder: an explicit `insecure = true` (flag, env, or profile) skips verification; otherwise a profile `ca_cert` wins, **including over `[defaults].insecure = true`** (a configured CA is still verification); otherwise `[defaults].insecure` decides. Passing `--insecure=false` forces verification no matter what the config says (the explicit value requires the equals form).
+
 ## Global Flags
 
 These flags work with every command:
@@ -174,13 +185,14 @@ These flags work with every command:
 -c, --controller <URL>   Controller URL (overrides profile)
 -s, --site <SITE>        Site name or UUID
 -o, --output <FORMAT>    Output: table, json, json-compact, yaml, plain
--k, --insecure           Accept self-signed TLS certificates
+-k, --insecure           Accept self-signed TLS certs (--insecure=false forces verification)
 -v, --verbose            Increase verbosity (-v, -vv, -vvv)
 -q, --quiet              Suppress non-error output
 -y, --yes                Skip confirmation prompts
-    --timeout <SECS>     Request timeout (default: 30)
+    --timeout <SECS>     Request timeout (default 30, profiles may override)
     --color <MODE>       Color: auto, always, never
     --no-cache           Force fresh login (bypass session cache)
+    --api-key <KEY>      Integration API key (one-shot override)
 ```
 
 ## TLS Certificates

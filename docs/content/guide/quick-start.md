@@ -21,10 +21,17 @@ unifly config init
 The wizard walks you through:
 
 1. **Controller URL**: your controller's address (e.g., `https://192.168.1.1`)
-2. **Authentication**: API key, username/password, or hybrid mode
-3. **Site selection**: choose which site to manage
+2. **TLS**: whether the controller uses a self-signed certificate (the default on UniFi hardware; the wizard pre-selects the right answer for LAN addresses)
+3. **Authentication**: API key, username/password, or hybrid mode
+4. **Site selection**: choose which site to manage
 
 Credentials are stored in your OS keyring by default. A plaintext config fallback is available if the keyring isn't accessible.
+
+For a cloud profile that reaches your controllers through Ubiquiti's Site Manager instead of a direct connection, run the guided cloud wizard (see [Cloud & Site Manager](/guide/cloud)):
+
+```bash
+unifly config cloud-setup
+```
 
 ## First Commands
 
@@ -75,6 +82,13 @@ unifly clients list -o plain | xargs -n1 unifly clients get
 
 {% end %}
 
+Create commands print the created entity on stdout in the requested format (the human confirmation goes to stderr), so capturing a new ID for the next step is a one-liner:
+
+```bash
+NET_ID=$(unifly networks create --name "IoT" --vlan 30 \
+  --management gateway --ipv4-host "10.0.30.1/24" -o json | jq -r '.id')
+```
+
 ## Launch the TUI
 
 For real-time monitoring, launch the terminal dashboard:
@@ -96,7 +110,7 @@ graph LR
 8 --> 9["9 WiFi<br/><i>RF health & roaming</i>"]
 {% end %}
 
-Navigate screens with number keys `1`-`9`. Press `,` for settings, `?` for help, `q` to quit.
+Eleven screens in total: the nine above on number keys `1`-`9`, a Settings screen on `,` (profiles, themes, display options), and an Onboarding wizard that appears automatically on first launch. Press `?` for help, `q` to quit.
 
 {% tip(title="Heads Up") %}
 
