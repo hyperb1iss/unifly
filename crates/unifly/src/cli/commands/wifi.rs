@@ -296,9 +296,15 @@ pub async fn handle(
                 }
             };
 
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateWifiBroadcast(req))
                 .await?;
+            if let unifly_api::CommandResult::WifiBroadcast(wifi) = result {
+                let wifi = Arc::new(wifi);
+                let out =
+                    output::render_single(&global.output, &wifi, detail, |w| w.id.to_string());
+                output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("WiFi broadcast created");
             }

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Create commands print the created entity on stdout** in the requested
+  `--output` format (`-o plain` emits the new ID), so pipelines can
+  capture IDs directly: `unifly networks create ... -o json | jq -r .id`.
+  Covers networks, wifi, firewall policies/zones/groups, NAT, ACL, DNS,
+  traffic-lists, hotspot vouchers (codes included), and the VPN create
+  surface (session records, with private keys and PSKs redacted). The
+  human confirmation stays on stderr. `sites create` is unchanged: the
+  controller returns no record.
+
 - **Switch port management as code**: `devices ports`, `devices ports-export`,
   and `devices port-set` cover the full per-port surface (mode, native VLAN,
   tagged VLANs, PoE, speed). `port-set --from-file` accepts a JSONC payload

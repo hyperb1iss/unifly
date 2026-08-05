@@ -131,8 +131,8 @@ pub(super) async fn route(
                 dhcp_guarding: None,
                 extra,
             };
-            ic.create_network(&sid, &body).await?;
-            Ok(crate::command::CommandResult::Ok)
+            let created = ic.create_network(&sid, &body).await?;
+            Ok(crate::command::CommandResult::Network(created.into()))
         }
         Command::UpdateNetwork { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateNetwork")?;
@@ -184,8 +184,8 @@ pub(super) async fn route(
         Command::CreateWifiBroadcast(req) => {
             let (ic, sid) = require_integration(integration, site_id, "CreateWifiBroadcast")?;
             let body = build_create_wifi_broadcast_payload(&req);
-            ic.create_wifi_broadcast(&sid, &body).await?;
-            Ok(crate::command::CommandResult::Ok)
+            let created = ic.create_wifi_broadcast(&sid, &body).await?;
+            Ok(crate::command::CommandResult::WifiBroadcast(created.into()))
         }
         Command::UpdateWifiBroadcast { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateWifiBroadcast")?;

@@ -20,8 +20,9 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 enabled: req.enabled,
                 fields,
             };
-            ic.create_dns_policy(&sid, &body).await?;
-            Ok(CommandResult::Ok)
+            let created = ic.create_dns_policy(&sid, &body).await?;
+            Ok(crate::convert::dns_policy_from_integration(created)
+                .map_or(CommandResult::Ok, CommandResult::DnsPolicy))
         }
         Command::UpdateDnsPolicy { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateDnsPolicy")?;

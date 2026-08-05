@@ -126,9 +126,15 @@ pub async fn handle(
                     description: None,
                 }
             };
-            controller
+            let result = controller
                 .execute(CoreCommand::CreateTrafficMatchingList(req))
                 .await?;
+            if let unifly_api::CommandResult::TrafficMatchingList(list) = result {
+                let list = Arc::new(list);
+                let out =
+                    output::render_single(&global.output, &list, detail, |t| t.id.to_string());
+                output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("Traffic matching list created");
             }

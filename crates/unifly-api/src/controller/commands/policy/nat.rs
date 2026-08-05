@@ -84,8 +84,9 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             body["destination_filter"] =
                 build_filter(req.dst_address.as_deref(), req.dst_port.as_deref());
 
-            session.create_nat_rule(&body).await?;
-            Ok(CommandResult::Ok)
+            let created = session.create_nat_rule(&body).await?;
+            Ok(crate::convert::nat_policy_from_v2(&created)
+                .map_or(CommandResult::Ok, CommandResult::NatPolicy))
         }
         Command::UpdateNatPolicy { id, update } => {
             let session = require_session(session)?;

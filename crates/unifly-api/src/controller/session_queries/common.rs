@@ -1,4 +1,4 @@
-pub(super) fn redact_sensitive_value(value: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn redact_sensitive_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => serde_json::Value::Object(
             map.iter()

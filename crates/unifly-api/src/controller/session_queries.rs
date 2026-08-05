@@ -1,6 +1,6 @@
 mod admin;
 mod backups;
-mod common;
+pub(crate) mod common;
 mod raw;
 mod settings;
 mod stats;

@@ -37,8 +37,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 )),
                 enforcing_device_filter: req.enforcing_device_filter,
             };
-            ic.create_acl_rule(&sid, &body).await?;
-            Ok(CommandResult::Ok)
+            let created = ic.create_acl_rule(&sid, &body).await?;
+            Ok(CommandResult::AclRule(created.into()))
         }
         Command::UpdateAclRule { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateAclRule")?;

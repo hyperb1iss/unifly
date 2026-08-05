@@ -80,7 +80,17 @@ pub(super) async fn handle(
                     destination_port,
                 )?
             };
-            controller.execute(CoreCommand::CreateAclRule(req)).await?;
+            let result = controller.execute(CoreCommand::CreateAclRule(req)).await?;
+            if let unifly_api::CommandResult::AclRule(rule) = result {
+                let rule = std::sync::Arc::new(rule);
+                let out = crate::cli::output::render_single(
+                    &global.output,
+                    &rule,
+                    super::render::detail,
+                    |r| r.id.to_string(),
+                );
+                crate::cli::output::print_output(&out, global.quiet);
+            }
             if !global.quiet {
                 eprintln!("ACL rule created");
             }

@@ -21,6 +21,15 @@ fn serialize_body<T: Serialize>(value: T, label: &str) -> Result<serde_json::Val
     })
 }
 
+/// Wrap the first created session record (secrets redacted) as a result.
+fn created_record_result(records: &[serde_json::Value]) -> CommandResult {
+    records.first().map_or(CommandResult::Ok, |record| {
+        CommandResult::Json(
+            crate::controller::session_queries::common::redact_sensitive_value(record),
+        )
+    })
+}
+
 pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandResult, CoreError> {
     let session = ctx.session.as_ref();
 
@@ -28,8 +37,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         Command::CreateSiteToSiteVpn(req) => {
             let session = require_session(session)?;
             let body = serialize_body(req, "site-to-site VPN")?;
-            session.create_network_conf(&body).await?;
-            Ok(CommandResult::Ok)
+            let created = session.create_network_conf(&body).await?;
+            Ok(created_record_result(&created))
         }
         Command::UpdateSiteToSiteVpn { id, update } => {
             let session = require_session(session)?;
@@ -42,8 +51,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         Command::CreateRemoteAccessVpnServer(req) => {
             let session = require_session(session)?;
             let body = serialize_body(req, "remote-access VPN server")?;
-            session.create_network_conf(&body).await?;
-            Ok(CommandResult::Ok)
+            let created = session.create_network_conf(&body).await?;
+            Ok(created_record_result(&created))
         }
         Command::UpdateRemoteAccessVpnServer { id, update } => {
             let session = require_session(session)?;
@@ -56,8 +65,8 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         Command::CreateVpnClientProfile(req) => {
             let session = require_session(session)?;
             let body = serialize_body(req, "VPN client profile")?;
-            session.create_network_conf(&body).await?;
-            Ok(CommandResult::Ok)
+            let created = session.create_network_conf(&body).await?;
+            Ok(created_record_result(&created))
         }
         Command::UpdateVpnClientProfile { id, update } => {
             let session = require_session(session)?;
@@ -70,10 +79,10 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         Command::CreateWireGuardPeer { server_id, peer } => {
             let session = require_session(session)?;
             let body = serialize_body(vec![peer], "WireGuard peer")?;
-            session
+            let created = session
                 .create_wireguard_peers(require_legacy_id(&server_id)?, &body)
                 .await?;
-            Ok(CommandResult::Ok)
+            Ok(created_record_result(&[created]))
         }
         Command::UpdateWireGuardPeer {
             server_id,

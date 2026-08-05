@@ -50,23 +50,20 @@ Network, firewall zone, WiFi SSID, and an isolation policy in one script:
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1. Create the network, then fetch its ID by name.
-#    (create commands confirm on stderr and print nothing to stdout,
-#    so IDs are captured with a follow-up list + jq filter)
-unifly networks create \
+# 1. Create the network. Create commands print the created entity on
+#    stdout in the requested format, so the ID captures directly.
+NETWORK_ID=$(unifly networks create \
   --name "IoT" \
   --vlan 30 \
   --management gateway \
   --ipv4-host 10.0.30.1/24 \
   --dhcp --dhcp-start 10.0.30.100 --dhcp-stop 10.0.30.254 \
-  --dns 1.1.1.1 --dns 1.0.0.1
-NETWORK_ID=$(unifly networks list --all -o json | \
-  jq -r '.[] | select(.name == "IoT") | .id')
+  --dns 1.1.1.1 --dns 1.0.0.1 \
+  -o json | jq -r '.id')
 
 # 2. Create a firewall zone that owns it
-unifly firewall zones create --name "IoT Zone" --networks "$NETWORK_ID"
-ZONE_ID=$(unifly firewall zones list --all -o json | \
-  jq -r '.[] | select(.name == "IoT Zone") | .id')
+ZONE_ID=$(unifly firewall zones create \
+  --name "IoT Zone" --networks "$NETWORK_ID" -o json | jq -r '.id')
 
 # 3. Grab the Internal zone ID (default LAN zone)
 INTERNAL_ZONE_ID=$(unifly firewall zones list -o json | \
@@ -272,16 +269,13 @@ Generate vouchers, export as a printable list with QR codes.
 set -euo pipefail
 
 BATCH="Cafe-$(date +%Y-%m-%d)"
-unifly hotspot create \
+# hotspot create prints the generated vouchers (codes included) on stdout
+VOUCHERS=$(unifly hotspot create \
   --name "$BATCH" \
   --count 20 \
   --minutes 1440 \
-  --rx-limit-kbps 20000 --tx-limit-kbps 5000
-
-# create prints confirmation on stderr only; fetch the batch by name
-# (hotspot list has no --all; it takes --limit up to 1000)
-VOUCHERS=$(unifly hotspot list --limit 1000 -o json | \
-  jq --arg name "$BATCH" '[.[] | select(.name == $name)]')
+  --rx-limit-kbps 20000 --tx-limit-kbps 5000 \
+  -o json)
 
 # Extract codes
 echo "$VOUCHERS" | jq -r '.[].code' > vouchers.txt
@@ -594,9 +588,10 @@ unifly --no-cache devices list
 
 1. **Inspect before mutating.** Always `get` or `list` an entity before
    `create`, `update`, or `delete`.
-2. **Capture IDs with a list after create.** Create commands confirm on
-   stderr and print nothing to stdout, so follow up with
-   `unifly ... list --all -o json | jq -r '.[] | select(.name == "X") | .id'`.
+2. **Capture IDs from create output.** Create commands print the created
+   entity on stdout: `unifly ... create -o json | jq -r '.id'`, or
+   `-o plain` for the bare ID. (Exception: `sites create` returns no
+   record from the controller.)
 3. **Verify after changes.** Re-fetch to confirm state.
 4. **Stagger bulk device operations.** Add `sleep` between restarts,
    upgrades, and port cycles to avoid overwhelming the controller.
