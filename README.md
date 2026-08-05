@@ -237,7 +237,10 @@ connector's site names or internal references.
 
 Flags and environment variables override profile values, profiles override
 the `[defaults]` config section, and `[defaults]` overrides the built-in
-fallbacks (30-second timeout, system TLS verification).
+fallbacks (30-second timeout, system TLS verification). One exception:
+`UNIFI_USERNAME` and `UNIFI_PASSWORD` fill in only when the profile does
+not set its own `username`/`password` — a profile's configured session
+credentials win over the environment.
 
 ---
 

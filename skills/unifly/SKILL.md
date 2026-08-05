@@ -335,8 +335,9 @@ UNIFI_PROFILE=warehouse unifly system health
 7. **Create commands print the created entity on stdout** in the chosen
    `--output` format, with the confirmation on stderr. Capture IDs
    directly: `ID=$(unifly networks create ... -o json | jq -r .id)`;
-   `-o plain` emits the bare ID. `sites create` prints nothing (the
-   controller returns no record).
+   `-o plain` emits the bare ID. Exceptions that print nothing because
+   the controller returns no record: `sites create` and
+   `system backup create`.
 
 ## Agent Workflow
 
