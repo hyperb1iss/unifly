@@ -234,6 +234,27 @@ fn build_cloud_integration_client(
     .map_err(cloud_api_error)
 }
 
+/// Guess whether a controller URL points at a LAN device that will present
+/// a self-signed certificate: bare IPs, single-label hostnames, and
+/// local-only suffixes default the wizard's TLS prompt to "yes", public
+/// hostnames to "no". Unparseable input is treated as local.
+fn likely_self_signed(controller: &str) -> bool {
+    let Ok(url) = url::Url::parse(controller) else {
+        return true;
+    };
+
+    match url.host() {
+        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) | None => true,
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            !domain.contains('.')
+                || [".local", ".lan", ".home", ".internal", ".home.arpa"]
+                    .iter()
+                    .any(|suffix| domain.ends_with(suffix))
+        }
+    }
+}
+
 fn slugify_profile_name(name: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
@@ -500,6 +521,14 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
         .interact_text()
         .map_err(prompt_err)?;
 
+    // UDMs/UCGs ship self-signed certs; a profile without `insecure` fails
+    // TLS in every surface that doesn't pass -k (issue #25 root cause).
+    let insecure = Confirm::new()
+        .with_prompt("Does the controller use a self-signed certificate? (skips TLS verification)")
+        .default(likely_self_signed(&controller))
+        .interact()
+        .map_err(prompt_err)?;
+
     let auth_choices = &[
         "API Key (recommended)",
         "Username/Password",
@@ -612,7 +641,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
         password,
         totp_env: None,
         ca_cert: None,
-        insecure: None,
+        insecure: insecure.then_some(true),
         timeout: None,
     };
 
@@ -633,12 +662,15 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
     ui.meta("Profile", &ui.accent(&profile_name));
     ui.meta("Controller", &ui.accent(&controller_display));
     ui.meta("Site", &ui.accent(&site_display));
+    if insecure {
+        ui.meta("TLS", &ui.accent("accept self-signed (insecure = true)"));
+    }
     ui.meta(
         "Config path",
         &ui.accent(&config_path.display().to_string()),
     );
     eprintln!();
-    ui.meta("Try", &ui.keyword("unifly system info --insecure"));
+    ui.meta("Try", &ui.keyword("unifly system info"));
 
     Ok(())
 }
@@ -667,7 +699,7 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
     let site_manager = build_site_manager_client(
         &controller,
         &api_key_setup.secret,
-        global.timeout_secs(None),
+        global.timeout_secs(None, None),
     )?;
 
     ui.step("Checking which consoles this API key can see...");
@@ -682,7 +714,7 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
         &controller,
         &host.id,
         &api_key_setup.secret,
-        global.timeout_secs(None),
+        global.timeout_secs(None, None),
     )?;
     let sites = integration
         .paginate_all(50, |offset, limit| integration.list_sites(offset, limit))
@@ -782,7 +814,9 @@ pub(super) fn store_profile_secrets(profile_name: &str, auth_mode: &str) -> Resu
 mod tests {
     use std::collections::HashMap;
 
-    use super::{cloud_connector_url, next_available_profile_name, slugify_profile_name};
+    use super::{
+        cloud_connector_url, likely_self_signed, next_available_profile_name, slugify_profile_name,
+    };
     use crate::config::Profile;
 
     fn sample_profile() -> Profile {
@@ -816,6 +850,22 @@ mod tests {
         profiles.insert("work-2".into(), sample_profile());
 
         assert_eq!(next_available_profile_name("work", &profiles), "work-3");
+    }
+
+    #[test]
+    fn likely_self_signed_defaults_yes_for_local_controllers() {
+        assert!(likely_self_signed("https://192.168.1.1"));
+        assert!(likely_self_signed("https://[fe80::1]:8443"));
+        assert!(likely_self_signed("https://udm.local"));
+        assert!(likely_self_signed("https://gateway.lan"));
+        assert!(likely_self_signed("https://dream-machine"));
+        assert!(likely_self_signed("192.168.1.1"));
+    }
+
+    #[test]
+    fn likely_self_signed_defaults_no_for_public_hostnames() {
+        assert!(!likely_self_signed("https://unifi.example.com"));
+        assert!(!likely_self_signed("https://controller.example.com:8443"));
     }
 
     #[test]
