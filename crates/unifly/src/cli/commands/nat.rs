@@ -295,6 +295,8 @@ async fn handle_create(
         let policy = Arc::new(policy);
         let out = output::render_single(&global.output, &policy, nat_detail, |p| p.id.to_string());
         output::print_output(&out, global.quiet);
+    } else {
+        output::warn_unrenderable_create(global.quiet);
     }
     if !global.quiet {
         eprintln!("NAT policy created");

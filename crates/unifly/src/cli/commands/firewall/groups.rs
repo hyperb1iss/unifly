@@ -186,6 +186,8 @@ async fn handle_create(
             g.id.to_string()
         });
         crate::cli::output::print_output(&out, global.quiet);
+    } else {
+        crate::cli::output::warn_unrenderable_create(global.quiet);
     }
     if !global.quiet {
         eprintln!("Firewall group created");

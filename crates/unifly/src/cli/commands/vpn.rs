@@ -237,6 +237,8 @@ async fn handle_site_to_site(
                 .await?;
             if let unifly_api::CommandResult::Json(record) = result {
                 print_created_record(global, &record);
+            } else {
+                output::warn_unrenderable_create(global.quiet);
             }
             if !global.quiet {
                 eprintln!("Site-to-site VPN created");
@@ -329,6 +331,8 @@ async fn handle_remote_access(
                 .await?;
             if let unifly_api::CommandResult::Json(record) = result {
                 print_created_record(global, &record);
+            } else {
+                output::warn_unrenderable_create(global.quiet);
             }
             if !global.quiet {
                 eprintln!("Remote-access VPN server created");
@@ -488,6 +492,8 @@ async fn handle_clients(
                 .await?;
             if let unifly_api::CommandResult::Json(record) = result {
                 print_created_record(global, &record);
+            } else {
+                output::warn_unrenderable_create(global.quiet);
             }
             if !global.quiet {
                 eprintln!("VPN client created");
@@ -617,6 +623,8 @@ async fn handle_peers(
                 .await?;
             if let unifly_api::CommandResult::Json(record) = result {
                 print_created_record(global, &record);
+            } else {
+                output::warn_unrenderable_create(global.quiet);
             }
             if !global.quiet {
                 eprintln!("WireGuard peer created");
