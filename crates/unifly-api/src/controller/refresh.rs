@@ -106,7 +106,7 @@ impl Controller {
                 policies: Vec::new(),
                 zones: Vec::new(),
                 acls: Vec::new(),
-                nat: Vec::new(),
+                nat: session.nat,
                 dns: Vec::new(),
                 vouchers: Vec::new(),
                 sites: session.sites,
