@@ -110,7 +110,13 @@ With `--with-clients`, the export prepends a comment line above each port record
 }
 ```
 
-Commit the export to git and re-export on a schedule: `git diff` then shows exactly which port's occupant changed, which is a cheap way to catch moved cables, swapped APs, or surprise devices.
+Commit the export to git and re-export on a schedule to catch moved cables, swapped APs, or surprise devices. Every export stamps a fresh timestamp into each `// last-seen` marker, so strip the timestamps before diffing to see only real occupant changes:
+
+```bash
+unifly devices ports-export <mac> --with-clients \
+  | sed -E 's|// last-seen [^:]+: |// occupant: |' > ports/<mac>.jsonc
+git diff ports/<mac>.jsonc
+```
 
 {% tip() %}
 The `// last-seen ` prefix (with a single trailing space) is a stable parse anchor if you script against the export.

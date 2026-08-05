@@ -51,11 +51,14 @@ Settings sections control controller-wide behavior — IPS modes, management acc
 
 ## Exporting Everything
 
-`settings export` dumps every section as raw JSON, regardless of the `--output` flag. It pairs well with version control for change tracking, or with `jq` for one-off questions:
+`settings export` dumps every section as raw JSON, regardless of the `--output` flag — **including `x_`-prefixed credential fields that the table view masks**. Treat the output as secret material: never commit it to version control as-is. Strip the sensitive fields first if you want change tracking:
 
 ```bash
-unifly settings export > settings-$(date +%F).json
+# One-off inspection
 unifly settings export | jq '.[] | select(.key == "ips")'
+
+# Sanitized snapshot safe for change tracking
+unifly settings export | jq 'walk(if type == "object" then with_entries(select(.key | startswith("x_") | not)) else . end)' > settings-$(date +%F).json
 ```
 
 ## Relationship to Other Commands
