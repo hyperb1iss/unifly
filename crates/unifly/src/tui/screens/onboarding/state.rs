@@ -112,8 +112,14 @@ impl OnboardingScreen {
         };
 
         tokio::spawn(async move {
-            let result = match crate::config::profile_to_controller_config(&profile, &profile_name)
-            {
+            let defaults = crate::config::load_config()
+                .map(|cfg| cfg.defaults)
+                .unwrap_or_default();
+            let result = match crate::config::profile_to_controller_config(
+                &profile,
+                &profile_name,
+                &defaults,
+            ) {
                 Ok(config) => {
                     let controller = unifly_api::Controller::new(config);
                     match controller.connect().await {
@@ -153,7 +159,10 @@ impl OnboardingScreen {
             return;
         };
 
-        match crate::config::profile_to_controller_config(&profile, profile_name) {
+        let defaults = crate::config::load_config()
+            .map(|cfg| cfg.defaults)
+            .unwrap_or_default();
+        match crate::config::profile_to_controller_config(&profile, profile_name, &defaults) {
             Ok(config) => {
                 let _ = tx.send(crate::tui::action::Action::OnboardingComplete {
                     profile_name: profile_name.to_string(),

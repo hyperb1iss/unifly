@@ -116,7 +116,9 @@ fn resolve_site<'a>(sites: &'a [SiteResponse], query: &str) -> Result<&'a SiteRe
 
 pub async fn handle(args: CloudSwitchArgs, global: &GlobalOpts) -> Result<(), CliError> {
     let (mut cfg, profile_name, profile) = require_cloud_profile(global)?;
-    let sites = load_cloud_connector_sites(&profile, &profile_name, global).await?;
+    let sites =
+        load_cloud_connector_sites(&profile, &profile_name, global, Some(cfg.defaults.timeout))
+            .await?;
     let site = resolve_site(&sites, &args.site)?;
 
     let Some(active_profile) = cfg.profiles.get_mut(&profile_name) else {

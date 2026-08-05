@@ -527,9 +527,12 @@ pub fn resolve_totp_token(profile: &Profile) -> Option<SecretString> {
 ///
 /// Suitable for the TUI and other non-CLI consumers. Sets TUI-friendly
 /// defaults: `websocket_enabled: true`, `refresh_interval_secs: 10`.
+/// `[defaults]` supplies `insecure` and `timeout` when the profile
+/// leaves them unset, mirroring the CLI resolution ladder.
 pub fn profile_to_controller_config(
     profile: &Profile,
     profile_name: &str,
+    defaults: &Defaults,
 ) -> Result<ControllerConfig, ConfigError> {
     let is_cloud = profile.auth_mode == "cloud";
     let controller_url = if is_cloud && profile.controller.trim().is_empty() {
@@ -547,17 +550,21 @@ pub fn profile_to_controller_config(
 
     let auth = resolve_auth(profile, profile_name)?;
 
+    // Profile insecure > profile ca_cert > defaults insecure: a CA is
+    // still verification, so only an explicit insecure=true skips it.
     let tls = if is_cloud {
         TlsVerification::SystemDefaults
     } else if profile.insecure.unwrap_or(false) {
         TlsVerification::DangerAcceptInvalid
     } else if let Some(ref ca_path) = profile.ca_cert {
         TlsVerification::CustomCa(ca_path.clone())
+    } else if profile.insecure.unwrap_or(defaults.insecure) {
+        TlsVerification::DangerAcceptInvalid
     } else {
         TlsVerification::SystemDefaults
     };
 
-    let timeout = Duration::from_secs(profile.timeout.unwrap_or(30));
+    let timeout = Duration::from_secs(profile.timeout.unwrap_or(defaults.timeout));
 
     let totp_token = resolve_totp_token(profile);
 
@@ -579,10 +586,11 @@ pub fn profile_to_controller_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_CLOUD_CONTROLLER_URL, Profile, profile_to_controller_config, resolve_api_key,
-        resolve_auth,
+        DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, profile_to_controller_config,
+        resolve_api_key, resolve_auth,
     };
     use secrecy::ExposeSecret;
+    use std::time::Duration;
     use unifly_api::{AuthCredentials, TlsVerification};
 
     fn cloud_profile() -> Profile {
@@ -646,8 +654,8 @@ mod tests {
     fn profile_to_controller_config_defaults_cloud_transport() {
         let profile = cloud_profile();
 
-        let config =
-            profile_to_controller_config(&profile, "cloud").expect("cloud config should resolve");
+        let config = profile_to_controller_config(&profile, "cloud", &Defaults::default())
+            .expect("cloud config should resolve");
 
         assert_eq!(
             config.url.as_str(),
@@ -658,5 +666,47 @@ mod tests {
         assert_eq!(config.refresh_interval_secs, 60);
         assert_eq!(config.polling_interval_secs, 30);
         assert!(config.no_session_cache);
+    }
+
+    fn direct_profile() -> Profile {
+        let mut profile = cloud_profile();
+        profile.auth_mode = "integration".into();
+        profile.controller = "https://10.0.1.1".into();
+        profile.insecure = None;
+        profile.timeout = None;
+        profile
+    }
+
+    #[test]
+    fn profile_to_controller_config_applies_defaults_insecure_and_timeout() {
+        let profile = direct_profile();
+
+        let defaults = Defaults {
+            insecure: true,
+            timeout: 77,
+            ..Defaults::default()
+        };
+
+        let config = profile_to_controller_config(&profile, "default", &defaults)
+            .expect("profile should resolve");
+
+        assert!(matches!(config.tls, TlsVerification::DangerAcceptInvalid));
+        assert_eq!(config.timeout, Duration::from_secs(77));
+    }
+
+    #[test]
+    fn profile_to_controller_config_ca_cert_beats_defaults_insecure() {
+        let mut profile = direct_profile();
+        profile.ca_cert = Some("/certs/controller-ca.pem".into());
+
+        let defaults = Defaults {
+            insecure: true,
+            ..Defaults::default()
+        };
+
+        let config = profile_to_controller_config(&profile, "default", &defaults)
+            .expect("profile should resolve");
+
+        assert!(matches!(config.tls, TlsVerification::CustomCa(_)));
     }
 }

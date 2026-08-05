@@ -65,10 +65,11 @@ pub(crate) async fn build_cloud_integration_client(
     profile: &Profile,
     profile_name: &str,
     global: &GlobalOpts,
+    defaults_timeout: Option<u64>,
 ) -> Result<IntegrationClient, CliError> {
     let api_key = resolve_cloud_api_key(Some(profile), profile_name, global)?;
     let controller = resolve_site_manager_url(Some(profile), global);
-    let transport = cloud_transport(global, profile.timeout, None);
+    let transport = cloud_transport(global, profile.timeout, defaults_timeout);
     let host_id = if let Some(host_id) = &global.host_id {
         host_id.clone()
     } else if let Ok(host_id) = config::resolve_host_id(profile) {
@@ -93,8 +94,10 @@ pub(crate) async fn load_cloud_connector_sites(
     profile: &Profile,
     profile_name: &str,
     global: &GlobalOpts,
+    defaults_timeout: Option<u64>,
 ) -> Result<Vec<SiteResponse>, CliError> {
-    let integration = build_cloud_integration_client(profile, profile_name, global).await?;
+    let integration =
+        build_cloud_integration_client(profile, profile_name, global, defaults_timeout).await?;
     integration
         .paginate_all(50, |offset, limit| integration.list_sites(offset, limit))
         .await
