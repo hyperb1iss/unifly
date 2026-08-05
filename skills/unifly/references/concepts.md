@@ -130,6 +130,8 @@ without username/password. Use this matrix to pick the right `auth_mode`.
 - `clients wifi <ip>`: `/v2/api/site/{site}/wifiman/{ip}/`
 - `devices` adopt, remove, restart, locate, port-cycle, upgrade, provision,
   speedtest (all route through `cmd/devmgr` and `cmd/stamgr`)
+- `devices ports`, `devices ports-export`, `devices port-set`: switch port
+  overrides via `/rest/device/{id}` (`port_overrides`)
 - `clients` authorize, unauthorize, block, unblock, kick, forget (via
   `cmd/stamgr`)
 - `dpi status | enable | disable`: `/set/setting/dpi`
@@ -144,6 +146,7 @@ without username/password. Use this matrix to pick the right `auth_mode`.
 - `vpn peers` (list/get/create/update/delete/subnets): `/v2/api/site/{site}/wireguard/*/users`
 - `vpn magic-site-to-site` (list/get): `/v2/api/site/{site}/magicsitetositevpn/configs`
 - `vpn settings` (list/get/set/patch): `/rest/setting`
+- `settings` (list/get/set/export): `/rest/setting`
 - `wifi neighbors`: `/stat/rogueap`
 - `wifi channels`: `/stat/current-channel`
 - `nat policies` (list/get/create/update/delete): Session v2 API
@@ -166,6 +169,14 @@ falls back to polling when no session cookie is available.
 - `clients find`: inherits the merged view
 - `devices list`: Integration fetch, Session API `num_sta` merged by MAC
 - `topology`: depends on merged `uplink_device_mac` for tree construction
+
+### Site Manager cloud (cloud auth mode)
+
+- `cloud hosts | sites | devices | isp | sdwan | switch`: direct calls to
+  the Site Manager fleet API at `api.ui.com/v1/`; no controller connection
+  needed. With `auth_mode = "cloud"`, Integration-backed commands tunnel
+  through the cloud connector; Session-only commands still need direct
+  controller access.
 
 ### Raw API escape hatch
 
@@ -200,8 +211,11 @@ falls back to polling when no session cookie is available.
    `clients wifi`), admin operations, and enriched `clients list` /
    `devices list`. Live `events watch` still will not.
 2. **"I have username + password only"** → `auth_mode = "session"`. Events,
-   stats, device commands work. Modern entities (DNS policies, NAT policies,
-   traffic lists, ACL) require Integration and will fail.
+   stats, device commands, NAT policies, firewall groups, switch port
+   config-as-code (`devices ports / ports-export / port-set`), and site
+   `settings` all work. Modern Integration entities (DNS policies, traffic
+   lists, ACL, firewall policies and zones) require Integration and will
+   fail.
 3. **"I have both"** → `auth_mode = "hybrid"`. Recommended when the task
    needs live WebSocket streaming or maximum controller compatibility.
 4. **"Agent will manage multiple sites/controllers"** → Use named profiles

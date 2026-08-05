@@ -24,10 +24,11 @@ description: >-
 unifly is a Rust CLI for managing Ubiquiti UniFi network infrastructure. It
 unifies the modern Integration API (REST, API key), the Session API (cookie
 plus CSRF), and Site Manager cloud APIs behind a single coherent interface,
-plus real-time WebSocket event streaming. 28 top-level commands cover devices,
-clients, networks, WiFi, firewall policies and zones, NAT policies, ACLs, DNS,
-traffic matching lists, hotspot vouchers, DPI, stats, backups, cloud fleet
-queries, and a raw API escape hatch.
+plus real-time WebSocket event streaming. 28 top-level commands cover devices
+and switch port config-as-code, clients, networks, WiFi, firewall policies,
+zones, and groups, NAT policies, ACLs, DNS, traffic matching lists, hotspot
+vouchers, DPI, stats, backups, the full VPN surface, site settings, cloud
+fleet queries, and a raw API escape hatch.
 
 Unique capabilities worth leading with when the user's task suits them:
 
@@ -62,12 +63,12 @@ unifly supports four modes. **API key mode is enough for most HTTP
 automation on UniFi OS controllers.** Choose **Hybrid** when the task needs
 live WebSocket features (`events watch`) or you want maximum compatibility.
 
-| Mode          | Credentials             | What It Unlocks                                                                                              |
-| ------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `integration` | API key                 | Integration API plus session HTTP on UniFi OS: CRUD, device commands, stats, reservations, admin, event list |
-| `session`     | Username + password     | Session HTTP + WebSocket only: events watch, stats, device commands, DPI control, admin, backups             |
-| `hybrid`      | API key + username/pass | Everything above, including session WebSocket plus enriched records with maximum controller compatibility    |
-| `cloud`       | Site Manager API key    | Connector-routed Integration CRUD plus `unifly cloud` fleet commands against `api.ui.com`                    |
+| Mode          | Credentials             | What It Unlocks                                                                                                                                                            |
+| ------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `integration` | API key                 | Integration API plus session HTTP on UniFi OS: CRUD, device commands, stats, reservations, admin, event list                                                               |
+| `session`     | Username + password     | Session HTTP + WebSocket only: events watch, stats, device commands, DPI control, admin, backups, NAT policies, firewall groups, switch port config-as-code, site settings |
+| `hybrid`      | API key + username/pass | Everything above, including session WebSocket plus enriched records with maximum controller compatibility                                                                  |
+| `cloud`       | Site Manager API key    | Connector-routed Integration CRUD plus `unifly cloud` fleet commands against `api.ui.com`                                                                                  |
 
 Session WebSocket still rejects API keys, so `events watch` needs `session` or
 `hybrid`. Cloud mode does **not** expose Session API endpoints or WebSocket
@@ -331,6 +332,11 @@ UNIFI_PROFILE=warehouse unifly system health
    controller access.
 6. **Exit codes are meaningful.** `0` on success, non-zero on error. Capture
    stderr for diagnostics.
+7. **Create commands print the created entity on stdout** in the chosen
+   `--output` format, with the confirmation on stderr. Capture IDs
+   directly: `ID=$(unifly networks create ... -o json | jq -r .id)`;
+   `-o plain` emits the bare ID. `sites create` prints nothing (the
+   controller returns no record).
 
 ## Agent Workflow
 
