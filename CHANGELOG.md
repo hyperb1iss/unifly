@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   human confirmation stays on stderr. `sites create` is unchanged: the
   controller returns no record.
 
+- **TUI auto-reconnect**: a failed controller connection no longer leaves
+  the dashboard dead. The data bridge retries with exponential backoff
+  (2s doubling to a 30s cap, indefinitely), the status bar shows the
+  attempt number while reconnecting, and `Ctrl+r` triggers an immediate
+  manual retry when disconnected.
 - **Switch port management as code**: `devices ports`, `devices ports-export`,
   and `devices port-set` cover the full per-port surface (mode, native VLAN,
   tagged VLANs, PoE, speed). `port-set --from-file` accepts a JSONC payload

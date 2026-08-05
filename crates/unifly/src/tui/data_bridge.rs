@@ -5,6 +5,7 @@
 //! through the TUI's action channel.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -15,9 +16,19 @@ use unifly_api::{ConnectionState, Controller, Event};
 use crate::sanitizer::Sanitizer;
 use crate::tui::action::Action;
 
+/// Delay before connect attempt `attempt + 1`: exponential from 2s,
+/// doubling each attempt, capped at 30s.
+fn connect_backoff(attempt: u32) -> Duration {
+    const BASE_SECS: u64 = 2;
+    const MAX_SECS: u64 = 30;
+    let exponent = attempt.saturating_sub(1).min(6);
+    Duration::from_secs((BASE_SECS << exponent).min(MAX_SECS))
+}
+
 /// Spawn the data bridge connecting [`Controller`] reactive streams to the TUI.
 ///
-/// Connects to the controller, sends initial data snapshots, then loops
+/// Connects to the controller (retrying failed attempts with bounded
+/// exponential backoff), sends initial data snapshots, then loops
 /// forwarding every entity change and connection-state transition as an
 /// [`Action`]. Shuts down cleanly on cancellation.
 ///
@@ -30,13 +41,27 @@ pub async fn spawn_data_bridge(
     cancel: CancellationToken,
     sanitizer: Option<Arc<Sanitizer>>,
 ) {
-    // Signal connecting state
-    let _ = action_tx.send(Action::Reconnecting);
+    let mut attempt: u32 = 1;
+    loop {
+        let _ = action_tx.send(Action::Reconnecting { attempt });
 
-    if let Err(e) = controller.connect().await {
-        warn!(error = %e, "failed to connect to controller");
-        let _ = action_tx.send(Action::Disconnected(format!("{e}")));
-        return;
+        match controller.connect().await {
+            Ok(()) => break,
+            Err(e) => {
+                warn!(error = %e, attempt, "failed to connect to controller");
+                let _ = action_tx.send(Action::Disconnected(format!("{e}")));
+
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        debug!("data bridge cancelled while waiting to reconnect");
+                        return;
+                    }
+                    () = tokio::time::sleep(connect_backoff(attempt)) => {}
+                }
+
+                attempt = attempt.saturating_add(1);
+            }
+        }
     }
 
     let _ = action_tx.send(Action::Connected);
@@ -190,8 +215,8 @@ pub async fn spawn_data_bridge(
                     ConnectionState::Disconnected => {
                         let _ = action_tx.send(Action::Disconnected("disconnected".into()));
                     }
-                    ConnectionState::Reconnecting { .. } => {
-                        let _ = action_tx.send(Action::Reconnecting);
+                    ConnectionState::Reconnecting { attempt } => {
+                        let _ = action_tx.send(Action::Reconnecting { attempt });
                     }
                     ConnectionState::Failed => {
                         let _ = action_tx.send(Action::Disconnected("connection failed".into()));
@@ -204,4 +229,24 @@ pub async fn spawn_data_bridge(
 
     controller.disconnect().await;
     debug!("data bridge shut down");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_backoff_doubles_from_two_seconds() {
+        assert_eq!(connect_backoff(1), Duration::from_secs(2));
+        assert_eq!(connect_backoff(2), Duration::from_secs(4));
+        assert_eq!(connect_backoff(3), Duration::from_secs(8));
+        assert_eq!(connect_backoff(4), Duration::from_secs(16));
+    }
+
+    #[test]
+    fn connect_backoff_caps_at_thirty_seconds() {
+        assert_eq!(connect_backoff(5), Duration::from_secs(30));
+        assert_eq!(connect_backoff(6), Duration::from_secs(30));
+        assert_eq!(connect_backoff(u32::MAX), Duration::from_secs(30));
+    }
 }
