@@ -148,6 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   single-label hostnames) and writes `insecure = true` into the profile,
   so the canonical UDM/UCG setup no longer produces a profile that fails
   TLS everywhere `-k` isn't passed.
+- **NAT policies appear in `nat policies list` under session-only auth.**
+  The session-only refresh snapshot omitted NAT entirely, so rules
+  created and persisted on the controller were invisible to the list
+  command while update and delete still worked against them.
 - Port range items in firewall policy payloads now serialize as
   `PORT_NUMBER_RANGE` instead of `PORT_RANGE`, which the UDM API rejects.
   `PORT_RANGE` is still accepted on read for backward compatibility.
