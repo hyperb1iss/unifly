@@ -23,7 +23,7 @@ infrastructure. A single `unifly` binary ships three user-facing surfaces:
   clients, connections, peers, magic-site-to-site, settings), Wi-Fi
   observability (neighbors, channels, roams, experience), site settings
   (`settings`), cloud fleet queries, and a raw `api` escape hatch.
-- **TUI dashboard** (`unifly tui`) -- 10-screen Ratatui interface for real-time
+- **TUI dashboard** (`unifly tui`) -- 11-screen Ratatui interface for real-time
   monitoring and interactive management.
 - **Agent skill** at `skills/unifly/SKILL.md`: bundled documentation that
   teaches AI agents to drive the CLI.
@@ -49,13 +49,14 @@ The project uses **just** for task orchestration. All recipes live in the
 just check              # fmt-check + maintainability + clippy + test
 
 # Individual gates
-just fmt-check          # nightly rustfmt, read-only
+just fmt-check          # nightly rustfmt + prettier, read-only
+just maintainability    # scripts/check-maintainability.sh line-count gate
 just clippy             # cargo clippy --workspace --all-targets
 just test               # cargo test --workspace
 
 # Fix-it automation
-just fix                # clippy --fix + cargo fmt --all
-just fmt                # cargo fmt --all
+just fix                # clippy --fix + cargo fmt + prettier --write
+just fmt                # cargo fmt --all + prettier --write
 
 # Running
 just cli <args>         # cargo run -p unifly -- <args>
@@ -66,6 +67,14 @@ just test-crate unifly-api
 just test-verbose       # cargo test --workspace -- --nocapture
 just snap-review        # cargo insta review for snapshot tests
 
+# End-to-end (dockerized controller, feature-gated)
+just e2e                # full lifecycle: up, wait, test, tear down
+just e2e-up             # start the controller container
+just e2e-wait           # poll until the controller is ready
+just e2e-build          # compile the gated e2e binary without running it
+just e2e-test           # run the suite against a running controller
+just e2e-down           # stop and remove the container
+
 # Build
 just build              # debug build (workspace)
 just build-release      # release build (workspace)
@@ -75,7 +84,9 @@ just install            # cargo install --path crates/unifly (CLI + TUI)
 just install-cli        # CLI without TUI dependencies
 
 # Docs and cleanup
-just doc                # cargo doc --workspace --open
+just doc                # cargo doc --workspace --no-deps --open
+just docs-build         # Zola docs site build + llms.txt generation
+just docs-serve         # Zola docs site with live reload
 just clean              # cargo clean
 ```
 
@@ -250,10 +261,14 @@ Integration gate is called by 8 handler files (acl, dns, hotspot,
 networks, traffic_lists, wifi, vpn for servers/tunnels, and firewall
 for policies and zones). The Session gate is called by `events`,
 `nat`, `firewall` (groups subgroup and group-name resolution inside
-policies), and `devices` (port-set / ports / ports-export / port-cycle
-/ tags). The `firewall` handler dispatches the gate per-subcommand
-rather than at the top level. New commands should add the appropriate
-gate call for clean error messages when the auth mode is insufficient.
+policies), `devices` (ports / ports-export / port-set), and `vpn`
+(status, health, site-to-site, remote-access, clients, connections,
+peers, magic-site-to-site, settings). The `firewall` and `vpn`
+handlers dispatch the gate per-subcommand rather than at the top
+level. The top-level `settings` command has no gate call; insufficient
+auth surfaces as a raw session-client error. New commands should add
+the appropriate gate call for clean error messages when the auth mode
+is insufficient.
 
 ### Output Formats
 
@@ -286,6 +301,16 @@ but functional. Used for MFA controllers and 1Password CLI integration via
 `--no-cache` forces a fresh Session login, bypassing the session cookie
 cache stored under the system config dir.
 
+Value resolution follows CLI flag/env > profile > `[defaults]` >
+builtin (30-second timeout, system TLS verification). A profile's
+explicit `ca_cert` beats an inherited `defaults.insecure = true`,
+since a configured CA still means verification. `--insecure` /
+`UNIFI_INSECURE` is tri-state (`Option<bool>` with `require_equals`):
+bare `-k` means true, `--insecure=false` forces verification over any
+profile or defaults value. `--timeout` has no clap default; the
+30-second fallback is applied during resolution so profile and
+`[defaults]` timeouts take effect.
+
 ---
 
 ## TUI Architecture
@@ -300,9 +325,9 @@ crates/unifly/src/tui/
   component.rs / screen.rs   # traits
   data_bridge.rs             # Controller streams -> App state
   app.rs / app/              # top-level App state + run loop
-  screens/                   # 10 screens (Dashboard, Devices, Clients,
+  screens/                   # 11 screens (Dashboard, Devices, Clients,
                              #  Networks, Firewall, Topology, Events, Stats,
-                             #  Onboarding, Settings)
+                             #  Wifi, Onboarding, Settings)
   widgets/                   # shared custom widgets
   forms/                     # editable form overlays (Networks, Settings)
 ```
@@ -355,25 +380,29 @@ Two error types, composed via `From` impls:
 crates/unifly-api/tests/
   integration_client_test.rs     # wiremock-based Integration API tests
   session_client_test.rs         # wiremock-based Session API tests
+  site_manager_client_test.rs    # wiremock-based Site Manager cloud tests
   controller_runtime_test.rs     # Controller lifecycle + refresh loop
 
 crates/unifly/tests/
   cli_test.rs                    # assert_cmd-based CLI tests (fast, no controller)
-  e2e_test.rs                    # end-to-end tests against a simulation controller
+  e2e_test.rs                    # gated e2e suite against a dockerized controller
 
-tests/fixtures/                  # repo-root shared test data
+tests/e2e/                       # docker-compose.yml + wait-for-controller.sh
 ```
 
 Unit tests are inline in source files under `#[cfg(test)] mod tests`.
-The e2e suite (`e2e_test.rs`) spins up a wiremock-backed simulation
-controller and runs full command flows including auth, refresh, and
-output validation.
+The e2e suite (`e2e_test.rs`) is feature-gated behind `--features e2e`
+and drives the built binary against a real UniFi Network controller
+running in simulation mode via `tests/e2e/docker-compose.yml`. `just
+e2e` runs the full lifecycle (up, wait, test, tear down); `UNIFLY_E2E_URL`,
+`UNIFLY_E2E_USERNAME`, `UNIFLY_E2E_PASSWORD`, `UNIFLY_E2E_SITE`, and
+`UNIFLY_E2E_TIMEOUT_SECS` override the connection defaults. CI runs the
+same lifecycle in `.github/workflows/e2e.yml`.
 
 ### Libraries
 
-- **wiremock**: mock HTTP servers for Integration/Session tests and the
-  e2e simulation controller. Serves static JSON fixtures from
-  `tests/fixtures/`.
+- **wiremock**: mock HTTP servers for the Integration, Session, and
+  Site Manager client test suites.
 - **insta**: snapshot tests for output formatting. `just snap-review`
   opens the interactive UI to approve changes. Snapshot files live next to
   the test as `.snap` or `.snap.new`.
@@ -390,9 +419,11 @@ snapshot diffing is fast even in debug builds.
 
 - Unit tests should be pure and deterministic. No real network calls.
 - Integration tests use wiremock or assert_cmd, never a real controller.
+  The one carve-out is the feature-gated e2e suite, which targets the
+  dockerized controller and never runs in a default `cargo test`.
 - Tests must not require a specific UniFi hardware or firmware version.
-- The TUI has no automated test coverage yet. Adding tests here is
-  welcomed.
+- The TUI has inline unit tests (effects, forms, screen state) but no
+  `ratatui::TestBackend` render harness yet. Adding one is welcomed.
 
 ---
 
@@ -603,11 +634,29 @@ workflow.
   `key` (e.g. `"US"`), and `name` (e.g. `"United States"`).
 - **Session v2 observability routes return raw JSON**, not the classic
   `{meta, data}` envelope. Use `get_raw()` / `raw_get()` patterns.
-- **Device `radios` is always empty**. Parsing from the `interfaces`
-  JSON is not yet implemented. Known gap.
+- **Device `radios` come from the session `radio_table`**, merged with
+  `radio_table_stats` by `convert.rs::parse_session_radios`. The
+  Integration `interfaces` JSON is not the source.
 
 ### CLI Quirks
 
+- **Create commands print the created entity on stdout** in the selected
+  `--output` format: `-o plain` emits the bare ID, `-o json | jq -r .id`
+  is the capture idiom. The confirmation message goes to stderr.
+  `sites create` prints nothing (the controller returns no record). VPN
+  create responses pass through session-query redaction, so generated
+  private keys and PSKs stay off stdout. A response that cannot be
+  rendered warns on stderr and still exits zero; the create succeeded,
+  and failing would invite duplicate-create retries.
+- **`nat policies list` works in session-only auth.** The session
+  refresh snapshot fetches the v2 NAT inventory alongside the other
+  session collections.
+- **Wire formats follow Ubiquiti's OpenAPI spec, not intuition**
+  (#26/#27). Port ranges are `start`/`stop` on the wire, never
+  `startPort`/`endPort` (that string appears nowhere in the spec). DNS
+  record types are `*_RECORD` tokens (`A_RECORD`, not `A`). Integration
+  list pages decode per-item so one unparseable record cannot blank a
+  collection, and pagination advances by the server-reported count.
 - **Default list limit is 25** with a silent truncation hint. Agents and
   scripts should pass `--all` or `--limit 200+` for enumeration.
 - **`events watch --types` takes `EventCategory` enum values** (Device,
@@ -679,6 +728,14 @@ remote-access suggest-port` and `vpn remote-access download-config
 - **Panic hooks must be installed before terminal setup** so that panics
   restore the terminal state before crashing. `terminal::install_hooks`
   handles this.
+- **The data bridge auto-reconnects.** Failed connects retry with
+  exponential backoff (2s doubling to a 30s cap, indefinitely), emitting
+  `Reconnecting`/`Disconnected` actions so the status bar stays
+  truthful. `Ctrl+r` forces an immediate retry while disconnected by
+  cancelling the old bridge and spawning a fresh one. Bridge lifetimes
+  are serialized: each new bridge task first awaits its predecessor's
+  `JoinHandle`, so teardown always completes before the next connect
+  starts.
 
 ---
 
@@ -703,9 +760,15 @@ remote-access suggest-port` and `vpn remote-access download-config
 - `ROADMAP.md`: forward-looking plans
 - `AGENTS.md` / `CLAUDE.md`: this file (CLAUDE.md is a symlink)
 - `skills/unifly/SKILL.md`: agent skill for USING the CLI
+- `docs/content/`: Zola docs site content (guide, reference, architecture)
+- `docs/config.toml`: Zola site configuration
 - `docs/images/`: committed screenshots and GIFs
 - `docs/plans/` --**scratch area, do not commit contents** (not currently
   gitignored but treat as ephemeral)
+
+The docs site deploys via `.github/workflows/docs.yml`, which triggers
+only on `docs/**` changes (and edits to the workflow itself). Root
+markdown changes do not redeploy the site.
 
 ### Scratch Areas
 
