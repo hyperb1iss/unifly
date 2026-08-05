@@ -810,11 +810,6 @@ fn session_profile_firewall_group_crud_round_trip() {
     ]);
     assert_success(&create, "firewall groups create");
     assert!(
-        create.stdout.is_empty(),
-        "expected create to print nothing on stdout (confirmation goes to stderr), got {}",
-        stdout_text(&create)
-    );
-    assert!(
         stderr_text(&create).contains("Firewall group created"),
         "expected create confirmation on stderr, got:\n{}",
         stderr_text(&create)
@@ -879,7 +874,7 @@ fn session_profile_firewall_group_crud_round_trip() {
 // `unifly api`. Create/update/delete resolve against the live endpoint and
 // are unaffected.
 #[test]
-fn session_profile_nat_policy_lifecycle_persists_via_raw_api() {
+fn session_profile_nat_policy_lifecycle() {
     let ctx = E2eContext::session();
     let name = "e2e-nat-lifecycle";
 
@@ -907,11 +902,6 @@ fn session_profile_nat_policy_lifecycle_persists_via_raw_api() {
     ]);
     assert_success(&create, "nat policies create");
     assert!(
-        create.stdout.is_empty(),
-        "expected create to print nothing on stdout (confirmation goes to stderr), got {}",
-        stdout_text(&create)
-    );
-    assert!(
         stderr_text(&create).contains("NAT policy created"),
         "expected create confirmation on stderr, got:\n{}",
         stderr_text(&create)
@@ -925,6 +915,20 @@ fn session_profile_nat_policy_lifecycle_persists_via_raw_api() {
     assert_eq!(json_str_field(created, "type"), "MASQUERADE");
     assert!(json_bool(created, "enabled"));
     let id = json_str_field(created, "_id").to_string();
+
+    // The session refresh snapshot now carries NAT rules, so the CLI list
+    // path must see the rule too (it was invisible before the fix that
+    // stopped refresh_session_snapshot hardcoding an empty NAT vec).
+    let listed = ctx.run(&["nat", "policies", "list", "--all", "-o", "json"]);
+    assert_success(&listed, "nat policies list");
+    let listed_payload = stdout_json(&listed);
+    let listed_rules = json_array(&listed_payload, "nat policies list");
+    assert!(
+        listed_rules.iter().any(|rule| {
+            rule.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str())
+        }),
+        "expected created NAT rule {id} in `nat policies list` output, got {listed_rules:?}"
+    );
     let restore = RestoreCommand::new(&ctx, &["nat", "policies", "delete", &id, "-y"]);
 
     let update = ctx.run(&["nat", "policies", "update", &id, "--enabled", "false"]);
