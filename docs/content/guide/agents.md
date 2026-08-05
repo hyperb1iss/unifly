@@ -1,7 +1,7 @@
 +++
 title = "AI Agent Skill"
 description = "Teach AI coding agents to manage your UniFi network"
-weight = 5
+weight = 9
 +++
 
 Unifly ships with a dedicated skill bundle that teaches AI coding agents how to manage your UniFi network infrastructure. Your agent gets the full CLI reference, automation workflows, and a ready-made network manager agent.
@@ -23,7 +23,7 @@ npx skills add hyperb1iss/unifly -a claude-code
 
 {% mermaid() %}
 graph TD
-SKILL["unifly Skill Bundle"] --> REF["Command Reference<br/><i>27 commands, flags, gotchas</i>"]
+SKILL["unifly Skill Bundle"] --> REF["Command Reference<br/><i>28 commands, flags, gotchas</i>"]
 SKILL --> AGENT["Network Manager Agent<br/><i>Autonomous provisioning</i>"]
 SKILL --> CONCEPTS["Networking Concepts<br/><i>Dual-API architecture, auth</i>"]
 SKILL --> WORKFLOWS["Workflow Patterns<br/><i>Automation recipes</i>"]
@@ -40,7 +40,7 @@ SKILL --> EXAMPLES["Example Payloads<br/><i>JSON templates for --from-file</i>"]
 | **Network Manager agent** | Autonomous agent for provisioning VLANs, auditing firewalls, diagnosing connectivity       |
 | **Reference docs**        | UniFi networking concepts, dual-API gate matrix, auth decision tree                        |
 | **Workflow patterns**     | Runnable recipes for event streaming, firewall reordering, DHCP reservations, DNS policies |
-| **Example payloads**      | JSON templates for `--from-file` (networks, firewall, NAT, WiFi)                           |
+| **Example payloads**      | JSON templates for `--from-file` (networks, firewall, NAT, WiFi, VPN, switch ports)        |
 
 ## What Your Agent Can Do
 

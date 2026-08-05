@@ -4,13 +4,15 @@ description = "API key, credentials, hybrid, and cloud auth modes explained"
 weight = 4
 +++
 
-Unifly supports three authentication modes. The right choice depends on whether you need live WebSocket streams.
+Unifly supports four authentication modes. The right choice depends on whether you need live WebSocket streams, and whether you reach the controller directly or through Ubiquiti's cloud.
 
 ## Which Mode Do I Need?
 
 {% mermaid() %}
 flowchart TD
-START["What do you need?"] --> Q1{"Live event streaming<br/>(events watch or TUI)?"}
+START["What do you need?"] --> Q0{"Direct connection<br/>to the controller?"}
+Q0 -->|"No, via Ubiquiti cloud"| CLOUD["Cloud Mode"]
+Q0 -->|"Yes"| Q1{"Live event streaming<br/>(events watch or TUI)?"}
 Q1 -->|"No"| APIKEY["API Key Mode"]
 Q1 -->|"Yes"| HYBRID["Hybrid Mode"]
 Q1 -->|"No API key<br/>available"| SESSION["Username/Password Mode"]
@@ -18,6 +20,7 @@ Q1 -->|"No API key<br/>available"| SESSION["Username/Password Mode"]
     style APIKEY fill:#50fa7b,color:#0a0a0f
     style HYBRID fill:#80ffea,color:#0a0a0f
     style SESSION fill:#f1fa8c,color:#0a0a0f
+    style CLOUD fill:#ff6ac1,color:#0a0a0f
 
 {% end %}
 
@@ -78,9 +81,25 @@ How it works: unifly uses the API key for every HTTP request and the cookie sess
 
 To verify Hybrid is working, run `unifly events watch` — if events stream, the WebSocket cookie session is active.
 
+## Cloud Mode
+
+Cloud mode reaches your controllers through Ubiquiti's [Site Manager](https://unifi.ui.com) instead of a direct network connection. It needs two things: a **Site Manager API key** (created under your Ubiquiti account, not on the controller) and a **console ID** (`host_id`) naming which console to talk to.
+
+```bash
+unifly config cloud-setup              # Guided setup: validates the key,
+                                       # picks a console and site, writes the profile
+```
+
+Two distinct surfaces run on this key:
+
+- **Fleet queries** (`unifly cloud hosts|sites|devices|isp|sdwan`) talk to the Site Manager fleet API directly and need no `host_id` at all.
+- **Connector-routed commands**: with `auth_mode = "cloud"`, regular Integration-backed commands (`networks list`, `wifi create`, `firewall policies list`, ...) tunnel through the cloud connector to the console named by `host_id`. When the API key sees exactly one console (or exactly one you own), unifly resolves `host_id` automatically; otherwise set it in the profile or pass `--host-id`.
+
+Session-backed commands (`events watch`, `stats`, device commands, admin) are not reachable through the connector and still require direct controller access. The full walkthrough lives on the [Cloud & Site Manager page](/guide/cloud).
+
 ## Credential Storage
 
-All credentials are stored in your OS keyring:
+Credentials go in your OS keyring by default:
 
 | OS      | Backend                                 |
 | ------- | --------------------------------------- |
@@ -89,6 +108,8 @@ All credentials are stored in your OS keyring:
 | Windows | Windows Credential Manager              |
 
 The `config.toml` file stores non-sensitive settings like controller URLs and site names. The setup wizard offers keyring storage by default, but also provides a plaintext config fallback for environments where the keyring isn't available (headless servers, WSL, CI).
+
+Secrets resolve in a fixed order: an environment variable named by `api_key_env` (or `UNIFI_PASSWORD` for passwords), then an explicit `api_key = "..."` / `password = "..."` value in `config.toml`, then the keyring. **Explicit config beats the keyring**, so editing a plaintext value in `config.toml` is never silently overridden by a stale keyring entry from an earlier `config init`.
 
 To update a stored password:
 
