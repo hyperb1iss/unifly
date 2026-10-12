@@ -34,7 +34,7 @@ pub enum Ipv6Mode {
 impl std::fmt::Display for Ipv6Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PrefixDelegation => f.write_str("Prefix Del"),
+            Self::PrefixDelegation => f.write_str("Prefix Delegation"),
             Self::Static => f.write_str("Static"),
         }
     }
