@@ -207,11 +207,16 @@ pub(super) fn open_url(url: &str) {
         .stderr(Stdio::null());
     match command.spawn() {
         Ok(mut child) => {
-            // Reap the opener so it does not linger as a zombie.
+            // Reap the opener so it does not linger as a zombie, and keep a
+            // trace of a failure since its stderr is gone.
             let _ = std::thread::Builder::new()
                 .name("unifly-open-url".into())
-                .spawn(move || {
-                    let _ = child.wait();
+                .spawn(move || match child.wait() {
+                    Ok(status) if !status.success() => {
+                        tracing::debug!("browser opener exited with {status}");
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::debug!("could not wait for the browser opener: {error}"),
                 });
         }
         Err(error) => tracing::debug!("could not open {url}: {error}"),
