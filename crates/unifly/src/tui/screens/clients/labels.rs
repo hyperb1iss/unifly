@@ -1,62 +1,110 @@
 //! Labels the Clients table resolves against the other entity lists: the
 //! network a client sits on and the device it connects through.
+//!
+//! The lookups are indexed once per device or network update, so drawing a
+//! frame resolves each visible client with a few hash lookups instead of a
+//! scan of the whole inventory.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use unifly_api::{Client, ClientType, Device, Network};
+use unifly_api::{Client, ClientType, Device, EntityId, MacAddress, Network};
 
-/// The client's network by name: its `network_id` first, then the network
-/// name the Session API reported (its network IDs are legacy record IDs
-/// that never match the Integration API's), then a network with the
-/// client's VLAN, then the bare VLAN number. `None` when the client carries
-/// none of these.
-pub(super) fn network_label(client: &Client, networks: &[Arc<Network>]) -> Option<String> {
-    let by_id = client
-        .network_id
-        .as_ref()
-        .and_then(|id| networks.iter().find(|network| &network.id == id))
-        .map(|network| network.name.clone());
-    let by_vlan = || {
-        client.vlan.and_then(|vlan| {
-            networks
-                .iter()
-                .find(|network| network.vlan_id == Some(vlan))
-                .map(|network| network.name.clone())
-        })
-    };
-    by_id
-        .or_else(|| client.network_name.clone())
-        .or_else(by_vlan)
-        .or_else(|| client.vlan.map(|vlan| format!("VLAN {vlan}")))
+/// Device and network names keyed the ways a client refers to them.
+#[derive(Debug, Default)]
+pub(super) struct LinkIndex {
+    /// Display name by device MAC (the uplink MAC, or an AP's MAC as BSSID).
+    device_by_mac: HashMap<MacAddress, String>,
+    device_by_id: HashMap<EntityId, String>,
+    network_by_id: HashMap<EntityId, String>,
+    /// The first network in list order carrying each VLAN.
+    network_by_vlan: HashMap<u16, String>,
 }
 
-/// Where the client connects: the access point's name for a wireless
-/// client, the switch's name and port for a wired one. Falls back to the
-/// uplink MAC when that device is not in `devices`, and to `None` when the
-/// client reports no uplink at all.
-pub(super) fn uplink_label(client: &Client, devices: &[Arc<Device>]) -> Option<String> {
-    let bssid = client
-        .wireless
-        .as_ref()
-        .and_then(|wireless| wireless.bssid.as_ref());
-    let device = devices.iter().find(|device| {
-        client.uplink_device_mac.as_ref() == Some(&device.mac)
-            || client.uplink_device_id.as_ref() == Some(&device.id)
-            || bssid == Some(&device.mac)
-    });
+impl LinkIndex {
+    /// Re-index the device names after a device list update.
+    pub(super) fn set_devices(&mut self, devices: &[Arc<Device>]) {
+        self.device_by_mac.clear();
+        self.device_by_id.clear();
+        for device in devices {
+            let name = device
+                .name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| device.mac.to_string());
+            self.device_by_id
+                .entry(device.id.clone())
+                .or_insert_with(|| name.clone());
+            self.device_by_mac.entry(device.mac.clone()).or_insert(name);
+        }
+    }
 
-    let name = match device {
-        Some(device) => device
-            .name
-            .clone()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| device.mac.to_string()),
-        None => client.uplink_device_mac.as_ref()?.to_string(),
-    };
+    /// Re-index the network names after a network list update.
+    pub(super) fn set_networks(&mut self, networks: &[Arc<Network>]) {
+        self.network_by_id.clear();
+        self.network_by_vlan.clear();
+        for network in networks {
+            self.network_by_id
+                .entry(network.id.clone())
+                .or_insert_with(|| network.name.clone());
+            if let Some(vlan) = network.vlan_id {
+                self.network_by_vlan
+                    .entry(vlan)
+                    .or_insert_with(|| network.name.clone());
+            }
+        }
+    }
 
-    match (client.client_type, client.switch_port) {
-        (ClientType::Wired, Some(port)) => Some(format!("{name} port {port}")),
-        _ => Some(name),
+    /// The client's network by name: its `network_id` first, then the
+    /// network name the Session API reported (its network IDs are legacy
+    /// record IDs that never match the Integration API's), then a network
+    /// with the client's VLAN, then the bare VLAN number. `None` when the
+    /// client carries none of these.
+    pub(super) fn network_label(&self, client: &Client) -> Option<String> {
+        client
+            .network_id
+            .as_ref()
+            .and_then(|id| self.network_by_id.get(id).cloned())
+            .or_else(|| client.network_name.clone())
+            .or_else(|| {
+                client
+                    .vlan
+                    .and_then(|vlan| self.network_by_vlan.get(&vlan).cloned())
+            })
+            .or_else(|| client.vlan.map(|vlan| format!("VLAN {vlan}")))
+    }
+
+    /// Where the client connects: the access point's name for a wireless
+    /// client, the switch's name and port for a wired one. The device is
+    /// found by uplink MAC, then uplink ID, then BSSID. Falls back to the
+    /// uplink MAC when that device is not indexed, and to `None` when the
+    /// client reports no uplink at all.
+    pub(super) fn uplink_label(&self, client: &Client) -> Option<String> {
+        let bssid = client
+            .wireless
+            .as_ref()
+            .and_then(|wireless| wireless.bssid.as_ref());
+        let indexed = client
+            .uplink_device_mac
+            .as_ref()
+            .and_then(|mac| self.device_by_mac.get(mac))
+            .or_else(|| {
+                client
+                    .uplink_device_id
+                    .as_ref()
+                    .and_then(|id| self.device_by_id.get(id))
+            })
+            .or_else(|| bssid.and_then(|mac| self.device_by_mac.get(mac)));
+
+        let name = match indexed {
+            Some(name) => name.clone(),
+            None => client.uplink_device_mac.as_ref()?.to_string(),
+        };
+
+        match (client.client_type, client.switch_port) {
+            (ClientType::Wired, Some(port)) => Some(format!("{name} port {port}")),
+            _ => Some(name),
+        }
     }
 }
 
@@ -67,7 +115,19 @@ mod tests {
     use serde_json::{Value, json};
     use unifly_api::{Client, Device, Network};
 
-    use super::{network_label, uplink_label};
+    use super::LinkIndex;
+
+    fn uplink_label(client: &Client, devices: &[Arc<Device>]) -> Option<String> {
+        let mut index = LinkIndex::default();
+        index.set_devices(devices);
+        index.uplink_label(client)
+    }
+
+    fn network_label(client: &Client, networks: &[Arc<Network>]) -> Option<String> {
+        let mut index = LinkIndex::default();
+        index.set_networks(networks);
+        index.network_label(client)
+    }
 
     const SWITCH_MAC: &str = "9e:b8:1f:d8:fc:f2";
     const AP_MAC: &str = "16:b0:16:bd:a0:84";
@@ -261,5 +321,46 @@ mod tests {
             Some("VLAN 99")
         );
         assert_eq!(network_label(&client(&json!({})), &networks), None);
+    }
+
+    #[test]
+    fn index_rebuilds_replace_old_entries_and_keep_the_first_vlan() {
+        let mut index = LinkIndex::default();
+        index.set_networks(&[
+            network("11111111-1111-4111-8111-111111111111", "Studio", 10),
+            network("22222222-2222-4222-8222-222222222222", "Studio Annex", 10),
+        ]);
+        let on_vlan = client(&json!({ "vlan": 10 }));
+        assert_eq!(index.network_label(&on_vlan).as_deref(), Some("Studio"));
+
+        index.set_networks(&[network(
+            "33333333-3333-4333-8333-333333333333",
+            "Render",
+            20,
+        )]);
+        assert_eq!(index.network_label(&on_vlan).as_deref(), Some("VLAN 10"));
+
+        index.set_devices(&fleet());
+        let wired = client(&json!({ "uplink_device_mac": SWITCH_MAC, "switch_port": 3 }));
+        assert_eq!(
+            index.uplink_label(&wired).as_deref(),
+            Some("sw-core port 3")
+        );
+        index.set_devices(&[]);
+        assert_eq!(
+            index.uplink_label(&wired).as_deref(),
+            Some("9e:b8:1f:d8:fc:f2 port 3")
+        );
+    }
+
+    #[test]
+    fn uplink_resolves_by_device_id_when_the_mac_is_missing() {
+        let mut index = LinkIndex::default();
+        index.set_devices(&fleet());
+        let by_id = client(&json!({
+            "client_type": "Wireless",
+            "uplink_device_id": format!("dev-{AP_MAC}"),
+        }));
+        assert_eq!(index.uplink_label(&by_id).as_deref(), Some("ap-lounge"));
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::super::ClientsScreen;
-use super::super::labels::{network_label, uplink_label};
+use super::super::labels::LinkIndex;
 use super::detail::render_detail;
 
 use ratatui::Frame;
@@ -98,19 +98,21 @@ const WIDE_TABLE: u16 = 118;
 const MAC_TABLE: u16 = 88;
 
 /// One client's table cells as text, measured once for column sizing and
-/// then styled into a row.
+/// then styled into a row. Cells of columns the layout hides stay `None`
+/// and are never computed.
 struct ClientCells {
     name: String,
     ip: String,
-    mac: String,
-    network: String,
-    uplink: String,
+    mac: Option<String>,
+    network: Option<String>,
+    uplink: Option<String>,
     traffic: String,
     duration: String,
 }
 
 impl ClientCells {
-    fn new(screen: &ClientsScreen, client: &Client) -> Self {
+    fn new(links: &LinkIndex, client: &Client, layout: ClientColumns) -> Self {
+        let dash = || "─".to_owned();
         Self {
             name: client
                 .name
@@ -121,9 +123,13 @@ impl ClientCells {
             ip: client
                 .ip
                 .map_or_else(|| "─".into(), |client_ip| client_ip.to_string()),
-            mac: client.mac.to_string(),
-            network: network_label(client, &screen.networks).unwrap_or_else(|| "─".into()),
-            uplink: uplink_label(client, &screen.devices).unwrap_or_else(|| "─".into()),
+            mac: layout.mac.then(|| client.mac.to_string()),
+            network: layout
+                .wide
+                .then(|| links.network_label(client).unwrap_or_else(dash)),
+            uplink: layout
+                .wide
+                .then(|| links.uplink_label(client).unwrap_or_else(dash)),
             traffic: bytes_fmt::fmt_tx_rx(
                 client.tx_bytes.unwrap_or(0),
                 client.rx_bytes.unwrap_or(0),
@@ -153,7 +159,7 @@ fn render_client_table(
     };
     let cells: Vec<ClientCells> = filtered
         .iter()
-        .map(|client| ClientCells::new(screen, client))
+        .map(|client| ClientCells::new(&screen.links, client, layout))
         .collect();
 
     let mut headers = vec!["Type", "Name", "IP"];
@@ -169,8 +175,13 @@ fn render_client_table(
     if layout.wide {
         headers.extend(["Network", "Uplink"]);
         columns.extend([
-            Column::fit("Network", cells.iter().map(|c| &c.network), 20).shrink_to(8),
-            Column::fit("Uplink", cells.iter().map(|c| &c.uplink), 32).shrink_to(10),
+            Column::fit(
+                "Network",
+                cells.iter().filter_map(|c| c.network.as_ref()),
+                20,
+            )
+            .shrink_to(8),
+            Column::fit("Uplink", cells.iter().filter_map(|c| c.uplink.as_ref()), 32).shrink_to(10),
         ]);
     }
     headers.extend(["Signal", "TX/RX", "Duration"]);
@@ -189,9 +200,7 @@ fn render_client_table(
         .iter()
         .zip(cells)
         .enumerate()
-        .map(|(index, (client, cells))| {
-            render_table_row(index == selected_idx, client, cells, layout)
-        })
+        .map(|(index, (client, cells))| render_table_row(index == selected_idx, client, cells))
         .collect();
 
     let table = Table::new(rows, plan_columns(&columns, area.width))
@@ -209,12 +218,7 @@ struct ClientColumns {
     wide: bool,
 }
 
-fn render_table_row(
-    is_selected: bool,
-    client: &Client,
-    cells: ClientCells,
-    layout: ClientColumns,
-) -> Row<'static> {
+fn render_table_row(is_selected: bool, client: &Client, cells: ClientCells) -> Row<'static> {
     let prefix = if is_selected { "▸" } else { " " };
 
     let type_char = match client.client_type {
@@ -271,13 +275,13 @@ fn render_table_row(
         Cell::from(cells.name).style(name_style),
         Cell::from(cells.ip).style(Style::default().fg(theme::accent_tertiary())),
     ];
-    if layout.mac {
-        row.push(Cell::from(cells.mac));
+    if let Some(mac) = cells.mac {
+        row.push(Cell::from(mac));
     }
-    if layout.wide {
+    if let (Some(network), Some(uplink)) = (cells.network, cells.uplink) {
         row.extend([
-            Cell::from(cells.network),
-            Cell::from(cells.uplink).style(Style::default().fg(theme::text_secondary())),
+            Cell::from(network),
+            Cell::from(uplink).style(Style::default().fg(theme::text_secondary())),
         ]);
     }
     row.extend([
@@ -300,6 +304,7 @@ mod tests {
     use serde_json::json;
     use unifly_api::{Client, Device, Network};
 
+    use super::{ClientCells, ClientColumns};
     use crate::tui::action::Action;
     use crate::tui::screens::clients::ClientsScreen;
     use crate::tui::table::render_lines;
@@ -367,6 +372,30 @@ mod tests {
                 assert!(text.contains(expected), "missing {expected:?}:\n{text}");
             }
         }
+    }
+
+    #[test]
+    fn hidden_columns_are_never_resolved() {
+        let screen = screen();
+        let client = screen.clients.first().expect("fixture client");
+
+        let narrow = ClientColumns {
+            mac: false,
+            wide: false,
+        };
+        let cells = ClientCells::new(&screen.links, client, narrow);
+        assert_eq!(cells.mac, None);
+        assert_eq!(cells.network, None);
+        assert_eq!(cells.uplink, None);
+
+        let wide = ClientColumns {
+            mac: true,
+            wide: true,
+        };
+        let cells = ClientCells::new(&screen.links, client, wide);
+        assert_eq!(cells.mac.as_deref(), Some("82:8b:02:66:7c:85"));
+        assert_eq!(cells.network.as_deref(), Some("Render"));
+        assert_eq!(cells.uplink.as_deref(), Some("sw-core port 14"));
     }
 
     #[test]
