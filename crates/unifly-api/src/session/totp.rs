@@ -40,10 +40,25 @@ impl TotpProvider {
         match tokio::task::spawn_blocking(move || provider()).await {
             Ok(code) => code,
             Err(error) => {
-                warn!(%error, "TOTP provider failed");
+                let reason = failure_reason(&error);
+                warn!(
+                    reason,
+                    "TOTP provider failed; treating it as having no code"
+                );
                 None
             }
         }
+    }
+}
+
+/// Why a provider call failed, without its panic payload: a provider may
+/// panic with a message that carries a secret, and the `Display` of a
+/// [`tokio::task::JoinError`] includes that message.
+fn failure_reason(error: &tokio::task::JoinError) -> &'static str {
+    if error.is_panic() {
+        "panicked"
+    } else {
+        "was cancelled"
     }
 }
 
@@ -93,7 +108,7 @@ pub(crate) fn is_totp_code(code: &str) -> bool {
 mod tests {
     use secrecy::SecretString;
 
-    use super::{TotpProvider, is_totp_code};
+    use super::{TotpProvider, failure_reason, is_totp_code};
     use crate::session::ReauthCredentials;
 
     #[test]
@@ -110,6 +125,23 @@ mod tests {
         assert!(!rendered.contains("482913"), "{rendered}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
         assert!(rendered.contains("totp_provider: true"), "{rendered}");
+    }
+
+    /// A provider that panics with a secret in its message yields no code,
+    /// and what gets logged is a fixed reason, never the payload.
+    #[tokio::test]
+    async fn a_panicking_provider_is_reported_without_its_payload() {
+        let provider = TotpProvider::new(|| panic!("secret-482913"));
+        assert!(provider.fresh_code().await.is_none());
+
+        let error = tokio::task::spawn_blocking(|| panic!("secret-482913"))
+            .await
+            .expect_err("the task panicked");
+        assert!(
+            error.to_string().contains("secret-482913"),
+            "tokio's own Display carries the payload, which is why it is not logged"
+        );
+        assert_eq!(failure_reason(&error), "panicked");
     }
 
     #[test]
