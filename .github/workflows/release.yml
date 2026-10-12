@@ -21,6 +21,11 @@ on:
         required: false
         type: boolean
         default: false
+      resume_release:
+        description: "Retry notes and CI/CD dispatch for an existing tag (needs version)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   release:
@@ -29,6 +34,7 @@ jobs:
       version: ${{ inputs.version }}
       bump: ${{ inputs.bump }}
       dry_run: ${{ inputs.dry_run }}
+      resume-release: ${{ inputs.resume_release }}
       system-deps: "libdbus-1-dev pkg-config lld"
       workspace: true
       all-features: false

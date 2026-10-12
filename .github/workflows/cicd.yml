@@ -1,10 +1,11 @@
 name: CI/CD
 
 on:
+  # Releases run only from release.yml's workflow_dispatch on the new tag,
+  # which carries release_run_id for the notes. A tag push trigger here
+  # started a second release run that raced the first to crates.io.
   push:
     branches: [main]
-    tags:
-      - "v*.*.*"
   pull_request:
   workflow_dispatch:
     inputs:

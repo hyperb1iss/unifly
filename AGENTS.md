@@ -510,31 +510,36 @@ licenses require a deliberate policy update.
 Releases use the shared workflow at
 `hyperb1iss/shared-workflows/.github/workflows/rust-release.yml`.
 
+### Before triggering
+
+Run `just changelog-cut X.Y.Z` and commit the result. It moves the
+`[Unreleased]` notes under `## [X.Y.Z] - <date>`, opens a fresh empty
+`[Unreleased]`, and updates the compare links. Skipping it leaves shipped
+notes in `[Unreleased]`, where the next release republishes them.
+
 ### Steps (handled automatically once triggered)
 
 1. `.github/workflows/release.yml` is triggered manually via
    `workflow_dispatch` with a `version` or `bump` input.
-2. The shared workflow bumps the workspace version in `Cargo.toml`, runs
-   the full build + test + clippy gate, commits the bump, tags `vX.Y.Z`,
-   pushes the tag.
-3. The tag push triggers `.github/workflows/cicd.yml` which:
+2. The shared workflow bumps the workspace version in `Cargo.toml` and
+   the plugin manifests and skill (its `version-files` list), runs the
+   full build + test + clippy gate, generates release notes with git-iris
+   and uploads them as an artifact, commits the bump, tags `vX.Y.Z`,
+   pushes the commit and tag, and dispatches `.github/workflows/cicd.yml`
+   on the tag with its run ID.
+3. That dispatched cicd run (the only one that releases; a tag push does
+   not trigger cicd):
    - Rebuilds and tests via the shared rust-ci workflow
    - Builds release artifacts for 4 targets (linux amd64+arm64, macOS
      arm64, Windows gnu)
    - Publishes `unifly-api` and `unifly` to crates.io (shared rust-publish)
-   - Creates a GitHub Release with all artifacts and git-iris-generated
-     notes
-   - Updates the Homebrew formula in `hyperb1iss/homebrew-tap`
+   - Creates a GitHub Release with all artifacts and the notes artifact
+     from the release run (git-iris regenerates them only as a fallback)
+   - Updates the Homebrew formula, the AUR package, and the ClawHub skill
 
-### What Is NOT Automated Yet
-
-- Plugin manifest version sync. **`.claude-plugin/plugin.json`,
-  `.claude-plugin/marketplace.json`, and `.cursor-plugin/plugin.json` must
-  be updated by hand** to match the new workspace version. They have
-  drifted before and caused a ClawHub publish at the wrong version.
-
-When bumping the version, always update the plugin manifests in the same
-commit.
+If the dispatch or a downstream job fails after the tag exists, rerun
+`release.yml` with the same `version` and `resume_release` set. It never
+moves the tag. Pushing a tag by hand does not release anything.
 
 ---
 
@@ -581,9 +586,9 @@ The `version` field in each must match the workspace version exactly.
 These have drifted before. If the workspace is at `0.8.0`, all three must
 say `0.8.0`.
 
-When releasing, patch them manually before the release commit, or add a CI
-step (not yet implemented) to patch them automatically in the shared
-workflow.
+The release workflow patches all three (plus `skills/unifly/SKILL.md`)
+through its `version-files` input, so a normal release keeps them in sync.
+Check them by hand only when bumping the version outside `release.yml`.
 
 ---
 

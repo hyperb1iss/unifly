@@ -147,6 +147,10 @@ dist-plan:
 dist-build:
     cargo dist build
 
+# Move the CHANGELOG [Unreleased] notes under a dated version heading
+changelog-cut version:
+    scripts/changelog-cut.sh {{version}}
+
 # Update AUR package for a new release
 aur-update version:
     cd aur && ./update-aur.sh {{version}}
