@@ -38,16 +38,16 @@ Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, or `,` for Settings:
 
 The dashboard packs eight live panels into a dense, information-rich overview:
 
-| Panel             | What It Shows                                                              |
-| ----------------- | -------------------------------------------------------------------------- |
-| **WAN Traffic**   | Area-fill chart with Braille line overlay, live TX/RX rates, peak tracking |
-| **Gateway**       | Model, firmware, WAN IP, IPv6, DNS, ISP name, latency, uptime              |
-| **Connectivity**  | Subsystem status dots (WAN/WWW/WLAN/LAN/VPN), aggregate traffic bars       |
-| **Capacity**      | Color-coded CPU/MEM gauges, load averages, device/client fleet count       |
-| **Networks**      | VLANs sorted by ID with IPv6 prefix delegation and SLAAC mode              |
-| **WiFi / APs**    | Client count and WiFi experience percentage per access point               |
-| **Top Clients**   | Proportional traffic bars with fractional block characters                 |
-| **Recent Events** | Compact event display, color-coded by severity                             |
+| Panel             | What It Shows                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| **WAN Traffic**   | Mirrored chart (download up, upload down, each on its own scale), live TX/RX rates, peak tracking |
+| **Gateway**       | Model, firmware, WAN IP, IPv6, DNS, ISP name, latency, uptime                                     |
+| **Connectivity**  | Subsystem status dots (WAN/WWW/WLAN/LAN/VPN), aggregate traffic bars                              |
+| **Capacity**      | Color-coded CPU/MEM gauges, load averages, device/client fleet count                              |
+| **Networks**      | VLANs sorted by ID with IPv6 prefix delegation and SLAAC mode                                     |
+| **WiFi / APs**    | Client count and WiFi experience percentage per access point                                      |
+| **Top Clients**   | Proportional traffic bars with fractional block characters                                        |
+| **Recent Events** | Compact event display, color-coded by severity                                                    |
 
 ## Key Bindings
 
@@ -69,28 +69,40 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 
 ### Screen-Specific
 
-| Screen               | Key             | Action                                                    |
-| -------------------- | --------------- | --------------------------------------------------------- |
-| **Devices**          | `R`             | Restart selected device                                   |
-| **Devices**          | `L`             | Locate (flash LED)                                        |
-| **Devices** (detail) | `h` / `l`       | Previous / next detail tab                                |
-| **Clients**          | `Tab`           | Cycle filter (All / Wireless / Wired / VPN / Guest)       |
-| **Clients**          | `b` / `B`       | Block / unblock client                                    |
-| **Clients**          | `x`             | Kick client                                               |
-| **Networks**         | `e`             | Edit selected network (opens overlay)                     |
-| **Firewall**         | `h` / `l`       | Cycle sub-tabs (Policies / Zones / ACL / NAT)             |
-| **Firewall**         | `K` / `J`       | Reorder policy up / down                                  |
-| **Topology**         | Arrows          | Pan canvas                                                |
-| **Topology**         | `+` / `-`       | Zoom in / out                                             |
-| **Topology**         | `f`             | Fit to view                                               |
-| **Events**           | `Space`         | Pause / resume live stream                                |
-| **Stats**            | `h` `d` `w` `m` | Period: 1h / 24h / 7d / 30d                               |
-| **Stats**            | `r`             | Refresh data                                              |
-| **WiFi**             | `Tab`           | Cycle sub-tabs (Overview / Clients / Neighbors / Roaming) |
-| **WiFi**             | `c`             | Toggle channel map on the Overview tab                    |
-| **WiFi**             | `[` / `]`       | Switch WiFi band in the channel map                       |
-| **WiFi**             | `R` / `L`       | Restart / locate selected access point                    |
-| **WiFi**             | `b` / `u` / `x` | Block / unblock / kick selected wireless client           |
+| Screen               | Key             | Action                                                            |
+| -------------------- | --------------- | ----------------------------------------------------------------- |
+| **Devices**          | `R`             | Restart selected device                                           |
+| **Devices**          | `L`             | Locate (flash LED)                                                |
+| **Devices** (detail) | `h` / `l`       | Previous / next detail tab                                        |
+| **Clients**          | `Tab`           | Cycle filter (All / Wireless / Wired / VPN / Guest)               |
+| **Clients**          | `b` / `B`       | Block / unblock client                                            |
+| **Clients**          | `x`             | Kick client                                                       |
+| **Networks**         | `e`             | Edit selected network (opens overlay)                             |
+| **Firewall**         | `h` / `l`       | Cycle sub-tabs (Policies / Zones / ACL / NAT)                     |
+| **Firewall**         | `K` / `J`       | Move a policy up / down within its zone pair (local preview only) |
+| **Topology**         | Arrows          | Pan canvas                                                        |
+| **Topology**         | `+` / `-`       | Zoom in / out                                                     |
+| **Topology**         | `f`             | Fit to view                                                       |
+| **Events**           | `Space`         | Pause / resume live stream                                        |
+| **Stats**            | `h` `d` `w` `m` | Period: 1h / 24h / 7d / 30d                                       |
+| **Stats**            | `r`             | Refresh data                                                      |
+| **WiFi**             | `Tab`           | Cycle sub-tabs (Overview / Clients / Neighbors / Roaming)         |
+| **WiFi**             | `c`             | Toggle channel map on the Overview tab                            |
+| **WiFi**             | `[` / `]`       | Switch WiFi band in the channel map                               |
+| **WiFi**             | `R` / `L`       | Restart / locate selected access point                            |
+| **WiFi**             | `b` / `u` / `x` | Block / unblock / kick selected wireless client                   |
+
+## Lists
+
+Every list screen orders its rows the way the CLI does: devices by name, clients by display name, networks by name, and firewall policies grouped by source zone, then destination zone, in the order they apply. The cursor stays on the same device, client, or policy when data refreshes or the order changes, so an action key always targets the row you see highlighted.
+
+Columns size themselves to their content. On a terminal 120 columns or wider, Devices adds Firmware (with an arrow when an update is waiting) and Clients, Clients adds Network and Uplink (the access point, or the switch and port), and the Firewall policy list adds a Zones column from 96 columns. Narrower terminals shrink names first and then drop the extra columns, so every table stays readable down to 80x24.
+
+`K` and `J` on the Firewall screen move a policy within its zone pair on screen only; the next refresh shows the controller's order again.
+
+## Charts
+
+The WAN and Stats charts draw as pixel images on terminals with a graphics protocol (kitty, Ghostty, WezTerm, iTerm2, and Sixel terminals) and as Braille or block glyphs elsewhere. The newest value sits in a rail at the chart's right edge. unifly deletes each kitty chart image once it is no longer shown and clears the rest when the TUI exits, so a long session does not fill the terminal's image memory. Set `UNIFLY_DISABLE_GRAPHICS=1` to force the glyph renderer, or `UNIFLY_GRAPHICS_PROTOCOL` to pick a protocol when detection guesses wrong.
 
 ## Detail Views
 
