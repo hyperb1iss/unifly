@@ -17,7 +17,7 @@ jobs:
       UNIFLY_E2E_TIMEOUT_SECS: "300"
       UNIFLY_E2E_API_KEY: ${{ secrets.UNIFLY_E2E_API_KEY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Start controller
         run: docker compose -f tests/e2e/docker-compose.yml up -d
@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload controller logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-controller-logs
           path: tests/e2e/controller.log
