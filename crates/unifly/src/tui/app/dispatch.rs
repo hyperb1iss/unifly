@@ -1,3 +1,4 @@
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use color_eyre::eyre::Result;
@@ -194,19 +195,62 @@ fn action_invalidates(action: &Action) -> bool {
 }
 
 /// Open a URL in the user's default browser.
+///
+/// The opener runs detached from the terminal. The TUI owns the screen, so
+/// anything the opener or the browser it starts prints would land on top of
+/// it, and an inherited stdin could swallow keystrokes.
 pub(super) fn open_url(url: &str) {
+    let mut command = opener_command(url);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match command.spawn() {
+        Ok(mut child) => {
+            // Reap the opener so it does not linger as a zombie.
+            let _ = std::thread::Builder::new()
+                .name("unifly-open-url".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
+        Err(error) => tracing::debug!("could not open {url}: {error}"),
+    }
+}
+
+fn opener_command(url: &str) -> Command {
     #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
+    let command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
     #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .spawn();
+    let command = {
+        let mut command = Command::new("cmd");
+        command.args(["/c", "start", url]);
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn opener_hands_the_url_to_xdg_open() {
+        let command = super::opener_command("https://github.com/sponsors/hyperb1iss");
+
+        assert_eq!(command.get_program(), "xdg-open");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["https://github.com/sponsors/hyperb1iss"]
+        );
     }
 }
