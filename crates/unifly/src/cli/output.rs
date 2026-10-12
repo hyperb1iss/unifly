@@ -37,12 +37,12 @@ pub fn load_theme(name: Option<&str>) -> opaline::Theme {
                 .and_then(|c| c.defaults.theme)
         })
         .flatten();
+    builtin_theme(name.or(config_theme.as_deref()))
+}
 
-    let resolved = name
-        .or(config_theme.as_deref())
-        .unwrap_or("silkcircuit-neon");
-
-    opaline::load_by_name(resolved).unwrap_or_else(|| {
+/// Resolve a theme by name without consulting the config file.
+fn builtin_theme(name: Option<&str>) -> opaline::Theme {
+    opaline::load_by_name(name.unwrap_or("silkcircuit-neon")).unwrap_or_else(|| {
         opaline::load_by_name("silkcircuit-neon").expect("builtin theme must exist")
     })
 }
@@ -68,16 +68,22 @@ impl Painter {
     pub fn new(global: &super::args::GlobalOpts) -> Self {
         let enabled = should_color(&global.color)
             && matches!(global.output, super::args::OutputFormat::Table);
-        Self {
-            theme: load_theme(global.theme.as_deref()),
-            enabled,
-        }
+        // The demo fleet never opens the config file, which holds profiles
+        // and possibly plaintext secrets: its theme comes only from
+        // --theme / UNIFLY_THEME or the builtin default.
+        let theme = if global.demo_fleet {
+            builtin_theme(global.theme.as_deref())
+        } else {
+            load_theme(global.theme.as_deref())
+        };
+        Self { theme, enabled }
     }
 
-    /// Create a disabled (no-color) painter.
+    /// Create a disabled (no-color) painter. Colors are never drawn, so it
+    /// does not read the config for a theme.
     pub fn plain() -> Self {
         Self {
-            theme: load_theme(None),
+            theme: builtin_theme(None),
             enabled: false,
         }
     }

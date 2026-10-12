@@ -5,6 +5,17 @@ use unifly_api::Controller;
 
 use crate::cli::args::GlobalOpts;
 use crate::cli::demo_fleet;
+use crate::config::Config;
+
+/// The config file for this session, if any. The demo fleet never opens it
+/// (it holds real profiles and possibly plaintext secrets): theme comes from
+/// `--theme` / `UNIFLY_THEME` or the default, everything else from defaults.
+pub(super) fn startup_config(
+    global: &GlobalOpts,
+    load: impl FnOnce() -> Option<Config>,
+) -> Option<Config> {
+    if global.demo_fleet { None } else { load() }
+}
 
 /// Pick this session's controller and report whether it is the demo fleet.
 ///
@@ -85,6 +96,17 @@ mod tests {
         let (controller, fleet) = select_controller(&global, || None);
         assert!(fleet);
         assert!(controller.is_some_and(|controller| controller.is_demo()));
+    }
+
+    #[test]
+    fn demo_fleet_never_loads_the_config_file() {
+        let global = parse(&["unifly", "tui", "--demo-fleet"]);
+        let config = startup_config(&global, || panic!("--demo-fleet must not read config"));
+        assert!(config.is_none());
+
+        let global = parse(&["unifly", "--demo", "tui"]);
+        let config = startup_config(&global, || Some(Config::default()));
+        assert!(config.is_some(), "plain --demo still reads config");
     }
 
     #[test]

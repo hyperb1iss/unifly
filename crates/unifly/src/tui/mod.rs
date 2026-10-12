@@ -41,7 +41,7 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
 
     let _log_guard = setup_tracing(global.verbose, &args.log_file);
 
-    let loaded_config = config::load_config().ok();
+    let loaded_config = demo_fleet::startup_config(global, || config::load_config().ok());
     let theme_name = global.theme.as_deref().or_else(|| {
         loaded_config
             .as_ref()

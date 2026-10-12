@@ -1151,3 +1151,73 @@ fn test_demo_fleet_refuses_commands_it_cannot_answer() {
             .stderr(predicate::str::contains("not available in demo mode"));
     }
 }
+
+/// The config file holds profiles and possibly plaintext secrets, so the
+/// demo fleet must never read it. A poisoned config sets a theme; if fleet
+/// mode read it, colored table output would change.
+#[test]
+fn test_demo_fleet_never_reads_the_config_file() {
+    let clean = TempDir::new().unwrap();
+    let poisoned = TempDir::new().unwrap();
+    for dir in [
+        poisoned.path().join("unifly"),
+        poisoned
+            .path()
+            .join("AppData")
+            .join("Roaming")
+            .join("unifly"),
+    ] {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "default_profile = \"home\"\n\
+             [defaults]\ntheme = \"nord\"\n\
+             [profiles.home]\ncontroller = \"https://192.0.2.1\"\n\
+             api_key = \"must-never-be-read\"\n",
+        )
+        .unwrap();
+    }
+
+    let table = |home: &std::path::Path, extra: &[&str]| {
+        let output = unifly_cmd_in(home)
+            .env_remove("UNIFLY_THEME")
+            .args(["--demo-fleet", "--demo-seed", "3"])
+            .args(extra)
+            .args(["devices", "list", "--color", "always"])
+            .args(["--filter", "name.eq('gw-harbor')"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", combined_output(&output));
+        output.stdout
+    };
+    let baseline = table(clean.path(), &[]);
+    assert_eq!(
+        table(poisoned.path(), &[]),
+        baseline,
+        "fleet mode read config"
+    );
+    assert_ne!(
+        table(clean.path(), &["--theme", "nord"]),
+        baseline,
+        "the probe must be sensitive to the configured theme"
+    );
+
+    for (args, code) in [
+        (&["clients", "list", "-o", "json"][..], 0),
+        (&["networks", "list", "-o", "yaml"][..], 0),
+        (&["devices", "restart", "00:00:00:00:00:01"][..], 5),
+    ] {
+        let output = unifly_cmd_in(poisoned.path())
+            .arg("--demo-fleet")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}",
+            combined_output(&output)
+        );
+        assert!(!combined_output(&output).contains("must-never-be-read"));
+    }
+}

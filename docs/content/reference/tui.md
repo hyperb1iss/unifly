@@ -155,7 +155,7 @@ Two flags make the TUI safe to show on screen.
 
 `--demo` (or `UNIFI_DEMO=1`, or `[demo] enabled = true` in config) connects to your real controller and swaps names, MACs, IPs, and SSIDs for deterministic fakes before anything is drawn.
 
-`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) skips the controller entirely. The TUI runs against a synthetic, offline network for a fictional creative studio, Neon Harbor Studios, and a simulation animates it about once a second:
+`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) skips the controller entirely and never reads the config file, so the theme comes from `--theme` or `UNIFLY_THEME`. The TUI runs against a synthetic, offline network for a fictional creative studio, Neon Harbor Studios, and a simulation animates it about once a second:
 
 - **The fleet**: a UDM Pro Max gateway, three switches, and nine access points (one offline, one finishing a firmware upgrade, one with an update waiting), about 140 clients on six VLANs and four SSIDs, firewall zones and policies, NAT, ACLs, and a week of event history.
 - **What moves**: WAN throughput (with render-upload and asset-sync bursts), device CPU, memory, and load, client traffic and signal, roams, arrivals and departures, and security events such as IPS alerts and firewall drops.
