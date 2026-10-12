@@ -5,3 +5,7 @@ CHANGELOG.md
 *.lock
 *.toml
 tests/fixtures/
+# The release workflow bumps this manifest's version with jq, which always
+# expands the tags array that prettier collapses, so the two would fight on
+# every release.
+.cursor-plugin/plugin.json
