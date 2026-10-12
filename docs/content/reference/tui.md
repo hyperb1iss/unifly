@@ -96,7 +96,15 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 
 Every list screen orders its rows the way the CLI does: devices by name, clients by display name, networks by name, and firewall policies grouped by source zone, then destination zone, in the order they apply. The cursor stays on the same device, client, or policy when data refreshes or the order changes, so an action key always targets the row you see highlighted.
 
-Columns size themselves to their content. On a terminal 120 columns or wider, Devices adds Firmware (with an arrow when an update is waiting) and Clients, Clients adds Network and Uplink (the access point, or the switch and port), and the Firewall policy list adds a Zones column from 96 columns. Narrower terminals shrink names first and then drop the extra columns, so every table stays readable down to 80x24.
+Columns size themselves to their content, and wider terminals reveal more of them:
+
+| Screen               | Extra columns                                                        | From width  |
+| -------------------- | -------------------------------------------------------------------- | ----------- |
+| **Devices**          | Firmware (with an arrow when an update is waiting) and Clients       | 120 columns |
+| **Clients**          | Network and Uplink (the access point, or the switch and port number) | 120 columns |
+| **Firewall** (rules) | Zones                                                                | 96 columns  |
+
+Narrower terminals shrink names first and then drop those extra columns, so every table stays readable down to 80x24.
 
 `K` and `J` on the Firewall screen move a policy within its zone pair on screen only; the next refresh shows the controller's order again.
 
