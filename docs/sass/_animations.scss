@@ -100,26 +100,6 @@
   }
 }
 
-// ── Nav title gradient hover ─────────────────────────────────────────────────
-
-.nav-title {
-  &:hover .nav-title__uni {
-    text-shadow: 0 0 12px rgba(128, 255, 234, 0.4);
-  }
-
-  &:hover .nav-title__fly {
-    text-shadow: 0 0 12px rgba(225, 53, 255, 0.4);
-  }
-
-  [data-theme="light"] &:hover .nav-title__uni {
-    text-shadow: 0 0 12px rgba(0, 127, 142, 0.3);
-  }
-
-  [data-theme="light"] &:hover .nav-title__fly {
-    text-shadow: 0 0 12px rgba(126, 43, 213, 0.3);
-  }
-}
-
 // ── Sidebar link slide-in indicator ──────────────────────────────────────────
 
 .sidebar-link--active {

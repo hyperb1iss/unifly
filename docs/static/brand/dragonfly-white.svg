@@ -1,0 +1,16 @@
+<svg viewBox="0 0 320 180" width="320" height="180" xmlns="http://www.w3.org/2000/svg">
+  <title>unifly Circuit Dragonfly mark</title>
+    <g>
+        <path fill="#f8f8f2" stroke="none" d="M 16 28 Q 14 27 16 30 L 55 70 Q 57 72 60 73 L 147 87 Q 150 88 148 85 L 107 51 Q 105 49 102 49 Z"/>
+        <g transform="matrix(-1 0 0 1 320 0)">
+            <path fill="#f8f8f2" stroke="none" d="M 16 28 Q 14 27 16 30 L 55 70 Q 57 72 60 73 L 147 87 Q 150 88 148 85 L 107 51 Q 105 49 102 49 Z"/>
+        </g>
+    </g>
+    <g>
+        <path fill="#f8f8f2" stroke="none" d="M 147 92 Q 150 91 148 94 L 115 123 Q 114 124 112 124 L 67 122 Q 64 122 67 120 L 96 100 Z"/>
+        <g transform="matrix(-1 0 0 1 320 0)">
+            <path fill="#f8f8f2" stroke="none" d="M 147 92 Q 150 91 148 94 L 115 123 Q 114 124 112 124 L 67 122 Q 64 122 67 120 L 96 100 Z"/>
+        </g>
+    </g>
+    <path fill="#f8f8f2" stroke="none" d="M 153 66 L 160 59 L 167 66 L 165 145 L 160 156 L 155 145 Z"/>
+</svg>

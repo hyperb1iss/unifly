@@ -26,7 +26,27 @@
     />
     <meta property="og:site_name" content="{{ config.title }}" />
 
-    <meta name="twitter:card" content="summary" />
+    <meta
+      property="og:image"
+      content="{{ get_url(path='brand/repo-card.png') }}"
+    />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta property="og:image:type" content="image/png" />
+    <meta
+      property="og:image:alt"
+      content="unifly: CLI + TUI for UniFi networks, with the purple and cyan Circuit Dragonfly."
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:image"
+      content="{{ get_url(path='brand/repo-card.png') }}"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="unifly: CLI + TUI for UniFi networks, with the purple and cyan Circuit Dragonfly."
+    />
     <meta
       name="twitter:title"
       content="{% block twitter_title %}{{ config.title }}{% endblock twitter_title %}"
@@ -34,6 +54,23 @@
     <meta
       name="twitter:description"
       content="{% block twitter_description %}{{ config.description }}{% endblock twitter_description %}"
+    />
+
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="{{ get_url(path='brand/favicon.svg') }}"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="{{ get_url(path='brand/favicon-32.png') }}"
+    />
+    <link
+      rel="apple-touch-icon"
+      sizes="180x180"
+      href="{{ get_url(path='brand/apple-touch-icon.png') }}"
     />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
