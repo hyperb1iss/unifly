@@ -46,6 +46,8 @@ impl Controller {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn connect_with_refresh(&self, initial_refresh: bool) -> Result<(), CoreError> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+
         #[cfg(feature = "demo")]
         if let Some(demo) = self.demo_runtime() {
             return self.demo_connect(std::sync::Arc::clone(demo)).await;
@@ -446,6 +448,7 @@ impl Controller {
     /// Cancels background tasks, logs out if session-based, and resets
     /// the connection state to [`Disconnected`](ConnectionState::Disconnected).
     pub async fn disconnect(&self) {
+        let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.cancel_child.lock().await.cancel();
 
         if let Some(handle) = self.inner.ws_handle.lock().await.take() {

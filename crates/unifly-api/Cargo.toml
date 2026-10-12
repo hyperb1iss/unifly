@@ -43,7 +43,7 @@ rustls-pki-types  = "1"
 
 [dev-dependencies]
 wiremock    = { workspace = true }
-tokio       = { workspace = true, features = ["test-util"] }
+tokio       = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 tokio-test  = { workspace = true }
 insta       = { workspace = true }
 tempfile    = { workspace = true }

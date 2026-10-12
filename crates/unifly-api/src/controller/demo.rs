@@ -202,4 +202,63 @@ mod tests {
             .expect("disconnect must not hang on a stale simulation task");
         assert_eq!(controller.inner.task_handles.lock().await.len(), 0);
     }
+
+    /// Overlapping lifecycle calls on clones must never leave a disconnect
+    /// awaiting a simulation task whose token nobody cancelled.
+    async fn overlap_rounds(controller: &Controller) {
+        let other = controller.clone();
+        for _ in 0..25 {
+            let (first, second) = tokio::join!(controller.connect(), other.connect());
+            first.expect("connect");
+            second.expect("connect");
+            assert_eq!(controller.inner.task_handles.lock().await.len(), 1);
+
+            let (connected, ()) = tokio::join!(controller.connect(), other.disconnect());
+            connected.expect("connect");
+            let ((), connected) = tokio::join!(controller.disconnect(), other.connect());
+            connected.expect("connect");
+            controller.disconnect().await;
+            assert_eq!(controller.inner.task_handles.lock().await.len(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn overlapping_lifecycle_calls_complete_on_one_thread() {
+        let controller = Controller::demo(DemoFleetOptions::default());
+        // Boxed: the round future is large and this is a test stack.
+        Box::pin(tokio::time::timeout(
+            Duration::from_secs(20),
+            overlap_rounds(&controller),
+        ))
+        .await
+        .expect("lifecycle calls must not hang");
+    }
+
+    /// The exact interleaving that used to hang: a disconnect cancels the
+    /// current token and stalls (here on the WebSocket slot, held by the
+    /// test) while a connect on a clone installs a fresh simulation; the
+    /// disconnect then resumes and would join that live task forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn disconnect_never_joins_a_task_a_parallel_connect_installed() {
+        let controller = Controller::demo(DemoFleetOptions::default());
+        controller.connect().await.expect("connect");
+
+        let stall = controller.inner.ws_handle.lock().await;
+        let disconnecting = controller.clone();
+        let disconnect = tokio::spawn(async move { disconnecting.disconnect().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let connecting = controller.clone();
+        let connect = tokio::spawn(async move { connecting.connect().await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(stall);
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            disconnect.await.expect("join");
+            connect.await.expect("join").expect("connect");
+        })
+        .await
+        .expect("overlapping disconnect and connect must both finish");
+        controller.disconnect().await;
+        assert_eq!(controller.inner.task_handles.lock().await.len(), 0);
+    }
 }

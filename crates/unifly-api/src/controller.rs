@@ -83,6 +83,9 @@ struct ControllerInner {
     /// WebSocket event stream handle (populated on connect if enabled).
     ws_handle: Mutex<Option<WebSocketHandle>>,
     task_handles: Mutex<Vec<JoinHandle<()>>>,
+    /// Held for the whole of connect and disconnect so token replacement,
+    /// task teardown, and task installation never interleave across clones.
+    lifecycle: Mutex<()>,
     /// Warnings accumulated during connect (e.g. Session auth failure in Hybrid mode).
     warnings: Mutex<Vec<String>>,
     /// Synthetic fleet backing a [`Controller::demo`] controller.
@@ -117,6 +120,7 @@ impl Controller {
                 site_id: Mutex::new(None),
                 ws_handle: Mutex::new(None),
                 task_handles: Mutex::new(Vec::new()),
+                lifecycle: Mutex::new(()),
                 #[cfg(feature = "demo")]
                 demo: std::sync::OnceLock::new(),
             }),
