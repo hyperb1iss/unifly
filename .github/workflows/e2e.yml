@@ -15,7 +15,10 @@ jobs:
     timeout-minutes: 15
     env:
       UNIFLY_E2E_TIMEOUT_SECS: "300"
-      UNIFLY_E2E_API_KEY: ${{ secrets.UNIFLY_E2E_API_KEY }}
+      # UNIFLY_E2E_API_KEY is deliberately not exported: this job targets
+      # the simulation controller, which cannot accept an Integration key,
+      # so the integration_profile_* lane skips here. That lane runs
+      # against a real UniFi OS console; see CONTRIBUTING.md.
     steps:
       - uses: actions/checkout@v7
 

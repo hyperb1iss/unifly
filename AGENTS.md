@@ -397,7 +397,13 @@ running in simulation mode via `tests/e2e/docker-compose.yml`. `just
 e2e` runs the full lifecycle (up, wait, test, tear down); `UNIFLY_E2E_URL`,
 `UNIFLY_E2E_USERNAME`, `UNIFLY_E2E_PASSWORD`, `UNIFLY_E2E_SITE`, and
 `UNIFLY_E2E_TIMEOUT_SECS` override the connection defaults. CI runs the
-same lifecycle in `.github/workflows/e2e.yml`.
+same lifecycle in `.github/workflows/e2e.yml`. The `integration_profile_*`
+tests form a second lane for the Integration API (REST, `X-API-KEY`)
+that runs only when `UNIFLY_E2E_API_KEY` is set and skips otherwise; the
+simulation image cannot mint a key (Integration auth is backed by the
+UniFi OS account subsystem the bare image lacks), so this lane needs a
+real UniFi OS controller plus a console-minted key. See `CONTRIBUTING.md`
+for the full provisioning findings.
 
 ### Libraries
 
