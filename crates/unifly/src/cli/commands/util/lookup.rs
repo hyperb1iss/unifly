@@ -85,13 +85,18 @@ fn matching<'a, T: Lookup>(records: &'a [Arc<T>], needle: &str) -> Vec<&'a Arc<T
     if !identified.is_empty() {
         return identified;
     }
-    if let Ok(mac) = needle.parse::<MacAddress>() {
+    let ip = needle.parse::<IpAddr>().ok();
+    // MAC parsing drops every colon, so an IPv6 address with twelve hex
+    // digits would otherwise pass for a MAC.
+    if ip.is_none()
+        && let Ok(mac) = needle.parse::<MacAddress>()
+    {
         let by_hardware = tier(&|record| record.mac() == Some(&mac));
         if !by_hardware.is_empty() {
             return by_hardware;
         }
     }
-    if let Ok(ip) = needle.parse::<IpAddr>() {
+    if let Some(ip) = ip {
         let by_address = tier(&|record| record.ip() == Some(ip));
         if !by_address.is_empty() {
             return by_address;

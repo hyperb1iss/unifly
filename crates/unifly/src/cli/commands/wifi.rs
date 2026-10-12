@@ -362,7 +362,7 @@ async fn handle_get(
     let snapshot = controller.wifi_broadcasts_snapshot();
     let entity_id = match util::lookup::lookup(snapshot.as_slice(), id)? {
         Some(broadcast) => broadcast.id.clone(),
-        None => EntityId::from(id.to_owned()),
+        None => EntityId::from(id.trim().to_owned()),
     };
     let broadcast = controller
         .get_wifi_broadcast_detail(&entity_id)
