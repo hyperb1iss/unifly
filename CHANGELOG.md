@@ -104,6 +104,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   screen and the dashboard oldest first; the store's unordered snapshot used
   to arrive in arbitrary order.
 
+- **Topology draws the real uplink tree.** The Topology screen used to
+  connect every switch to every access point, whatever the cabling. It now
+  lays devices out under the device they report as their uplink, gateway at
+  the root, with the parent's port number on each wired link, wireless mesh
+  links dashed, and devices with no reported uplink attached to the gateway
+  by a dim dotted line. The view fits the whole tree at 100% zoom.
+
 ### Performance
 
 - **TUI memory and idle CPU.** The dashboard used ~100 MB RSS at start and

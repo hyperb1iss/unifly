@@ -104,6 +104,10 @@ Press `Enter` on any list item to open a detail panel with comprehensive informa
 
 Navigate detail tabs with `h`/`l`. Press `Esc` to close.
 
+## Topology
+
+The Topology screen draws the uplink tree the controller reports: the gateway at the top, every switch and access point under the device it uplinks through, and the parent's port number on each wired link. Dashed lines are wireless mesh uplinks. A device with no reported uplink hangs off the gateway on a dim dotted line, so missing uplink data shows up as such instead of being guessed. Press `f` to fit the whole tree back into view.
+
 ## Data Refresh
 
 {% mermaid() %}
