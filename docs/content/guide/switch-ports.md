@@ -12,7 +12,7 @@ unifly devices ports-export <SWITCH>       # Export overrides as JSONC
 unifly devices port-set <SWITCH> -F ports.jsonc   # Apply a file
 ```
 
-`<SWITCH>` accepts a device ID or MAC. Port indices are **1-based** throughout, matching the labels on the hardware and the controller's wire format.
+`<SWITCH>` accepts the switch's name, ID, IP, or MAC. Port indices are **1-based** throughout, matching the labels on the hardware and the controller's wire format.
 
 ## Reading Ports
 

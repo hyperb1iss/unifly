@@ -50,32 +50,34 @@ List commands default to 25 rows. Pass `--all` or `--limit 200` for complete res
 ```bash
 unifly devices list                             # All adopted devices
 unifly devices list --filter "state.eq('Online')"  # Filter by status
-unifly devices get <ID|MAC>                     # Device details
+unifly devices get <DEVICE>                     # Device details
 unifly devices pending                          # Devices awaiting adoption
 unifly devices adopt <MAC>                      # Adopt a pending device
-unifly devices remove <ID|MAC>                  # Unadopt a device
-unifly devices restart <ID|MAC>                 # Restart
-unifly devices locate <MAC> --on true           # Flash LED (--on false to stop)
-unifly devices port-cycle <ID|MAC> <PORT>       # Power-cycle a PoE port
-unifly devices stats <ID|MAC>                   # Real-time device stats
-unifly devices upgrade <MAC>                    # Trigger firmware upgrade
-unifly devices provision <MAC>                  # Force re-provision config
+unifly devices remove <DEVICE>                  # Unadopt a device
+unifly devices restart <DEVICE>                 # Restart
+unifly devices locate <DEVICE> --on true        # Flash LED (--on false to stop)
+unifly devices port-cycle <DEVICE> <PORT>       # Power-cycle a PoE port
+unifly devices stats <DEVICE>                   # Real-time device stats
+unifly devices upgrade <DEVICE>                 # Trigger firmware upgrade
+unifly devices provision <DEVICE>               # Force re-provision config
 unifly devices speedtest                        # WAN speed test (gateway only)
 unifly devices tags                             # List device tags
 ```
+
+`<DEVICE>` is the device name (case-insensitive), ID, IP, or MAC in any common spelling (`aa:bb:cc:dd:ee:ff`, `AA-BB-CC-DD-EE-FF`, `aabb.ccdd.eeff`). A name two devices share is an error that lists both; pass an ID then. `adopt` takes the MAC, since a pending device is not in the adopted inventory yet.
 
 Gotchas: `restart`, `locate`, `upgrade`, `provision`, `speedtest`, and `port-cycle` require Session API access. `list` and `get` work with any auth mode but return richer data when session HTTP access exists (client count, uplink MAC).
 
 ### Switch Ports (config-as-code)
 
 ```bash
-unifly devices ports <ID|MAC>                   # Current port config
-unifly devices ports <ID|MAC> --with-clients    # Annotate with connected clients
-unifly devices ports-export <ID|MAC>            # Export overrides as JSONC
-unifly devices ports-export <ID|MAC> --all      # Include every port
-unifly devices port-set <ID|MAC> 5 --mode access --native-vlan IoT
-unifly devices port-set <ID|MAC> -F ports.jsonc # Apply a JSONC file
-unifly devices port-set <ID|MAC> 5 --reset      # Back to controller defaults
+unifly devices ports <DEVICE>                   # Current port config
+unifly devices ports <DEVICE> --with-clients    # Annotate with connected clients
+unifly devices ports-export <DEVICE>            # Export overrides as JSONC
+unifly devices ports-export <DEVICE> --all      # Include every port
+unifly devices port-set <DEVICE> 5 --mode access --native-vlan IoT
+unifly devices port-set <DEVICE> -F ports.jsonc # Apply a JSONC file
+unifly devices port-set <DEVICE> 5 --reset      # Back to controller defaults
 ```
 
 Port indices are **1-based**, matching the controller's wire format. `port-set -F` accepts a JSONC payload (comments and trailing commas allowed) with splice semantics: ports not listed keep their existing override, and a per-port `"reset": true` removes that port's override entirely. `--with-clients` adds connection annotations, and on `ports-export` it prepends `// last-seen <timestamp>: <mac>` comment lines for git-diff drift detection. See [Switch Ports](/guide/switch-ports) for the full workflow and payload schema.
@@ -86,7 +88,7 @@ Port indices are **1-based**, matching the controller's wire format. `port-set -
 unifly clients list                             # Connected clients
 unifly clients list --type wireless             # Filter by type
 unifly clients find "ring-doorbell"             # Search by name, IP, or MAC
-unifly clients get <MAC>                        # Client details
+unifly clients get <CLIENT>                     # Client details
 unifly clients reservations                     # All DHCP reservations
 unifly clients set-ip <MAC> --ip 10.0.10.50    # Create DHCP reservation
 unifly clients set-ip <MAC> --ip 10.0.10.50 --network <ID>  # Scoped to network
@@ -97,9 +99,11 @@ unifly clients kick <MAC>                       # Force reconnection
 unifly clients authorize <MAC> --minutes 60     # Authorize guest access
 unifly clients unauthorize <MAC>                # Revoke guest access
 unifly clients forget <MAC>                     # Remove from client history
-unifly clients roams <MAC>                      # Roaming history for a client
-unifly clients wifi <MAC>                       # WiFi experience details for a client
+unifly clients roams <CLIENT>                   # Roaming history for a client
+unifly clients wifi <CLIENT>                    # WiFi experience details for a client
 ```
+
+`<CLIENT>` is a name, hostname, ID, IP, or MAC in any common spelling. Other `get` commands take an ID or the record's name, compared case-insensitively (DNS policies by domain, vouchers by code).
 
 Gotchas: `list` returns enriched data in Hybrid mode (traffic bytes, hostname, wireless, VLAN). `block`/`unblock`/`kick`/`forget` and DHCP reservation commands require Session API.
 
@@ -107,7 +111,7 @@ Gotchas: `list` returns enriched data in Hybrid mode (traffic bytes, hostname, w
 
 ```bash
 unifly networks list                            # All networks/VLANs
-unifly networks get <ID>                        # Full network details
+unifly networks get <ID|NAME>                   # Full network details
 unifly networks create --name "IoT" --management gateway --vlan 20 --ipv4-host "10.0.20.1/24"
 unifly networks create -F network.json          # Create from JSON file
 unifly networks update <ID> --enabled false
@@ -121,7 +125,7 @@ Gotchas: `list` returns summary data without `ipv4Configuration`. Use `get` for 
 
 ```bash
 unifly wifi list                                # All SSIDs
-unifly wifi get <ID>                            # SSID details
+unifly wifi get <ID|NAME>                       # SSID details
 unifly wifi create --name "Guest" --network <ID> --security wpa2-personal --passphrase "..."
 unifly wifi create -F wifi.json                 # Create from JSON file
 unifly wifi update <ID> --enabled false
@@ -138,7 +142,7 @@ Gotchas: Serde defaults to PascalCase for enums in `--from-file` JSON. Use `"Wpa
 
 ```bash
 unifly firewall policies list
-unifly firewall policies get <ID>
+unifly firewall policies get <ID|NAME>
 unifly firewall policies create --name "Block IoT" --action block \
   --source-zone <ID> --dest-zone <ID>
 unifly firewall policies create -F policy.json
@@ -156,7 +160,7 @@ Gotchas: `patch` is the fast path for toggling `enabled`/`logging` only. Use `up
 
 ```bash
 unifly firewall zones list
-unifly firewall zones get <ID>
+unifly firewall zones get <ID|NAME>
 unifly firewall zones create --name "IoT Zone" --networks <ID1,ID2>
 unifly firewall zones create -F zone.json
 unifly firewall zones update <ID> --networks <ID1,ID2>
@@ -168,7 +172,7 @@ unifly firewall zones delete <ID>
 ```bash
 unifly firewall groups list
 unifly firewall groups list --type port-group
-unifly firewall groups get <ID>
+unifly firewall groups get <ID|NAME>
 unifly firewall groups create --name "Web Ports" --type port-group --members "80,443,8000-8002"
 unifly firewall groups create --name "IoT Nets" --type address-group --members "10.0.30.0/24"
 unifly firewall groups update <ID> --members "80,443"
@@ -181,7 +185,7 @@ Gotchas: groups use the **Session API** (`rest/firewallgroup`), not Integration;
 
 ```bash
 unifly nat policies list
-unifly nat policies get <ID>
+unifly nat policies get <ID|NAME>
 unifly nat policies create --name "Masquerade" --type masquerade --interface-id <ID>
 unifly nat policies create -F nat.json
 unifly nat policies update <ID> --name "New Name" --enabled true
@@ -198,7 +202,7 @@ NAT types: `masquerade` (outgoing interface address), `source` (explicit rewrite
 
 ```bash
 unifly acl list
-unifly acl get <ID>
+unifly acl get <ID|NAME>
 unifly acl create --name "Block printer" --rule-type ipv4 --action block \
   --source-zone <ID> --dest-zone <ID>
 unifly acl create -F acl.json
@@ -212,7 +216,7 @@ unifly acl reorder --set <ID1,ID2,...>          # Apply new order
 
 ```bash
 unifly dns list
-unifly dns get <ID>
+unifly dns get <ID|NAME>
 unifly dns create --record-type a --domain "nas.home" --value "10.0.10.5"
 unifly dns create -F dns.json
 unifly dns update <ID> -F dns.json
@@ -225,7 +229,7 @@ Supported record types: `a`, `aaaa`, `cname`, `mx`, `txt`, `srv`, `forward`. The
 
 ```bash
 unifly traffic-lists list
-unifly traffic-lists get <ID>
+unifly traffic-lists get <ID|NAME>
 unifly traffic-lists create --name "Ad servers" --list-type ipv4 --items "1.2.3.4,5.6.7.8"
 unifly traffic-lists create -F list.json
 unifly traffic-lists update <ID> -F list.json
@@ -270,7 +274,7 @@ Supported intervals: `5m` (high resolution), `hourly` (default), `daily`, `month
 
 ```bash
 unifly hotspot list
-unifly hotspot get <ID>
+unifly hotspot get <ID|NAME>
 unifly hotspot create --name "Day Pass" --count 10 --minutes 1440
 unifly hotspot delete <ID>
 unifly hotspot purge --filter "status.eq('EXPIRED')"  # Bulk delete
@@ -545,7 +549,7 @@ writes through a symlinked skill directory or file.
 
 Any other command exits with code 5 and a "not available in demo mode" error before it reads config or touches the network. Each run generates the fleet fresh from the seed, so names, MACs, IPs, and IDs match from one run to the next.
 
-The fleet comes with problems to diagnose: an offline access point, one with a firmware update waiting, a camera whose switch port went dark, and an unplugged second WAN. Site health, alarms, the WAN list, events, and device details all tell the same story.
+The fleet comes with problems to diagnose: an offline access point, one with a firmware update waiting, a camera whose switch port went dark, and an unplugged second WAN. Alarms, the WAN list, events, and device details all tell the same story, and site health flags the offline access point as a `wlan` warning.
 
 ```bash
 unifly --demo-fleet devices list
