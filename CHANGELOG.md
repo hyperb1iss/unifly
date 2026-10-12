@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   other than a rule array (UniFi OS can wrap errors this way) is now an error
   instead of an empty list, so the refresh keeps the current NAT rules
   rather than clearing them.
+- **Clients and devices keep their session details through a failed session
+  fetch.** When a session lookup that enriches Integration data failed,
+  clients lost their hostname, traffic counters, Wi-Fi details, uplink, and
+  DHCP reservation for a refresh cycle, and devices lost their client count,
+  WAN IPv6, uplink, ports, and radios, so the TUI flickered to blanks. Those
+  fields now carry over from the last good refresh, and anything the
+  Integration API reports itself still wins.
 
 ### Performance
 
