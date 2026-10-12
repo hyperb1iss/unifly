@@ -262,24 +262,30 @@ config file > built-in defaults.
 
 ### MFA / TOTP
 
-If the controller requires TOTP two-factor auth, set a totp source:
+If the controller requires TOTP two-factor auth, prefer a command that
+prints the current code. unifly runs it (argv, no shell, 10 s limit,
+trimmed stdout) for every login that needs a code, so long-running
+sessions such as the TUI renew themselves when the cookie expires:
 
 ```toml
 [profiles.home]
 controller = "https://192.168.1.1"
 auth_mode = "hybrid"
-totp_env = "UNIFI_TOTP"
+totp_command = ["op", "item", "get", "UniFi", "--otp"]
 ```
 
-Supply the current code via the env var at runtime:
+A one-off code also works for a single command, via `totp_env` in the
+profile or `UNIFI_TOTP` directly:
 
 ```bash
 UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password") \
   unifly devices list
 ```
 
-The `--totp` CLI flag also exists but is hidden from `--help`. Use it for
-one-shot operations.
+The `--totp` CLI flag also exists but is hidden from `--help`. A one-off
+code (`--totp`, `UNIFI_TOTP`, `totp_env`) serves only the first login and
+wins over `totp_command` there; `totp_command` feeds every re-login. A
+session with only a one-off code cannot renew itself.
 
 ### Session Cache
 

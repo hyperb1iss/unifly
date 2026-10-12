@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`totp_command` profile setting: MFA sessions that renew themselves.**
+  A profile can name a command that prints the current TOTP code, as an
+  argv array run without a shell, e.g.
+  `totp_command = ["op", "item", "get", "UniFi", "--otp"]`. unifly runs it
+  (no stdin, 10 s limit, trimmed stdout) for every login that needs a code,
+  so a long-running TUI on an MFA account keeps its Session-backed features
+  past the first cookie expiry. A non-zero exit, a timeout, or empty output
+  counts as no code and is logged without the output. An explicit one-off
+  code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves the first
+  login; the command feeds every re-login, and the first login too when
+  there is no explicit code. The CLI and the TUI launch paths resolve it
+  through the same helper, so the TUI's direct `--controller` /
+  `--api-key` path now also honours a hybrid profile's `totp_env`.
 - **MFA sessions can renew themselves when a fresh code is available.**
   `unifly-api` gains `TotpProvider`, a closure that returns the current TOTP
   code, set as `ControllerConfig::totp_provider` (or
@@ -20,9 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   never presents the password with a spent one. At connect it supplies the
   code when `totp_token` is unset, and only if the controller actually
   issues the MFA challenge, so a restored cached session never runs it. The
-  CLI and TUI do not set one: `--totp`, `UNIFI_TOTP`, and a profile's
-  `totp_env` are each read once at startup, so sessions opened with them
-  still do not renew.
+  CLI and TUI build one from a profile's `totp_command`; `--totp`,
+  `UNIFI_TOTP`, and `totp_env` are each read once at startup, so they never
+  become a provider.
 
 ### Security
 
@@ -63,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retried. A session opened with a fixed TOTP code does not renew itself,
   because replaying a spent code would fail every attempt while still
   presenting the correct password; MFA sessions renew only through a
-  `TotpProvider` (see Added). A session restored from cache for an MFA
+  `TotpProvider`, which the CLI and TUI build from `totp_command` (see
+  Added). A session restored from cache for an MFA
   account with no TOTP source stops re-logging in after the first re-login
   meets the MFA challenge, instead of repeating it every 30 s for as long as
   the process runs. The WebSocket reads its cookie from the session client

@@ -144,20 +144,30 @@ CLI flags override environment variables, which override config file values.
 
 ## MFA / TOTP
 
-If your controller requires two-factor authentication:
+If your controller requires two-factor authentication, give unifly a command that prints the current code. unifly runs it again every time it has to log in, so a long-running TUI renews its session when the cookie expires (about an hour in):
+
+```toml
+[profiles.home]
+totp_command = ["op", "item", "get", "UniFi", "--otp"]
+```
+
+The command is an argv array: the program, then its arguments. It runs directly, without a shell, with no stdin and 10 seconds to finish, and its trimmed output is the code. A non-zero exit, a timeout, or empty output counts as no code and is logged without the output.
+
+A one-off code works too, for a single command:
 
 ```bash
-# One-shot with 1Password CLI
 UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password") \
   unifly devices list
 
-# Or set totp_env in your config.toml profile:
+# Or name the variable in your profile:
 # [profiles.home]
 # totp_env = "UNIFI_TOTP"
 ```
 
+A one-off code (`--totp`, `UNIFI_TOTP`, or `totp_env`) serves a single login. When a profile has both, the one-off code is used for the first login and `totp_command` for every later one. A session with only a one-off code cannot renew itself, so the TUI loses session-backed features (events, health, client details) once its cookie expires.
+
 {% tip() %}
-The `totp_env` setting must be edited directly in `config.toml`. It is not yet supported by `unifly config set`.
+`totp_env` and `totp_command` must be edited directly in `config.toml`. Neither is supported by `unifly config set` yet.
 {% end %}
 
 ## Next Steps

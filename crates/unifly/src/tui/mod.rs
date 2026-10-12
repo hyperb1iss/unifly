@@ -144,13 +144,17 @@ fn build_controller_direct(
 
     let api_key = SecretString::from(global.api_key.as_ref()?.clone());
 
-    let auth = if let Some(ref host_id) = global.host_id {
-        AuthCredentials::Cloud {
+    let (auth, session_profile) = if let Some(ref host_id) = global.host_id {
+        let auth = AuthCredentials::Cloud {
             api_key,
             host_id: host_id.clone(),
-        }
+        };
+        (auth, None)
     } else {
-        try_hybrid_from_config(&api_key, global, cfg).unwrap_or(AuthCredentials::ApiKey(api_key))
+        match try_hybrid_from_config(&api_key, global, cfg) {
+            Some((auth, profile)) => (auth, Some(profile)),
+            None => (AuthCredentials::ApiKey(api_key), None),
+        }
     };
 
     let tls = if is_cloud {
@@ -163,10 +167,24 @@ fn build_controller_direct(
 
     let site = global.site.clone().unwrap_or_else(|| "default".into());
 
-    let totp_token = global
-        .totp
-        .as_ref()
-        .map(|t| secrecy::SecretString::from(t.clone()));
+    // Session credentials borrowed from a profile bring its TOTP sources,
+    // resolved exactly as the profile path resolves them.
+    let (totp_token, totp_provider) = match session_profile {
+        Some(profile) => match config::resolve::resolve_totp(profile, global) {
+            Ok(totp) => totp,
+            Err(error) => {
+                tracing::warn!(%error, "invalid TOTP settings, ignoring direct flags");
+                return None;
+            }
+        },
+        None => (
+            global
+                .totp
+                .as_ref()
+                .map(|t| secrecy::SecretString::from(t.clone())),
+            None,
+        ),
+    };
 
     let controller_config = ControllerConfig {
         url,
@@ -178,7 +196,7 @@ fn build_controller_direct(
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },
         totp_token,
-        totp_provider: None,
+        totp_provider,
         profile_name: global.profile.clone(),
         no_session_cache: global.no_cache || is_cloud,
     };
@@ -187,13 +205,13 @@ fn build_controller_direct(
 }
 
 /// Pair an API key with profile credentials to upgrade an Integration-only
-/// connection to hybrid auth. Returns `None` when the profile has no
-/// username/password to add.
-fn try_hybrid_from_config(
+/// connection to hybrid auth, returning the profile they came from. Returns
+/// `None` when the profile has no username/password to add.
+fn try_hybrid_from_config<'a>(
     api_key: &SecretString,
     global: &GlobalOpts,
-    cfg: Option<&config::Config>,
-) -> Option<AuthCredentials> {
+    cfg: Option<&'a config::Config>,
+) -> Option<(AuthCredentials, &'a config::Profile)> {
     let cfg = cfg?;
     let name = global
         .profile
@@ -219,11 +237,12 @@ fn try_hybrid_from_config(
         }
     };
 
-    Some(AuthCredentials::Hybrid {
+    let auth = AuthCredentials::Hybrid {
         api_key: api_key.clone(),
         username,
         password,
-    })
+    };
+    Some((auth, profile))
 }
 
 /// Build a controller from the active config profile. Returns `None` when no

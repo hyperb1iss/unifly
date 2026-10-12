@@ -231,14 +231,20 @@ UNIFI_TOTP=123456 unifly devices list
 # Or with 1Password CLI
 UNIFI_TOTP=$(op read "op://Vault/UniFi/one-time password") unifly devices list
 
-# Configure in your config.toml profile for automatic resolution:
+# Or let unifly fetch a fresh code whenever it logs in:
 # [profiles.home]
-# totp_env = "UNIFI_TOTP"
+# totp_command = ["op", "item", "get", "UniFi", "--otp"]
 ```
 
 {% tip() %}
-`totp_env` must be set directly in `config.toml`. It is not yet supported by `unifly config set`.
+`totp_env` and `totp_command` must be set directly in `config.toml`. Neither is supported by `unifly config set` yet.
 {% end %}
+
+### TUI loses events and client details after about an hour
+
+**Cause**: The session cookie expired, and the account uses MFA with only a one-off code (`--totp`, `UNIFI_TOTP`, or `totp_env`). That code is spent, so unifly cannot log in again on its own.
+
+**Fix**: Set `totp_command` in the profile so unifly can fetch a current code for each re-login. The TUI log (`unifly tui -v`) says when a session cannot renew itself.
 
 ## Common Gotchas
 

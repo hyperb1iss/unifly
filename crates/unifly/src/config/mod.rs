@@ -5,6 +5,7 @@
 
 #[cfg(feature = "cli")]
 pub mod resolve;
+pub mod totp_command;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification};
+use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification, TotpProvider};
 
 pub const DEFAULT_CLOUD_CONTROLLER_URL: &str = "https://api.ui.com";
 
@@ -239,10 +240,21 @@ pub struct Profile {
     /// `UNIFI_TOTP=$(op item get "UniFi" --otp) unifly ...`
     ///
     /// The variable is read once, at startup, and nothing outside the
-    /// process can change it afterwards, so the code serves the connect
-    /// login only. A session opened with it does not renew itself when the
-    /// cookie expires.
+    /// process can change it afterwards, so the code serves the first login
+    /// only. Without `totp_command`, a session opened with it does not renew
+    /// itself when the cookie expires.
     pub totp_env: Option<String>,
+
+    /// Command that prints a current TOTP code, as an argv array: the
+    /// program, then its arguments. It runs directly, without a shell, with
+    /// no stdin and a 10 s limit; its trimmed stdout is the code.
+    ///
+    /// It runs again for every login that needs a code, so a long-running
+    /// session (the TUI) can renew itself when its cookie expires. An
+    /// explicit code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves
+    /// the first login. Example with 1Password CLI:
+    /// `totp_command = ["op", "item", "get", "UniFi", "--otp"]`
+    pub totp_command: Option<Vec<String>>,
 
     /// Path to custom CA certificate.
     pub ca_cert: Option<PathBuf>,
@@ -530,6 +542,25 @@ pub fn resolve_totp_token(profile: &Profile) -> Option<SecretString> {
     std::env::var(env_name).ok().map(SecretString::from)
 }
 
+/// Turn the profile's `totp_command` into a [`TotpProvider`].
+///
+/// Returns `None` when no command is configured, and an error when the
+/// command names no program.
+pub fn resolve_totp_provider(profile: &Profile) -> Result<Option<TotpProvider>, ConfigError> {
+    let Some(argv) = profile.totp_command.as_ref() else {
+        return Ok(None);
+    };
+    if argv.first().is_none_or(|program| program.trim().is_empty()) {
+        return Err(ConfigError::Validation {
+            field: "totp_command".into(),
+            reason: "must start with the program to run, e.g. [\"op\", \"item\", \"get\", \
+                     \"UniFi\", \"--otp\"]"
+                .into(),
+        });
+    }
+    Ok(Some(totp_command::provider(argv.clone())))
+}
+
 /// Build a `ControllerConfig` from a profile — no CLI flag overrides.
 ///
 /// Suitable for the TUI and other non-CLI consumers. Sets TUI-friendly
@@ -574,6 +605,7 @@ pub fn profile_to_controller_config(
     let timeout = Duration::from_secs(profile.timeout.unwrap_or(defaults.timeout));
 
     let totp_token = resolve_totp_token(profile);
+    let totp_provider = resolve_totp_provider(profile)?;
 
     Ok(ControllerConfig {
         url,
@@ -585,7 +617,7 @@ pub fn profile_to_controller_config(
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },
         totp_token,
-        totp_provider: None,
+        totp_provider,
         profile_name: Some(profile_name.to_owned()),
         no_session_cache: is_cloud,
     })
@@ -615,6 +647,7 @@ mod tests {
             username: None,
             password: None,
             totp_env: None,
+            totp_command: None,
             ca_cert: None,
             insecure: Some(true),
             timeout: Some(45),
@@ -656,6 +689,22 @@ mod tests {
         let secret = resolve_api_key(&profile, "cloud").expect("config api_key should resolve");
 
         assert_eq!(secret.expose_secret(), "explicit-config-key");
+    }
+
+    #[test]
+    fn profile_to_controller_config_wires_the_totp_command() {
+        let mut profile = cloud_profile();
+        profile.auth_mode = "session".into();
+        profile.controller = "https://10.0.1.1".into();
+        profile.username = Some("admin".into());
+        profile.password = Some("pw".into());
+        profile.totp_command = Some(vec!["op".into(), "item".into(), "get".into()]);
+
+        let config = profile_to_controller_config(&profile, "default", &Defaults::default())
+            .expect("profile should resolve");
+
+        assert!(config.totp_provider.is_some());
+        assert!(config.totp_token.is_none());
     }
 
     #[test]
