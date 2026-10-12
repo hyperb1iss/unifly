@@ -99,7 +99,8 @@ impl SettingsScreen {
 
         self.profile_name = profile_name.to_string();
         self.draft = ControllerProfileDraft::from_profile(profile)
-            .with_keyring_origins(profile_name, &crate::config::OsKeyring);
+            .with_keyring_origins(profile_name, &crate::config::OsKeyring)
+            .with_inherited_insecure(&cfg.defaults);
         self.auth_mode_index = AuthMode::ALL
             .iter()
             .position(|&mode| mode == self.draft.auth_mode)

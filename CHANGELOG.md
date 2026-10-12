@@ -113,8 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `totp_command`, `ca_cert`, and `timeout` were deleted from `config.toml`,
   and an unset `insecure` came back as an explicit `false` that overrode
   `[defaults].insecure`. Fields the form does not show are now written back
-  as loaded, and `insecure` keeps its stored value unless the toggle
-  changes.
+  as loaded. `insecure` keeps its stored value, unset included, until you
+  touch the toggle, which then saves exactly what it shows; an unset value
+  displays what it inherits (verification when the profile has a
+  `ca_cert`, otherwise `[defaults].insecure`).
 - **The TUI no longer writes keyring credentials to `config.toml`.** A
   profile whose API key or password lives in the OS keyring loaded into the
   settings form as an empty field, failed validation until the secret was

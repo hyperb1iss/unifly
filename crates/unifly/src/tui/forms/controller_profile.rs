@@ -76,6 +76,9 @@ pub(crate) struct ControllerProfileDraft {
     pub(crate) password: String,
     pub(crate) site: String,
     pub(crate) insecure: bool,
+    /// Whether the user changed the insecure toggle. Until they do, saving
+    /// keeps the stored value, including "unset".
+    insecure_touched: bool,
     /// What the form does not edit, from the profile it was loaded from.
     /// `None` for a new profile.
     pub(crate) loaded: Option<LoadedProfileFields>,
@@ -151,8 +154,7 @@ pub(crate) struct LoadedProfileFields {
     ca_cert: Option<std::path::PathBuf>,
     timeout: Option<u64>,
     /// The stored `insecure`, which may be unset (inherit `[defaults]`).
-    /// The toggle can only show a bool, so an untouched toggle writes this
-    /// back rather than turning "unset" into an explicit `false`.
+    /// An untouched toggle writes this back, so "unset" stays unset.
     insecure: Option<bool>,
 }
 
@@ -169,6 +171,7 @@ impl Default for ControllerProfileDraft {
             password: String::new(),
             site: "default".into(),
             insecure: true,
+            insecure_touched: false,
             loaded: None,
             api_key_origin: SecretOrigin::Unset,
             password_origin: SecretOrigin::Unset,
@@ -189,6 +192,7 @@ impl ControllerProfileDraft {
             password: profile.password.clone().unwrap_or_default(),
             site: profile.site.clone(),
             insecure: profile.insecure.unwrap_or(false),
+            insecure_touched: false,
             loaded: Some(LoadedProfileFields {
                 totp_env: profile.totp_env.clone(),
                 totp_command: profile.totp_command.clone(),
@@ -233,11 +237,31 @@ impl ControllerProfileDraft {
         self
     }
 
-    /// The `insecure` value to save: the stored one while the toggle still
-    /// shows what was loaded, otherwise the toggle.
+    /// Show what an unset `insecure` actually resolves to, so the toggle
+    /// tells the truth: a profile CA means verification, otherwise
+    /// `[defaults].insecure` applies. An explicit value is shown as is.
+    pub(crate) fn with_inherited_insecure(mut self, defaults: &crate::config::Defaults) -> Self {
+        if self.auth_mode != AuthMode::Cloud
+            && let Some(loaded) = &self.loaded
+            && loaded.insecure.is_none()
+        {
+            self.insecure = loaded.ca_cert.is_none() && defaults.insecure;
+        }
+        self
+    }
+
+    /// Flip the insecure toggle. From then on saving writes it explicitly.
+    pub(crate) fn toggle_insecure(&mut self) {
+        self.insecure = !self.insecure;
+        self.insecure_touched = true;
+    }
+
+    /// The `insecure` value to save: the stored one (possibly unset) until
+    /// the toggle is touched, the toggle's value after that. A new profile
+    /// always saves the toggle.
     fn insecure_to_save(&self) -> Option<bool> {
         match &self.loaded {
-            Some(loaded) if self.insecure == loaded.insecure.unwrap_or(false) => loaded.insecure,
+            Some(loaded) if !self.insecure_touched => loaded.insecure,
             _ => Some(self.insecure),
         }
     }
@@ -432,6 +456,7 @@ mod tests {
             password: "hunter2".into(),
             site: "default".into(),
             insecure: false,
+            insecure_touched: false,
             loaded: None,
             api_key_origin: SecretOrigin::Unset,
             password_origin: SecretOrigin::Unset,
@@ -566,15 +591,17 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_insecure_toggle_is_saved_explicitly() {
+    fn a_touched_insecure_toggle_is_saved_explicitly() {
         let mut draft = sample_draft();
         draft.loaded = Some(super::LoadedProfileFields::default());
-        draft.insecure = true;
+        assert_eq!(draft.to_profile().insecure, None, "untouched keeps unset");
 
+        draft.toggle_insecure();
         assert_eq!(draft.to_profile().insecure, Some(true));
 
-        draft.insecure = false;
-        assert_eq!(draft.to_profile().insecure, None, "back to what was loaded");
+        // Back to the starting value, but the user chose it: explicit.
+        draft.toggle_insecure();
+        assert_eq!(draft.to_profile().insecure, Some(false));
 
         draft.loaded = None;
         assert_eq!(
@@ -582,6 +609,38 @@ mod tests {
             Some(false),
             "a new profile always saves the toggle"
         );
+    }
+
+    /// With `insecure` unset and `[defaults].insecure = true`, the toggle
+    /// shows the inherited "on", and switching it off must save an explicit
+    /// `false`; saving "unset" would leave TLS verification disabled.
+    #[test]
+    fn an_unset_insecure_shows_and_overrides_the_inherited_value() {
+        let defaults = crate::config::Defaults {
+            insecure: true,
+            ..crate::config::Defaults::default()
+        };
+        let mut profile = hybrid_profile(Some("k"), Some("p"));
+        profile.insecure = None;
+
+        let mut draft =
+            ControllerProfileDraft::from_profile(&profile).with_inherited_insecure(&defaults);
+        assert!(draft.insecure, "shows the inherited value");
+        assert_eq!(
+            draft.to_profile().insecure,
+            None,
+            "untouched stays inherited"
+        );
+
+        draft.toggle_insecure();
+        assert!(!draft.insecure);
+        assert_eq!(draft.to_profile().insecure, Some(false));
+
+        // A profile CA means verification, whatever [defaults] says.
+        profile.ca_cert = Some("/etc/ssl/certs/unifi-ca.pem".into());
+        let draft =
+            ControllerProfileDraft::from_profile(&profile).with_inherited_insecure(&defaults);
+        assert!(!draft.insecure);
     }
 
     /// In-memory stand-in for the OS keyring.
