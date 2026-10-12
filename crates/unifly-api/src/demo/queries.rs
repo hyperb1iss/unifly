@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use super::catalog::{DPI_APPS, DPI_CATEGORIES};
 use super::fleet::GATEWAY;
 use super::fleet::history::activity;
-use super::rng::{DemoRng, from_u64, hash_str, hash_unit, to_u64};
+use super::rng::{DemoRng, from_u64, from_usize, hash_str, hash_unit, mix, to_u64};
 use super::sim::Simulation;
 use crate::core_error::CoreError;
 use crate::model::{ClientType, Device, DpiApplication, DpiCategory, MacAddress};
@@ -64,14 +64,24 @@ fn bucket_activity(start: DateTime<Utc>, bucket: i64, anchor: DateTime<Utc>) -> 
     samples.iter().sum::<f64>() / 24.0
 }
 
+/// One report bucket: when it starts, and a stable noise key derived from
+/// its offset from launch, so the same seed draws the same series no
+/// matter what time the fleet was launched.
+struct Bucket {
+    at: DateTime<Utc>,
+    key: u64,
+}
+
 impl Simulation {
-    /// Timestamps (ms) of report buckets between `start` and `end`.
+    /// Report buckets between `start` and `end`, aligned to the launch time
+    /// rather than the wall clock.
     fn buckets(
+        &self,
         interval: &str,
         start: Option<i64>,
         end: Option<i64>,
         now: DateTime<Utc>,
-    ) -> Vec<DateTime<Utc>> {
+    ) -> Vec<Bucket> {
         // Clamp before doing any arithmetic: the bounds come straight from
         // callers and may be anything an i64 holds.
         let bucket = bucket_secs(interval);
@@ -81,15 +91,26 @@ impl Simulation {
         let start_secs = start
             .map_or(end_secs - default_span_secs(interval), epoch_secs)
             .clamp(floor, end_secs);
-        let mut first = start_secs.div_euclid(bucket) * bucket;
-        let mut count = (end_secs - first) / bucket;
+        let anchor_secs = self.fleet.anchor.timestamp();
+        let mut first_offset = (start_secs - anchor_secs).div_euclid(bucket);
+        let mut count = (end_secs - (anchor_secs + first_offset * bucket)) / bucket;
         if count > MAX_ROWS {
             // Keep the newest buckets when the range holds too many.
-            first += (count - MAX_ROWS) * bucket;
+            first_offset += count - MAX_ROWS;
             count = MAX_ROWS;
         }
+        let salt = mix(bucket.cast_unsigned());
         (0..count.max(0))
-            .filter_map(|index| Utc.timestamp_opt(first + index * bucket, 0).single())
+            .filter_map(|index| {
+                let offset = first_offset + index;
+                let at = Utc
+                    .timestamp_opt(anchor_secs + offset * bucket, 0)
+                    .single()?;
+                Some(Bucket {
+                    at,
+                    key: salt ^ offset.cast_unsigned(),
+                })
+            })
             .collect()
     }
 
@@ -110,11 +131,12 @@ impl Simulation {
         now: DateTime<Utc>,
     ) -> Vec<Value> {
         let bucket = bucket_secs(interval);
-        let live = from_u64(u64::try_from(self.fleet.clients.len()).unwrap_or(0));
-        Self::buckets(interval, start, end, now)
+        // The launch population, not the live one, so history does not
+        // shift as clients come and go.
+        let live = from_usize(self.initial_clients());
+        self.buckets(interval, start, end, now)
             .into_iter()
-            .map(|at| {
-                let key = u64::try_from(at.timestamp()).unwrap_or(0);
+            .map(|Bucket { at, key }| {
                 let level = bucket_activity(at, bucket, self.fleet.anchor);
                 let noise = 0.94 + 0.12 * hash_unit(self.fleet.seed ^ 0x51, key);
                 let total = live * self.level_ratio(level, 0.25) * noise;
@@ -146,10 +168,9 @@ impl Simulation {
         let bucket_f = from_u64(u64::try_from(bucket).unwrap_or(3_600));
         let gateway = &self.fleet.devices[GATEWAY];
         let seed = self.fleet.seed;
-        Self::buckets(interval, start, end, now)
+        self.buckets(interval, start, end, now)
             .into_iter()
-            .map(|at| {
-                let key = u64::try_from(at.timestamp()).unwrap_or(0);
+            .map(|Bucket { at, key }| {
                 let level = bucket_activity(at, bucket, self.fleet.anchor);
                 let ratio_rx = self.level_ratio(level, 0.15);
                 let ratio_tx = self.level_ratio(level, 0.2);

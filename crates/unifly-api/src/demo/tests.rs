@@ -586,3 +586,30 @@ fn kicks_follow_unifi_wired_versus_wireless() {
     let client = &sim.fleet.clients[back].client;
     assert!(client.wireless.is_some() && client.switch_port.is_none());
 }
+
+#[test]
+fn history_series_do_not_depend_on_launch_time() {
+    let early = anchor();
+    let late = early + Duration::days(3) + Duration::minutes(17) + Duration::seconds(9);
+    let series = |launch: DateTime<Utc>| {
+        let sim = Simulation::new(Fleet::generate(DEFAULT_DEMO_SEED, launch));
+        let now = launch + Duration::seconds(45);
+        let mut rows = Vec::new();
+        for interval in ["5minutes", "hourly", "daily"] {
+            rows.extend(sim.gateway_stats(interval, None, None, now));
+            rows.extend(sim.site_stats(interval, None, None, now));
+        }
+        let times: Vec<i64> = rows.iter().filter_map(|row| row["time"].as_i64()).collect();
+        for row in &mut rows {
+            if let Some(object) = row.as_object_mut() {
+                object.remove("time");
+            }
+        }
+        (rows, times)
+    };
+    let (early_rows, early_times) = series(early);
+    let (late_rows, late_times) = series(late);
+    assert_ne!(early_rows.len(), 0);
+    assert_eq!(early_rows, late_rows, "same seed, same chart shapes");
+    assert_ne!(early_times, late_times, "timestamps still track the clock");
+}
