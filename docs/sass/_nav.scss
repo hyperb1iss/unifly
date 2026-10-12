@@ -179,8 +179,10 @@
 .nav-hamburger {
   @extend %nav-action-btn;
   display: none;
+  flex-direction: column;
+  gap: 4px;
 
-  .hamburger-line {
+  .nav-hamburger__bar {
     display: block;
     width: 18px;
     height: 2px;
@@ -189,23 +191,25 @@
     transition:
       transform $duration-normal $ease-out,
       opacity $duration-fast $ease-out;
-
-    & + .hamburger-line {
-      margin-top: 4px;
-    }
   }
 
   &[aria-expanded="true"] {
-    .hamburger-line:nth-child(1) {
-      transform: rotate(45deg) translate(4px, 4px);
+    .nav-hamburger__bar:nth-child(1) {
+      transform: translateY(6px) rotate(45deg);
     }
 
-    .hamburger-line:nth-child(2) {
+    .nav-hamburger__bar:nth-child(2) {
       opacity: 0;
     }
 
-    .hamburger-line:nth-child(3) {
-      transform: rotate(-45deg) translate(4px, -4px);
+    .nav-hamburger__bar:nth-child(3) {
+      transform: translateY(-6px) rotate(-45deg);
     }
   }
+}
+
+// Primary section links repeated inside the mobile drawer; hidden on
+// desktop, where the nav bar shows them.
+.sidebar-primary {
+  display: none;
 }

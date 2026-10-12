@@ -33,32 +33,9 @@
       <span class="nav-hamburger__bar"></span>
     </button>
 
-    <div class="nav-links" id="nav-links" role="menubar">
-      {% set cp = current_path | default(value="") %}
-      <a
-        class="nav-link{% if cp is starting_with('/guide/') %} nav-link--active{% endif %}"
-        href="{{ get_url(path='@/guide/_index.md') }}"
-        role="menuitem"
-        >Guide</a
-      >
-      <a
-        class="nav-link{% if cp is starting_with('/reference/') %} nav-link--active{% endif %}"
-        href="{{ get_url(path='@/reference/_index.md') }}"
-        role="menuitem"
-        >Reference</a
-      >
-      <a
-        class="nav-link{% if cp is starting_with('/architecture/') %} nav-link--active{% endif %}"
-        href="{{ get_url(path='@/architecture/_index.md') }}"
-        role="menuitem"
-        >Architecture</a
-      >
-      <a
-        class="nav-link{% if cp is starting_with('/troubleshooting') %} nav-link--active{% endif %}"
-        href="{{ get_url(path='@/troubleshooting.md') }}"
-        role="menuitem"
-        >Troubleshooting</a
-      >
+    <div class="nav-links" id="nav-links">
+      {% set primary_link_class = "nav-link" %} {% include
+      "partials/primary-links.html" %}
     </div>
 
     <div class="nav-actions">
