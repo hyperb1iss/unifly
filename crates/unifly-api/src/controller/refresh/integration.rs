@@ -11,17 +11,20 @@ use crate::model::{
 };
 
 use super::super::REFRESH_DETAIL_CONCURRENCY;
+use super::optional::keep_on_failure;
 
+/// Integration data for one refresh. `Option` fields come from optional
+/// endpoints, where `None` means the fetch failed (see [`keep_on_failure`]).
 pub(super) struct IntegrationRefresh {
     pub(super) devices: Vec<Device>,
     pub(super) clients: Vec<Client>,
     pub(super) networks: Vec<Network>,
     pub(super) wifi: Vec<WifiBroadcast>,
-    pub(super) policies: Vec<FirewallPolicy>,
-    pub(super) zones: Vec<FirewallZone>,
-    pub(super) acls: Vec<AclRule>,
-    pub(super) dns: Vec<DnsPolicy>,
-    pub(super) vouchers: Vec<Voucher>,
+    pub(super) policies: Option<Vec<FirewallPolicy>>,
+    pub(super) zones: Option<Vec<FirewallZone>>,
+    pub(super) acls: Option<Vec<AclRule>>,
+    pub(super) dns: Option<Vec<DnsPolicy>>,
+    pub(super) vouchers: Option<Vec<Voucher>>,
     pub(super) sites: Vec<Site>,
     pub(super) traffic_matching_lists: Vec<TrafficMatchingList>,
 }
@@ -90,15 +93,16 @@ pub(super) async fn fetch(
         .map(TrafficMatchingList::from)
         .collect();
 
-    let policies = unwrap_or_empty("firewall/policies", policies_res);
-    let zones = unwrap_or_empty("firewall/zones", zones_res);
-    let acls = unwrap_or_empty("acl/rules", acls_res);
-    let dns = unwrap_or_empty_with(
-        "dns/policies",
-        dns_res,
-        crate::convert::dns_policy_from_integration,
-    );
-    let vouchers = unwrap_or_empty("vouchers", vouchers_res);
+    let policies = optional_list("firewall/policies", policies_res);
+    let zones = optional_list("firewall/zones", zones_res);
+    let acls = optional_list("acl-rules", acls_res);
+    let dns = keep_on_failure("dns/policies", dns_res).map(|items| {
+        items
+            .into_iter()
+            .filter_map(crate::convert::dns_policy_from_integration)
+            .collect()
+    });
+    let vouchers = optional_list("hotspot/vouchers", vouchers_res);
 
     info!(
         device_count = devices.len(),
@@ -180,31 +184,11 @@ async fn fetch_device_statistics(
     .await
 }
 
-/// Downgrade a failed paginated fetch to an empty `Vec` so one optional
-/// endpoint cannot abort the whole refresh. 404s (endpoints missing on older
-/// firmware) log at debug; every other error logs at warn.
-fn unwrap_or_empty<S, D>(endpoint: &str, result: Result<Vec<S>, crate::error::Error>) -> Vec<D>
+/// Convert an optional paginated fetch into its snapshot field, mapping
+/// each item into the domain type on success.
+fn optional_list<S, D>(endpoint: &str, result: Result<Vec<S>, crate::Error>) -> Option<Vec<D>>
 where
     D: From<S>,
 {
-    unwrap_or_empty_with(endpoint, result, |item| Some(D::from(item)))
-}
-
-/// Like [`unwrap_or_empty`], for conversions that can reject individual items.
-fn unwrap_or_empty_with<S, D>(
-    endpoint: &str,
-    result: Result<Vec<S>, crate::error::Error>,
-    convert: impl Fn(S) -> Option<D>,
-) -> Vec<D> {
-    match result {
-        Ok(items) => items.into_iter().filter_map(convert).collect(),
-        Err(ref error) if error.is_not_found() => {
-            tracing::debug!("{endpoint}: not available (404), treating as empty");
-            Vec::new()
-        }
-        Err(error) => {
-            warn!("{endpoint}: unexpected error {error}, treating as empty");
-            Vec::new()
-        }
-    }
+    keep_on_failure(endpoint, result).map(|items| items.into_iter().map(D::from).collect())
 }

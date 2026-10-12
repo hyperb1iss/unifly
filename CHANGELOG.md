@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   correct password. The WebSocket reads its cookie from the session client on
   every reconnect, and a server-side clean close now waits the initial
   backoff instead of reconnecting immediately.
+- **A failed fetch during refresh keeps the last known data.** Firewall
+  policies, firewall zones, ACL rules, DNS policies, vouchers, NAT policies,
+  firewall groups, and events come from optional endpoints. A timeout, 5xx,
+  or 404 on any of them used to count as an empty list, so one transient
+  error wiped that collection from the store while the refresh still
+  reported success, and the TUI and CLI showed nothing until the next good
+  refresh. A failed optional fetch now leaves its collection untouched, and
+  only a successful response (empty or not) replaces it. Site health follows
+  the same rule, so a successful empty health response now clears it.
 
 ### Performance
 
