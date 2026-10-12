@@ -40,7 +40,23 @@ pub fn provider(argv: Vec<String>) -> TotpProvider {
 /// an async read that is simply dropped when time runs out. A blocking read
 /// on a thread could not be abandoned, and would stay stuck for as long as
 /// anything the command started held the pipe open.
+///
+/// One narrow limit remains on Windows, where tokio itself reads a child's
+/// pipe with a blocking read that dropping it does not cancel. The call
+/// still returns on time (see [`block_on_detached`]), but a helper that
+/// leaves a background process holding its stdout leaves one thread
+/// blocked until that process exits. Stopping such processes there would
+/// take Job Objects.
 fn run(argv: &[String], timeout: Duration) -> Option<SecretString> {
+    block_on_detached(run_async(argv, timeout)).flatten()
+}
+
+/// Drive `future` to completion on a private current-thread runtime, then
+/// shut the runtime down without waiting for its blocking tasks. Dropping
+/// it normally would wait for every one of them, including a blocking pipe
+/// read that only ends when whatever holds the pipe open exits. `None` when
+/// no runtime could be built.
+fn block_on_detached<F: std::future::Future>(future: F) -> Option<F::Output> {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -52,7 +68,9 @@ fn run(argv: &[String], timeout: Duration) -> Option<SecretString> {
             return None;
         }
     };
-    runtime.block_on(run_async(argv, timeout))
+    let output = runtime.block_on(future);
+    runtime.shutdown_background();
+    Some(output)
 }
 
 async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
@@ -173,7 +191,7 @@ fn kill_group(_group: Option<u32>) {}
 mod tests {
     use std::time::Duration;
 
-    use super::run;
+    use super::{block_on_detached, run};
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_owned()).collect()
@@ -298,6 +316,26 @@ mod tests {
 
         let pid = std::fs::read_to_string(&pid_file).expect("descendant pid");
         assert!(wait_for_exit(pid.trim()), "the descendant {pid} still runs");
+    }
+
+    /// A blocking task still running when the command is done (tokio's
+    /// pipe read on Windows, held open by a leftover process) must not
+    /// hold up the call: the runtime is shut down without waiting for it.
+    #[test]
+    fn an_outstanding_blocking_read_does_not_hold_up_the_call() {
+        let started = std::time::Instant::now();
+        let value = block_on_detached(async {
+            drop(tokio::task::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_secs(5));
+            }));
+            7
+        });
+        assert_eq!(value, Some(7));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "waited for the blocking task: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

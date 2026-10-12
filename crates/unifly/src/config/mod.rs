@@ -257,6 +257,8 @@ pub struct Profile {
     ///
     /// A locked password manager may prompt to unlock on every re-login
     /// attempt, about once per 30 s cooldown while the session is expired.
+    /// On Windows, a helper that leaves a background process holding its
+    /// stdout can leave one blocked thread until that process exits.
     pub totp_command: Option<Vec<String>>,
 
     /// Path to custom CA certificate.

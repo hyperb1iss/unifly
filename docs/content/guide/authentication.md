@@ -153,7 +153,7 @@ If your controller requires two-factor authentication, give unifly a command tha
 totp_command = ["op", "item", "get", "UniFi", "--otp"]
 ```
 
-The command is an argv array: the program, then its arguments. It runs directly, without a shell, with no stdin and 10 seconds to finish, and its trimmed output is the code. A non-zero exit, a timeout, or empty output counts as no code and is logged without the output. On Unix the command runs in its own process group, so a timeout stops anything it started too, as does exiting while something it started still holds its output open.
+The command is an argv array: the program, then its arguments. It runs directly, without a shell, with no stdin and 10 seconds to finish, and its trimmed output is the code. A non-zero exit, a timeout, or empty output counts as no code and is logged without the output. On Unix the command runs in its own process group, so a timeout stops anything it started too, as does exiting while something it started still holds its output open. On Windows only the command itself is stopped, and a helper that leaves a background process holding its output open can leave one idle thread in unifly until that process exits; the login itself is never held up.
 
 If the password manager is locked when a re-login runs, the command may raise an unlock prompt (Touch ID or a system password dialog). An attempt that gets no code is retried after 30 seconds, so while the session stays expired, expect a prompt about every 30 seconds until you unlock it.
 
