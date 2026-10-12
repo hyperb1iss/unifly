@@ -505,3 +505,34 @@ fn queries_survive_every_ap_going_dark() {
         sim.step(anchor() + Duration::seconds(tick));
     }
 }
+
+#[test]
+fn stats_ranges_are_clamped_and_bounded() {
+    let sim = Simulation::new(fleet());
+    let now = anchor();
+    let started = std::time::Instant::now();
+    for (start, end) in [
+        (Some(i64::MIN), Some(i64::MAX)),
+        (Some(i64::MAX), Some(i64::MIN)),
+        (Some(i64::MIN), None),
+        (None, Some(i64::MIN)),
+        (Some(0), Some(0)),
+    ] {
+        for interval in ["5minutes", "hourly", "daily", "monthly"] {
+            let rows = sim.gateway_stats(interval, start, end, now);
+            assert!(rows.len() <= 2_000, "{interval}: {} rows", rows.len());
+            sim.site_stats(interval, start, end, now);
+        }
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+    let newest = sim.gateway_stats("5minutes", Some(i64::MIN), Some(i64::MAX), now);
+    let last = newest
+        .last()
+        .and_then(|row| row["time"].as_i64())
+        .expect("rows");
+    assert!(
+        now.timestamp_millis() - last <= 600_000,
+        "keeps the newest buckets"
+    );
+}

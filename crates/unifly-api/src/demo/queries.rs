@@ -20,6 +20,10 @@ use crate::session::models::{ChannelAvailability, RogueAp};
 
 /// Total bytes behind the DPI breakdown (about a month of studio traffic).
 const DPI_TOTAL_BYTES: f64 = 41.0e12;
+/// Oldest history a report will answer for.
+const MAX_HISTORY_SECS: i64 = 400 * 86_400;
+/// Most rows a single report returns.
+const MAX_ROWS: i64 = 2_000;
 
 fn bucket_secs(interval: &str) -> i64 {
     match interval {
@@ -68,19 +72,25 @@ impl Simulation {
         end: Option<i64>,
         now: DateTime<Utc>,
     ) -> Vec<DateTime<Utc>> {
+        // Clamp before doing any arithmetic: the bounds come straight from
+        // callers and may be anything an i64 holds.
         let bucket = bucket_secs(interval);
-        let end_secs = end.map_or(now.timestamp(), epoch_secs);
-        let start_secs = start.map_or(end_secs - default_span_secs(interval), epoch_secs);
-        let first = start_secs.div_euclid(bucket) * bucket;
-        let mut cursor = first;
-        let mut out = Vec::new();
-        while cursor + bucket <= end_secs && out.len() < 2_000 {
-            if let Some(at) = Utc.timestamp_opt(cursor, 0).single() {
-                out.push(at);
-            }
-            cursor += bucket;
+        let now_secs = now.timestamp();
+        let floor = now_secs - MAX_HISTORY_SECS;
+        let end_secs = end.map_or(now_secs, epoch_secs).clamp(floor, now_secs);
+        let start_secs = start
+            .map_or(end_secs - default_span_secs(interval), epoch_secs)
+            .clamp(floor, end_secs);
+        let mut first = start_secs.div_euclid(bucket) * bucket;
+        let mut count = (end_secs - first) / bucket;
+        if count > MAX_ROWS {
+            // Keep the newest buckets when the range holds too many.
+            first += (count - MAX_ROWS) * bucket;
+            count = MAX_ROWS;
         }
-        out
+        (0..count.max(0))
+            .filter_map(|index| Utc.timestamp_opt(first + index * bucket, 0).single())
+            .collect()
     }
 
     /// Scale that lines a historical series up with the live fleet, which
