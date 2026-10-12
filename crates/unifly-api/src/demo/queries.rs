@@ -24,6 +24,8 @@ const DPI_TOTAL_BYTES: f64 = 41.0e12;
 const MAX_HISTORY_SECS: i64 = 400 * 86_400;
 /// Most rows a single report returns.
 const MAX_ROWS: i64 = 2_000;
+/// Gateway LAN bytes relative to WAN bytes (WAN traffic plus routing).
+const LAN_ROUTING_FACTOR: f64 = 1.12;
 
 fn bucket_secs(interval: &str) -> i64 {
     match interval {
@@ -187,12 +189,18 @@ impl Simulation {
                 if level > 0.3 && burst < 0.09 {
                     tx_rate += upload_peak * (0.4 + 0.6 * hash_unit(seed ^ 0xB1, key));
                 }
+                let (wan_tx, wan_rx) = (tx_rate * bucket_f, rx_rate * bucket_f);
+                // The LAN side carries the WAN traffic plus inter-VLAN
+                // routing, so it runs a little hotter in both directions.
                 json!({
                     "o": "gw",
                     "gw": gateway.mac.as_str(),
                     "time": at.timestamp_millis(),
-                    "wan-tx_bytes": to_u64(tx_rate * bucket_f),
-                    "wan-rx_bytes": to_u64(rx_rate * bucket_f),
+                    "bytes": to_u64(wan_tx + wan_rx),
+                    "wan-tx_bytes": to_u64(wan_tx),
+                    "wan-rx_bytes": to_u64(wan_rx),
+                    "lan-tx_bytes": to_u64(wan_rx * LAN_ROUTING_FACTOR),
+                    "lan-rx_bytes": to_u64(wan_tx * LAN_ROUTING_FACTOR),
                     "lan-num_sta": to_u64(level * 40.0),
                 })
             })
