@@ -13,5 +13,5 @@
 ## Checklist
 
 - [ ] `just check` passes (fmt + maintainability + clippy + test)
-- [ ] New commands are documented in `skills/unifly/SKILL.md`
+- [ ] Command behavior changes update `crates/unifly/skill/` guidance and examples
 - [ ] No credentials or secrets in the diff

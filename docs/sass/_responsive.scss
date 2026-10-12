@@ -51,7 +51,7 @@
     }
   }
 
-  .sidebar-overlay {
+  .nav-overlay {
     position: fixed;
     inset: 0;
     top: $nav-height;
@@ -69,6 +69,57 @@
     }
   }
 
+  // Pages without a sidebar (the homepage) open the primary links as a
+  // dropdown panel instead.
+  .nav-links--open {
+    display: flex;
+    position: fixed;
+    top: $nav-height;
+    left: 0;
+    right: 0;
+    z-index: $z-sidebar;
+    flex-direction: column;
+    align-items: stretch;
+    gap: $sp-1;
+    margin: 0;
+    padding: $sp-3 $sp-4 $sp-4;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-subtle);
+    box-shadow: $shadow-lg;
+
+    .nav-link {
+      padding: $sp-3 $sp-3;
+      font-size: $font-size-base;
+    }
+  }
+
+  .sidebar-primary {
+    display: flex;
+    flex-direction: column;
+    gap: $sp-1;
+    padding-bottom: $sp-4;
+    margin-bottom: $sp-4;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .sidebar-primary__link {
+    display: block;
+    padding: $sp-2 $sp-3;
+    font-weight: $font-weight-medium;
+    color: var(--text-secondary);
+    text-decoration: none;
+    border-radius: $radius-md;
+
+    &:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+
+    &--active {
+      color: var(--c-purple);
+    }
+  }
+
   .site-main {
     grid-column: 1;
     padding: $sp-6 $sp-4;
@@ -83,20 +134,25 @@
 
 @media (max-width: $bp-md) {
   .hero {
-    padding: $sp-16 $sp-4 $sp-10;
+    padding: calc(#{$nav-height} + #{$sp-10}) $sp-4 $sp-10;
+  }
+
+  .hero__inner {
+    grid-template-columns: 1fr;
+    gap: $sp-8;
+    max-width: 560px;
   }
 
   .hero__title {
-    font-size: $font-size-2xl;
-  }
-
-  .hero__tagline {
-    font-size: $font-size-md;
+    font-size: 4.5rem;
   }
 
   .hero__actions {
-    flex-direction: column;
-    align-items: center;
+    flex-direction: row;
+
+    .btn {
+      width: auto;
+    }
   }
 
   .btn {
@@ -137,6 +193,12 @@
   // Nav adjustments
   .nav-container {
     padding: 0 $sp-4;
+    gap: $sp-2;
+  }
+
+  .nav-title__logo {
+    width: 108px;
+    height: 34px;
   }
 
   .search-trigger__kbd {
@@ -168,11 +230,11 @@
   }
 
   .hero {
-    padding: $sp-12 $sp-3 $sp-8;
+    padding: calc(#{$nav-height} + #{$sp-8}) $sp-3 $sp-8;
   }
 
   .hero__title {
-    font-size: $font-size-xl;
+    font-size: 4rem;
   }
 
   .doc pre {

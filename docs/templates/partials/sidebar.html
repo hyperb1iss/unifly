@@ -1,4 +1,8 @@
 <aside class="site-sidebar" id="site-sidebar" aria-label="Section navigation">
+  <nav class="sidebar-primary" aria-label="Documentation sections">
+    {% set primary_link_class = "sidebar-primary__link" %} {% include
+    "partials/primary-links.html" %}
+  </nav>
   {% if section_data is defined %}
   <div class="sidebar-group">
     <div class="sidebar-group__title">{{ section_data.title }}</div>

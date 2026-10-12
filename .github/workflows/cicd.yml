@@ -168,7 +168,7 @@ jobs:
           to: ${{ github.ref_name }}
           version-name: ${{ github.ref_name }}
           provider: anthropic
-          model: claude-opus-4-6
+          model: claude-opus-5-5
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           output-file: RELEASE_NOTES.md
       - name: Create GitHub Release
@@ -197,10 +197,11 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
         run: npx -y clawhub@0.9.0 login --token "$CLAWHUB_TOKEN" --no-browser
-      - name: Publish skill via sync
+      - name: Publish discovery skill at the release version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          npx -y clawhub@0.9.0 sync --root ./skills --all --changelog "Release v${VERSION}"
+          npx -y clawhub@0.9.0 publish ./skills/unifly \
+            --slug unifly --name unifly --version "$VERSION" --changelog "Release v${VERSION}"
 
   # ── Update AUR Package ─────────────────────────────────────────
   update-aur:

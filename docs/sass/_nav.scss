@@ -27,34 +27,36 @@
 // ── Brand ────────────────────────────────────────────────────────────────────
 
 .nav-title {
-  font-family: $font-mono;
-  font-size: $font-size-lg;
-  font-weight: $font-weight-bold;
-  letter-spacing: -0.02em;
-  text-decoration: none;
   display: flex;
   align-items: center;
-  gap: 0;
+  flex-shrink: 0;
+  text-decoration: none;
   transition: opacity $duration-fast $ease-out;
 
   &:hover {
     opacity: 0.85;
-
-    .nav-title__uni,
-    .nav-title__fly {
-      filter: unquote("brightness(1.15)");
-    }
   }
 }
 
-.nav-title__uni {
-  color: var(--c-cyan);
-  transition: filter $duration-normal $ease-out;
+.nav-title__logo {
+  display: block;
+  width: 128px;
+  height: 40px;
+  object-fit: contain;
 }
 
-.nav-title__fly {
-  color: var(--c-purple);
-  transition: filter $duration-normal $ease-out;
+.nav-title__logo--light {
+  display: none;
+}
+
+[data-theme="light"] {
+  .nav-title__logo--dark {
+    display: none;
+  }
+
+  .nav-title__logo--light {
+    display: block;
+  }
 }
 
 // ── Nav links ────────────────────────────────────────────────────────────────
@@ -177,8 +179,10 @@
 .nav-hamburger {
   @extend %nav-action-btn;
   display: none;
+  flex-direction: column;
+  gap: 4px;
 
-  .hamburger-line {
+  .nav-hamburger__bar {
     display: block;
     width: 18px;
     height: 2px;
@@ -187,23 +191,25 @@
     transition:
       transform $duration-normal $ease-out,
       opacity $duration-fast $ease-out;
-
-    & + .hamburger-line {
-      margin-top: 4px;
-    }
   }
 
   &[aria-expanded="true"] {
-    .hamburger-line:nth-child(1) {
-      transform: rotate(45deg) translate(4px, 4px);
+    .nav-hamburger__bar:nth-child(1) {
+      transform: translateY(6px) rotate(45deg);
     }
 
-    .hamburger-line:nth-child(2) {
+    .nav-hamburger__bar:nth-child(2) {
       opacity: 0;
     }
 
-    .hamburger-line:nth-child(3) {
-      transform: rotate(-45deg) translate(4px, -4px);
+    .nav-hamburger__bar:nth-child(3) {
+      transform: translateY(-6px) rotate(-45deg);
     }
   }
+}
+
+// Primary section links repeated inside the mobile drawer; hidden on
+// desktop, where the nav bar shows them.
+.sidebar-primary {
+  display: none;
 }

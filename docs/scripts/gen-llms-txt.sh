@@ -43,8 +43,8 @@ url_for() {
   echo "> $DESCRIPTION"
   echo ""
   echo "Unifly is a Rust CLI and TUI for managing Ubiquiti UniFi network"
-  echo "infrastructure. One binary, 28 commands, 10 TUI screens, triple-path"
-  echo "API engine (Integration + Session + Site Manager cloud)."
+  echo "infrastructure. One binary with CLI commands, a TUI dashboard, and a"
+  echo "triple-path API engine (Integration + Session + Site Manager cloud)."
   echo ""
 
   for section_index in "$CONTENT_DIR"/*/_index.md; do

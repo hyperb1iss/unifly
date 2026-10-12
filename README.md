@@ -1,12 +1,13 @@
-<h1 align="center">
-  <br>
-  🌐 unifly
-  <br>
-</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/static/brand/logo-stacked.svg">
+    <img src="docs/static/brand/logo-stacked-light.svg" alt="unifly" width="360">
+  </picture>
+</p>
 
 <p align="center">
-  <strong>Your UniFi Network, at Your Fingertips</strong><br>
-  <sub>✦ CLI + TUI for UniFi Network Controllers ✦</sub>
+  Your UniFi network, at your fingertips.<br>
+  <sub>CLI + TUI for humans and agents</sub>
 </p>
 
 <p align="center">
@@ -53,7 +54,7 @@
 
 ## 💜 What is unifly?
 
-A complete command-line toolkit for managing Ubiquiti UniFi network controllers. One binary with 28 top-level commands for scripting and a built-in TUI dashboard for real-time monitoring, powered by a shared async engine that speaks every UniFi API dialect, including Site Manager cloud fleet APIs and the cloud connector.
+A complete command-line toolkit for managing Ubiquiti UniFi network controllers. One binary with 29 top-level commands for scripting and a built-in TUI dashboard for real-time monitoring, powered by a shared async engine that speaks every UniFi API dialect, including Site Manager cloud fleet APIs and the cloud connector.
 
 > _Manage devices, monitor clients, inspect VLANs, stream events, and watch bandwidth charts, all without leaving your terminal._
 
@@ -65,11 +66,13 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 >
 > unifly speaks fluent silicon _and_ carbon.
 >
-> **Coding agents** get a dedicated [skill bundle](skills/unifly/SKILL.md): full CLI reference, automation workflows, and a ready-made network manager agent that can provision VLANs, audit firewalls, and diagnose connectivity without asking permission for every command. One command to install:
+> **Coding agents** get a small [discovery skill](skills/unifly/SKILL.md) that loads version-matched guidance from `unifly skill`. The binary ships command discovery, automation workflows, and payload examples, all available offline. One command to install the skill:
 >
 > ```bash
 > npx skills add hyperb1iss/unifly
 > ```
+>
+> Install or update the binary separately using [Install](#-install). Older binaries without `unifly skill` need an update before they can serve the guide.
 >
 > **Humans** get a gorgeous 11-screen TUI, shell completions, pipe-friendly output, and the quiet satisfaction of never opening the UniFi web UI again. Keep scrolling to [Install](#-install).
 
@@ -81,7 +84,7 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 🔮 **Triple-Path API Engine** | Integration API + Session API via a single API key on UniFi OS, plus Site Manager cloud fleet and connector support. Hybrid mode adds WebSocket for live event streaming                                            |
 | ⚡ **Real-Time TUI**          | 11-screen dashboard with SilkCircuit octant traffic charts, CPU/MEM gauges, live client counts, zoomable topology, and auto-detected graphics-protocol charts (Kitty/Sixel/iTerm2)                                  |
-| 🦋 **28 Top-Level Commands**  | Devices and switch port config-as-code, clients, networks, WiFi, firewall policies/zones/groups, ACLs, NAT, DNS, full VPN surface, DPI, RADIUS, site settings, topology, cloud fleet, raw API passthrough, `tui`... |
+| 🦋 **29 Top-Level Commands**  | Devices and switch port config-as-code, clients, networks, WiFi, firewall policies/zones/groups, ACLs, NAT, DNS, full VPN surface, DPI, RADIUS, site settings, topology, cloud fleet, raw API passthrough, `tui`... |
 | 📡 **Wi-Fi Observability**    | Neighboring APs, regulatory channels, per-client Wi-Fi experience scores, roam timelines                                                                                                                            |
 | 💎 **Flexible Output**        | Table, JSON, compact JSON, YAML, and plain text. Pipe-friendly for scripting                                                                                                                                        |
 | 🔒 **Secure Credentials**     | OS keyring storage for API keys and passwords by default. Explicit `api_key` / `password` in TOML config wins when set, useful for headless or shared machines.                                                     |

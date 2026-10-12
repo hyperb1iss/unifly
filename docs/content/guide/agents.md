@@ -1,95 +1,88 @@
 +++
 title = "AI Agent Skill"
-description = "Teach AI coding agents to manage your UniFi network"
+description = "Version-matched UniFi guidance for coding agents"
 weight = 9
 +++
 
-Unifly ships with a dedicated skill bundle that teaches AI coding agents how to manage your UniFi network infrastructure. Your agent gets the full CLI reference, automation workflows, and a ready-made network manager agent.
+The installable unifly skill is a discovery stub. It tells an agent to run
+`unifly skill`, which prints the guide embedded in the installed binary.
+Updating the CLI updates its guide at the same time.
 
 ## Install
 
+Install the [unifly binary](/guide/installation) on the machine where the agent
+runs, then add the discovery skill:
+
 ```bash
-# Claude Code, Cursor, Copilot, Codex, Gemini, and more
 npx skills add hyperb1iss/unifly
+```
 
-# Target a specific agent platform
-npx skills add hyperb1iss/unifly -a claude-code
+For Claude Code, the repository also provides a plugin with a network manager
+agent and status/audit shortcuts:
 
-# As a Claude Code plugin
+```text
 /plugin marketplace add hyperb1iss/unifly
 ```
 
-## What's Included
+Older binaries that do not recognize `unifly skill` need an update before
+they can serve the guide. Until then, use the installed binary's `--help` for
+syntax rather than assuming current online instructions match its behavior.
 
-{% mermaid() %}
-graph TD
-SKILL["unifly Skill Bundle"] --> REF["Command Reference<br/><i>28 commands, flags, gotchas</i>"]
-SKILL --> AGENT["Network Manager Agent<br/><i>Autonomous provisioning</i>"]
-SKILL --> CONCEPTS["Networking Concepts<br/><i>Dual-API architecture, auth</i>"]
-SKILL --> WORKFLOWS["Workflow Patterns<br/><i>Automation recipes</i>"]
-SKILL --> EXAMPLES["Example Payloads<br/><i>JSON templates for --from-file</i>"]
-
-    style SKILL fill:#e135ff,color:#0a0a0f
-    style AGENT fill:#50fa7b,color:#0a0a0f
-
-{% end %}
-
-| Component                 | Description                                                                                |
-| ------------------------- | ------------------------------------------------------------------------------------------ |
-| **unifly skill**          | Complete CLI reference with command syntax, flags, output formats, and automation tips     |
-| **Network Manager agent** | Autonomous agent for provisioning VLANs, auditing firewalls, diagnosing connectivity       |
-| **Reference docs**        | UniFi networking concepts, dual-API gate matrix, auth decision tree                        |
-| **Workflow patterns**     | Runnable recipes for event streaming, firewall reordering, DHCP reservations, DNS policies |
-| **Example payloads**      | JSON templates for `--from-file` (networks, firewall, NAT, WiFi, VPN, switch ports)        |
-
-## What Your Agent Can Do
-
-With the skill installed, your coding agent can:
-
-- **Provision infrastructure**: Create VLANs, WiFi SSIDs, firewall zones, and isolation policies in the correct dependency order
-- **Audit security**: Check for open WiFi, permissive firewall rules, missing zone isolation
-- **Diagnose connectivity**: Trace device topology, check client signal strength, review event logs
-- **Manage devices**: Restart APs, adopt new devices, check firmware versions
-- **Query statistics**: Pull bandwidth trends, DPI app breakdown, client count history
-- **Automate workflows**: Bulk DHCP reservations, DNS policy management, voucher provisioning
-
-## Slash Commands
-
-Two slash commands are included for quick actions:
-
-| Command          | Description                                                 |
-| ---------------- | ----------------------------------------------------------- |
-| `/unifly-status` | Quick health check of your UniFi infrastructure             |
-| `/unifly-audit`  | Security audit of WiFi, firewall, and network configuration |
-
-## Prerequisite
-
-The agent needs unifly installed and configured on the system where it runs:
+## Load Guidance as Needed
 
 ```bash
-# Install unifly
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/unifly/main/install.sh | sh
-
-# Configure a controller profile
-unifly config init
+unifly skill
+unifly skill commands
+unifly skill concepts
+unifly skill workflows
+unifly skill examples
+unifly skill examples switch-ports.jsonc
 ```
 
-The skill teaches the agent to use `unifly` CLI commands. It does not connect to your controller directly.
+The core guide covers targeting, authentication, inspection, authorized
+changes, and verification. Command notes explain operational exceptions;
+the appended inventory is generated from the binary's Clap command tree.
+Concepts covers configuration, identifiers, output, and secrets. Workflows
+provides focused recipes for diagnostics, settings, switch ports, and firewall
+ordering. Named examples print the raw template for saving and editing.
 
-## Example Prompts
+Every topic works offline without a configured controller. Commands used to
+inspect or modify the network still need the appropriate credentials.
+Configuration setup uses `unifly config init` locally or
+`unifly config cloud-setup` for Site Manager.
 
-Once the skill is installed, try these with your coding agent:
+Runtime guidance removes installed skill/binary version mismatch. Operational
+prose still needs maintenance when behavior changes, and a payload that passes
+local schema checks may require different values on a particular controller.
 
-- _"Set up an IoT VLAN on 10.0.30.0/24 with a dedicated WiFi SSID and firewall isolation from the trusted network"_
-- _"Audit my firewall rules for any allow-all policies or missing zone isolation"_
-- _"Find the client named 'ring-doorbell' and show me its connection details"_
-- _"Show me the network topology and identify any devices that are offline"_
-- _"Stream events for the next few minutes and flag anything unusual"_
+## Agent and Slash Commands
 
-The agent will use `unifly` commands with `-o json` output, parse the results, and orchestrate multi-step workflows automatically.
+The plugin's network manager agent and both shortcuts load the same runtime
+guide instead of carrying separate command recipes:
+
+| Entry point           | Purpose                                                          |
+| --------------------- | ---------------------------------------------------------------- |
+| Network manager agent | Inspect, provision, and verify authorized infrastructure changes |
+| `/unifly-status`      | Read-only health, device, client, and alarm summary              |
+| `/unifly-audit`       | Read-only WiFi, firewall, firmware, and isolation review         |
+
+The shortcuts preserve the requested profile and report checks that the
+available authentication cannot perform. Audit findings include evidence and
+impact; a failed query is not proof that a resource is unused.
+
+## Example Requests
+
+- "Create an IoT VLAN with a dedicated SSID and isolation from my trusted network."
+- "Audit firewall policy ordering without changing anything."
+- "Find the client named ring-doorbell and inspect its WiFi experience."
+- "Export the switch port configuration so I can review the VLAN assignments."
+- "List the consoles visible through my Site Manager profile."
+
+The agent reads the relevant guide topic, inspects state, carries the user's
+authorization through the task, and verifies changes afterward.
 
 ## Next Steps
 
-- [Quick Start](/guide/quick-start): make sure unifly is configured before using the skill
-- [Authentication](/guide/authentication): API Key mode is the recommended default on UniFi OS. Hybrid is only needed for WebSocket features like `events watch`
-- [CLI Commands](/reference/cli): the commands the agent will use under the hood
+- [Quick Start](/guide/quick-start): configure the CLI
+- [Authentication](/guide/authentication): choose local or cloud access
+- [CLI Commands](/reference/cli): inspect the available operations

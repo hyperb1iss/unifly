@@ -23,7 +23,7 @@
       "poe": "auto",
     },
 
-    // Restricted trunk — explicit list of tagged networks. Empty
+    // Restricted trunk: explicit list of tagged networks. Empty
     // `tagged_vlans` would clear the list (JSON Merge Patch); omitting
     // the field leaves it untouched.
     {
@@ -34,7 +34,7 @@
       "tagged_vlans": ["personal", "iot"],
     },
 
-    // Drop the override on port 16 — controller defaults take over.
+    // Drop the override on port 16: controller defaults take over.
     {
       "index": 16,
       "reset": true,

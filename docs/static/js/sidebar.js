@@ -1,45 +1,62 @@
 /**
- * Hypercolor — Mobile sidebar toggle
+ * unifly docs: mobile navigation drawer.
+ *
+ * Below the tablet breakpoint the nav bar hides its section links and shows
+ * the hamburger. On pages with a section sidebar the hamburger slides that
+ * sidebar in (it repeats the primary links at its top); on pages without
+ * one, such as the homepage, it drops the primary links down as a panel.
  */
 
 (() => {
-  const BREAKPOINT = 768;
+  // Must match `@media (max-width: $bp-lg)` in sass/_responsive.scss.
+  const COLLAPSED = window.matchMedia("(max-width: 1024px)");
 
   const init = () => {
-    const toggle = document.getElementById("sidebar-toggle");
-    const sidebar = document.querySelector(".site-sidebar");
-    if (!toggle || !sidebar) return;
+    const toggle = document.getElementById("nav-hamburger");
+    if (!toggle) return;
 
-    const overlay = document.querySelector(".site-overlay");
+    const sidebar = document.getElementById("site-sidebar");
+    const links = document.getElementById("nav-links");
+    const drawer = sidebar || links;
+    if (!drawer) return;
 
-    const isMobile = () => window.innerWidth < BREAKPOINT;
+    const openClass = sidebar ? "site-sidebar--open" : "nav-links--open";
+    const overlay = document.getElementById("nav-overlay");
 
-    const isOpen = () => sidebar.classList.contains("site-sidebar--open");
+    toggle.setAttribute("aria-controls", drawer.id);
+
+    const isOpen = () => drawer.classList.contains(openClass);
+
+    const syncHidden = () => {
+      // The sidebar is a regular column on desktop and off-canvas when
+      // collapsed; only hide it from assistive tech while it is off-canvas.
+      if (sidebar) {
+        sidebar.setAttribute(
+          "aria-hidden",
+          COLLAPSED.matches && !isOpen() ? "true" : "false",
+        );
+      }
+    };
 
     const open = () => {
-      if (!isMobile()) return;
-      sidebar.classList.add("site-sidebar--open");
-      overlay?.classList.add("site-overlay--active");
+      if (!COLLAPSED.matches) return;
+      drawer.classList.add(openClass);
+      overlay?.classList.add("nav-overlay--visible");
       document.body.style.overflow = "hidden";
       toggle.setAttribute("aria-expanded", "true");
-      sidebar.setAttribute("aria-hidden", "false");
+      syncHidden();
+      drawer.querySelector("a")?.focus({ preventScroll: true });
     };
 
-    const close = () => {
-      sidebar.classList.remove("site-sidebar--open");
-      overlay?.classList.remove("site-overlay--active");
+    const close = ({ restoreFocus = false } = {}) => {
+      drawer.classList.remove(openClass);
+      overlay?.classList.remove("nav-overlay--visible");
       document.body.style.overflow = "";
       toggle.setAttribute("aria-expanded", "false");
-      sidebar.setAttribute("aria-hidden", isMobile() ? "true" : "false");
+      syncHidden();
+      if (restoreFocus) toggle.focus();
     };
 
-    // Set initial ARIA state
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.setAttribute("aria-controls", sidebar.id || "sidebar");
-    toggle.setAttribute("aria-label", "Toggle navigation menu");
-    if (isMobile()) sidebar.setAttribute("aria-hidden", "true");
-
-    // Toggle button
     toggle.addEventListener("click", () => {
       if (isOpen()) {
         close();
@@ -48,30 +65,28 @@
       }
     });
 
-    // Overlay click closes sidebar
-    overlay?.addEventListener("click", close);
+    overlay?.addEventListener("click", () => close());
 
-    // Escape key closes sidebar
+    // Following a link inside the drawer navigates away; close it so the
+    // back button does not return to an open drawer.
+    drawer.addEventListener("click", (e) => {
+      if (e.target.closest("a") && isOpen()) close();
+    });
+
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && isOpen()) {
         e.preventDefault();
-        close();
-        toggle.focus();
+        close({ restoreFocus: true });
       }
     });
 
-    // Reset state on viewport resize past breakpoint
-    const handleResize = () => {
-      if (!isMobile() && isOpen()) {
-        close();
-      }
-      sidebar.setAttribute(
-        "aria-hidden",
-        isMobile() && !isOpen() ? "true" : "false",
-      );
-    };
+    COLLAPSED.addEventListener("change", () => {
+      if (!COLLAPSED.matches && isOpen()) close();
+      syncHidden();
+    });
 
-    window.addEventListener("resize", handleResize, { passive: true });
+    toggle.setAttribute("aria-expanded", "false");
+    syncHidden();
   };
 
   if (document.readyState === "loading") {

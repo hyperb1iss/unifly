@@ -9,24 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`totp_command` profile setting: MFA sessions that renew themselves.**
-  A profile can name a command that prints the current TOTP code, as an
-  argv array run without a shell, e.g.
-  `totp_command = ["op", "item", "get", "UniFi", "--otp"]`. unifly runs it
-  (no stdin, 10 s limit, trimmed stdout) for every login that needs a code,
-  so a long-running TUI on an MFA account keeps its Session-backed features
-  past the first cookie expiry. A non-zero exit, a timeout, or empty output
-  counts as no code and is logged without the output. On Unix the command
-  runs in its own process group, which is stopped on a timeout or when
-  something the command started still holds its output open after it
-  exits; a background process with its output redirected (a cache daemon)
-  is left running. A locked password
-  manager may prompt on each attempt, about every 30 s while the session
-  is expired. An explicit one-off
-  code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves the first
-  login; the command feeds every re-login, and the first login too when
-  there is no explicit code. The CLI and the TUI launch paths resolve it
-  through the same helper, so the TUI's direct `--controller` /
+- **`totp_command` profile setting: MFA sessions that renew themselves.** A
+  profile can name a command that prints the current TOTP code, as an argv
+  array run without a shell, e.g. `totp_command = ["op", "item", "get",
+  "UniFi", "--otp"]`. unifly runs it (no stdin, 10 s limit, trimmed stdout)
+  for every login that needs a code, so a long-running TUI on an MFA account
+  keeps its Session-backed features past the first cookie expiry. A non-zero
+  exit, a timeout, or empty output counts as no code and is logged without
+  the output. On Unix the command runs in its own process group, which is
+  stopped on a timeout or when something the command started still holds its
+  output open after it exits; a background process with its output
+  redirected (a cache daemon) is left running. A locked password manager may
+  prompt on each attempt, about every 30 s while the session is expired. An
+  explicit one-off code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves
+  the first login; the command feeds every re-login, and the first login too
+  when there is no explicit code. The CLI and the TUI launch paths resolve
+  it through the same helper, so the TUI's direct `--controller` /
   `--api-key` path now also honours a hybrid profile's `totp_env`.
 - **MFA sessions can renew themselves when a fresh code is available.**
   `unifly-api` gains `TotpProvider`, a closure that returns the current TOTP
@@ -42,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   CLI and TUI build one from a profile's `totp_command`; `--totp`,
   `UNIFI_TOTP`, and `totp_env` are each read once at startup, so they never
   become a provider.
+- **Version-matched agent guidance** via `unifly skill`, available offline
+  without controller configuration. The installed skill and network manager
+  agent now load the binary's guide, with on-demand concepts, workflows,
+  payload examples, and a command inventory generated from Clap. Corrected
+  authentication boundaries, raw API paths, identifiers, and output recipes.
+  Older binaries need an update before they can serve the new discovery skill.
 
 ### Security
 

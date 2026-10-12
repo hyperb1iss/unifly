@@ -1,25 +1,42 @@
-{% extends "base.html" %} {% block title %}{{ config.title }} — {{
+{% extends "base.html" %} {% block title %}{{ config.title }} | {{
 config.description }}{% endblock title %} {% block content %}
 <main id="main-content">
-  <section class="hero">
-    <div class="hero__bg" aria-hidden="true"></div>
-    <h1 class="hero__title gradient-text">Unifly</h1>
-    <p class="hero__tagline">Your UniFi Network, at Your Fingertips</p>
-    <p class="hero__sub">
-      28 commands, 10 TUI screens, triple-path API engine. Manage your entire
-      UniFi network from the terminal, or have an AI agent do it for you.
-    </p>
-    <div class="hero__actions">
-      <a class="btn btn--primary" href="{{ get_url(path='@/guide/_index.md') }}"
-        >Get Started</a
-      >
-      <a
-        class="btn btn--secondary"
-        href="{{ config.extra.github_url }}"
-        target="_blank"
-        rel="noopener noreferrer"
-        >GitHub</a
-      >
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="hero__inner">
+      <div class="hero__copy">
+        <p class="hero__eyebrow">CLI + TUI / UniFi Networks</p>
+        <h1 class="hero__title" id="hero-title">unifly</h1>
+        <p class="hero__tagline">
+          Your UniFi network,<br />at your fingertips.
+        </p>
+        <p class="hero__sub">
+          29 commands. 11 TUI screens. One place to manage your network, from a
+          quick status check to a scripted rollout.
+        </p>
+        <div class="hero__actions">
+          <a
+            class="btn btn--primary"
+            href="{{ get_url(path='@/guide/_index.md') }}"
+            >Get Started</a
+          >
+          <a
+            class="btn btn--secondary"
+            href="{{ config.extra.github_url }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub</a
+          >
+        </div>
+      </div>
+      <div class="hero__art">
+        <img
+          src="{{ get_url(path='brand/hero.svg') }}"
+          alt="Circuit Dragonfly: four angular purple and cyan wings around a central white spine."
+          width="1536"
+          height="1024"
+          fetchpriority="high"
+        />
+      </div>
     </div>
   </section>
 
@@ -35,7 +52,7 @@ config.description }}{% endblock title %} {% block content %}
       </div>
       <div class="feature-card">
         <div class="feature-card__icon">&#128202;</div>
-        <h3 class="feature-card__title">10-Screen TUI</h3>
+        <h3 class="feature-card__title">11-Screen TUI</h3>
         <p class="feature-card__desc">
           btop-inspired dashboard with area-fill traffic charts, CPU/MEM gauges,
           zoomable topology, and live event streaming.
@@ -43,7 +60,7 @@ config.description }}{% endblock title %} {% block content %}
       </div>
       <div class="feature-card">
         <div class="feature-card__icon">&#129504;</div>
-        <h3 class="feature-card__title">28 Top-Level Commands</h3>
+        <h3 class="feature-card__title">29 Top-Level Commands</h3>
         <p class="feature-card__desc">
           Devices, clients, networks, WiFi, firewall, NAT, DNS, VPN, DPI, cloud
           fleet, topology, raw API passthrough, and more.
@@ -69,8 +86,8 @@ config.description }}{% endblock title %} {% block content %}
         <div class="feature-card__icon">&#129302;</div>
         <h3 class="feature-card__title">AI Agent Skill</h3>
         <p class="feature-card__desc">
-          Ships with a skill bundle that teaches coding agents to provision
-          VLANs, audit firewalls, and diagnose connectivity.
+          Agents load version-matched guidance from the CLI to provision VLANs,
+          audit firewalls, and diagnose connectivity.
         </p>
       </div>
     </div>

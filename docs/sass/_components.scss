@@ -4,84 +4,72 @@
 
 .hero {
   position: relative;
-  text-align: center;
-  padding: $sp-24 $sp-6 $sp-16;
+  padding: calc(#{$nav-height} + #{$sp-16}) $sp-6 $sp-16;
   overflow: hidden;
 }
 
-.hero__bg {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background:
-    radial-gradient(
-      ellipse 60% 50% at 50% 0%,
-      rgba(225, 53, 255, 0.12) 0%,
-      transparent 70%
-    ),
-    radial-gradient(
-      ellipse 40% 40% at 80% 20%,
-      rgba(128, 255, 234, 0.08) 0%,
-      transparent 60%
-    ),
-    radial-gradient(
-      ellipse 40% 40% at 20% 30%,
-      rgba(255, 106, 193, 0.06) 0%,
-      transparent 60%
-    );
+.hero__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: $sp-12;
+  max-width: 1160px;
+  margin: 0 auto;
+}
 
-  [data-theme="light"] & {
-    background:
-      radial-gradient(
-        ellipse 60% 50% at 50% 0%,
-        rgba(126, 43, 213, 0.1) 0%,
-        transparent 70%
-      ),
-      radial-gradient(
-        ellipse 40% 40% at 80% 20%,
-        rgba(0, 127, 142, 0.07) 0%,
-        transparent 60%
-      ),
-      radial-gradient(
-        ellipse 40% 40% at 20% 30%,
-        rgba(180, 0, 119, 0.05) 0%,
-        transparent 60%
-      );
-  }
+.hero__eyebrow {
+  margin: 0 0 $sp-5;
+  font-family: $font-mono;
+  font-size: $font-size-xs;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-cyan);
 }
 
 .hero__title {
-  font-size: $font-size-4xl;
+  font-size: clamp(4rem, 7vw, 6.5rem);
   font-weight: $font-weight-bold;
-  line-height: 1.1;
-  margin-bottom: $sp-4;
-  @include gradient-text;
-
-  @media (max-width: $bp-md) {
-    font-size: $font-size-3xl;
-  }
+  letter-spacing: -0.07em;
+  line-height: 1;
+  margin: 0 0 $sp-6;
+  color: var(--text-primary);
 }
 
 .hero__tagline {
-  font-size: $font-size-xl;
-  color: var(--text-secondary);
-  max-width: 600px;
-  margin: 0 auto $sp-2;
-  line-height: $line-height-normal;
+  font-size: clamp(1.5rem, 2.5vw, 2rem);
+  font-weight: $font-weight-medium;
+  color: var(--text-primary);
+  margin: 0 0 $sp-5;
+  line-height: $line-height-tight;
+  letter-spacing: -0.03em;
 }
 
 .hero__sub {
   font-size: $font-size-base;
-  color: var(--text-muted);
-  max-width: 520px;
-  margin: 0 auto $sp-8;
+  color: var(--text-secondary);
+  max-width: 420px;
+  margin: 0 0 $sp-8;
 }
 
 .hero__actions {
   display: flex;
-  justify-content: center;
-  gap: $sp-4;
+  gap: $sp-3;
   flex-wrap: wrap;
+}
+
+.hero__art {
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: $radius-2xl;
+  background: #12101a;
+
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 2;
+    object-fit: cover;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
