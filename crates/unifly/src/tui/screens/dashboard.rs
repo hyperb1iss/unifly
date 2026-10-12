@@ -35,7 +35,9 @@ pub(super) const BANDWIDTH_TICK_COUNT: usize = 4;
 pub(super) const BANDWIDTH_LABEL_WIDTH: usize = 6;
 pub(super) const BANDWIDTH_GUTTER_WIDTH: u16 = 7;
 pub(super) const MIN_BANDWIDTH_SCALE: f64 = 10_000.0;
-pub(super) const BANDWIDTH_SCALE_WINDOW_SAMPLES: usize = 48;
+/// Samples the y-scale percentile considers: the whole visible window, so a
+/// burst still on screen is never outside the scale reference and clamped.
+pub(super) const BANDWIDTH_SCALE_WINDOW_SAMPLES: usize = LIVE_CHART_WINDOW_SAMPLES;
 pub(super) const BANDWIDTH_SCALE_PERCENTILE: usize = 85;
 
 #[derive(Clone, Copy)]

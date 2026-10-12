@@ -316,7 +316,7 @@ mod tests {
     use crate::tui::render_caps::{ColorDepth, GlyphTier, GraphicsProtocol};
     use crate::tui::widgets::hyperchart::ChartGradient;
     use crate::tui::widgets::hyperchart::model::{Baseline, SeriesData, XAxis};
-    use crate::tui::widgets::hyperchart::scene::{GridSpec, PlotBounds};
+    use crate::tui::widgets::hyperchart::scene::{GridSpec, PlotBounds, mirror_lower_extent};
 
     fn caps() -> RenderCaps {
         RenderCaps {
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn mirror_halves_compose_without_sharing_cells() {
         let rx = [(0.0, 90.0), (10.0, 90.0)];
-        let tx = [(0.0, 20.0), (10.0, 20.0)];
+        let tx = [(0.0, 25.0), (10.0, 25.0)];
         let series = vec![
             up_series(&rx),
             SceneSeries {
@@ -468,7 +468,7 @@ mod tests {
             bounds: PlotBounds {
                 x_min: 0.0,
                 x_max: 10.0,
-                y_min: -30.0,
+                y_min: -mirror_lower_extent(90.0),
                 y_max: 90.0,
             },
             baseline: Baseline::Mirror {
@@ -481,19 +481,21 @@ mod tests {
             grid: GridSpec { tick_count: 4 },
             annotations: Vec::new(),
         };
-        let area = Rect::new(0, 0, 10, 8);
+        let area = Rect::new(0, 0, 10, 9);
         let mut buf = Buffer::empty(area);
 
         assert!(render(&scene, area, &mut buf, caps()));
-        // Baseline at y=0 maps to eighth 48, a cell boundary at row 6. RX
-        // fills rows 0..6 solid; TX 20 of 30 reaches eighth 59, so row 6 is
-        // solid and row 7 is a 3-eighth top fill via the inversion trick.
+        // The lanes split 2:1, so the baseline lands on eighth 48, a cell
+        // boundary at row 6. RX fills rows 0..6 solid; TX 25 of 30 covers
+        // 20 of the lower lane's 24 eighths, so rows 6 and 7 are solid and
+        // row 8 is a 4-eighth top fill via the inversion trick.
         assert_eq!(symbol_at(&buf, 3, 0), "█");
         assert_eq!(symbol_at(&buf, 3, 5), "█");
         assert_eq!(symbol_at(&buf, 3, 6), "█");
+        assert_eq!(symbol_at(&buf, 3, 7), "█");
         let bottom = buf
-            .cell((3, 7))
+            .cell((3, 8))
             .map(|cell| (cell.symbol().to_string(), cell.bg));
-        assert_eq!(bottom, Some(("▅".to_string(), Color::Magenta)));
+        assert_eq!(bottom, Some(("▄".to_string(), Color::Magenta)));
     }
 }
