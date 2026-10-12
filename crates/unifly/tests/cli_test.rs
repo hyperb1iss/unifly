@@ -1273,6 +1273,72 @@ fn test_demo_fleet_answers_wifi_get_and_device_stats_by_name() {
     assert!(stats["stats"]["cpu_utilization_pct"].is_number(), "{stats}");
 }
 
+/// `unifly skill concepts` lists JSON field names so agents stop guessing;
+/// every listed key must exist in real output, and the guide must name it.
+#[test]
+fn test_demo_fleet_json_keys_match_the_skill_guide() {
+    let guide = include_str!("../skill/concepts.md");
+    let device = demo_json(&["devices", "get", "ap-roof"]);
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let wireless = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|client| client["client_type"] == "Wireless")
+        .unwrap();
+    let cases = [
+        (
+            device.clone(),
+            "id mac ip name model serial device_type state firmware_version \
+             firmware_updatable adopted_at last_seen client_count uplink_device_id \
+             uplink_device_mac uplink_port_idx uplink_medium ports radios stats",
+        ),
+        (
+            device["stats"].clone(),
+            "uptime_secs cpu_utilization_pct memory_utilization_pct load_average_1m \
+             load_average_5m load_average_15m last_heartbeat uplink_bandwidth",
+        ),
+        (
+            device["stats"]["uplink_bandwidth"].clone(),
+            "tx_bytes_per_sec rx_bytes_per_sec",
+        ),
+        (
+            device["radios"][0].clone(),
+            "frequency_ghz channel channel_width_mhz wlan_standard \
+             channel_utilization_pct tx_retries_pct",
+        ),
+        (
+            wireless.clone(),
+            "id mac ip name hostname client_type connected_at uplink_device_id \
+             uplink_device_mac switch_port network_id vlan is_guest blocked tx_bytes \
+             rx_bytes bandwidth os_name device_class use_fixedip fixed_ip wireless",
+        ),
+        (
+            wireless["wireless"].clone(),
+            "ssid bssid channel frequency_ghz signal_dbm noise_dbm satisfaction \
+             tx_rate_kbps rx_rate_kbps",
+        ),
+        (
+            demo_json(&["events", "list"])[0].clone(),
+            "id timestamp category severity event_type raw_key message device_mac \
+             client_mac site_id",
+        ),
+        (demo_json(&["alarms", "list"])[0].clone(), "archived"),
+        (
+            demo_json(&["system", "health"])[0].clone(),
+            "subsystem status num_adopted num_sta tx_bytes_r rx_bytes_r latency wan_ip \
+             gateways extra",
+        ),
+        (demo_json(&["wans", "list"])[0].clone(), "gateway dns"),
+    ];
+    for (record, keys) in &cases {
+        for key in keys.split_whitespace() {
+            assert!(record.get(key).is_some(), "output lacks `{key}`: {record}");
+            assert!(guide.contains(&format!("`{key}`")), "guide omits `{key}`");
+        }
+    }
+}
+
 /// The config file holds profiles and possibly plaintext secrets, so the
 /// demo fleet must never read it. A poisoned config sets a theme; if fleet
 /// mode read it, colored table output would change.

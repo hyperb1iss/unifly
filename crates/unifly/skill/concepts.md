@@ -115,11 +115,6 @@ different: each event is a separate JSON line. Quiet mode suppresses normal
 output, so do not combine `-q` with commands whose JSON you need to capture.
 Dynamic/raw endpoints may retain controller-specific schemas.
 
-Device states and event severities serialize in PascalCase (for example
-`Online`, `Offline`, `Warning`). Events expose `client_mac` and
-`device_mac`. Site health is an array of subsystem records, not one object
-containing CPU and memory fields.
-
 Site settings hide nested `x_` credential fields by default. The opt-in
 flag `--with-secrets` reveals them. Settings updates merge with existing
 values, but replacing arrays can remove hidden credentials. Inspect the
@@ -132,6 +127,61 @@ record is not a complete backup or a ready-to-replay secret-bearing
 payload. Restore required secret fields from an authorized source before
 an update. Downloaded VPN configurations can contain credentials; keep
 them out of logs and source control.
+
+## JSON field names
+
+Typed records use snake_case keys, and every key is present: missing data is
+`null`, so there is no alternate spelling to fall back on. Enum values are
+PascalCase unless noted. For a field not listed here, read one record's keys
+(`jq '.[0] | keys'`) rather than guessing. The controller's wire names, such
+as `uplink`, `radio_table`, `system_stats`, `datetime`, or `msg`, do not
+appear in typed output.
+
+Devices (`devices list`, `get`, and `stats` share one shape): `id`, `mac`,
+`ip`, `name`, `model`, `serial`, `device_type` (`Gateway`, `Switch`,
+`AccessPoint`, `Other`), `state` (`Online`, `Offline`, `Updating`, ...),
+`firmware_version`, `firmware_updatable`, `adopted_at`, `last_seen`,
+`client_count`, `uplink_device_id`, `uplink_device_mac`, `uplink_port_idx`,
+`uplink_medium` (lowercase `wired` or `wireless`), `ports` (each with
+`index`, `name`, `state`, `speed_mbps`, `max_speed_mbps`, `connector`,
+`poe`), `radios` (each with `frequency_ghz`, `channel`, `channel_width_mhz`,
+`wlan_standard`, `channel_utilization_pct`, `tx_retries_pct`), and `stats`
+(`uptime_secs`, `cpu_utilization_pct`, `memory_utilization_pct`,
+`load_average_1m`, `load_average_5m`, `load_average_15m`, `last_heartbeat`,
+and `uplink_bandwidth` with `tx_bytes_per_sec` and `rx_bytes_per_sec`).
+
+Clients: `id`, `mac`, `ip`, `name` (the alias), `hostname`, `client_type`
+(`Wired`, `Wireless`, `Vpn`, `Teleport`, `Unknown`), `connected_at`,
+`uplink_device_id`, `uplink_device_mac`, `switch_port`, `network_id`,
+`vlan`, `is_guest`, `blocked`, `tx_bytes`, `rx_bytes`, `bandwidth` (bytes
+per second, as on devices), `os_name`, `device_class`, `use_fixedip`,
+`fixed_ip`, and `wireless`: `null` for wired clients, otherwise `ssid`,
+`bssid`, `channel`, `frequency_ghz`, `signal_dbm`, `noise_dbm`,
+`satisfaction`, `tx_rate_kbps`, `rx_rate_kbps`.
+
+Events: `id`, `timestamp` (RFC 3339), `category` (`Device`, `Client`,
+`Network`, `System`, `Admin`, `Firewall`, `Vpn`, `Unknown`), `severity`
+(`Info`, `Warning`, `Error`, `Critical`), `event_type` (the controller key,
+such as `EVT_AP_Lost_Contact`; `raw_key` repeats it), `message`,
+`device_mac`, `client_mac`, and `site_id`. Alarms carry `id`, `timestamp`,
+`category`, `severity`, `message`, `device_mac`, and `site_id`, plus
+`archived`.
+
+Site health is an array with one record per subsystem (`wan`, `www`,
+`wlan`, `lan`, `vpn`), not one object with CPU and memory fields. Each has
+`subsystem`, `status` (`ok` when healthy), `num_adopted`, `num_sta`,
+`tx_bytes_r`, `rx_bytes_r`, `latency`, `wan_ip`, `gateways`, and `extra`
+with the controller's remaining fields (ISP, speed test, AP counts). WAN
+interfaces carry `id`, `name`, `ip`, `gateway`, and `dns`.
+
+Stats commands pass report rows through as the controller sends them:
+`time` is epoch milliseconds and values keep hyphenated attribute names.
+Site rows default to `bytes`, `num_sta`, `wlan-num_sta`, and `lan-num_sta`;
+gateway rows to `bytes`, `wan-tx_bytes`, `wan-rx_bytes`, `lan-tx_bytes`,
+and `lan-rx_bytes`; device and client rows to `bytes`, `tx_bytes`, and
+`rx_bytes` (devices add `num_sta`). `--attrs` replaces the list. DPI output
+keeps the shape of whichever endpoint answered (`by_app` or `by_cat` rows,
+or a v2 traffic-flow summary), so inspect it before parsing.
 
 ## Raw API paths and controller quirks
 

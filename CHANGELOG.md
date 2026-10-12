@@ -110,6 +110,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead of silently picking the first. Every lookup goes through one
   shared resolver, so ambiguity and not-found errors read the same
   everywhere.
+- **The agent guide lists JSON field names.** `unifly skill concepts`
+  now spells out the keys of devices, clients, events, alarms, site health,
+  WANs, and stats rows, and names the controller wire fields (`uplink`,
+  `radio_table`, `system_stats`, `datetime`, `msg`) that typed output does
+  not use, so agents stop probing with `jq` fallbacks such as
+  `.uplink // .uplink_info`. A test checks every listed key against real
+  output.
 
 ### Security
 
