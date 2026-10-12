@@ -16,9 +16,23 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tachyonfx::{
-    Duration as FxDuration, Effect, EffectManager, EffectTimer, Interpolation, Motion, fx,
-    pattern::RadialPattern,
+    CellFilter, Duration as FxDuration, Effect, EffectManager, EffectTimer, Interpolation, Motion,
+    fx, pattern::RadialPattern,
 };
+
+/// Kitty's Unicode image placeholder character.
+const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
+
+/// Select every cell except kitty image placeholders.
+///
+/// A placeholder cell's foreground color encodes its image id, so an effect
+/// that recolors it points the cell at an image the terminal never received
+/// and the image blanks for as long as the effect runs. Leaf effects carry
+/// this filter themselves because wrappers such as `ping_pong` do not pass a
+/// filter down to the effect they wrap.
+fn outside_images() -> CellFilter {
+    CellFilter::eval_cell(|cell| !cell.symbol().contains(KITTY_PLACEHOLDER))
+}
 
 /// The role of a running effect — used to cancel in-progress effects of the
 /// same kind when a new one of the same role is registered.
@@ -68,7 +82,8 @@ impl EffectStack {
             2,
             Color::Black,
             FxDuration::from_millis(1_200),
-        );
+        )
+        .with_filter(outside_images());
         self.manager.add_unique_effect(EffectKind::Intro, effect);
     }
 
@@ -78,7 +93,8 @@ impl EffectStack {
     /// new screen's text/borders fade up from black on the first few
     /// frames and the transition is done before you finish blinking.
     pub fn start_screen_transition(&mut self) {
-        let effect = fx::fade_from_fg(Color::Black, FxDuration::from_millis(160));
+        let effect = fx::fade_from_fg(Color::Black, FxDuration::from_millis(160))
+            .with_filter(outside_images());
         self.manager
             .add_unique_effect(EffectKind::ScreenTransition, effect);
     }
@@ -87,16 +103,19 @@ impl EffectStack {
     pub fn start_chart_pulse(&mut self) {
         let effect = fx::ping_pong(
             fx::lighten_fg(0.18, EffectTimer::from_ms(180, Interpolation::SineOut))
-                .with_pattern(RadialPattern::center().with_transition_width(10.0)),
+                .with_pattern(RadialPattern::center().with_transition_width(10.0))
+                .with_filter(outside_images()),
         );
         self.manager
             .add_unique_effect(EffectKind::ChartPulse, effect);
     }
 
     /// Register a custom effect under the given kind, cancelling any prior
-    /// effect of the same kind.
+    /// effect of the same kind. An effect without its own filter skips image
+    /// cells; a wrapper effect must filter the effect it wraps itself.
     pub fn add_unique(&mut self, kind: EffectKind, effect: Effect) {
-        self.manager.add_unique_effect(kind, effect);
+        self.manager
+            .add_unique_effect(kind, effect.with_filter(outside_images()));
     }
 
     /// Apply all running effects to the given buffer for a single frame.
@@ -153,6 +172,48 @@ mod tests {
         assert!(EffectKind::Intro < EffectKind::ScreenTransition);
         assert!(EffectKind::ScreenTransition < EffectKind::NotificationFade);
         assert!(EffectKind::ChartPulse < EffectKind::TopologyPulse);
+    }
+
+    /// A buffer whose left half holds kitty placeholders and right half text.
+    fn image_and_text_buffer(area: Rect) -> Buffer {
+        let mut buf = Buffer::empty(area);
+        let placeholder = KITTY_PLACEHOLDER.to_string();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let cell = &mut buf[(x, y)];
+                if x < area.width / 2 {
+                    cell.set_symbol(&placeholder).set_fg(Color::Rgb(10, 20, 30));
+                } else {
+                    cell.set_symbol("x").set_fg(Color::Rgb(120, 120, 120));
+                }
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn effects_never_recolor_image_placeholders() {
+        let area = Rect::new(0, 0, 40, 10);
+        let starts: [fn(&mut EffectStack); 3] = [
+            EffectStack::start_intro,
+            EffectStack::start_screen_transition,
+            EffectStack::start_chart_pulse,
+        ];
+        for start in starts {
+            let mut stack = EffectStack::new();
+            start(&mut stack);
+            let mut buf = image_and_text_buffer(area);
+            stack.process(Duration::from_millis(90), &mut buf, area);
+
+            let text_changed = (area.width / 2..area.width)
+                .any(|x| buf[(x, area.height / 2)].fg != Color::Rgb(120, 120, 120));
+            assert!(text_changed, "the effect should still animate text");
+            for y in area.top()..area.bottom() {
+                for x in 0..area.width / 2 {
+                    assert_eq!(buf[(x, y)].fg, Color::Rgb(10, 20, 30), "cell {x},{y}");
+                }
+            }
+        }
     }
 
     #[test]
