@@ -469,6 +469,12 @@ mod tests {
     /// A helper that properly detaches a background process (its output
     /// redirected, so our pipe still reaches end of file) keeps it: that is
     /// how a password manager's cache daemon survives between renewals.
+    ///
+    /// The daemon redirects its output and signals before the command
+    /// prints, so it has let go of the pipe by the time the command exits.
+    /// Redirecting inline (`sleep 30 >/dev/null &`) leaves a window where
+    /// the forked child still holds the inherited pipe, and on a loaded
+    /// machine that outlasts the output grace and the group is stopped.
     #[cfg(unix)]
     #[test]
     fn a_detached_background_process_is_left_running() {
@@ -476,9 +482,12 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let pid_file = dir.path().join("daemon.pid");
+        let ready = dir.path().join("daemon.ready");
         let script = format!(
-            "sleep 30 >/dev/null 2>&1 & echo $! > '{}'; printf 123456",
-            pid_file.display()
+            "(exec >/dev/null 2>&1; : > '{ready}'; exec sleep 30) & echo $! > '{pid}'; \
+             while [ ! -e '{ready}' ]; do sleep 0.01; done; printf 123456",
+            ready = ready.display(),
+            pid = pid_file.display()
         );
 
         let code = run(&argv(&["sh", "-c", &script]), Duration::from_secs(5))
