@@ -109,6 +109,30 @@ verify() {
     fi
 }
 
+# Install the agent skill for the current user. Package managers cannot
+# reach a home directory, but this script runs as the user. Set
+# UNIFLY_NO_SKILL=1 to skip it.
+install_skill() {
+    BIN_PATH="${INSTALL_DIR}/${BINARY}"
+    if [ -n "$UNIFLY_NO_SKILL" ]; then
+        return
+    fi
+    # Releases before `unifly skill --install` cannot do this.
+    if ! "$BIN_PATH" skill --help 2>/dev/null | grep -q -- '--install'; then
+        return
+    fi
+    if [ "$(id -u)" = "0" ]; then
+        warn "Skipped the agent skill while running as root"
+        warn "Run 'unifly skill --install' as your own user to add it"
+        return
+    fi
+    if SKILL_STATUS=$("$BIN_PATH" skill --install 2>&1 >/dev/null); then
+        printf '%s\n' "$SKILL_STATUS" | while IFS= read -r line; do ok "$line"; done
+    else
+        warn "Could not install the agent skill; run 'unifly skill --install' to see why"
+    fi
+}
+
 # Main
 printf "\n${PURPLE}  unifly installer${RESET}\n\n"
 
@@ -117,6 +141,7 @@ get_latest_version
 choose_install_dir
 install
 verify
+install_skill
 
 printf "\n${CYAN}  Get started:${RESET}\n"
 printf "    unifly config init    # Set up your controller\n"

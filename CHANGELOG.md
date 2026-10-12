@@ -77,7 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unless `--force` is given. The installed path is printed on stdout.
   Homebrew and AUR install system-wide and cannot write into a home
   directory, so the formula's caveats and the AUR package's install message
-  point users at the command instead.
+  point users at the command instead. The `install.sh` and `install.ps1`
+  installers run as the user, so they install the skill themselves once the
+  binary supports it (skip with `UNIFLY_NO_SKILL=1`, or `-NoSkill` in
+  PowerShell); `install.sh` skips it when running as root.
 
 ### Security
 
