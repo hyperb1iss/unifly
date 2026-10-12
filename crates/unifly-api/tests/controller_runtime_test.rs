@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use url::Url;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_json, body_partial_json, header_regex, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use unifly_api::model::DnsPolicyType;
@@ -42,6 +42,7 @@ fn base_config(
         websocket_enabled,
         polling_interval_secs: 1,
         totp_token: None,
+        totp_provider: None,
         profile_name: None,
         no_session_cache: true,
     }
@@ -760,6 +761,164 @@ async fn legacy_401_with_cookie_jar_reports_session_expired() {
         matches!(raw, Err(Error::SessionExpired)),
         "expected SessionExpired for raw request, got: {raw:?}"
     );
+}
+
+// ── MFA session renewal ──────────────────────────────────────────────
+
+/// Mount a classic controller whose account has MFA. A login without a
+/// code gets the 499 challenge (`challenges` times in total); each listed
+/// code is accepted once and hands out its own session cookie, so a
+/// renewal is distinguishable from the connect login.
+async fn mock_mfa_legacy_controller(server: &MockServer, codes: &[(&str, &str)], challenges: u64) {
+    Mock::given(method("GET"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/auth/login"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
+    for (code, cookie) in codes {
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .and(body_partial_json(json!({ "ubic_2fa_token": code })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Set-Cookie", format!("unifly_session={cookie}; Path=/"))
+                    .set_body_json(json!({})),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(body_json(
+            json!({ "username": "admin", "password": "password" }),
+        ))
+        .respond_with(ResponseTemplate::new(499).set_body_json(json!({
+            "errors": ["ubic_2fa_token required"],
+            "token": "UBIC_2FA=challenge",
+        })))
+        .expect(challenges)
+        .mount(server)
+        .await;
+}
+
+/// A provider that hands out `codes` in order, then `None`, and counts how
+/// often it was asked.
+fn sequence_provider(
+    codes: &'static [&'static str],
+) -> (
+    unifly_api::TotpProvider,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let provider = unifly_api::TotpProvider::new(move || {
+        let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        codes.get(index).map(|code| secret(code))
+    });
+    (provider, calls)
+}
+
+fn mfa_config(server: &MockServer) -> ControllerConfig {
+    base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    )
+}
+
+/// A session opened with a fixed TOTP code must never log in again: the
+/// code is spent, and replaying it would fail on every attempt while
+/// presenting the correct password.
+#[tokio::test]
+async fn static_totp_session_does_not_relogin() {
+    let server = MockServer::start().await;
+    mock_mfa_legacy_controller(&server, &[("123456", "first")], 1).await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut config = mfa_config(&server);
+    config.totp_token = Some(secret("123456"));
+    let controller = Controller::new(config);
+    controller.connect_lightweight().await.unwrap();
+
+    controller
+        .raw_get("api/s/default/stat/health")
+        .await
+        .expect_err("an expired static-code MFA session stays expired");
+
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+/// With a provider and no fixed code, the connect login asks it for a code
+/// at the MFA challenge, and the re-login after an expiry asks it again
+/// for a fresh one instead of reusing the first.
+#[tokio::test]
+async fn provider_backed_mfa_session_renews_with_a_fresh_code() {
+    let server = MockServer::start().await;
+    mock_mfa_legacy_controller(&server, &[("111111", "first"), ("222222", "second")], 2).await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .and(header_regex("cookie", "unifly_session=first"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .and(header_regex("cookie", "unifly_session=second"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_legacy_envelope()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (provider, calls) = sequence_provider(&["111111", "222222"]);
+    let mut config = mfa_config(&server);
+    config.totp_provider = Some(provider);
+    let controller = Controller::new(config);
+    controller.connect_lightweight().await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let value = controller
+        .raw_get("api/s/default/stat/health")
+        .await
+        .expect("the expired MFA session renews with the provider's next code");
+    assert_eq!(value["meta"]["rc"], "ok");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+/// A provider may be slow or interactive (a password manager prompt), so a
+/// login the controller does not challenge must never run it.
+#[tokio::test]
+async fn totp_provider_is_not_run_without_an_mfa_challenge() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+
+    let (provider, calls) = sequence_provider(&["111111"]);
+    let mut config = mfa_config(&server);
+    config.totp_provider = Some(provider);
+    let controller = Controller::new(config);
+    controller.connect_lightweight().await.unwrap();
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    controller.disconnect().await;
 }
 
 #[tokio::test]

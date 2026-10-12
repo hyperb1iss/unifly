@@ -178,6 +178,7 @@ fn build_controller_direct(
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },
         totp_token,
+        totp_provider: None,
         profile_name: global.profile.clone(),
         no_session_cache: global.no_cache || is_cloud,
     };

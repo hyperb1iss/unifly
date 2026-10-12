@@ -237,6 +237,11 @@ pub struct Profile {
     ///
     /// Useful with 1Password CLI: `totp_env = "UNIFI_TOTP"` and
     /// `UNIFI_TOTP=$(op item get "UniFi" --otp) unifly ...`
+    ///
+    /// The variable is read once, at startup, and nothing outside the
+    /// process can change it afterwards, so the code serves the connect
+    /// login only. A session opened with it does not renew itself when the
+    /// cookie expires.
     pub totp_env: Option<String>,
 
     /// Path to custom CA certificate.
@@ -518,6 +523,8 @@ pub fn resolve_auth(profile: &Profile, profile_name: &str) -> Result<AuthCredent
 /// Resolve a TOTP token from the profile's `totp_env` field.
 ///
 /// Returns `None` if no `totp_env` is configured or the env var is unset.
+/// The result is a fixed code, never a `TotpProvider`: re-reading the same
+/// variable later would only return the spent code again.
 pub fn resolve_totp_token(profile: &Profile) -> Option<SecretString> {
     let env_name = profile.totp_env.as_deref()?;
     std::env::var(env_name).ok().map(SecretString::from)
@@ -578,6 +585,7 @@ pub fn profile_to_controller_config(
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },
         totp_token,
+        totp_provider: None,
         profile_name: Some(profile_name.to_owned()),
         no_session_cache: is_cloud,
     })

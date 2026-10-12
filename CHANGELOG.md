@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **MFA sessions can renew themselves when a fresh code is available.**
+  `unifly-api` gains `TotpProvider`, a closure that returns the current TOTP
+  code, set as `ControllerConfig::totp_provider` (or
+  `ReauthCredentials::totp_provider` on a bare `SessionClient`). The
+  automatic re-login after a cookie expiry asks it for a code on every
+  attempt. When it has none, returns something other than six digits, or
+  repeats the code the last login sent, no login is sent and the 30 s
+  cooldown applies, so a provider that cannot really produce fresh codes
+  never presents the password with a spent one. At connect it supplies the
+  code when `totp_token` is unset, and only if the controller actually
+  issues the MFA challenge, so a restored cached session never runs it. The
+  CLI and TUI do not set one: `--totp`, `UNIFI_TOTP`, and a profile's
+  `totp_env` are each read once at startup, so sessions opened with them
+  still do not renew.
+
 ### Security
 
 - **Settings output no longer leaks credentials.** `settings export`, and
@@ -43,11 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   another request already replaced retries on the new session instead of
   clearing it. Stale cookies are cleared before the re-login and a login that
   returns no new cookie is reported as a failure rather than silently
-  retried. Sessions opened with a TOTP code do not renew themselves, because
-  replaying a spent code would fail every attempt while still presenting the
-  correct password. The WebSocket reads its cookie from the session client on
-  every reconnect, and a server-side clean close now waits the initial
-  backoff instead of reconnecting immediately.
+  retried. A session opened with a fixed TOTP code does not renew itself,
+  because replaying a spent code would fail every attempt while still
+  presenting the correct password; MFA sessions renew only through a
+  `TotpProvider` (see Added). The WebSocket reads its cookie from the
+  session client on every reconnect, and a server-side clean close now
+  waits the initial backoff instead of reconnecting immediately.
 - **A failed fetch during refresh keeps the last known data.** Firewall
   policies, firewall zones, ACL rules, DNS policies, vouchers, NAT policies,
   firewall groups, and events come from optional endpoints. A timeout, 5xx,
@@ -124,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionClient::get_device_raw` when the full device record is needed.
   `WebSocketHandle::new` takes a `CookieProvider` closure instead of a fixed
   cookie string, and `SessionClient::enable_reauth` with `ReauthCredentials`
-  is new.
+  is new. `ControllerConfig` has a new `totp_provider` field, so struct
+  literals need `totp_provider: None` or `..Default::default()`.
 
 ## [0.10.0] - 2026-08-07
 

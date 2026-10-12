@@ -13,6 +13,7 @@ use secrecy::ExposeSecret;
 use crate::config::AuthCredentials;
 use crate::core_error::CoreError;
 use crate::session::ReauthCredentials;
+use crate::session::totp::TotpSource;
 use crate::websocket::DeviceSync;
 use crate::websocket::{CookieProvider, ReconnectConfig, WebSocketHandle};
 use crate::{IntegrationClient, SessionClient};
@@ -136,14 +137,13 @@ impl Controller {
                 )?;
 
                 let cache = build_session_cache(config);
+                let totp = connect_totp(config);
                 if let Some(ref cache) = cache {
                     client
-                        .login_with_cache(username, password, config.totp_token.as_ref(), cache)
+                        .login_with_cache_and_totp(username, password, totp, cache)
                         .await?;
                 } else {
-                    client
-                        .login(username, password, config.totp_token.as_ref())
-                        .await?;
+                    client.login_with_totp(username, password, totp).await?;
                 }
                 debug!("session authentication successful");
                 retain_reauth(&client, username, password, config, cache).await;
@@ -196,19 +196,13 @@ impl Controller {
                 match SessionClient::new(config.url.clone(), resolved.slug, platform, &transport) {
                     Ok(client) => {
                         let cache = build_session_cache(config);
+                        let totp = connect_totp(config);
                         let login_result = if let Some(ref cache) = cache {
                             client
-                                .login_with_cache(
-                                    username,
-                                    password,
-                                    config.totp_token.as_ref(),
-                                    cache,
-                                )
+                                .login_with_cache_and_totp(username, password, totp, cache)
                                 .await
                         } else {
-                            client
-                                .login(username, password, config.totp_token.as_ref())
-                                .await
+                            client.login_with_totp(username, password, totp).await
                         };
                         match login_result {
                             Ok(()) => {
@@ -487,10 +481,17 @@ impl Controller {
     }
 }
 
-/// Build a `SessionCache` if caching is enabled for this config.
+/// Where the connect-time login gets a TOTP code if the controller asks
+/// for one: the configured code, else the provider.
+fn connect_totp(config: &crate::config::ControllerConfig) -> TotpSource<'_> {
+    TotpSource::new(config.totp_token.as_ref(), config.totp_provider.as_ref())
+}
+
 /// Let a cookie session log in again on its own when it expires.
 ///
-/// Skipped for sessions opened with a TOTP code: the code is spent, and a
+/// An MFA re-login needs a code that is current at that moment, so it is
+/// handed the TOTP provider when there is one. A session opened with only
+/// a fixed TOTP code is not renewed at all: the code is spent, and a
 /// re-login that replays it fails on every attempt while presenting the
 /// correct password. See [`ReauthCredentials`].
 async fn retain_reauth(
@@ -500,7 +501,7 @@ async fn retain_reauth(
     config: &crate::config::ControllerConfig,
     cache: Option<crate::session::session_cache::SessionCache>,
 ) {
-    if config.totp_token.is_some() {
+    if config.totp_token.is_some() && config.totp_provider.is_none() {
         info!("MFA login: this session cannot renew itself when the cookie expires");
         return;
     }
@@ -508,11 +509,13 @@ async fn retain_reauth(
         .enable_reauth(ReauthCredentials {
             username: username.to_owned(),
             password: password.clone(),
+            totp_provider: config.totp_provider.clone(),
             cache,
         })
         .await;
 }
 
+/// Build a `SessionCache` if caching is enabled for this config.
 fn build_session_cache(
     config: &crate::config::ControllerConfig,
 ) -> Option<crate::session::session_cache::SessionCache> {

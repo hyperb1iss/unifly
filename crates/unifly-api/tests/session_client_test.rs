@@ -924,6 +924,7 @@ async fn expired_cookie_session_relogs_in_and_retries_once() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("pw".to_string()),
+            totp_provider: None,
             cache: None,
         })
         .await;
@@ -986,6 +987,7 @@ async fn failed_relogin_is_rate_limited() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("wrong".to_string()),
+            totp_provider: None,
             cache: None,
         })
         .await;
@@ -1021,6 +1023,7 @@ async fn relogin_with_cookie_jar_replaces_stale_cookie_and_retries() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("pw".to_string()),
+            totp_provider: None,
             cache: None,
         })
         .await;
@@ -1071,6 +1074,7 @@ async fn relogin_that_returns_no_cookie_is_treated_as_failure() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("pw".to_string()),
+            totp_provider: None,
             cache: None,
         })
         .await;
@@ -1094,5 +1098,148 @@ async fn relogin_that_returns_no_cookie_is_treated_as_failure() {
         .await
         .unwrap_err();
     assert!(matches!(error, Error::SessionExpired), "got {error:?}");
+    server.verify().await;
+}
+
+// ── MFA session re-authentication ───────────────────────────────────
+
+/// A provider that hands out `codes` in order, then `None`, and counts how
+/// often it was asked.
+fn sequence_provider(
+    codes: &'static [&'static str],
+) -> (
+    unifly_api::TotpProvider,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&calls);
+    let provider = unifly_api::TotpProvider::new(move || {
+        let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        codes
+            .get(index)
+            .map(|code| secrecy::SecretString::from((*code).to_owned()))
+    });
+    (provider, calls)
+}
+
+/// The 499 challenge a login without a code receives from an MFA account.
+fn mfa_challenge() -> ResponseTemplate {
+    ResponseTemplate::new(499).set_body_json(json!({
+        "errors": ["ubic_2fa_token required"],
+        "token": "UBIC_2FA=eyJhbGciOiJIUzI1NiJ9"
+    }))
+}
+
+#[tokio::test]
+async fn provider_backed_relogin_completes_the_mfa_challenge_with_a_fresh_code() {
+    let (server, client) = setup_with_stale_cookie().await;
+    let (provider, calls) = sequence_provider(&["654321"]);
+    client
+        .enable_reauth(unifly_api::session::ReauthCredentials {
+            username: "admin".into(),
+            password: secrecy::SecretString::from("pw".to_string()),
+            totp_provider: Some(provider),
+            cache: None,
+        })
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The second step carries the provider's code, not anything from before.
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(body_json(json!({
+            "username": "admin",
+            "password": "pw",
+            "ubic_2fa_token": "654321"
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("set-cookie", "TOKEN=fresh; Path=/")
+                .set_body_json(json!({"meta": {"rc": "ok"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(body_json(json!({"username": "admin", "password": "pw"})))
+        .respond_with(mfa_challenge())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .and(wiremock::matchers::header_regex("cookie", "TOKEN=fresh"))
+        .respond_with(health_ok())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let value = client.raw_get("api/s/default/stat/health").await.unwrap();
+    assert_eq!(value["meta"]["rc"], "ok");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    server.verify().await;
+}
+
+/// A provider that only ever returns the code the connect login used is a
+/// static code in disguise. Re-sending that spent code would fail while
+/// presenting the correct password, so no login may go out at all.
+#[tokio::test]
+async fn provider_repeating_the_spent_code_sends_no_login() {
+    let (server, client) = setup_with_jar().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(wiremock::matchers::body_string_contains("ubic_2fa_token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("set-cookie", "TOKEN=first; Path=/")
+                .set_body_json(json!({})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(mfa_challenge())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let password = secrecy::SecretString::from("pw".to_string());
+    let code = secrecy::SecretString::from("123456".to_string());
+    client
+        .login("admin", &password, Some(&code))
+        .await
+        .expect("connect-time MFA login succeeds");
+
+    let (provider, calls) = sequence_provider(&["123456"]);
+    client
+        .enable_reauth(unifly_api::session::ReauthCredentials {
+            username: "admin".into(),
+            password,
+            totp_provider: Some(provider),
+            cache: None,
+        })
+        .await;
+
+    let error = client
+        .raw_get("api/s/default/stat/health")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::SessionExpired), "got {error:?}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     server.verify().await;
 }

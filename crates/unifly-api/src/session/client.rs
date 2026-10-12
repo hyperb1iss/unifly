@@ -16,6 +16,7 @@ use url::Url;
 use crate::auth::ControllerPlatform;
 use crate::error::Error;
 use crate::session::models::SessionResponse;
+use crate::session::totp::{TotpProvider, is_totp_code};
 use crate::transport::TransportConfig;
 
 /// UniFi OS wraps some errors as `{"error":{"code":N,"message":"..."}}` with HTTP 200.
@@ -46,23 +47,29 @@ pub enum SessionAuth {
 /// Without this a long-running process (the TUI) silently loses every
 /// Session-backed feature roughly an hour in, when the cookie lapses.
 ///
-/// There is deliberately no TOTP field: a code is valid for one 30 s step,
-/// so replaying the one used at connect would fail every re-login while
-/// still presenting the correct password, which is how accounts get locked.
-/// MFA sessions therefore do not renew themselves.
+/// There is deliberately no field for a fixed TOTP code: a code is valid
+/// for one 30 s step, so replaying the one used at connect would fail every
+/// re-login while still presenting the correct password, which is how
+/// accounts get locked. An MFA session renews itself only through
+/// `totp_provider`, which is asked for a current code on every attempt.
 pub struct ReauthCredentials {
     pub username: String,
     pub password: secrecy::SecretString,
+    /// Source of a current TOTP code for each re-login, for accounts with
+    /// MFA. When set, an attempt for which it yields no usable code counts
+    /// as a failed attempt and sends no login at all.
+    pub totp_provider: Option<TotpProvider>,
     /// Session cache to refresh after a successful re-login, if enabled.
     pub cache: Option<super::session_cache::SessionCache>,
 }
 
 impl std::fmt::Debug for ReauthCredentials {
-    /// Hand-written so the password and TOTP token can never reach a log
-    /// line; only the username and whether a cache is attached are shown.
+    /// Hand-written so the password can never reach a log line; only the
+    /// username and which optional parts are attached are shown.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReauthCredentials")
             .field("username", &self.username)
+            .field("totp_provider", &self.totp_provider.is_some())
             .field("cache", &self.cache.is_some())
             .finish_non_exhaustive()
     }
@@ -102,6 +109,9 @@ pub struct SessionClient {
     /// it before it is sent, so a 401 that describes an already-replaced
     /// cookie can be told apart from a fresh expiry.
     session_generation: std::sync::atomic::AtomicU64,
+    /// The last TOTP code an MFA login sent. It is spent, so a re-login
+    /// refuses a provider that hands it back.
+    spent_totp: std::sync::Mutex<Option<secrecy::SecretString>>,
 }
 
 /// First ~200 bytes of a response body for error messages, never panicking
@@ -140,6 +150,7 @@ impl SessionClient {
             cookie_jar,
             reauth: tokio::sync::Mutex::default(),
             session_generation: std::sync::atomic::AtomicU64::new(0),
+            spent_totp: std::sync::Mutex::default(),
         })
     }
 
@@ -168,6 +179,7 @@ impl SessionClient {
             cookie_jar: None,
             reauth: tokio::sync::Mutex::default(),
             session_generation: std::sync::atomic::AtomicU64::new(0),
+            spent_totp: std::sync::Mutex::default(),
         }
     }
 
@@ -213,6 +225,51 @@ impl SessionClient {
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
+    /// Remember a TOTP code that a login has just sent.
+    pub(super) fn note_totp_spent(&self, code: &secrecy::SecretString) {
+        *self.spent_totp.lock().expect("TOTP lock poisoned") = Some(code.clone());
+    }
+
+    fn is_spent_totp(&self, code: &secrecy::SecretString) -> bool {
+        use secrecy::ExposeSecret;
+        self.spent_totp
+            .lock()
+            .expect("TOTP lock poisoned")
+            .as_ref()
+            .is_some_and(|spent| spent.expose_secret() == code.expose_secret())
+    }
+
+    /// Ask `provider` for a code to re-login with. Yields `None`, after a
+    /// warning, when it has no code, returns something that is not a code,
+    /// or repeats the code the last login sent, which is spent: sending any
+    /// of those would fail while presenting the correct password.
+    async fn reauth_totp(&self, provider: &TotpProvider) -> Option<secrecy::SecretString> {
+        use secrecy::ExposeSecret;
+        let retry_in_secs = REAUTH_COOLDOWN.as_secs();
+        let Some(code) = provider.fresh_code().await else {
+            warn!(
+                retry_in_secs,
+                "session expired but the TOTP provider gave no code"
+            );
+            return None;
+        };
+        if !is_totp_code(code.expose_secret()) {
+            warn!(
+                retry_in_secs,
+                "TOTP provider returned something other than 6 digits"
+            );
+            return None;
+        }
+        if self.is_spent_totp(&code) {
+            warn!(
+                retry_in_secs,
+                "TOTP provider repeated the code the last login used; waiting for a fresh one"
+            );
+            return None;
+        }
+        Some(code)
+    }
+
     /// Attempt a re-login on behalf of a request sent at `observed`
     /// generation. Serialised through a mutex so concurrent callers that hit
     /// the same expiry share one login; rate-limited after failure.
@@ -250,6 +307,17 @@ impl SessionClient {
         // and timing the windows from before it would let a slow login
         // expire its own cooldown.
         *last_attempt = Some(now);
+        // An MFA account gets its code before anything is sent: without
+        // one the login cannot complete, so it is not attempted at all.
+        let totp = if let Some(provider) = credentials.totp_provider.as_ref() {
+            let Some(code) = self.reauth_totp(provider).await else {
+                *last_attempt = Some(std::time::Instant::now());
+                return false;
+            };
+            Some(code)
+        } else {
+            None
+        };
         info!("session expired; re-authenticating");
         // Send the login without the dead cookie attached. UniFi OS treats
         // a request that still carries an expired TOKEN differently from a
@@ -259,7 +327,7 @@ impl SessionClient {
         let generation_before_login = self.session_generation();
         self.clear_session_cookies();
         match self
-            .login(&credentials.username, &credentials.password, None)
+            .login(&credentials.username, &credentials.password, totp.as_ref())
             .await
         {
             Ok(()) => {
@@ -893,7 +961,7 @@ impl SessionClient {
 mod tests {
     use url::Url;
 
-    use super::{ReauthCredentials, SessionAuth, SessionClient};
+    use super::{ReauthCredentials, SessionAuth, SessionClient, TotpProvider};
     use crate::{ControllerPlatform, Error};
 
     fn client(auth: SessionAuth) -> SessionClient {
@@ -945,6 +1013,7 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("pw".to_string()),
+                totp_provider: None,
                 cache: None,
             })
             .await;
@@ -1010,6 +1079,7 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("wrong".to_string()),
+                totp_provider: None,
                 cache: None,
             })
             .await;
@@ -1070,6 +1140,7 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("pw".to_string()),
+                totp_provider: None,
                 cache: None,
             })
             .await;
@@ -1123,6 +1194,7 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("pw".to_string()),
+                totp_provider: None,
                 cache: None,
             })
             .await;
@@ -1166,6 +1238,74 @@ mod tests {
         server.verify().await;
     }
 
+    /// A TOTP provider with no code to give means an MFA login cannot
+    /// complete, so no login is sent at all. The attempt still counts as a
+    /// failure: the cooldown keeps the next expired request from asking
+    /// the provider again straight away.
+    #[tokio::test]
+    async fn provider_without_a_code_sends_no_login_and_arms_the_cooldown() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        crate::transport::ensure_crypto_provider();
+        let server = MockServer::start().await;
+        let client = SessionClient::with_client(
+            reqwest::Client::new(),
+            Url::parse(&server.uri()).expect("mock server URL is valid"),
+            "default".into(),
+            ControllerPlatform::ClassicController,
+            SessionAuth::Cookie,
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        client
+            .enable_reauth(ReauthCredentials {
+                username: "admin".into(),
+                password: secrecy::SecretString::from("pw".to_string()),
+                totp_provider: Some(TotpProvider::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    None
+                })),
+                cache: None,
+            })
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/s/default/stat/health"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        for _ in 0..2 {
+            let error = client
+                .raw_get("api/s/default/stat/health")
+                .await
+                .expect_err("without a code the expiry surfaces");
+            assert!(matches!(error, Error::SessionExpired), "got {error:?}");
+        }
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "second expiry hit the cooldown"
+        );
+        assert!(
+            client.reauth.lock().await.last_attempt.is_some(),
+            "a provider with no code arms the cooldown"
+        );
+        server.verify().await;
+    }
+
     /// A state-changing request must never be replayed after an expiry. A
     /// 401 is normally raised before the controller dispatches the write,
     /// but the API makes no such guarantee, and a replayed POST would create
@@ -1189,6 +1329,7 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("pw".to_string()),
+                totp_provider: None,
                 cache: None,
             })
             .await;
