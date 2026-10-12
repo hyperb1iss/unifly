@@ -26,7 +26,6 @@ pub(super) struct ChannelOccupancy {
 }
 
 /// Identities of the selected table rows, see [`WifiScreen::selected_rows`].
-#[derive(Default)]
 pub(super) struct SelectedRows {
     ap: Option<EntityId>,
     client: Option<EntityId>,
@@ -87,14 +86,10 @@ impl WifiScreen {
                 self.sync_neighbor_selection();
             }
             Action::ClientsUpdated(clients) => {
-                // The first client list reorders the health-sorted AP table
-                // wholesale; the cursor keeps its row rather than chasing
-                // whichever AP happened to be on top before.
-                let selected = if self.clients.is_empty() {
-                    SelectedRows::default()
-                } else {
-                    self.selected_rows()
-                };
+                // Client health reorders the AP table too, so the AP
+                // selection follows its AP on every client snapshot,
+                // including the first; restart and locate act on it.
+                let selected = self.selected_rows();
                 self.clients = Arc::new(order::clients(clients));
                 self.follow_rows(&selected);
                 self.sync_client_selection();
