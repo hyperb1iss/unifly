@@ -14,10 +14,12 @@ use crate::transport::TlsMode;
 use super::parser::{UnifiEvent, parse_and_broadcast};
 use super::tls::build_tls_connector;
 
-/// Broadcast ring depth. Each slot pins an `Arc<UnifiEvent>` until every
-/// subscriber has read past it, so keep this small; a lagging consumer gets
-/// `RecvError::Lagged` rather than the ring growing.
-const EVENT_CHANNEL_CAPACITY: usize = 64;
+/// Broadcast ring depth. The parser sends every record of an envelope
+/// without yielding, so the ring must absorb a whole burst before the bridge
+/// task drains it. A slot only holds its event until the last subscriber has
+/// read it, which is why [`WebSocketHandle`] keeps the sender rather than an
+/// idle receiver that would pin every slot.
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// Exponential backoff configuration for WebSocket reconnection.
 #[derive(Debug, Clone)]

@@ -146,14 +146,7 @@ impl Controller {
                         .await?;
                 }
                 debug!("session authentication successful");
-                client
-                    .enable_reauth(ReauthCredentials {
-                        username: username.clone(),
-                        password: password.clone(),
-                        totp_token: config.totp_token.clone(),
-                        cache,
-                    })
-                    .await;
+                retain_reauth(&client, username, password, config, cache).await;
 
                 *self.inner.session_client.lock().await = Some(Arc::new(client));
             }
@@ -220,14 +213,7 @@ impl Controller {
                         match login_result {
                             Ok(()) => {
                                 debug!("session authentication successful (hybrid)");
-                                client
-                                    .enable_reauth(ReauthCredentials {
-                                        username: username.clone(),
-                                        password: password.clone(),
-                                        totp_token: config.totp_token.clone(),
-                                        cache,
-                                    })
-                                    .await;
+                                retain_reauth(&client, username, password, config, cache).await;
                                 *self.inner.session_client.lock().await = Some(Arc::new(client));
                             }
                             Err(e) => {
@@ -389,10 +375,11 @@ impl Controller {
         // to feed the dashboard chart without waiting for full_refresh().
         //
         // `device:sync` frames arrive several times a second per device.
-        // They are coalesced by MAC (latest frame wins) and applied under
-        // one mutation batch on a fixed cadence, so subscribers see at most
-        // one devices snapshot per `DEVICE_SYNC_FLUSH_INTERVAL` instead of
-        // a full snapshot rebuild per frame. `EVT_*` events stay immediate.
+        // They are coalesced by MAC (newer fields win, omitted fields are
+        // kept) and applied under one mutation batch on a fixed cadence, so
+        // subscribers see at most one devices snapshot per
+        // `DEVICE_SYNC_FLUSH_INTERVAL` instead of a full snapshot rebuild per
+        // frame. `EVT_*` events stay immediate.
         let mut ws_rx = handle.subscribe();
         let event_tx = self.inner.event_tx.clone();
         let store = Arc::clone(&self.inner.store);
@@ -424,7 +411,10 @@ impl Controller {
                                 if let Some(sync) = ws_event.device_sync.as_ref()
                                     && let Some(mac) = sync.mac.as_deref()
                                 {
-                                    pending_sync.insert(mac.to_ascii_lowercase(), sync.clone());
+                                    pending_sync
+                                        .entry(mac.to_ascii_lowercase())
+                                        .and_modify(|pending| pending.merge_newer(sync))
+                                        .or_insert_with(|| sync.clone());
                                 }
 
                                 if ws_event.key.starts_with("EVT_") {
@@ -498,6 +488,31 @@ impl Controller {
 }
 
 /// Build a `SessionCache` if caching is enabled for this config.
+/// Let a cookie session log in again on its own when it expires.
+///
+/// Skipped for sessions opened with a TOTP code: the code is spent, and a
+/// re-login that replays it fails on every attempt while presenting the
+/// correct password. See [`ReauthCredentials`].
+async fn retain_reauth(
+    client: &SessionClient,
+    username: &str,
+    password: &secrecy::SecretString,
+    config: &crate::config::ControllerConfig,
+    cache: Option<crate::session::session_cache::SessionCache>,
+) {
+    if config.totp_token.is_some() {
+        info!("MFA login: this session cannot renew itself when the cookie expires");
+        return;
+    }
+    client
+        .enable_reauth(ReauthCredentials {
+            username: username.to_owned(),
+            password: password.clone(),
+            cache,
+        })
+        .await;
+}
+
 fn build_session_cache(
     config: &crate::config::ControllerConfig,
 ) -> Option<crate::session::session_cache::SessionCache> {

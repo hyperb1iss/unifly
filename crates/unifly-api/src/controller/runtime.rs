@@ -49,12 +49,12 @@ pub(super) fn apply_device_sync(store: &DataStore, data: &DeviceSync) {
     let uplink = data.uplink.as_ref();
     let tx_bps = uplink
         .and_then(|u| u.tx_bytes_r.as_ref())
-        .or(data.tx_bytes_r.as_ref())
-        .and_then(NumOrStr::as_u64);
+        .and_then(NumOrStr::as_u64)
+        .or_else(|| data.tx_bytes_r.as_ref().and_then(NumOrStr::as_u64));
     let rx_bps = uplink
         .and_then(|u| u.rx_bytes_r.as_ref())
-        .or(data.rx_bytes_r.as_ref())
-        .and_then(NumOrStr::as_u64);
+        .and_then(NumOrStr::as_u64)
+        .or_else(|| data.rx_bytes_r.as_ref().and_then(NumOrStr::as_u64));
 
     let bandwidth = match (tx_bps, rx_bps) {
         (Some(tx), Some(rx)) if tx > 0 || rx > 0 => Some(crate::model::common::Bandwidth {

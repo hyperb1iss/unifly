@@ -7,15 +7,18 @@
 //! updates `Device.stats` in place under one snapshot publish, which is a
 //! handful of ~1 KB requests instead of the ~30-request, ~450 KB full pass.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::core_error::CoreError;
-use crate::model::Device;
+use crate::model::{Device, EntityId, MacAddress};
 
-use super::{Controller, integration};
+use super::super::REFRESH_DETAIL_CONCURRENCY;
+use super::Controller;
 
 /// Background loop: poll device statistics every `interval_secs` until cancelled.
 pub(in crate::controller) async fn stats_poll_task(
@@ -41,7 +44,8 @@ pub(in crate::controller) async fn stats_poll_task(
 }
 
 impl Controller {
-    /// Refresh only `Device.stats` for every device already in the store.
+    /// Refresh only `Device.stats` (and the radio stats derived from the
+    /// same response) for every device already in the store.
     ///
     /// No-op when the Integration client or site is not available (e.g. a
     /// session-only connection), because the WebSocket covers that case.
@@ -54,28 +58,56 @@ impl Controller {
         };
 
         let store = &self.inner.store;
-        let devices: Vec<Device> = store
+        let targets: Vec<(MacAddress, uuid::Uuid)> = store
             .devices_snapshot()
             .iter()
-            .map(|device| Device::clone(device))
+            .filter_map(|device| match &device.id {
+                EntityId::Uuid(id) => Some((device.mac.clone(), *id)),
+                EntityId::Legacy(_) => None,
+            })
             .collect();
-        if devices.is_empty() {
+        if targets.is_empty() {
             return Ok(());
         }
 
-        let count = devices.len();
-        let updated = integration::fetch_device_statistics(integration, site_id, devices).await;
+        let fetched: Vec<_> = stream::iter(targets.into_iter().map(|(mac, device_id)| {
+            let integration = Arc::clone(&integration);
+            async move {
+                match integration
+                    .get_device_statistics(&site_id, &device_id)
+                    .await
+                {
+                    Ok(stats) => Some((mac, stats)),
+                    Err(error) => {
+                        warn!(device = %mac, error = %error, "device stats poll failed");
+                        None
+                    }
+                }
+            }
+        }))
+        .buffer_unordered(REFRESH_DETAIL_CONCURRENCY)
+        .filter_map(std::future::ready)
+        .collect()
+        .await;
 
-        // Same key/id convention as the WebSocket `device:sync` path.
+        // Apply onto whatever the store holds now, not the snapshot taken
+        // before the requests went out: a full refresh may have landed in
+        // between, and its names, ports, and removals must win.
         let batch = store.devices.begin_batch();
-        for device in updated {
-            let key = device.mac.as_str().to_owned();
-            let id = device.id.clone();
-            store.devices.upsert(key, id, device);
+        for (mac, stats) in &fetched {
+            let Some(current) = store.device_by_mac(mac) else {
+                continue;
+            };
+            let mut device = Device::clone(&current);
+            device.stats = crate::convert::device_stats_from_integration(stats);
+            crate::convert::enrich_radios_from_stats(&mut device.radios, &stats.interfaces);
+            store
+                .devices
+                .upsert(mac.as_str().to_owned(), device.id.clone(), device);
         }
         drop(batch);
 
-        debug!(devices = count, "device statistics poll applied");
+        debug!(devices = fetched.len(), "device statistics poll applied");
         Ok(())
     }
 }

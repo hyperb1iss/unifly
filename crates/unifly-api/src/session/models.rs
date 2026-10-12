@@ -84,17 +84,27 @@ pub struct SessionDevice {
     #[serde(default)]
     pub ipv6: Option<serde_json::Value>,
     /// Physical port table (switches and gateways).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub port_table: Vec<SessionPortEntry>,
     /// Radio configuration rows (access points).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub radio_table: Vec<SessionRadioEntry>,
     /// Per-radio runtime statistics, keyed by the `radio` band token.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub radio_table_stats: Vec<SessionRadioStats>,
 }
 
-/// Uplink summary nested inside `SessionDevice`.
+/// Deserialize a list that the controller may send as `null` instead of
+/// omitting it. `#[serde(default)]` alone only covers a missing key, and a
+/// `null` table would otherwise fail the whole device record.
+fn null_as_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Deserialize a string that UniFi sometimes sends as a bare number
 /// (e.g. `"ht": 20` vs `"ht": "20"`). Non-scalar values become `None`.
 fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -183,6 +193,7 @@ fn lenient_u64_from_value(value: &serde_json::Value) -> Option<u64> {
     }
 }
 
+/// Uplink summary nested inside `SessionDevice`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionUplink {
     #[serde(default, deserialize_with = "lenient_string")]
@@ -496,6 +507,22 @@ pub struct ChannelAvailability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_device_treats_null_tables_as_empty() {
+        let json = serde_json::json!({
+            "_id": "abc",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "type": "usw",
+            "port_table": null,
+            "radio_table": null,
+            "radio_table_stats": null
+        });
+        let device: SessionDevice = serde_json::from_value(json).expect("null tables decode");
+        assert_eq!(device.port_table.len(), 0);
+        assert_eq!(device.radio_table.len(), 0);
+        assert_eq!(device.radio_table_stats.len(), 0);
+    }
 
     #[test]
     fn session_device_tolerates_auto_channel_and_string_numbers() {

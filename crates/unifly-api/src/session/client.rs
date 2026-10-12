@@ -45,10 +45,14 @@ pub enum SessionAuth {
 ///
 /// Without this a long-running process (the TUI) silently loses every
 /// Session-backed feature roughly an hour in, when the cookie lapses.
+///
+/// There is deliberately no TOTP field: a code is valid for one 30 s step,
+/// so replaying the one used at connect would fail every re-login while
+/// still presenting the correct password, which is how accounts get locked.
+/// MFA sessions therefore do not renew themselves.
 pub struct ReauthCredentials {
     pub username: String,
     pub password: secrecy::SecretString,
-    pub totp_token: Option<secrecy::SecretString>,
     /// Session cache to refresh after a successful re-login, if enabled.
     pub cache: Option<super::session_cache::SessionCache>,
 }
@@ -67,15 +71,11 @@ impl std::fmt::Debug for ReauthCredentials {
 /// Minimum spacing between re-login attempts after a failure, so a changed
 /// password cannot turn every refresh into a login storm.
 const REAUTH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
-/// A re-login this recent is treated as "already done" by concurrent
-/// callers that hit the same expiry (the refresh fans out seven requests).
-const REAUTH_FRESH: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Default)]
 struct ReauthSlot {
     credentials: Option<ReauthCredentials>,
     last_attempt: Option<std::time::Instant>,
-    last_success: Option<std::time::Instant>,
 }
 
 /// Raw HTTP client for the UniFi controller's session API.
@@ -98,6 +98,10 @@ pub struct SessionClient {
     cookie_jar: Option<Arc<Jar>>,
     /// Self-healing state: see [`ReauthCredentials`].
     reauth: tokio::sync::Mutex<ReauthSlot>,
+    /// Bumped on every successful re-login. A request records it before it
+    /// is sent, so a 401 that describes an already-replaced cookie can be
+    /// told apart from a fresh expiry.
+    session_generation: std::sync::atomic::AtomicU64,
 }
 
 /// First ~200 bytes of a response body for error messages, never panicking
@@ -135,6 +139,7 @@ impl SessionClient {
             csrf_token: RwLock::new(None),
             cookie_jar,
             reauth: tokio::sync::Mutex::default(),
+            session_generation: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -162,6 +167,7 @@ impl SessionClient {
             csrf_token: RwLock::new(None),
             cookie_jar: None,
             reauth: tokio::sync::Mutex::default(),
+            session_generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -187,15 +193,25 @@ impl SessionClient {
         F: Fn() -> Fut + Send + Sync,
         Fut: std::future::Future<Output = Result<T, Error>> + Send,
     {
+        let generation = self.session_generation();
         match op().await {
-            Err(Error::SessionExpired) if self.try_reauthenticate().await => op().await,
+            Err(Error::SessionExpired) if self.try_reauthenticate(generation).await => op().await,
             result => result,
         }
     }
 
-    /// Attempt a re-login. Serialised through a mutex so concurrent callers
-    /// that hit the same expiry share one login; rate-limited after failure.
-    async fn try_reauthenticate(&self) -> bool {
+    fn session_generation(&self) -> u64 {
+        self.session_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Attempt a re-login on behalf of a request sent at `observed`
+    /// generation. Serialised through a mutex so concurrent callers that hit
+    /// the same expiry share one login; rate-limited after failure.
+    ///
+    /// Returns `true` when the session is usable again, either because this
+    /// call logged in or because another caller already did after `observed`.
+    async fn try_reauthenticate(&self, observed: u64) -> bool {
         if self.auth != SessionAuth::Cookie {
             debug!("session expired on an API-key client; nothing to re-authenticate");
             return false;
@@ -204,16 +220,18 @@ impl SessionClient {
         let ReauthSlot {
             credentials,
             last_attempt,
-            last_success,
         } = &mut *slot;
         let Some(credentials) = credentials.as_ref() else {
             warn!("session expired but no credentials were retained for re-login");
             return false;
         };
-        let now = std::time::Instant::now();
-        if last_success.is_some_and(|at| now.duration_since(at) < REAUTH_FRESH) {
+        // The 401 came back for a cookie that has since been replaced. It
+        // says nothing about the new session, so retry on that instead of
+        // clearing a cookie that works.
+        if self.session_generation() != observed {
             return true;
         }
+        let now = std::time::Instant::now();
         if last_attempt.is_some_and(|at| now.duration_since(at) < REAUTH_COOLDOWN) {
             debug!("session expired; re-login attempted recently, not retrying yet");
             return false;
@@ -232,11 +250,7 @@ impl SessionClient {
         let stale = self.cookie_header();
         self.clear_session_cookies();
         match self
-            .login(
-                &credentials.username,
-                &credentials.password,
-                credentials.totp_token.as_ref(),
-            )
+            .login(&credentials.username, &credentials.password, None)
             .await
         {
             Ok(()) => {
@@ -258,7 +272,8 @@ impl SessionClient {
                 // the attempt timestamp set would block a genuine second
                 // expiry that lands inside the cooldown window.
                 *last_attempt = None;
-                *last_success = Some(std::time::Instant::now());
+                self.session_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 info!("session re-authenticated");
                 true
             }
@@ -282,9 +297,10 @@ impl SessionClient {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, Error>>,
     {
+        let generation = self.session_generation();
         match op().await {
             Err(Error::SessionExpired) => {
-                if self.try_reauthenticate().await {
+                if self.try_reauthenticate(generation).await {
                     warn!(
                         "session expired during a state-changing request; \
                          re-authenticated but did not replay it -- retry the operation"
@@ -891,16 +907,6 @@ mod tests {
         ));
     }
 
-    /// Rewind both re-auth timestamps, standing in for `secs` of elapsed
-    /// time. The cooldown reads `std::time::Instant`, which `tokio`'s paused
-    /// clock does not control, so the stored instants are moved instead.
-    async fn rewind_reauth_clock(client: &SessionClient, secs: u64) {
-        let delta = std::time::Duration::from_secs(secs);
-        let mut slot = client.reauth.lock().await;
-        slot.last_attempt = slot.last_attempt.and_then(|at| at.checked_sub(delta));
-        slot.last_success = slot.last_success.and_then(|at| at.checked_sub(delta));
-    }
-
     /// A second expiry shortly after a *successful* re-login must trigger
     /// another login. The cooldown is meant to throttle failed re-logins
     /// only; leaving `last_attempt` set after success locked the client out
@@ -923,7 +929,6 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("pw".to_string()),
-                totp_token: None,
                 cache: None,
             })
             .await;
@@ -957,9 +962,7 @@ mod tests {
             .await
             .expect("first call recovers via re-login");
 
-        // Six seconds on: past REAUTH_FRESH (5 s), inside REAUTH_COOLDOWN (30 s).
-        rewind_reauth_clock(&client, 6).await;
-
+        // Immediately after the first recovery, well inside REAUTH_COOLDOWN.
         client
             .raw_get("api/s/default/stat/health")
             .await
@@ -968,13 +971,11 @@ mod tests {
         server.verify().await;
     }
 
-    /// The re-auth windows must be timed from when a login *finished*, not
+    /// The failure cooldown must be timed from when a login *finished*, not
     /// from before it started. A login is a network round trip; timing from
-    /// the start lets a slow login hand back an already-stale `last_success`
-    /// (and, on the failure paths, an `last_attempt` that has already
-    /// outlived its own cooldown).
+    /// the start would let a slow failed login outlive its own cooldown.
     #[tokio::test]
-    async fn reauth_timestamps_are_taken_after_the_login_completes() {
+    async fn failed_relogin_cooldown_starts_after_the_login_completes() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -992,14 +993,67 @@ mod tests {
         client
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
-                password: secrecy::SecretString::from("pw".to_string()),
-                totp_token: None,
+                password: secrecy::SecretString::from("wrong".to_string()),
                 cache: None,
             })
             .await;
 
-        let ok =
-            || ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}}));
+        Mock::given(method("GET"))
+            .and(path("/api/s/default/stat/health"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .respond_with(ResponseTemplate::new(401).set_delay(LOGIN_LATENCY))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let before = std::time::Instant::now();
+        client
+            .raw_get("api/s/default/stat/health")
+            .await
+            .expect_err("a failed re-login surfaces the expiry");
+
+        let slot = client.reauth.lock().await;
+        let recorded = slot
+            .last_attempt
+            .expect("a failed re-login arms the cooldown");
+        assert!(
+            recorded.duration_since(before) >= LOGIN_LATENCY,
+            "last_attempt was stamped before the login finished: {:?} elapsed, \
+             login took at least {LOGIN_LATENCY:?}",
+            recorded.duration_since(before),
+        );
+    }
+
+    /// A 401 for a cookie that another caller has already replaced must not
+    /// clear the working cookie or start a second login. This is the late
+    /// response from a request that went out just before a re-login landed.
+    #[tokio::test]
+    async fn stale_expiry_after_a_renewal_reuses_the_new_session() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let transport = crate::transport::TransportConfig::default().with_cookie_jar();
+        let client = SessionClient::new(
+            Url::parse(&server.uri()).expect("mock server URL is valid"),
+            "default".into(),
+            ControllerPlatform::ClassicController,
+            &transport,
+        )
+        .expect("session client builds");
+        client
+            .enable_reauth(ReauthCredentials {
+                username: "admin".into(),
+                password: secrecy::SecretString::from("pw".to_string()),
+                cache: None,
+            })
+            .await;
+
         Mock::given(method("GET"))
             .and(path("/api/s/default/stat/health"))
             .respond_with(ResponseTemplate::new(401))
@@ -1009,33 +1063,34 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/s/default/stat/health"))
-            .respond_with(ok())
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}})),
+            )
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/api/login"))
-            .respond_with(ok().set_delay(LOGIN_LATENCY))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("set-cookie", "TOKEN=fresh; Path=/")
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}})),
+            )
             .expect(1)
             .mount(&server)
             .await;
 
-        let before = std::time::Instant::now();
+        let stale_generation = client.session_generation();
         client
             .raw_get("api/s/default/stat/health")
             .await
-            .expect("re-login recovers the request");
+            .expect("first expiry recovers via re-login");
 
-        let slot = client.reauth.lock().await;
-        let recorded = slot
-            .last_success
-            .expect("a successful re-login is recorded");
-        assert!(
-            recorded.duration_since(before) >= LOGIN_LATENCY,
-            "last_success was stamped before the login finished: {:?} elapsed, \
-             login took at least {LOGIN_LATENCY:?}",
-            recorded.duration_since(before),
-        );
+        // A request sent before that re-login now reports its 401.
+        assert!(client.try_reauthenticate(stale_generation).await);
+        assert_eq!(client.cookie_header().as_deref(), Some("TOKEN=fresh"));
+
+        server.verify().await;
     }
 
     /// A state-changing request must never be replayed after an expiry. A
@@ -1061,7 +1116,6 @@ mod tests {
             .enable_reauth(ReauthCredentials {
                 username: "admin".into(),
                 password: secrecy::SecretString::from("pw".to_string()),
-                totp_token: None,
                 cache: None,
             })
             .await;

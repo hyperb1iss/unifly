@@ -881,7 +881,6 @@ async fn expired_cookie_session_relogs_in_and_retries_once() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("pw".to_string()),
-            totp_token: None,
             cache: None,
         })
         .await;
@@ -944,7 +943,6 @@ async fn failed_relogin_is_rate_limited() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("wrong".to_string()),
-            totp_token: None,
             cache: None,
         })
         .await;
@@ -980,7 +978,6 @@ async fn relogin_with_cookie_jar_replaces_stale_cookie_and_retries() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("pw".to_string()),
-            totp_token: None,
             cache: None,
         })
         .await;
@@ -1031,7 +1028,6 @@ async fn relogin_that_returns_no_cookie_is_treated_as_failure() {
         .enable_reauth(unifly_api::session::ReauthCredentials {
             username: "admin".into(),
             password: secrecy::SecretString::from("pw".to_string()),
-            totp_token: None,
             cache: None,
         })
         .await;

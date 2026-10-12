@@ -147,7 +147,7 @@ async fn fetch_network_details(
 /// Fetch per-device statistics concurrently, keeping each device's existing
 /// fields and filling in only the stats. A device whose fetch fails is
 /// returned unchanged rather than dropped.
-pub(super) async fn fetch_device_statistics(
+async fn fetch_device_statistics(
     integration: Arc<IntegrationClient>,
     site_id: uuid::Uuid,
     devices: Vec<Device>,

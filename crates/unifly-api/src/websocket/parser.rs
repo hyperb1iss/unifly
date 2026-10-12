@@ -101,6 +101,57 @@ pub struct DeviceSyncWan {
     pub ipv6: Option<serde_json::Value>,
 }
 
+/// Overwrite each field of `target` that `newer` carries, keeping the rest.
+fn take_newer<T: Clone>(target: &mut Option<T>, newer: Option<&T>) {
+    if let Some(value) = newer {
+        *target = Some(value.clone());
+    }
+}
+
+impl DeviceSync {
+    /// Fold a later frame for the same device into this one. Frames can be
+    /// partial, so a field the newer frame omits keeps its earlier value
+    /// instead of being lost when several frames coalesce before a flush.
+    pub fn merge_newer(&mut self, newer: &Self) {
+        take_newer(&mut self.mac, newer.mac.as_ref());
+        match (&mut self.sys_stats, &newer.sys_stats) {
+            (Some(sys), Some(next)) => sys.merge_newer(next),
+            (slot, next) => take_newer(slot, next.as_ref()),
+        }
+        match (&mut self.uplink, &newer.uplink) {
+            (Some(uplink), Some(next)) => {
+                take_newer(&mut uplink.tx_bytes_r, next.tx_bytes_r.as_ref());
+                take_newer(&mut uplink.rx_bytes_r, next.rx_bytes_r.as_ref());
+            }
+            (slot, next) => take_newer(slot, next.as_ref()),
+        }
+        take_newer(&mut self.tx_bytes_r, newer.tx_bytes_r.as_ref());
+        take_newer(&mut self.rx_bytes_r, newer.rx_bytes_r.as_ref());
+        take_newer(
+            &mut self.underscore_uptime,
+            newer.underscore_uptime.as_ref(),
+        );
+        take_newer(&mut self.uptime, newer.uptime.as_ref());
+        take_newer(&mut self.num_sta, newer.num_sta.as_ref());
+        match (&mut self.wan1, &newer.wan1) {
+            (Some(wan), Some(next)) => take_newer(&mut wan.ipv6, next.ipv6.as_ref()),
+            (slot, next) => take_newer(slot, next.as_ref()),
+        }
+        take_newer(&mut self.ipv6, newer.ipv6.as_ref());
+    }
+}
+
+impl DeviceSyncSysStats {
+    fn merge_newer(&mut self, newer: &Self) {
+        take_newer(&mut self.cpu, newer.cpu.as_ref());
+        take_newer(&mut self.mem_used, newer.mem_used.as_ref());
+        take_newer(&mut self.mem_total, newer.mem_total.as_ref());
+        take_newer(&mut self.loadavg_1, newer.loadavg_1.as_ref());
+        take_newer(&mut self.loadavg_5, newer.loadavg_5.as_ref());
+        take_newer(&mut self.loadavg_15, newer.loadavg_15.as_ref());
+    }
+}
+
 /// A JSON number that some firmware versions encode as a string.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -289,6 +340,34 @@ mod tests {
         );
         let sync = event.device_sync.expect("typed sync stats");
         assert_eq!(sync.mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+    }
+
+    #[test]
+    fn device_sync_merge_keeps_fields_a_partial_frame_omits() {
+        let first = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "sys_stats": { "cpu": 40, "mem_used": 10, "mem_total": 100 },
+                "num_sta": 3
+            }),
+        );
+        let second = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "sys_stats": { "mem_used": 20 },
+                "num_sta": 5
+            }),
+        );
+        let mut merged = *first.device_sync.expect("first frame decodes");
+        merged.merge_newer(&second.device_sync.expect("second frame decodes"));
+
+        let sys = merged.sys_stats.expect("sys_stats survives the merge");
+        assert_eq!(sys.cpu.and_then(|v| v.as_f64()), Some(40.0));
+        assert_eq!(sys.mem_used.and_then(|v| v.as_f64()), Some(20.0));
+        assert_eq!(sys.mem_total.and_then(|v| v.as_f64()), Some(100.0));
+        assert_eq!(merged.num_sta.as_ref().and_then(NumOrStr::as_u64), Some(5));
     }
 
     #[test]
