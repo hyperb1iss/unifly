@@ -31,6 +31,15 @@ A truncation hint appears only when more matching entries exist than the
 limit. Hotspot, events, and alarms lists default to 100 and lack `--all`;
 client roams defaults to 50. Check each command's help for pagination.
 
+Lists built from the controller snapshot sort before filtering and paging,
+so every run and every output format agrees and consecutive `--offset`
+pages never overlap. Named entities sort case-insensitively by name
+(clients by alias, else hostname, then IP and MAC), with unnamed entries
+last. Firewall policies group by source then destination zone name and
+follow the evaluation `index` within each pair. ACL rules follow `index`
+and NAT rules `rule_index`. Events and hotspot vouchers list newest first.
+Lists fetched live from the controller keep its order.
+
 Local list filters accept one expression, with case-insensitive comparisons:
 
 ```text

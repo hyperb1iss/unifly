@@ -3,6 +3,7 @@
 mod access;
 mod filter;
 mod io;
+pub mod order;
 mod resolve;
 
 pub use access::{ensure_integration_access, ensure_session_access};

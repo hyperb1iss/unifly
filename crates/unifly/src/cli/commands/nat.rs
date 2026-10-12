@@ -219,9 +219,10 @@ fn handle_list(
     painter: &output::Painter,
 ) {
     let all = controller.nat_policies_snapshot();
-    let snapshot = util::apply_list_args(all.iter().cloned(), list, |policy, filter| {
-        util::matches_json_filter(policy, filter)
-    });
+    let snapshot =
+        util::apply_list_args(util::order::nat_policies(&all), list, |policy, filter| {
+            util::matches_json_filter(policy, filter)
+        });
     let out = output::render_list(
         &global.output,
         &snapshot,

@@ -49,13 +49,12 @@ pub async fn handle(
     match args.command {
         EventsCommand::List { limit, within } => {
             util::ensure_session_access(controller, "events list").await?;
-            let snap = controller.events_snapshot();
+            let snap = util::order::events(&controller.events_snapshot());
             let cutoff = Utc::now() - chrono::TimeDelta::hours(i64::from(within));
             let filtered: Vec<_> = snap
-                .iter()
+                .into_iter()
                 .filter(|e| e.timestamp >= cutoff)
                 .take(usize::try_from(limit).unwrap_or(usize::MAX))
-                .cloned()
                 .collect();
             let out = output::render_list(
                 &global.output,

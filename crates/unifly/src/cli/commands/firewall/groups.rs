@@ -91,9 +91,9 @@ pub(super) async fn handle(
             let all = controller.firewall_groups_snapshot();
             let type_filter = r#type.as_ref().map(map_group_type);
             let snapshot = util::apply_list_args(
-                all.iter()
-                    .filter(|g| type_filter.is_none_or(|t| g.group_type == t))
-                    .cloned(),
+                util::order::firewall_groups(&all)
+                    .into_iter()
+                    .filter(|g| type_filter.is_none_or(|t| g.group_type == t)),
                 &list,
                 util::matches_json_filter,
             );

@@ -109,8 +109,11 @@ pub(super) async fn handle(
 ) -> Result<(), CliError> {
     match cmd {
         FirewallPoliciesCommand::List(list) => {
-            let all = controller.firewall_policies_snapshot();
-            let snapshot = util::apply_list_args(all.iter().cloned(), &list, |policy, filter| {
+            let all = util::order::firewall_policies(
+                &controller.firewall_policies_snapshot(),
+                &controller.firewall_zones_snapshot(),
+            );
+            let snapshot = util::apply_list_args(all, &list, |policy, filter| {
                 util::matches_json_filter(policy, filter)
             });
             let out = output::render_list(

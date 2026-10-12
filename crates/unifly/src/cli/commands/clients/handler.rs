@@ -66,9 +66,10 @@ pub(super) async fn handle(
     match args.command {
         ClientsCommand::List(list) => {
             let all = controller.clients_snapshot();
-            let snapshot = util::apply_list_args(all.iter().cloned(), &list, |client, filter| {
-                util::matches_json_filter(client, filter)
-            });
+            let snapshot =
+                util::apply_list_args(util::order::clients(&all), &list, |client, filter| {
+                    util::matches_json_filter(client, filter)
+                });
             let out = output::render_list(
                 &global.output,
                 &snapshot,
@@ -81,11 +82,9 @@ pub(super) async fn handle(
 
         ClientsCommand::Find { query } => {
             let normalized_query = query.to_lowercase();
-            let matches: Vec<_> = controller
-                .clients_snapshot()
-                .iter()
+            let matches: Vec<_> = util::order::clients(&controller.clients_snapshot())
+                .into_iter()
                 .filter(|client| matches_find_query(client, &normalized_query))
-                .cloned()
                 .collect();
             if matches.is_empty() {
                 return Err(CliError::NotFound {

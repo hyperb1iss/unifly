@@ -1221,3 +1221,89 @@ fn test_demo_fleet_never_reads_the_config_file() {
         assert!(!combined_output(&output).contains("must-never-be-read"));
     }
 }
+
+// ── List ordering ───────────────────────────────────────────────────
+
+fn demo_ids(args: &[&str]) -> Vec<String> {
+    demo_json(args)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn test_demo_fleet_lists_come_out_in_the_same_order_every_run() {
+    for command in [
+        &["devices", "list", "--all"][..],
+        &["clients", "list", "--all"][..],
+        &["networks", "list", "--all"][..],
+        &["wifi", "list", "--all"][..],
+        &["firewall", "policies", "list", "--all"][..],
+        &["firewall", "zones", "list", "--all"][..],
+        &["nat", "policies", "list", "--all"][..],
+        &["acl", "list", "--all"][..],
+    ] {
+        let first = demo_ids(command);
+        assert!(!first.is_empty(), "{command:?} returned no rows");
+        for _ in 0..3 {
+            assert_eq!(demo_ids(command), first, "{command:?} reordered");
+        }
+    }
+}
+
+#[test]
+fn test_demo_fleet_pages_are_stable_and_disjoint() {
+    let all = demo_ids(&["clients", "list", "--all"]);
+    assert!(all.len() > 50, "fleet too small to page: {}", all.len());
+
+    let page = |offset: &str| demo_ids(&["clients", "list", "--limit", "25", "--offset", offset]);
+    let first = page("0");
+    let second = page("25");
+    assert_eq!(first.len(), 25);
+    assert_eq!(second.len(), 25);
+    assert!(first.iter().all(|id| !second.contains(id)), "pages overlap");
+    assert_eq!(
+        [first, second].concat(),
+        all[..50],
+        "pages must tile the full listing in order"
+    );
+}
+
+#[test]
+fn test_demo_fleet_firewall_policies_list_in_evaluation_order() {
+    let zones = demo_json(&["firewall", "zones", "list", "--all"]);
+    let zone_name = |id: &serde_json::Value| -> String {
+        zones
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|zone| zone["id"] == *id)
+            .and_then(|zone| zone["name"].as_str())
+            .unwrap_or_else(|| panic!("policy references unknown zone {id}"))
+            .to_lowercase()
+    };
+
+    let policies = demo_json(&["firewall", "policies", "list", "--all"]);
+    let keys: Vec<(String, String, i64)> = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|policy| {
+            (
+                zone_name(&policy["source"]["zone_id"]),
+                zone_name(&policy["destination"]["zone_id"]),
+                policy["index"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert!(keys.len() > 5, "too few policies: {keys:?}");
+
+    let mut expected = keys.clone();
+    expected.sort();
+    assert_eq!(
+        keys, expected,
+        "policies must group by zone pair and run by ascending index"
+    );
+}
