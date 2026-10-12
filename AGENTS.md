@@ -674,8 +674,11 @@ Check them by hand only when bumping the version outside `release.yml`.
   refresh snapshot fetches the v2 NAT inventory alongside the other
   session collections.
 - **Wire formats follow Ubiquiti's OpenAPI spec, not intuition**
-  (#26/#27). Port ranges are `start`/`stop` on the wire, never
-  `startPort`/`endPort` (that string appears nowhere in the spec). DNS
+  (#26/#27). The controller sends port ranges as `start`/`stop`, the
+  only shape in the spec (`startPort` appears nowhere in it), and reads
+  accept both. Writes still send `startPort`/`endPort`, the shape a live
+  UDM accepted in #18; the e2e Integration lane's firewall round trip is
+  the check that decides whether writes can move to `start`/`stop`. DNS
   record types are `*_RECORD` tokens (`A_RECORD`, not `A`). Integration
   list pages decode per-item so one unparseable record cannot blank a
   collection, and pagination advances by the server-reported count.
