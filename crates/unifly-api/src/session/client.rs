@@ -256,6 +256,7 @@ impl SessionClient {
         // clean login, and a stale cookie left in the jar would shadow the
         // new one.
         let stale = self.cookie_header();
+        let generation_before_login = self.session_generation();
         self.clear_session_cookies();
         match self
             .login(&credentials.username, &credentials.password, None)
@@ -269,6 +270,15 @@ impl SessionClient {
                         retry_in_secs = REAUTH_COOLDOWN.as_secs(),
                         "login succeeded but returned no new session cookie; \
                          re-authentication did not take"
+                    );
+                    // `login` already counted this as a new session. Take that
+                    // back so callers queued on this mutex do not read it as a
+                    // successful renewal; only our own bump is undone.
+                    let _ = self.session_generation.compare_exchange(
+                        generation_before_login + 1,
+                        generation_before_login,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
                     );
                     *last_attempt = Some(std::time::Instant::now());
                     return false;
@@ -1033,6 +1043,63 @@ mod tests {
              login took at least {LOGIN_LATENCY:?}",
             recorded.duration_since(before),
         );
+    }
+
+    /// A login that answers 200 but sets no new cookie is a failed renewal.
+    /// Requests queued behind it must see the failure, not a generation bump
+    /// that reads as "someone else already renewed".
+    #[tokio::test]
+    async fn cookieless_relogin_does_not_advance_the_generation() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let base_url = Url::parse(&server.uri()).expect("mock server URL is valid");
+        let transport = crate::transport::TransportConfig::default().with_cookie_jar();
+        if let Some(jar) = transport.cookie_jar.as_ref() {
+            jar.add_cookie_str("TOKEN=stale", &base_url);
+        }
+        let client = SessionClient::new(
+            base_url,
+            "default".into(),
+            ControllerPlatform::ClassicController,
+            &transport,
+        )
+        .expect("session client builds");
+        client
+            .enable_reauth(ReauthCredentials {
+                username: "admin".into(),
+                password: secrecy::SecretString::from("pw".to_string()),
+                cache: None,
+            })
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/s/default/stat/health"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        client
+            .raw_get("api/s/default/stat/health")
+            .await
+            .expect_err("a renewal without a cookie surfaces the expiry");
+
+        assert_eq!(client.session_generation(), 0);
+        // A request that was waiting on the same expiry now hits the
+        // cooldown instead of being told the session was renewed.
+        assert!(!client.try_reauthenticate(0).await);
+
+        server.verify().await;
     }
 
     /// A 401 for a cookie that another caller has already replaced must not
