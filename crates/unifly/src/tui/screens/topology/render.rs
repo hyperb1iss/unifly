@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unifly_api::DeviceType;
 
 use super::TopologyScreen;
-use super::layout::{LinkKind, MARGIN, TopoEdge, TopoNode, layout};
+use super::layout::{LinkKind, MARGIN, TopoEdge, TopoNode, fit_cells, layout};
 use crate::tui::theme;
 
 impl TopologyScreen {
@@ -117,6 +117,17 @@ fn node_color(node: &TopoNode) -> Color {
     }
 }
 
+/// Cells available for text inside a box: its width less one padding cell
+/// on each side.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn inner_cells(box_width: f64) -> usize {
+    (box_width - 2.0).max(0.0).floor() as usize
+}
+
 /// Layout rows grow down; canvas `y` grows up.
 fn up(y: f64) -> f64 {
     -y
@@ -132,18 +143,21 @@ fn draw_node(ctx: &mut Context<'_>, node: &TopoNode) {
         color,
     });
 
+    // Boxes are sized to their text, so clipping to the inner width only
+    // matters as a guard: a label must never spill into a sibling's box.
     let (label_x, _) = node.label_span();
+    let inner = inner_cells(node.width);
     ctx.print(
         label_x,
         up(node.y + 1.0),
-        Span::styled(node.label.clone(), Style::default().fg(color)),
+        Span::styled(fit_cells(&node.label, inner), Style::default().fg(color)),
     );
     if !node.ip.is_empty() {
         ctx.print(
             label_x,
             up(node.y + 2.0),
             Span::styled(
-                node.ip.clone(),
+                fit_cells(&node.ip, inner),
                 Style::default().fg(theme::text_secondary()),
             ),
         );

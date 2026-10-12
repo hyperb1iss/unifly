@@ -49,8 +49,31 @@ impl TopoNode {
 
     /// Where the label starts, and how many cells it takes.
     pub(super) fn label_span(&self) -> (f64, usize) {
-        (self.x + 1.0, self.label.chars().count())
+        (self.x + 1.0, cell_width(&self.label))
     }
+}
+
+/// Width of `text` in terminal cells. Wide characters (CJK, most emoji)
+/// take two cells, so a character count would under-size boxes for them.
+pub(super) fn cell_width(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// `text` cut to at most `max` terminal cells, never splitting a wide
+/// character across the limit.
+pub(super) fn fit_cells(text: &str, max: usize) -> String {
+    let mut fitted = String::new();
+    let mut used = 0;
+    let mut buf = [0u8; 4];
+    for ch in text.chars() {
+        let width = cell_width(ch.encode_utf8(&mut buf));
+        if used + width > max {
+            break;
+        }
+        used += width;
+        fitted.push(ch);
+    }
+    fitted
 }
 
 /// How a device reaches its parent.

@@ -372,3 +372,101 @@ fn every_name_survives_rendering_at_80_columns() {
         );
     }
 }
+
+/// A gateway with four access points whose names are wide CJK characters,
+/// two terminal cells each, as UniFi device names can be in any language.
+fn wide_siblings() -> Vec<Arc<Device>> {
+    let names = [
+        "会議室アクセス点",
+        "東側ギャラリー点",
+        "屋上デッキ無線点",
+        "編集室アクセス点",
+    ];
+    let mut devices = vec![device(
+        "gw-harbor",
+        "00:00:00:00:00:01",
+        "Gateway",
+        None,
+        None,
+    )];
+    for (index, name) in names.iter().enumerate() {
+        let mac = format!("00:00:00:00:02:{index:02}");
+        let port = u32::try_from(index + 1).ok();
+        devices.push(device(
+            name,
+            &mac,
+            "AccessPoint",
+            Some("00:00:00:00:00:01"),
+            port,
+        ));
+    }
+    devices
+}
+
+#[test]
+fn wide_names_get_boxes_measured_in_cells() {
+    let layout = layout(&wide_siblings(), 80.0);
+    for node in &layout.nodes {
+        let (start, cells) = node.label_span();
+        assert!(
+            start + f64::from(u32::try_from(cells).unwrap_or(u32::MAX)) < node.x + node.width,
+            "{} spills out of its box",
+            node.label
+        );
+    }
+    for (index, left) in layout.nodes.iter().enumerate() {
+        for right in layout.nodes.iter().skip(index + 1) {
+            let same_band = left.y < right.bottom() && right.y < left.bottom();
+            let apart = left.x + left.width < right.x || right.x + right.width < left.x;
+            assert!(
+                !same_band || apart,
+                "{} and {} overlap",
+                left.label,
+                right.label
+            );
+        }
+    }
+}
+
+#[test]
+fn wide_names_survive_rendering_at_80_columns() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut screen = super::super::TopologyScreen::new();
+    screen.devices = Arc::new(wide_siblings());
+    let mut terminal = Terminal::new(TestBackend::new(80, 40)).expect("test terminal");
+    terminal
+        .draw(|frame| screen.render_screen(frame, frame.area()))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    // A wide character covers two cells and a terminal draws nothing in the
+    // second one, so skip it to rebuild the text as it reads on screen.
+    let text: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            let mut row = String::new();
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                row.push_str(symbol);
+                x += if super::cell_width(symbol) == 2 { 2 } else { 1 };
+            }
+            row
+        })
+        .collect();
+    for device in wide_siblings() {
+        let name = device.name.clone().unwrap_or_default();
+        assert!(
+            text.iter().any(|row| row.contains(&name)),
+            "{name} is not drawn whole:\n{}",
+            text.join("\n")
+        );
+    }
+}
+
+#[test]
+fn fit_cells_never_splits_a_wide_character() {
+    assert_eq!(super::fit_cells("会議室", 5), "会議");
+    assert_eq!(super::fit_cells("ap-roof", 4), "ap-r");
+    assert_eq!(super::fit_cells("ap", 10), "ap");
+}

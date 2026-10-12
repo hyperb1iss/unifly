@@ -29,7 +29,7 @@ const MIN_BOX: usize = 8;
 /// Box width in cells: the longer of name and address plus a cell of
 /// padding on each side.
 pub(super) fn box_width(label: &str, ip: &str) -> f64 {
-    let cells = label.chars().count().max(ip.chars().count()) + 2;
+    let cells = super::cell_width(label).max(super::cell_width(ip)) + 2;
     cells_f64(cells.max(MIN_BOX))
 }
 
