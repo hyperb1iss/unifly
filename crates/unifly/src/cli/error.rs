@@ -89,6 +89,22 @@ pub enum CliError {
         list_command: String,
     },
 
+    #[error("{resource_type} '{identifier}' is ambiguous ({count} matches)")]
+    #[diagnostic(
+        code(unifi::ambiguous),
+        help(
+            "Candidates:\n{candidates}\n\
+             Pass the ID of the one you mean, or run: unifly {list_command}"
+        )
+    )]
+    Ambiguous {
+        resource_type: String,
+        identifier: String,
+        count: usize,
+        candidates: String,
+        list_command: String,
+    },
+
     #[error("{resource_type} '{identifier}' already exists")]
     #[diagnostic(code(unifi::conflict))]
     Conflict {
@@ -251,7 +267,8 @@ impl CliError {
             Self::Timeout { .. } => exit_code::TIMEOUT,
             Self::Validation { .. }
             | Self::NonInteractiveRequiresYes { .. }
-            | Self::SiteAmbiguous { .. } => exit_code::USAGE,
+            | Self::SiteAmbiguous { .. }
+            | Self::Ambiguous { .. } => exit_code::USAGE,
             Self::Unsupported { .. }
             | Self::NotYetImplemented { .. }
             | Self::DemoUnavailable { .. } => exit_code::PERMISSION,

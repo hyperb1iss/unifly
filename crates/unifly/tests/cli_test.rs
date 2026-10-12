@@ -1152,6 +1152,40 @@ fn test_demo_fleet_refuses_commands_it_cannot_answer() {
     }
 }
 
+#[test]
+fn test_demo_fleet_devices_get_accepts_name_ip_and_any_mac_spelling() {
+    let roof = demo_json(&["devices", "get", "ap-roof"]);
+    assert_eq!(roof["name"], "ap-roof");
+    let id = roof["id"].as_str().unwrap();
+    let ip = roof["ip"].as_str().unwrap();
+    let mac = roof["mac"].as_str().unwrap();
+    let dashed_upper = mac.replace(':', "-").to_uppercase();
+    let bare = mac.replace(':', "");
+    let dotted = format!("{}.{}.{}", &bare[..4], &bare[4..8], &bare[8..]);
+    for needle in [id, "AP-Roof", ip, dashed_upper.as_str(), dotted.as_str()] {
+        let found = demo_json(&["devices", "get", needle]);
+        assert_eq!(found["id"], roof["id"], "{needle} resolved elsewhere");
+    }
+}
+
+#[test]
+fn test_demo_fleet_devices_get_miss_points_at_devices_list() {
+    unifly_cmd()
+        .args([
+            "--demo-fleet",
+            "devices",
+            "get",
+            "ap-attic",
+            "--color",
+            "never",
+        ])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("device 'ap-attic' not found"))
+        .stderr(predicate::str::contains("unifly devices list"));
+}
+
 /// The config file holds profiles and possibly plaintext secrets, so the
 /// demo fleet must never read it. A poisoned config sets a theme; if fleet
 /// mode read it, colored table output would change.

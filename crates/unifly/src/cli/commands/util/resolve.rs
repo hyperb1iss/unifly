@@ -1,55 +1,47 @@
-use unifly_api::{Controller, EntityId, MacAddress};
+//! Device and client resolution against the controller snapshot.
+//!
+//! Every command that targets one device or client goes through these, so
+//! all of them accept the same identifiers: ID, name (or client hostname),
+//! IP, or MAC in any common spelling. See [`super::lookup`].
 
+use std::sync::Arc;
+
+use unifly_api::{Client, Controller, Device, EntityId, MacAddress};
+
+use super::lookup;
 use crate::cli::error::CliError;
 
-pub fn resolve_device_id(controller: &Controller, identifier: &str) -> Result<EntityId, CliError> {
+/// The adopted device `identifier` names.
+pub fn resolve_device(controller: &Controller, identifier: &str) -> Result<Arc<Device>, CliError> {
     let snapshot = controller.devices_snapshot();
-    for device in snapshot.iter() {
-        if device.id.to_string() == identifier || device.mac.to_string() == identifier {
-            return Ok(device.id.clone());
-        }
-    }
-
-    Err(CliError::NotFound {
-        resource_type: "device".into(),
-        identifier: identifier.into(),
-        list_command: "devices list".into(),
-    })
+    lookup::resolve(snapshot.as_slice(), identifier).map(Arc::clone)
 }
 
+pub fn resolve_device_id(controller: &Controller, identifier: &str) -> Result<EntityId, CliError> {
+    resolve_device(controller, identifier).map(|device| device.id.clone())
+}
+
+/// The MAC of the device `identifier` names. A well-formed MAC absent from
+/// the snapshot passes through, so MAC-addressed Session commands can still
+/// reach a device the snapshot does not hold.
 pub fn resolve_device_mac(
     controller: &Controller,
     identifier: &str,
 ) -> Result<MacAddress, CliError> {
     let snapshot = controller.devices_snapshot();
-    for device in snapshot.iter() {
-        if device.id.to_string() == identifier || device.mac.to_string() == identifier {
-            return Ok(device.mac.clone());
-        }
+    if let Some(device) = lookup::lookup(snapshot.as_slice(), identifier)? {
+        return Ok(device.mac.clone());
     }
-
     identifier
+        .trim()
         .parse::<MacAddress>()
-        .map_err(|_| CliError::Validation {
-            field: "device".into(),
-            reason: "expected a device UUID from the snapshot or a valid MAC address".into(),
-        })
+        .map_err(|_| lookup::not_found::<Device>(identifier))
 }
 
-#[allow(dead_code)]
-pub fn resolve_client_id(controller: &Controller, identifier: &str) -> Result<EntityId, CliError> {
+/// The client `identifier` names in the current snapshot.
+pub fn resolve_client(controller: &Controller, identifier: &str) -> Result<Arc<Client>, CliError> {
     let snapshot = controller.clients_snapshot();
-    for client in snapshot.iter() {
-        if client.id.to_string() == identifier || client.mac.to_string() == identifier {
-            return Ok(client.id.clone());
-        }
-    }
-
-    Err(CliError::NotFound {
-        resource_type: "client".into(),
-        identifier: identifier.into(),
-        list_command: "clients list".into(),
-    })
+    lookup::resolve(snapshot.as_slice(), identifier).map(Arc::clone)
 }
 
 #[cfg(test)]
@@ -60,21 +52,28 @@ mod tests {
     #[test]
     fn resolve_device_mac_accepts_valid_fallback_mac() {
         let controller = Controller::new(ControllerConfig::default());
-        match resolve_device_mac(&controller, "AABBCCDDEEFF") {
-            Ok(mac) => assert_eq!(mac.as_str(), "aa:bb:cc:dd:ee:ff"),
-            Err(error) => panic!("expected valid MAC fallback, got {error:?}"),
+        for spelling in ["AABBCCDDEEFF", "AA-BB-CC-DD-EE-FF", "aabb.ccdd.eeff"] {
+            match resolve_device_mac(&controller, spelling) {
+                Ok(mac) => assert_eq!(mac.as_str(), "aa:bb:cc:dd:ee:ff"),
+                Err(error) => panic!("expected valid MAC fallback, got {error:?}"),
+            }
         }
     }
 
     #[test]
-    fn resolve_device_mac_rejects_invalid_fallback_identifier() {
+    fn resolve_device_mac_reports_unknown_identifiers_as_not_found() {
         let controller = Controller::new(ControllerConfig::default());
         match resolve_device_mac(&controller, "definitely-not-a-mac") {
-            Err(crate::cli::error::CliError::Validation { field, .. }) => {
-                assert_eq!(field, "device");
+            Err(crate::cli::error::CliError::NotFound {
+                resource_type,
+                list_command,
+                ..
+            }) => {
+                assert_eq!(resource_type, "device");
+                assert_eq!(list_command, "devices list");
             }
-            Ok(mac) => panic!("expected validation error, got {mac:?}"),
-            Err(other) => panic!("expected validation error, got {other:?}"),
+            Ok(mac) => panic!("expected not found, got {mac:?}"),
+            Err(other) => panic!("expected not found, got {other:?}"),
         }
     }
 }
