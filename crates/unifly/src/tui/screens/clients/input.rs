@@ -59,6 +59,12 @@ impl ClientsScreen {
             Action::ClientsUpdated(clients) => {
                 self.apply_clients_update(clients);
             }
+            Action::DevicesUpdated(devices) => {
+                self.devices = std::sync::Arc::clone(devices);
+            }
+            Action::NetworksUpdated(networks) => {
+                self.networks = std::sync::Arc::clone(networks);
+            }
             Action::FilterClientType(filter) => {
                 self.filter = *filter;
                 self.reconcile_selection_after_view_change(true);

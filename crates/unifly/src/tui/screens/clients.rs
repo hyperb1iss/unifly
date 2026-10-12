@@ -1,6 +1,7 @@
 //! Clients screen - client table with type filters.
 
 mod input;
+mod labels;
 mod render;
 mod state;
 
@@ -13,7 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc::UnboundedSender;
 
-use unifly_api::{Client, EntityId};
+use unifly_api::{Client, Device, EntityId, Network};
 
 use crate::tui::action::{Action, ClientTypeFilter};
 use crate::tui::component::Component;
@@ -22,6 +23,9 @@ pub struct ClientsScreen {
     focused: bool,
     action_tx: Option<UnboundedSender<Action>>,
     clients: Arc<Vec<Arc<Client>>>,
+    /// Devices and networks, for each client's uplink and network labels.
+    devices: Arc<Vec<Arc<Device>>>,
+    networks: Arc<Vec<Arc<Network>>>,
     table_state: TableState,
     filter: ClientTypeFilter,
     search_query: String,
