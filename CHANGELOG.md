@@ -22,11 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the write but nothing in the API contract guarantees it, and a replayed
   `POST` would create a second record or repeat a device command. Failed
   re-logins are rate-limited to one per 30 s, and a successful one clears
-  that cooldown so a later expiry is not blocked by it. Stale cookies are
-  cleared before the re-login and a login that returns no new cookie is
-  reported as a failure rather than silently retried. The WebSocket reads its
-  cookie from the session client on every reconnect, and a server-side clean
-  close now waits the initial backoff instead of reconnecting immediately.
+  that cooldown so a later expiry is not blocked by it. Each request records
+  the session generation it was sent under, so a late 401 for a cookie that
+  another request already replaced retries on the new session instead of
+  clearing it. Stale cookies are cleared before the re-login and a login that
+  returns no new cookie is reported as a failure rather than silently
+  retried. Sessions opened with a TOTP code do not renew themselves, because
+  replaying a spent code would fail every attempt while still presenting the
+  correct password. The WebSocket reads its cookie from the session client on
+  every reconnect, and a server-side clean close now waits the initial
+  backoff instead of reconnecting immediately.
 
 ### Performance
 
@@ -39,9 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     for CLI commands, instead of tokio's one-per-core default. Refresh
     cadence is unchanged.
   - `polling_interval_secs` is now honoured: when no WebSocket is available
-    (API-key or cloud auth) the controller polls only per-device statistics
-    from the Integration API rather than nothing at all. Previously the
-    setting was unused.
+    (API-key or cloud auth) and it is shorter than the full refresh, the
+    controller polls only per-device statistics from the Integration API in
+    between. Results are applied onto the current store records, so a full
+    refresh that lands mid-poll keeps its names, ports, and removals.
+    Previously the setting was unused.
   - WebSocket `device:sync` decode failures are logged (once at warn) instead
     of silently disabling live stats; all numeric fields accept number or
     string encodings.
@@ -49,8 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     carry typed fields instead of a `#[serde(flatten)]` catch-all map; the
     switch-port commands fetch the raw record on demand.
   - WebSocket `device:sync` frames are parsed into a typed `DeviceSync`
-    instead of retaining the raw JSON, coalesced into one store snapshot per
-    second, and the event ring shrank from 1024 to 64 slots.
+    instead of retaining the raw JSON and coalesced into one store snapshot
+    per second, merging partial frames field by field. `WebSocketHandle` no
+    longer holds an idle broadcast receiver, which had kept every one of the
+    ring's 1024 slots (each a full device record) alive indefinitely.
+  - Session list responses decode per record: a record with an unexpected
+    shape is skipped with a warning instead of failing the whole collection.
   - Session bodies decode from bytes without an intermediate UTF-8 `String`.
   - Dashboard traffic chart records one real sample per second (was four,
     with exponential smoothing interpolating between controller updates that
@@ -66,6 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `tracing-subscriber/json` feature). Stripped x86_64 binary: 22.0 MB → 18.2 MB.
   A new `release-small` cargo profile (`opt-level = "s"`) builds a 13.0 MB
   binary for low-power hosts at ~5% more TUI CPU.
+
+### Changed
+
+- **`unifly-api` breaking changes.** `SessionDevice`, `SessionClientEntry`,
+  and `SessionUserEntry` no longer carry a flattened `extra` map; use
+  `SessionClient::get_device_raw` when the full device record is needed.
+  `WebSocketHandle::new` takes a `CookieProvider` closure instead of a fixed
+  cookie string, and `SessionClient::enable_reauth` with `ReauthCredentials`
+  is new.
 
 
 ### Added
