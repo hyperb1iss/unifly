@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Synthetic demo fleet for screenshots and recordings.**
+  `unifly tui --demo-fleet` runs the real TUI against an offline, fictional
+  network with no controller, credentials, or network access: "Neon Harbor
+  Studios", with a UDM Pro Max gateway, three switches, nine access points,
+  about 140 clients on six VLANs and four SSIDs, a zone-based firewall, NAT,
+  ACLs, and a week of events. A once-a-second simulation keeps WAN traffic
+  (with render-upload and asset-sync bursts), device telemetry, client roams
+  and arrivals, and security events moving, and the on-demand queries behind
+  the Stats and WiFi screens answer from the same fleet. The same
+  `--demo-seed` replays the same fleet and the same animation, so a shot can
+  be retaken identically. Device actions (restart, locate, upgrade,
+  PoE power cycle) and client actions (block, unblock, kick) play out in the
+  simulation; configuration changes are refused with a clear error. Plain
+  `--demo` still sanitizes a real controller, and now falls back to the demo
+  fleet when no controller is configured instead of opening onboarding.
+  Library users get the same fleet from `Controller::demo` behind the new
+  `demo` feature of `unifly-api`.
+
 ### Security
 
 - **Settings output no longer leaks credentials.** `settings export`, and
@@ -71,6 +91,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   WAN IPv6, uplink, ports, and radios, so the TUI flickered to blanks. Those
   fields now carry over from the last good refresh, and anything the
   Integration API reports itself still wins.
+
+- **The Firewall screen's NAT tab was always empty.** NAT policy updates
+  reached the TUI but were never handed to the screens, so the tab stayed
+  blank on every controller.
+
+- **Stats time axis.** `stat/report` rows carry `time` in milliseconds and
+  the Stats screen plotted them as seconds, so the axis showed unrelated
+  clock times. Timestamps are converted before plotting.
+
+- **Event backlog order.** Events loaded at connect now reach the Events
+  screen and the dashboard oldest first; the store's unordered snapshot used
+  to arrive in arbitrary order.
 
 ### Performance
 

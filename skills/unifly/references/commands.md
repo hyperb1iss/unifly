@@ -693,8 +693,13 @@ unifly cloud sdwan status <id>
 
 - `unifly topology`: Pretty-print the gateway > switch > AP > client tree
   (Hybrid recommended for complete uplink data).
-- `unifly tui [--theme NAME] [--log-file PATH]`: Launches the Ratatui
-  dashboard. `UNIFLY_THEME` env var also sets the theme.
+- `unifly tui [--theme NAME] [--log-file PATH] [--demo-fleet] [--demo-seed N]`:
+  Launches the Ratatui dashboard. `UNIFLY_THEME` env var also sets the
+  theme. `--demo-fleet` runs against a synthetic offline fleet (no
+  controller, credentials, or network); the same `--demo-seed` replays the
+  same fleet and animation. Plain `--demo` sanitizes a real controller and
+  falls back to the demo fleet when none is configured. The demo fleet is
+  TUI-only; CLI commands still need a controller.
 - `unifly completions bash|zsh|fish|powershell|elvish`: Emit completion
   script to stdout.
 - `unifly config init | cloud-setup | show | set | profiles | use | set-password | theme`:

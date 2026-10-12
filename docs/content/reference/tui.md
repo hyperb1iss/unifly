@@ -13,6 +13,7 @@ unifly tui                   # Launch with default profile
 unifly tui -p office         # Use a specific profile
 unifly tui -k                # Accept self-signed TLS certs
 unifly tui -v                # Verbose logging to temp directory
+unifly tui --demo-fleet      # Synthetic offline fleet, no controller needed
 ```
 
 ## Screens
@@ -143,6 +144,30 @@ Cloud mode's Devices screen lists device data through the connector but the mana
 ## Graceful Degradation
 
 When data is unavailable (e.g., API-key-only mode without Session access), panels show placeholder lines instead of crashing. The dashboard adapts to whatever data sources are available. Missing data is indicated with dim placeholder text.
+
+## Demo Mode
+
+Two flags make the TUI safe to show on screen.
+
+`--demo` (or `UNIFI_DEMO=1`, or `[demo] enabled = true` in config) connects to your real controller and swaps names, MACs, IPs, and SSIDs for deterministic fakes before anything is drawn.
+
+`--demo-fleet` skips the controller entirely. The TUI runs against a synthetic, offline network for a fictional creative studio, Neon Harbor Studios, and a simulation animates it about once a second:
+
+- **The fleet**: a UDM Pro Max gateway, three switches, and nine access points (one offline, one finishing a firmware upgrade, one with an update waiting), about 140 clients on six VLANs and four SSIDs, firewall zones and policies, NAT, ACLs, and a week of event history.
+- **What moves**: WAN throughput (with render-upload and asset-sync bursts), device CPU, memory, and load, client traffic and signal, roams, arrivals and departures, and security events such as IPS alerts and firewall drops.
+- **Every screen has data**, including Stats history for all four periods, DPI, Wi-Fi neighbors, channel usage, roam history, and per-client Wi-Fi experience.
+
+```bash
+unifly tui --demo-fleet                  # The default fleet (seed 2077)
+unifly tui --demo-fleet --demo-seed 7    # A different fleet, just as reproducible
+unifly tui --demo                        # Falls back to the demo fleet when no controller is configured
+```
+
+The same seed produces the same fleet and the same animation from launch, so a screenshot or a recording can be reshot identically; only wall-clock timestamps differ. When `--demo` is set and no controller can be resolved from flags, environment, or config, the TUI opens the demo fleet instead of onboarding and logs that it did. The sanitizer never runs on the demo fleet, because its data is fictional already: documentation and private address ranges, locally administered MACs, and invented names.
+
+Device actions (restart, locate, upgrade, PoE power cycle) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Power cycling the dark camera port on `sw-core` brings that camera back. Changes that need a real controller, such as editing a network or deleting a policy, are refused with a clear error.
+
+For recordings, `--no-effects` (or `NO_EFFECTS=1`) skips the launch animation.
 
 ## Theme
 
