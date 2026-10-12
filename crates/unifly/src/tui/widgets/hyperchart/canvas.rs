@@ -10,8 +10,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use super::annotations;
 use super::axis;
 use super::geometry::{fraction, render_text, x_to_col, y_to_row};
-use super::model::{Baseline, XAxis};
-use super::scene::{ChartScene, PlotBounds};
+use super::model::{Baseline, SeriesDirection, XAxis};
+use super::scene::{ChartScene, PlotBounds, transform_y};
 use super::time_series::HyperChart;
 use crate::tui::theme;
 
@@ -31,30 +31,57 @@ pub(super) fn render(chart: &HyperChart<'_>, area: Rect, buf: &mut Buffer, gutte
     let layout = Layout::horizontal([Constraint::Length(gutter_width), Constraint::Min(1)])
         .split(chart_area);
     let gutter_area = layout[0];
-    let plot_area = layout[1];
     let scene = chart.scene();
     let bounds = scene.bounds;
     let caps = chart.caps();
 
-    render_y_gutter(chart, gutter_area, plot_area, &scene, buf);
+    render_y_gutter(chart, gutter_area, layout[1], &scene, buf);
 
+    // A graphics-protocol image owns every cell it covers: text written into
+    // one of them breaks the terminal's placement of the rest of that row.
+    // Pixel charts therefore leave markers to the raster and move value
+    // labels into a rail beside the image.
+    let pixels = cfg!(feature = "tui-graphics") && caps.graphics_protocol.is_pixels();
+    let (plot_area, overlay) = if pixels {
+        annotations::split_value_rail(layout[1])
+    } else {
+        (layout[1], annotations::Overlay::Inline)
+    };
+
+    if !render_plot(&scene, plot_area, buf, caps, pixels) {
+        render_canvas_fallback(&scene, plot_area, buf, caps);
+    }
+    annotations::render(chart, &scene, plot_area, overlay, buf);
+    if let Some(axis_area) = x_axis_area {
+        render_x_axis(chart.x_axis_kind(), axis_area, plot_area, bounds, buf);
+    }
+}
+
+/// Draw the plot with the richest renderer the terminal supports, returning
+/// false when the caller should fall back to the cell canvas.
+#[cfg_attr(not(feature = "tui-graphics"), allow(unused_variables))]
+fn render_plot(
+    scene: &ChartScene<'_>,
+    plot_area: Rect,
+    buf: &mut Buffer,
+    caps: crate::tui::render_caps::RenderCaps,
+    pixels: bool,
+) -> bool {
     #[cfg(feature = "tui-graphics")]
-    if caps.graphics_protocol.is_pixels() && super::pixel::render_scene(&scene, plot_area, buf) {
-        annotations::render(chart, &scene, plot_area, buf);
-        if let Some(axis_area) = x_axis_area {
-            render_x_axis(chart.x_axis_kind(), axis_area, plot_area, bounds, buf);
-        }
-        return;
+    if pixels && super::pixel::render_scene(scene, plot_area, buf) {
+        return true;
     }
 
-    if super::subcell::render(&scene, plot_area, buf, caps) {
-        annotations::render(chart, &scene, plot_area, buf);
-        if let Some(axis_area) = x_axis_area {
-            render_x_axis(chart.x_axis_kind(), axis_area, plot_area, bounds, buf);
-        }
-        return;
-    }
+    super::subcell::render(scene, plot_area, buf, caps)
+}
 
+fn render_canvas_fallback(
+    scene: &ChartScene<'_>,
+    plot_area: Rect,
+    buf: &mut Buffer,
+    caps: crate::tui::render_caps::RenderCaps,
+) {
+    let bounds = scene.bounds;
     let plot_density = (usize::from(plot_area.width.max(1)) * 4).max(160);
     let paths: Vec<Vec<Vec<(f64, f64)>>> = scene
         .series
@@ -75,7 +102,7 @@ pub(super) fn render(chart: &HyperChart<'_>, area: Rect, buf: &mut Buffer, gutte
         .x_bounds([bounds.x_min, bounds.x_max])
         .y_bounds([bounds.y_min, bounds.y_max])
         .paint(|ctx| {
-            draw_grid(ctx, &scene);
+            draw_grid(ctx, scene);
 
             for (series, series_paths) in scene.series.iter().zip(paths.iter()) {
                 let Some(bands) = series.fill.bands(caps, usize::from(plot_area.height)) else {
@@ -110,10 +137,6 @@ pub(super) fn render(chart: &HyperChart<'_>, area: Rect, buf: &mut Buffer, gutte
         });
 
     canvas.render(plot_area, buf);
-    annotations::render(chart, &scene, plot_area, buf);
-    if let Some(axis_area) = x_axis_area {
-        render_x_axis(chart.x_axis_kind(), axis_area, plot_area, bounds, buf);
-    }
 }
 
 fn draw_grid(ctx: &mut ratatui::widgets::canvas::Context<'_>, scene: &ChartScene<'_>) {
@@ -170,81 +193,52 @@ fn render_y_gutter(
             upper_label,
             lower_label,
         } => {
-            render_mirror_labels(
-                chart,
-                gutter_area,
-                plot_area,
-                scene.bounds,
-                upper_max,
-                true,
-                buf,
-            );
-            render_mirror_labels(
-                chart,
-                gutter_area,
-                plot_area,
-                scene.bounds,
-                lower_max,
-                false,
-                buf,
-            );
-
+            // Lane names hug the baseline and claim their rows first; tick
+            // labels then fill the remaining rows from each lane's outer
+            // edge inward, so a short lane drops its inner ticks instead of
+            // printing two labels on one row.
             let baseline_row = y_to_row(plot_area, scene.bounds, 0.0);
             let label_style = Style::default().fg(theme::border_unfocused());
+            let mut occupied = vec![baseline_row];
             if baseline_row > plot_area.y {
-                render_text(
-                    buf,
-                    Rect {
-                        x: gutter_area.x,
-                        y: baseline_row - 1,
-                        width: gutter_area.width,
-                        height: 1,
-                    },
-                    upper_label,
-                    label_style,
-                );
+                let row = baseline_row - 1;
+                render_text(buf, gutter_row(gutter_area, row), upper_label, label_style);
+                occupied.push(row);
             }
             if baseline_row + 1 < plot_area.y + plot_area.height {
-                render_text(
-                    buf,
-                    Rect {
-                        x: gutter_area.x,
-                        y: baseline_row + 1,
-                        width: gutter_area.width,
-                        height: 1,
-                    },
-                    lower_label,
-                    label_style,
-                );
+                let row = baseline_row + 1;
+                render_text(buf, gutter_row(gutter_area, row), lower_label, label_style);
+                occupied.push(row);
+            }
+
+            let divisions = chart.tick_count_value().saturating_sub(1).max(1);
+            for (max_value, direction) in [
+                (upper_max, SeriesDirection::Up),
+                (lower_max, SeriesDirection::Down),
+            ] {
+                let labels = chart.build_y_labels(max_value);
+                for (idx, label) in labels.iter().enumerate().skip(1).rev() {
+                    let value = max_value * fraction(idx, divisions);
+                    let y = transform_y(scene.baseline, direction, value);
+                    let row = y_to_row(plot_area, scene.bounds, y);
+                    if occupied.contains(&row) {
+                        continue;
+                    }
+                    occupied.push(row);
+                    Paragraph::new(ratatui::text::Line::from(label.clone()))
+                        .render(gutter_row(gutter_area, row), buf);
+                }
             }
         }
     }
 }
 
-fn render_mirror_labels(
-    chart: &HyperChart<'_>,
-    gutter_area: Rect,
-    plot_area: Rect,
-    bounds: PlotBounds,
-    max_value: f64,
-    upper: bool,
-    buf: &mut Buffer,
-) {
-    let labels = chart.build_y_labels(max_value);
-    let divisions = chart.tick_count_value().saturating_sub(1).max(1);
-    for (idx, label) in labels.iter().enumerate().skip(1) {
-        let value = max_value * fraction(idx, divisions);
-        let signed_value = if upper { value } else { -value };
-        let row = y_to_row(plot_area, bounds, signed_value);
-        Paragraph::new(ratatui::text::Line::from(label.clone())).render(
-            Rect {
-                x: gutter_area.x,
-                y: row,
-                width: gutter_area.width,
-                height: 1,
-            },
-            buf,
-        );
+fn gutter_row(gutter_area: Rect, row: u16) -> Rect {
+    Rect {
+        x: gutter_area.x,
+        y: row,
+        width: gutter_area.width,
+        height: 1,
     }
 }
 

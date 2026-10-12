@@ -161,14 +161,10 @@ impl<'a> HyperChart<'a> {
                 y_min: 0.0,
                 y_max: y_max.max(1.0),
             },
-            Baseline::Mirror {
-                upper_max,
-                lower_max,
-                ..
-            } => PlotBounds {
+            Baseline::Mirror { upper_max, .. } => PlotBounds {
                 x_min,
                 x_max,
-                y_min: -lower_max.max(1.0),
+                y_min: -scene::mirror_lower_extent(upper_max),
                 y_max: upper_max.max(1.0),
             },
         }

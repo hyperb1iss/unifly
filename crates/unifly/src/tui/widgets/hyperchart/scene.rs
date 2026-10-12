@@ -69,15 +69,12 @@ impl ChartScene<'_> {
                     values.push(y_max * fraction(idx, divisions));
                 }
             }
-            Baseline::Mirror {
-                upper_max,
-                lower_max,
-                ..
-            } => {
+            Baseline::Mirror { upper_max, .. } => {
+                let lower_extent = mirror_lower_extent(upper_max);
                 for idx in 1..=divisions {
                     let position = fraction(idx, divisions);
                     values.push(upper_max * position);
-                    values.push(-lower_max * position);
+                    values.push(-lower_extent * position);
                 }
             }
         }
@@ -85,9 +82,31 @@ impl ChartScene<'_> {
     }
 }
 
+/// Height of a mirror chart's lower lane relative to its upper lane.
+const MIRROR_LOWER_LANE_SHARE: f64 = 0.5;
+
+/// Plot-space depth of a mirror chart's lower lane, which spans
+/// `[-extent, 0]` while the upper lane keeps its own units.
+///
+/// The lanes hold fixed shares of the plot height, so each keeps its own
+/// scale without a large upper range squeezing the lower lane to one row.
+pub(super) fn mirror_lower_extent(upper_max: f64) -> f64 {
+    upper_max.max(1.0) * MIRROR_LOWER_LANE_SHARE
+}
+
 pub(super) fn transform_y(baseline: Baseline<'_>, direction: SeriesDirection, value: f64) -> f64 {
     match (baseline, direction) {
-        (Baseline::Mirror { lower_max, .. }, SeriesDirection::Down) => -value.min(lower_max),
+        (
+            Baseline::Mirror {
+                upper_max,
+                lower_max,
+                ..
+            },
+            SeriesDirection::Down,
+        ) => {
+            let lower_max = lower_max.max(1.0);
+            -(value.min(lower_max) / lower_max) * mirror_lower_extent(upper_max)
+        }
         (Baseline::Mirror { upper_max, .. }, SeriesDirection::Up) => value.min(upper_max),
         _ => value,
     }
@@ -174,6 +193,25 @@ mod tests {
         };
 
         assert!((scene.transform_y(&scene.series[0], 75.0) + 50.0).abs() < f64::EPSILON);
+        assert!((scene.transform_y(&scene.series[0], 25.0) + 25.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mirror_lower_lane_keeps_its_share_under_a_large_upper_scale() {
+        let baseline = Baseline::Mirror {
+            upper_max: 1_200.0,
+            lower_max: 120.0,
+            upper_label: "RX",
+            lower_label: "TX",
+        };
+
+        // A full-scale lower value reaches half the upper lane's height no
+        // matter how far apart the two scales are.
+        let full = transform_y(baseline, SeriesDirection::Down, 120.0);
+        let half = transform_y(baseline, SeriesDirection::Down, 60.0);
+        assert!((full + 600.0).abs() < f64::EPSILON);
+        assert!((half + 300.0).abs() < f64::EPSILON);
+        assert!((mirror_lower_extent(1_200.0) - 600.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -199,7 +237,7 @@ mod tests {
 
         assert_eq!(
             scene.gridlines(),
-            vec![30.0, -10.0, 60.0, -20.0, 90.0, -30.0]
+            vec![30.0, -15.0, 60.0, -30.0, 90.0, -45.0]
         );
     }
 }
