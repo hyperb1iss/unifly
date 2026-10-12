@@ -305,6 +305,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   to whichever network held the selected row, so a refresh that removed the
   network being edited sent the edit to a different one.
 
+- **Pixel charts no longer flash, blank rows, or squash upload traffic.** On
+  kitty-graphics terminals such as Ghostty and kitty, the WAN and stats charts
+  blanked the rest of a row wherever a marker or value label sat on the image,
+  flashed off whenever a screen transition or the new-peak pulse recolored the
+  image's cells, gave the upload lane a single row when download dwarfed it,
+  and clamped a burst still on screen flat against the top. Markers now come
+  from the image itself with value labels in a rail beside it, effects leave
+  image cells alone, the two lanes split 2:1 with their own scales, and the
+  scale covers the whole visible window. New images are sent ahead of the
+  frame, so a help overlay or dialog over a chart can no longer lose one.
+- **Sponsor and About links no longer corrupt the screen.** The browser
+  opener inherited the TUI's terminal, so anything `xdg-open` or the browser
+  printed landed on the display, and it could read keystrokes. It now runs
+  detached and is reaped in the background.
+
 ### Performance
 
 - **TUI memory and idle CPU.** The dashboard used ~100 MB RSS at start and
@@ -349,6 +364,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `tracing-subscriber/json` feature). Stripped x86_64 binary: 22.0 MB → 18.2 MB.
   A new `release-small` cargo profile (`opt-level = "s"`) builds a 13.0 MB
   binary for low-power hosts at ~5% more TUI CPU.
+
+- **The TUI frees chart images it no longer shows.** Each chart refresh sent
+  a fresh kitty image, about 3 MB decoded, and none were ever deleted, so the
+  terminal's image store filled within minutes and images outlived the
+  session. unifly now keeps at most four images per chart, deletes each one
+  it drops in the same update as the frame that replaced it, and deletes the
+  rest on exit.
 
 ### Changed
 
