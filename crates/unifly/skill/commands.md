@@ -27,8 +27,9 @@ case-insensitively: networks, WiFi, firewall policies, zones, and groups,
 NAT, ACL, traffic lists, DNS (by domain), and hotspot vouchers (by code).
 Device commands and client get, roams, and WiFi experience also take an IP
 or a MAC in any spelling (colons, dashes, dots, or none; any case); clients
-answer to their hostname too. A name two records share fails with exit 2
-and lists the candidates; pass an ID then. Update, delete, and VPN commands
+answer to their hostname too. A MAC- or IP-shaped identifier only ever
+matches MACs or IPs, never a name. A name two records share fails with exit
+2 and lists the candidates; pass an ID then. Update, delete, and VPN commands
 still take IDs. Client find searches IP, name, hostname, and MAC by
 substring.
 

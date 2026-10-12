@@ -1,43 +1,11 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use unifly_api::{Client, Device, FirewallGroup, Network};
+use unifly_api::{Device, FirewallGroup, MacAddress, Network};
 
-use super::{lookup, resolve};
+use super::{Shape, lookup, lookup_mac, resolve};
+use crate::cli::commands::util::fixtures::{client, device, from_json};
 use crate::cli::error::CliError;
-
-fn from_json<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Arc<T> {
-    Arc::new(serde_json::from_value(value).expect("fixture should deserialize"))
-}
-
-fn device(id: &str, name: Option<&str>, mac: &str, ip: Option<&str>) -> Arc<Device> {
-    from_json(json!({
-        "id": id,
-        "mac": mac,
-        "ip": ip,
-        "wan_ipv6": null,
-        "name": name,
-        "model": null,
-        "device_type": "AccessPoint",
-        "state": "Online",
-        "firmware_version": null,
-        "firmware_updatable": false,
-        "adopted_at": null,
-        "provisioned_at": null,
-        "last_seen": null,
-        "serial": null,
-        "supported": true,
-        "ports": [],
-        "radios": [],
-        "uplink_device_id": null,
-        "uplink_device_mac": null,
-        "has_switching": false,
-        "has_access_point": true,
-        "stats": {},
-        "client_count": null,
-        "origin": null
-    }))
-}
 
 const ROOF_ID: &str = "7369b778-1354-4760-83b8-2d36a5d49050";
 
@@ -140,13 +108,54 @@ fn duplicate_names_are_ambiguous_and_list_every_candidate() {
 }
 
 #[test]
-fn stronger_tiers_win_and_empty_tiers_fall_through() {
+fn shape_alone_decides_how_an_identifier_reads() {
+    assert_eq!(
+        Shape::of(" 10.40.0.7 "),
+        Shape::Ip("10.40.0.7".parse().expect("ip"))
+    );
+    // Twelve hex digits once the colons go, but an IPv6 address first.
+    assert!(matches!(Shape::of("::3624:909d:f310"), Shape::Ip(_)));
+    assert_eq!(
+        Shape::of("AABB.CCDD.EEFF"),
+        Shape::Mac(MacAddress::new("aa:bb:cc:dd:ee:ff"))
+    );
+    assert_eq!(Shape::of("ap-roof"), Shape::Name);
+}
+
+/// A device named after some other MAC must never capture a command aimed
+/// at that MAC: the get and ID-based mutations (remove, restart,
+/// port-cycle) report not found, and MAC-based mutations (upgrade,
+/// provision, locate, port-set) pass the MAC through untouched.
+#[test]
+fn a_device_named_like_a_mac_never_captures_that_mac() {
+    let fleet = vec![device(
+        "11111111-1111-4111-8111-111111111111",
+        Some("aa:bb:cc:dd:ee:ff"),
+        "02:00:00:00:00:01",
+        Some("10.40.0.5"),
+    )];
+    for needle in ["aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "aabb.ccdd.eeff"] {
+        assert!(
+            matches!(resolve(&fleet, needle), Err(CliError::NotFound { .. })),
+            "get {needle} must not resolve the MAC-named device"
+        );
+        match lookup_mac(&fleet, needle) {
+            Ok(mac) => assert_eq!(mac.as_str(), "aa:bb:cc:dd:ee:ff", "{needle}"),
+            Err(error) => panic!("{needle} should pass through, got {error:?}"),
+        }
+    }
+}
+
+/// The same for IP addresses, which have no pass-through: every path is
+/// not found rather than the IP-named device.
+#[test]
+fn a_device_named_like_an_ip_never_captures_that_ip() {
     let fleet = vec![
         device(
             "11111111-1111-4111-8111-111111111111",
-            Some("10.40.0.7"),
+            Some("10.40.0.99"),
             "02:00:00:00:00:01",
-            None,
+            Some("10.40.0.5"),
         ),
         device(
             "22222222-2222-4222-8222-222222222222",
@@ -154,30 +163,35 @@ fn stronger_tiers_win_and_empty_tiers_fall_through() {
             "02:00:00:00:00:02",
             Some("10.40.0.7"),
         ),
-        device(
-            "33333333-3333-4333-8333-333333333333",
-            Some("020000000009"),
-            "02:00:00:00:00:03",
-            None,
-        ),
     ];
-    // The IP tier answers before a name that happens to look like an IP.
+    assert!(matches!(
+        resolve(&fleet, "10.40.0.99"),
+        Err(CliError::NotFound { .. })
+    ));
+    assert!(matches!(
+        lookup_mac(&fleet, "10.40.0.99"),
+        Err(CliError::NotFound { .. })
+    ));
+    // An IP that a device does hold still resolves it.
     assert_eq!(
         name_of(resolve(&fleet, "10.40.0.7").expect("by IP")),
         "bench"
     );
-    // A MAC-shaped needle that matches no MAC falls through to names.
     assert_eq!(
-        name_of(resolve(&fleet, "020000000009").expect("by name")),
-        "020000000009"
+        lookup_mac(&fleet, "10.40.0.7").expect("by IP").as_str(),
+        "02:00:00:00:00:02"
     );
 }
 
 #[test]
-fn ip_addresses_never_match_as_macs() {
+fn ip_addresses_never_match_or_pass_through_as_macs() {
     let fleet = fleet();
     // Twelve hex digits once the colons go: the MAC of ap-roof.
     assert!(matches!(lookup(&fleet, "::3624:909d:f310"), Ok(None)));
+    assert!(matches!(
+        lookup_mac(&fleet, "::aabb:ccdd:eeff"),
+        Err(CliError::NotFound { .. })
+    ));
 }
 
 #[test]
@@ -201,32 +215,12 @@ fn misses_point_at_the_list_command() {
 
 #[test]
 fn clients_answer_to_alias_or_hostname() {
-    let client: Arc<Client> = from_json(json!({
-        "id": "9d5cf91f-0513-4c50-b79c-b3350a023b95",
-        "mac": "76:ce:f4:ac:26:ee",
-        "ip": "10.40.0.131",
-        "name": "Crew Laptop",
-        "hostname": "crew-laptop-01",
-        "client_type": "Wireless",
-        "connected_at": null,
-        "uplink_device_id": null,
-        "uplink_device_mac": null,
-        "switch_port": null,
-        "network_id": null,
-        "vlan": null,
-        "wireless": null,
-        "guest_auth": null,
-        "is_guest": false,
-        "tx_bytes": null,
-        "rx_bytes": null,
-        "bandwidth": null,
-        "os_name": null,
-        "device_class": null,
-        "use_fixedip": false,
-        "fixed_ip": null,
-        "blocked": false
-    }));
-    let clients = vec![client];
+    let clients = vec![client(
+        "Crew Laptop",
+        "crew-laptop-01",
+        "76:ce:f4:ac:26:ee",
+        Some("10.40.0.131"),
+    )];
     for needle in [
         "crew laptop",
         "CREW-LAPTOP-01",

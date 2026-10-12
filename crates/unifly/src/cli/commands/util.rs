@@ -2,6 +2,8 @@
 
 mod access;
 mod filter;
+#[cfg(test)]
+pub mod fixtures;
 mod io;
 pub mod lookup;
 pub mod order;
