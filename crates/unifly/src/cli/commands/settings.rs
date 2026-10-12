@@ -83,10 +83,10 @@ fn is_secret_field(key: &str) -> bool {
 
 /// Remove every secret field, at any depth, from a settings payload.
 ///
-/// Fields are dropped rather than masked: `settings set --data` merges its
-/// JSON into the live section, so a masked placeholder fed back from an
-/// edited export would overwrite the real credential, while an absent key
-/// leaves it untouched. Returns how many fields were removed.
+/// Fields are dropped rather than masked: a `***` placeholder fed back from
+/// an edited export would overwrite the real credential, while an absent
+/// one is restored by [`guard_secrets`] when the section is written back.
+/// Returns how many fields were removed.
 fn strip_secrets(value: &mut serde_json::Value) -> usize {
     match value {
         serde_json::Value::Object(map) => {
@@ -98,6 +98,106 @@ fn strip_secrets(value: &mut serde_json::Value) -> usize {
         serde_json::Value::Array(items) => items.iter_mut().map(strip_secrets).sum(),
         _ => 0,
     }
+}
+
+/// Replace every secret value, at any depth, with `***` for display.
+fn mask_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, field) in map.iter_mut() {
+                if is_secret_field(key) {
+                    *field = serde_json::Value::String("***".to_owned());
+                } else {
+                    mask_secrets(field);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                mask_secrets(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Copy secret fields from `current` into `incoming` wherever `incoming`
+/// omits them at the same object key path. `set --data` replaces nested
+/// objects wholesale, so without this an object taken from a stripped
+/// export would erase the credentials nested inside it. Arrays are not
+/// matched by position: an element's index is not its identity.
+fn carry_secrets(current: &serde_json::Value, incoming: &mut serde_json::Value) {
+    let (serde_json::Value::Object(current), serde_json::Value::Object(incoming)) =
+        (current, incoming)
+    else {
+        return;
+    };
+    for (key, value) in current {
+        if let Some(next) = incoming.get_mut(key) {
+            carry_secrets(value, next);
+        } else if is_secret_field(key) {
+            incoming.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Collect the paths of secret fields present in `current` that `merged`
+/// no longer has, such as one inside an array element the update replaced.
+fn dropped_secrets(
+    current: &serde_json::Value,
+    merged: Option<&serde_json::Value>,
+    path: &str,
+    dropped: &mut Vec<String>,
+) {
+    match current {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                let next = merged.and_then(|m| m.get(key));
+                if is_secret_field(key) {
+                    if next.is_none() {
+                        dropped.push(child);
+                    }
+                } else {
+                    dropped_secrets(value, next, &child, dropped);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                let next = merged.and_then(|m| m.get(index));
+                dropped_secrets(item, next, &format!("{path}[{index}]"), dropped);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Fill in secrets the update left out, then refuse it if any live
+/// credential would still be erased. A credential is only removed when the
+/// update names it explicitly (for example by setting it to `""`).
+fn guard_secrets(
+    current: &serde_json::Value,
+    merged: &mut serde_json::Value,
+) -> Result<(), CliError> {
+    carry_secrets(current, merged);
+    let mut dropped = Vec::new();
+    dropped_secrets(current, Some(merged), "", &mut dropped);
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    Err(CliError::Validation {
+        field: "data".into(),
+        reason: format!(
+            "this update would erase credential field(s) {}; include them \
+             (export with --with-secrets) or set them explicitly",
+            dropped.join(", ")
+        ),
+    })
 }
 
 fn section_detail(section: &serde_json::Value, mask_sensitive: bool) -> String {
@@ -120,7 +220,11 @@ fn section_detail(section: &serde_json::Value, mask_sensitive: bool) -> String {
         let display = if mask_sensitive && is_secret_field(k) {
             "***".to_owned()
         } else if v.is_object() || v.is_array() {
-            serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+            let mut shown = v.clone();
+            if mask_sensitive {
+                mask_secrets(&mut shown);
+            }
+            serde_json::to_string_pretty(&shown).unwrap_or_else(|_| shown.to_string())
         } else {
             match v {
                 serde_json::Value::String(s) => s.clone(),
@@ -245,9 +349,10 @@ async fn handle_set(
     obj.remove("site_id");
     obj.remove("key");
 
-    controller
-        .update_site_setting(&args.key, &serde_json::Value::Object(obj))
-        .await?;
+    let mut update = serde_json::Value::Object(obj);
+    guard_secrets(&current, &mut update)?;
+
+    controller.update_site_setting(&args.key, &update).await?;
 
     if !global.quiet {
         eprintln!("Setting '{}' updated", args.key);
@@ -379,6 +484,61 @@ mod tests {
         let summary = build_notable_summary(obj.as_object());
         assert!(summary.contains("..."));
         assert!(summary.len() < 60);
+    }
+
+    #[test]
+    fn section_detail_masks_nested_secrets() {
+        let section = serde_json::json!({
+            "key": "radius",
+            "nested": { "x_password": "hunter2", "port": 1812 },
+            "servers": [{ "ip": "10.0.0.5", "x_shared_secret": "s3cr3t" }]
+        });
+        let detail = section_detail(&section, true);
+        assert!(!detail.contains("hunter2"));
+        assert!(!detail.contains("s3cr3t"));
+        assert!(detail.contains("1812"));
+        assert!(detail.contains("10.0.0.5"));
+    }
+
+    #[test]
+    fn stripped_export_replays_without_losing_nested_secrets() {
+        let current = serde_json::json!({
+            "nested": { "x_password": "hunter2", "port": 1812 },
+            "x_top": "keep"
+        });
+        let mut exported = current.clone();
+        strip_secrets(&mut exported);
+        exported["nested"]["port"] = serde_json::json!(1813);
+
+        let mut update = current.clone();
+        update["nested"] = exported["nested"].clone();
+        guard_secrets(&current, &mut update).expect("object secrets carry over");
+
+        assert_eq!(update["nested"]["x_password"], "hunter2");
+        assert_eq!(update["nested"]["port"], 1813);
+        assert_eq!(update["x_top"], "keep");
+    }
+
+    #[test]
+    fn update_that_drops_an_array_secret_is_refused() {
+        let current = serde_json::json!({
+            "servers": [{ "ip": "10.0.0.5", "x_shared_secret": "s3cr3t" }]
+        });
+        let mut update = serde_json::json!({ "servers": [{ "ip": "10.0.0.6" }] });
+
+        let error = guard_secrets(&current, &mut update).expect_err("array secret would be lost");
+        assert!(
+            error.to_string().contains("servers[0].x_shared_secret"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn explicitly_cleared_secret_is_allowed() {
+        let current = serde_json::json!({ "nested": { "x_password": "hunter2" } });
+        let mut update = serde_json::json!({ "nested": { "x_password": "" } });
+        guard_secrets(&current, &mut update).expect("an explicit value is intentional");
+        assert_eq!(update["nested"]["x_password"], "");
     }
 
     #[test]

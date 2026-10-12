@@ -378,7 +378,7 @@ unifly settings export                          # JSON dump of every section, se
 unifly settings export --with-secrets           # Include x_ credential fields
 ```
 
-Site-level settings live in Session API setting sections. `set` performs a read-modify-write of the whole section. `x_`-prefixed secret fields show as `***` in table mode and are left out of JSON/YAML output and `export` unless you pass `--with-secrets`. Session-gated: needs an API key on UniFi OS or session credentials. Details on the [Site Settings page](/guide/settings).
+Site-level settings live in Session API setting sections. `set` performs a read-modify-write of the whole section. `x_`-prefixed secret fields show as `***` in table mode and are left out of JSON/YAML output and `export` unless you pass `--with-secrets`. `set` never erases a credential the update left out. Session-gated: needs an API key on UniFi OS or session credentials. Details on the [Site Settings page](/guide/settings).
 
 ## Cloud (Site Manager)
 

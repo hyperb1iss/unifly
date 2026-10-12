@@ -495,10 +495,12 @@ unifly settings export [--with-secrets]
 - `list` shows a summary table of all ~44 setting sections with key, field
   count, enabled status, and notable values.
 - `x_`-prefixed fields (credentials, internal secrets) show as `***` in table
-  mode and are omitted, at any depth, from JSON/YAML output of `list`/`get`
-  and from `export`. Pass `--with-secrets` to include them. Omission (not
-  masking) is deliberate: `set --data` merges, so an edited export never
-  overwrites a credential with a placeholder.
+  mode (at any depth) and are omitted, at any depth, from JSON/YAML output of
+  `list`/`get` and from `export`. Pass `--with-secrets` to include them.
+- `set` carries over credentials an update leaves out (nested objects
+  included) and refuses an update that would still erase one (e.g. inside a
+  replaced array element), naming the field. Clear a credential on purpose
+  by setting it explicitly (e.g. `""`).
 - `set` performs a read-modify-write: fetches the current section, patches
   the specified field, and PUTs the full section back. Values are parsed as
   bool (`true`/`false`), number, or string fallback.
