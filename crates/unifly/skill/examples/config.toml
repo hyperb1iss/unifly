@@ -19,6 +19,10 @@ api_key = "your-integration-api-key-here"
 # api_key_env = "UNIFI_HOME_API_KEY"  # Alternative: read from env var
 username = "admin"
 # password stored in OS keyring via: unifly config set-password home
+# MFA: a command (argv, no shell) that prints the current TOTP code. It
+# runs for every login that needs one, so the TUI renews its session. A
+# locked password manager may prompt on each attempt (about every 30 s).
+# totp_command = ["op", "item", "get", "UniFi", "--otp"]
 insecure = false
 timeout = 30
 

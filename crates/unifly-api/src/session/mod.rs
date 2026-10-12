@@ -18,8 +18,10 @@ pub mod sites;
 pub mod stats;
 pub mod system;
 pub mod system_log;
+pub mod totp;
 pub mod vpn;
 pub mod wifi;
 pub mod wireguard;
 
 pub use client::{ReauthCredentials, SessionAuth, SessionClient};
+pub use totp::TotpProvider;

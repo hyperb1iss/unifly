@@ -61,9 +61,17 @@ Store passwords in the OS keyring with `unifly config set-password PROFILE`,
 or supply credentials through the configured environment sources. An
 explicit profile `password` or `api_key` takes precedence over its keyring
 entry. Do not print secrets while inspecting configuration or commands.
-For MFA, supply a current token via `UNIFI_TOTP`; the hidden `--totp` flag
-also exists. The flag `--no-cache` bypasses cached Session login cookies
-(useful after password rotation).
+For MFA, the best source is a profile `totp_command`: an argv array (no
+shell, 10 s limit) that prints the current code, for example
+`totp_command = ["op", "item", "get", "UniFi", "--otp"]`. unifly runs it for
+every login that needs a code, so long-running sessions such as the TUI
+renew themselves when the cookie expires; a locked password manager may
+prompt on each retry, about every 30 s while the session stays expired. A
+one-off code via `UNIFI_TOTP`, `totp_env`, or the hidden `--totp` flag
+serves only the first login and cannot renew a session. With 1Password's
+`op read`, append `?attribute=otp` to the reference so it prints the code.
+The flag `--no-cache` bypasses cached Session login cookies (useful after
+password rotation).
 
 ## Identifiers and query scope
 

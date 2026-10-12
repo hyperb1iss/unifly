@@ -31,7 +31,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Any other command fails with a "not available in demo mode" error before
   it reads config or touches the network. Library users get the same fleet
   from `Controller::demo` behind the new `demo` feature of `unifly-api`.
-
+- **`totp_command` profile setting: MFA sessions that renew themselves.** A
+  profile can name a command that prints the current TOTP code, as an argv
+  array run without a shell, e.g. `totp_command = ["op", "item", "get",
+  "UniFi", "--otp"]`. unifly runs it (no stdin, 10 s limit, trimmed stdout)
+  for every login that needs a code, so a long-running TUI on an MFA account
+  keeps its Session-backed features past the first cookie expiry. A non-zero
+  exit, a timeout, or empty output counts as no code and is logged without
+  the output. On Unix the command runs in its own process group, which is
+  stopped on a timeout or when something the command started still holds its
+  output open after it exits; a background process with its output
+  redirected (a cache daemon) is left running. A locked password manager may
+  prompt on each attempt, about every 30 s while the session is expired. An
+  explicit one-off code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves
+  the first login; the command feeds every re-login, and the first login too
+  when there is no explicit code. The CLI and the TUI launch paths resolve
+  it through the same helper, so the TUI's direct `--controller` /
+  `--api-key` path now also honours a hybrid profile's `totp_env`.
+- **MFA sessions can renew themselves when a fresh code is available.**
+  `unifly-api` gains `TotpProvider`, a closure that returns the current TOTP
+  code, set as `ControllerConfig::totp_provider` (or
+  `ReauthCredentials::totp_provider` on a bare `SessionClient`). The
+  automatic re-login after a cookie expiry asks it for a code on every
+  attempt. When it has none, returns something other than six digits, or
+  repeats the code the last login sent, no login is sent and the 30 s
+  cooldown applies, so a provider that cannot really produce fresh codes
+  never presents the password with a spent one. At connect it supplies the
+  code when `totp_token` is unset, and only if the controller actually
+  issues the MFA challenge, so a restored cached session never runs it. The
+  CLI and TUI build one from a profile's `totp_command`; `--totp`,
+  `UNIFI_TOTP`, and `totp_env` are each read once at startup, so they never
+  become a provider.
 - **Version-matched agent guidance** via `unifly skill`, available offline
   without controller configuration. The installed skill and network manager
   agent now load the binary's guide, with on-demand concepts, workflows,
@@ -75,10 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   another request already replaced retries on the new session instead of
   clearing it. Stale cookies are cleared before the re-login and a login that
   returns no new cookie is reported as a failure rather than silently
-  retried. Sessions opened with a TOTP code do not renew themselves, because
-  replaying a spent code would fail every attempt while still presenting the
-  correct password. The WebSocket reads its cookie from the session client on
-  every reconnect, and a server-side clean close now waits the initial
+  retried. A session opened with a fixed TOTP code does not renew itself,
+  because replaying a spent code would fail every attempt while still
+  presenting the correct password; MFA sessions renew only through a
+  `TotpProvider`, which the CLI and TUI build from `totp_command` (see
+  Added). A session restored from cache for an MFA
+  account with no TOTP source stops re-logging in after the first re-login
+  meets the MFA challenge, instead of repeating it every 30 s for as long as
+  the process runs. The WebSocket reads its cookie from the session client
+  on every reconnect, and a server-side clean close now waits the initial
   backoff instead of reconnecting immediately.
 - **A failed fetch during refresh keeps the last known data.** Firewall
   policies, firewall zones, ACL rules, DNS policies, vouchers, NAT policies,
@@ -103,6 +138,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   WAN IPv6, uplink, ports, and radios, so the TUI flickered to blanks. Those
   fields now carry over from the last good refresh, and anything the
   Integration API reports itself still wins.
+- **Saving in the TUI settings screen no longer erases profile settings.**
+  Test and Apply rebuilt the profile from the form alone, so `totp_env`,
+  `totp_command`, `ca_cert`, and `timeout` were deleted from `config.toml`,
+  and an unset `insecure` came back as an explicit `false` that overrode
+  `[defaults].insecure`. Fields the form does not show are now written back
+  as loaded. `insecure` keeps its stored value, unset included, until you
+  touch the toggle, which then saves exactly what it shows; an unset value
+  displays what it inherits (verification when the profile has a
+  `ca_cert`, otherwise `[defaults].insecure`).
+- **The TUI no longer writes keyring credentials to `config.toml`.** A
+  profile whose API key or password lives in the OS keyring loaded into the
+  settings form as an empty field, failed validation until the secret was
+  retyped, and then saved it to `config.toml` in plaintext. The form now
+  shows such a credential as "stored in keyring", accepts it without
+  retyping, connects with the keyring value, and leaves the entry alone. A
+  newly typed credential (in settings or the first-run setup) goes to the
+  keyring, as `config init` stores it, with plaintext only as a reported
+  fallback when no keyring is usable (none running, locked, or failing). A
+  keyring that refuses the secret stops the save with a message naming the
+  field, leaves `config.toml` unchanged, and puts back any keyring entry
+  the same save had already written. An existing entry that cannot be read
+  back first is never overwritten; that stops the save the same way. If
+  writing `config.toml` fails after the keyring step, those keyring changes
+  are put back too, so a failed save never pairs the old profile with a
+  new credential.
+  `config init` and
+  `config set-password` classify keyring errors the same way. Credentials
+  already kept in `config.toml` stay there.
 
 - **The Firewall screen's NAT tab was always empty.** NAT policy updates
   reached the TUI but were never handed to the screens, so the tab stayed
@@ -178,7 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionClient::get_device_raw` when the full device record is needed.
   `WebSocketHandle::new` takes a `CookieProvider` closure instead of a fixed
   cookie string, and `SessionClient::enable_reauth` with `ReauthCredentials`
-  is new.
+  is new. `ControllerConfig` has a new `totp_provider` field, so struct
+  literals need `totp_provider: None` or `..Default::default()`.
 
 ## [0.10.0] - 2026-08-07
 

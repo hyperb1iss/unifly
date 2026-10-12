@@ -5,6 +5,7 @@
 
 #[cfg(feature = "cli")]
 pub mod resolve;
+pub mod totp_command;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification};
+use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification, TotpProvider};
 
 pub const DEFAULT_CLOUD_CONTROLLER_URL: &str = "https://api.ui.com";
 
@@ -237,7 +238,28 @@ pub struct Profile {
     ///
     /// Useful with 1Password CLI: `totp_env = "UNIFI_TOTP"` and
     /// `UNIFI_TOTP=$(op item get "UniFi" --otp) unifly ...`
+    ///
+    /// The variable is read once, at startup, and nothing outside the
+    /// process can change it afterwards, so the code serves the first login
+    /// only. Without `totp_command`, a session opened with it does not renew
+    /// itself when the cookie expires.
     pub totp_env: Option<String>,
+
+    /// Command that prints a current TOTP code, as an argv array: the
+    /// program, then its arguments. It runs directly, without a shell, with
+    /// no stdin and a 10 s limit; its trimmed stdout is the code.
+    ///
+    /// It runs again for every login that needs a code, so a long-running
+    /// session (the TUI) can renew itself when its cookie expires. An
+    /// explicit code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves
+    /// the first login. Example with 1Password CLI:
+    /// `totp_command = ["op", "item", "get", "UniFi", "--otp"]`
+    ///
+    /// A locked password manager may prompt to unlock on every re-login
+    /// attempt, about once per 30 s cooldown while the session is expired.
+    /// On Windows, a helper that leaves a background process holding its
+    /// stdout can leave one blocked thread until that process exits.
+    pub totp_command: Option<Vec<String>>,
 
     /// Path to custom CA certificate.
     pub ca_cert: Option<PathBuf>,
@@ -376,6 +398,87 @@ pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
+// ── Secret storage ──────────────────────────────────────────────────
+
+/// Keyring service name every unifly secret is stored under.
+pub const KEYRING_SERVICE: &str = "unifly";
+
+/// Keyring entry holding a profile's API key.
+pub fn api_key_keyring_key(profile_name: &str) -> String {
+    format!("{profile_name}/api-key")
+}
+
+/// Keyring entry holding a profile's session password.
+pub fn password_keyring_key(profile_name: &str) -> String {
+    format!("{profile_name}/password")
+}
+
+/// Where profile secrets live outside `config.toml`: [`OsKeyring`] in the
+/// app, an in-memory stand-in in tests so they never touch the real one.
+pub trait SecretStore {
+    /// The secret stored under `key`: `Ok(None)` when nothing is, an error
+    /// when the store could not say.
+    fn get(&self, key: &str) -> Result<Option<String>, SecretStoreError>;
+    /// Store `secret` under `key`, replacing any previous value.
+    fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError>;
+    /// Remove whatever is stored under `key`; nothing stored is not an error.
+    fn delete(&self, key: &str) -> Result<(), SecretStoreError>;
+}
+
+/// Why a secret could not be stored. Only [`Self::Unavailable`] justifies
+/// the documented plaintext fallback; a keyring that is there but refuses
+/// a secret must not be quietly swapped for a plaintext file.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SecretStoreError {
+    /// No usable keyring here: none could be opened, it is locked or
+    /// unreachable, or the platform store failed.
+    #[error("no usable keyring: {0}")]
+    Unavailable(String),
+    /// The keyring is there but refused this secret (an ambiguous entry, a
+    /// value it cannot hold, an invalid name, and the like).
+    #[error("the keyring refused it: {0}")]
+    Rejected(String),
+}
+
+impl From<&keyring::Error> for SecretStoreError {
+    fn from(error: &keyring::Error) -> Self {
+        match error {
+            keyring::Error::NoStorageAccess(_)
+            | keyring::Error::PlatformFailure(_)
+            | keyring::Error::NoDefaultStore => Self::Unavailable(error.to_string()),
+            _ => Self::Rejected(error.to_string()),
+        }
+    }
+}
+
+/// The OS keyring, where `config init` and `config set-password` put
+/// secrets and the credential resolvers below look for them.
+pub struct OsKeyring;
+
+impl SecretStore for OsKeyring {
+    fn get(&self, key: &str) -> Result<Option<String>, SecretStoreError> {
+        match keyring::Entry::new(KEYRING_SERVICE, key).and_then(|entry| entry.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(SecretStoreError::from(&error)),
+        }
+    }
+
+    fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError> {
+        keyring::Entry::new(KEYRING_SERVICE, key)
+            .and_then(|entry| entry.set_password(secret))
+            .map_err(|error| SecretStoreError::from(&error))
+    }
+
+    fn delete(&self, key: &str) -> Result<(), SecretStoreError> {
+        match keyring::Entry::new(KEYRING_SERVICE, key).and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(SecretStoreError::from(&error)),
+        }
+    }
+}
+
 // ── Credential resolution (without CLI flags) ───────────────────────
 
 /// Resolve an API key from the credential chain (no CLI flag step).
@@ -404,7 +507,7 @@ pub fn resolve_api_key(profile: &Profile, profile_name: &str) -> Result<SecretSt
     }
 
     // 3. System keyring
-    if let Ok(entry) = keyring::Entry::new("unifly", &format!("{profile_name}/api-key"))
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &api_key_keyring_key(profile_name))
         && let Ok(secret) = entry.get_password()
     {
         tracing::debug!(profile = profile_name, "resolved api_key from keyring");
@@ -468,7 +571,7 @@ pub fn resolve_session_credentials(
     }
 
     // 3. Keyring
-    if let Ok(entry) = keyring::Entry::new("unifly", &format!("{profile_name}/password"))
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &password_keyring_key(profile_name))
         && let Ok(pw) = entry.get_password()
     {
         tracing::debug!(profile = profile_name, "resolved password from keyring");
@@ -518,9 +621,30 @@ pub fn resolve_auth(profile: &Profile, profile_name: &str) -> Result<AuthCredent
 /// Resolve a TOTP token from the profile's `totp_env` field.
 ///
 /// Returns `None` if no `totp_env` is configured or the env var is unset.
+/// The result is a fixed code, never a `TotpProvider`: re-reading the same
+/// variable later would only return the spent code again.
 pub fn resolve_totp_token(profile: &Profile) -> Option<SecretString> {
     let env_name = profile.totp_env.as_deref()?;
     std::env::var(env_name).ok().map(SecretString::from)
+}
+
+/// Turn the profile's `totp_command` into a [`TotpProvider`].
+///
+/// Returns `None` when no command is configured, and an error when the
+/// command names no program.
+pub fn resolve_totp_provider(profile: &Profile) -> Result<Option<TotpProvider>, ConfigError> {
+    let Some(argv) = profile.totp_command.as_ref() else {
+        return Ok(None);
+    };
+    if argv.first().is_none_or(|program| program.trim().is_empty()) {
+        return Err(ConfigError::Validation {
+            field: "totp_command".into(),
+            reason: "must start with the program to run, e.g. [\"op\", \"item\", \"get\", \
+                     \"UniFi\", \"--otp\"]"
+                .into(),
+        });
+    }
+    Ok(Some(totp_command::provider(argv.clone())))
 }
 
 /// Build a `ControllerConfig` from a profile — no CLI flag overrides.
@@ -567,6 +691,7 @@ pub fn profile_to_controller_config(
     let timeout = Duration::from_secs(profile.timeout.unwrap_or(defaults.timeout));
 
     let totp_token = resolve_totp_token(profile);
+    let totp_provider = resolve_totp_provider(profile)?;
 
     Ok(ControllerConfig {
         url,
@@ -578,6 +703,7 @@ pub fn profile_to_controller_config(
         websocket_enabled: !is_cloud,
         polling_interval_secs: if is_cloud { 30 } else { 10 },
         totp_token,
+        totp_provider,
         profile_name: Some(profile_name.to_owned()),
         no_session_cache: is_cloud,
     })
@@ -607,6 +733,7 @@ mod tests {
             username: None,
             password: None,
             totp_env: None,
+            totp_command: None,
             ca_cert: None,
             insecure: Some(true),
             timeout: Some(45),
@@ -648,6 +775,61 @@ mod tests {
         let secret = resolve_api_key(&profile, "cloud").expect("config api_key should resolve");
 
         assert_eq!(secret.expose_secret(), "explicit-config-key");
+    }
+
+    /// Only a keyring that cannot be used at all justifies the plaintext
+    /// fallback; one that refuses a secret must stop the save.
+    #[test]
+    fn keyring_errors_split_into_unavailable_and_rejected() {
+        use super::SecretStoreError;
+
+        let platform = || -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::other("locked"))
+        };
+        let unavailable = [
+            keyring::Error::NoStorageAccess(platform()),
+            keyring::Error::PlatformFailure(platform()),
+            keyring::Error::NoDefaultStore,
+        ];
+        for error in &unavailable {
+            assert!(
+                matches!(
+                    SecretStoreError::from(error),
+                    SecretStoreError::Unavailable(_)
+                ),
+                "{error}"
+            );
+        }
+
+        let rejected = [
+            keyring::Error::Ambiguous(Vec::new()),
+            keyring::Error::BadEncoding(Vec::new()),
+            keyring::Error::TooLong("password".into(), 4),
+            keyring::Error::Invalid("service".into(), "empty".into()),
+            keyring::Error::NotSupportedByStore("write".into()),
+        ];
+        for error in &rejected {
+            assert!(
+                matches!(SecretStoreError::from(error), SecretStoreError::Rejected(_)),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_to_controller_config_wires_the_totp_command() {
+        let mut profile = cloud_profile();
+        profile.auth_mode = "session".into();
+        profile.controller = "https://10.0.1.1".into();
+        profile.username = Some("admin".into());
+        profile.password = Some("pw".into());
+        profile.totp_command = Some(vec!["op".into(), "item".into(), "get".into()]);
+
+        let config = profile_to_controller_config(&profile, "default", &Defaults::default())
+            .expect("profile should resolve");
+
+        assert!(config.totp_provider.is_some());
+        assert!(config.totp_token.is_none());
     }
 
     #[test]

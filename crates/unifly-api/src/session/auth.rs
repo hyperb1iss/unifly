@@ -17,6 +17,7 @@ use url::Url;
 use crate::auth::ControllerPlatform;
 use crate::error::Error;
 use crate::session::client::SessionClient;
+use crate::session::totp::{TotpSource, is_totp_code};
 
 /// Response body from a 499 MFA challenge.
 #[derive(serde::Deserialize)]
@@ -37,6 +38,18 @@ impl SessionClient {
         username: &str,
         password: &SecretString,
         totp_token: Option<&SecretString>,
+    ) -> Result<(), Error> {
+        self.login_with_totp(username, password, TotpSource::new(totp_token, None))
+            .await
+    }
+
+    /// [`Self::login`] with the TOTP code taken from `totp`, which is only
+    /// consulted if the controller issues an MFA challenge.
+    pub(crate) async fn login_with_totp(
+        &self,
+        username: &str,
+        password: &SecretString,
+        totp: TotpSource<'_>,
     ) -> Result<(), Error> {
         let login_path = self
             .platform()
@@ -67,11 +80,12 @@ impl SessionClient {
 
         let status = resp.status();
 
-        // HTTP 499 = MFA challenge from UniFi SSO
+        // HTTP 499 = MFA challenge from UniFi SSO. Boxed because the second
+        // round trip (plus a possible provider call) would otherwise
+        // inflate every login future, and with it every connect future,
+        // for a path taken at most once per login.
         if status.as_u16() == 499 {
-            return self
-                .handle_mfa_challenge(resp, &url, username, password, totp_token)
-                .await;
+            return Box::pin(self.handle_mfa_challenge(resp, &url, username, password, totp)).await;
         }
 
         if !status.is_success() {
@@ -95,13 +109,18 @@ impl SessionClient {
         login_url: &Url,
         username: &str,
         password: &SecretString,
-        totp_token: Option<&SecretString>,
+        totp: TotpSource<'_>,
     ) -> Result<(), Error> {
-        let totp = totp_token.ok_or(Error::TwoFactorRequired)?;
+        // Read the challenge before asking for a code: a provider can take
+        // a while (a password manager prompt), and the unread response
+        // would hold its connection the whole time.
+        let challenge = resp.json::<MfaChallengeResponse>().await;
+
+        let totp = totp.resolve().await.ok_or(Error::TwoFactorRequired)?;
         let code = totp.expose_secret();
 
         // Validate TOTP format before sending
-        if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+        if !is_totp_code(code) {
             return Err(Error::Authentication {
                 message: "TOTP token must be exactly 6 digits".into(),
             });
@@ -110,10 +129,9 @@ impl SessionClient {
         debug!("MFA challenge received — completing 2FA handshake");
 
         // Extract the MFA cookie from the challenge response
-        let challenge: MfaChallengeResponse =
-            resp.json().await.map_err(|_| Error::Authentication {
-                message: "failed to parse MFA challenge response".into(),
-            })?;
+        let challenge = challenge.map_err(|_| Error::Authentication {
+            message: "failed to parse MFA challenge response".into(),
+        })?;
 
         if let Some(cookie_value) = challenge.token {
             if !cookie_value.starts_with("UBIC_2FA=") {
@@ -126,7 +144,9 @@ impl SessionClient {
             self.add_cookie(&cookie_value, login_url)?;
         }
 
-        // Retry login with TOTP token
+        // Retry login with TOTP token. Once sent, the code is spent
+        // whatever the outcome.
+        self.note_totp_spent(&totp);
         let body = json!({
             "username": username,
             "password": password.expose_secret(),
@@ -179,6 +199,20 @@ impl SessionClient {
         totp_token: Option<&secrecy::SecretString>,
         cache: &super::session_cache::SessionCache,
     ) -> Result<(), Error> {
+        self.login_with_cache_and_totp(username, password, TotpSource::new(totp_token, None), cache)
+            .await
+    }
+
+    /// [`Self::login_with_cache`] with the TOTP code taken from `totp`. A
+    /// restored session never consults it, so a provider only runs when a
+    /// fresh login actually meets an MFA challenge.
+    pub(crate) async fn login_with_cache_and_totp(
+        &self,
+        username: &str,
+        password: &secrecy::SecretString,
+        totp: TotpSource<'_>,
+        cache: &super::session_cache::SessionCache,
+    ) -> Result<(), Error> {
         // Try cached session first
         if let Some((cookie, csrf)) = cache.load() {
             self.add_cookie(&cookie, self.base_url())?;
@@ -195,7 +229,7 @@ impl SessionClient {
         }
 
         // Fresh login
-        self.login(username, password, totp_token).await?;
+        self.login_with_totp(username, password, totp).await?;
         self.cache_current_session(cache);
         Ok(())
     }

@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use secrecy::SecretString;
 
-use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification};
+use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification, TotpProvider};
 
 use crate::cli::args::GlobalOpts;
 use crate::cli::error::CliError;
-use crate::config::{self, Config, Profile, resolve_totp_token};
+use crate::config::{
+    self, Config, ConfigError, Profile, resolve_totp_provider, resolve_totp_token,
+};
 
 // ── Re-exports for convenience ──────────────────────────────────
 
@@ -129,8 +131,8 @@ pub fn resolve_profile(
     // 5. Timeout (flag/env > profile > defaults > builtin)
     let timeout = Duration::from_secs(global.timeout_secs(profile.timeout, Some(defaults.timeout)));
 
-    // 6. TOTP (flag > env var from profile's totp_env)
-    let totp_token = resolve_totp_with_flag(profile, global);
+    // 6. TOTP: see `resolve_totp`.
+    let (totp_token, totp_provider) = resolve_totp(profile, global)?;
 
     Ok(ControllerConfig {
         url,
@@ -142,17 +144,29 @@ pub fn resolve_profile(
         websocket_enabled: false,
         polling_interval_secs: 30,
         totp_token,
+        totp_provider,
         profile_name: Some(profile_name.to_owned()),
         no_session_cache: global.no_cache || is_cloud,
     })
 }
 
-/// Resolve TOTP token: CLI flag takes priority, then profile's `totp_env`.
-fn resolve_totp_with_flag(profile: &Profile, global: &GlobalOpts) -> Option<SecretString> {
-    if let Some(ref totp) = global.totp {
-        return Some(SecretString::from(totp.clone()));
-    }
-    resolve_totp_token(profile)
+/// Resolve where a login with `profile`'s session credentials gets its TOTP
+/// codes, as `(code, provider)` for `ControllerConfig`.
+///
+/// The code is explicit and single-use: `--totp` / `UNIFI_TOTP`, else the
+/// profile's `totp_env`. It serves the first login only. The provider comes
+/// from the profile's `totp_command` and runs for every re-login, and for
+/// the first login too when there is no explicit code.
+pub fn resolve_totp(
+    profile: &Profile,
+    global: &GlobalOpts,
+) -> Result<(Option<SecretString>, Option<TotpProvider>), ConfigError> {
+    let code = global
+        .totp
+        .as_ref()
+        .map(|totp| SecretString::from(totp.clone()))
+        .or_else(|| resolve_totp_token(profile));
+    Ok((code, resolve_totp_provider(profile)?))
 }
 
 /// Resolve API key with CLI flag override, then fall through to shared resolution.
@@ -222,6 +236,7 @@ mod tests {
             username: None,
             password: None,
             totp_env: None,
+            totp_command: None,
             ca_cert: None,
             insecure: Some(true),
             timeout: None,
@@ -413,6 +428,130 @@ mod tests {
             .expect("profile should resolve");
 
         assert_eq!(resolved.timeout, Duration::from_secs(5));
+    }
+
+    fn mfa_session_profile(controller: &str) -> Profile {
+        let mut profile = direct_profile();
+        profile.auth_mode = "session".into();
+        profile.controller = controller.into();
+        profile.api_key = None;
+        profile.host_id = None;
+        profile.username = Some("admin".into());
+        profile.password = Some("pw".into());
+        profile.totp_command = Some(vec!["sh".into(), "-c".into(), "echo 246810".into()]);
+        profile
+    }
+
+    fn session_global() -> GlobalOpts {
+        let mut global = base_global();
+        global.api_key = None;
+        global.host_id = None;
+        // Keep tests away from the real session cache.
+        global.no_cache = true;
+        global
+    }
+
+    #[test]
+    fn explicit_totp_code_serves_the_first_login_and_the_command_every_relogin() {
+        use secrecy::ExposeSecret;
+
+        let profile = mfa_session_profile("https://10.0.1.1");
+        let mut global = session_global();
+        global.totp = Some("111111".into());
+
+        let resolved = resolve_profile(&profile, "default", &global, &Defaults::default())
+            .expect("profile should resolve");
+
+        assert_eq!(
+            resolved
+                .totp_token
+                .as_ref()
+                .map(ExposeSecret::expose_secret),
+            Some("111111")
+        );
+        assert!(resolved.totp_provider.is_some());
+    }
+
+    #[test]
+    fn totp_command_alone_feeds_every_login() {
+        let profile = mfa_session_profile("https://10.0.1.1");
+
+        let resolved =
+            resolve_profile(&profile, "default", &session_global(), &Defaults::default())
+                .expect("profile should resolve");
+
+        assert!(resolved.totp_token.is_none());
+        assert!(resolved.totp_provider.is_some());
+    }
+
+    #[test]
+    fn totp_command_without_a_program_is_rejected() {
+        for argv in [Vec::new(), vec![" ".to_owned()]] {
+            let mut profile = mfa_session_profile("https://10.0.1.1");
+            profile.totp_command = Some(argv);
+
+            let error =
+                resolve_profile(&profile, "default", &session_global(), &Defaults::default())
+                    .expect_err("an empty totp_command must not resolve");
+
+            assert!(error.to_string().contains("totp_command"), "{error}");
+        }
+    }
+
+    /// The command's output must reach the MFA step of a real login: a
+    /// profile resolved here connects to a controller that challenges.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn totp_command_code_completes_the_mfa_login() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .and(body_partial_json(
+                serde_json::json!({ "ubic_2fa_token": "246810" }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Set-Cookie", "TOKEN=mfa; Path=/")
+                    .set_body_json(serde_json::json!({})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .respond_with(ResponseTemplate::new(499).set_body_json(serde_json::json!({
+                "errors": ["ubic_2fa_token required"],
+                "token": "UBIC_2FA=challenge",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let profile = mfa_session_profile(&server.uri());
+        let resolved =
+            resolve_profile(&profile, "default", &session_global(), &Defaults::default())
+                .expect("profile should resolve");
+        let controller = unifly_api::Controller::new(resolved);
+        controller
+            .connect_lightweight()
+            .await
+            .expect("the command's code completes the MFA login");
+        controller.disconnect().await;
+
+        server.verify().await;
     }
 
     #[test]
