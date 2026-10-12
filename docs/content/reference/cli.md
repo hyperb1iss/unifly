@@ -547,7 +547,7 @@ writes through a symlinked skill directory or file.
 | Events, stats | `events list`, `stats site`, `stats gateway`, `stats dpi`                                        |
 | Other         | `topology`, `sites list`                                                                         |
 
-Any other command exits with code 5 and a "not available in demo mode" error before it reads config or touches the network. Each run generates the fleet fresh from the seed, so names, MACs, IPs, and IDs match from one run to the next.
+Any other command exits with code 5 and a "not available in demo mode" error before it reads config or touches the network. Each run generates the fleet fresh from the seed, so names, MACs, IPs, and IDs match from one run to the next. Timestamps follow the launch time, except the `// last-seen` markers of `devices ports-export --with-clients`, which carry a fixed `2026-03-18T15:30Z` so a seed exports the same bytes on every run.
 
 The fleet comes with problems to diagnose: an offline access point, one with a firmware update waiting, a camera whose switch port went dark, and an unplugged second WAN. Alarms, the WAN list, events, device details, and switch ports all tell the same story, and site health flags the offline access point as a `wlan` warning. `devices ports` and `devices ports-export` (with or without `--with-clients`) show each port's VLANs, PoE, and link state in the same shape a real controller produces, while `devices port-set` is refused like every other write.
 

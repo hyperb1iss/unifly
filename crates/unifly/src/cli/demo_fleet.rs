@@ -4,6 +4,7 @@
 //! fleet, so CLI screenshots need no controller. Everything else is refused
 //! up front, before any config file, keyring, or network access.
 
+use chrono::{DateTime, Utc};
 use clap::ArgMatches;
 use unifly_api::{Controller, DEFAULT_DEMO_SEED, DemoFleetOptions};
 
@@ -51,6 +52,17 @@ pub const SUPPORTED: &[&str] = &[
 
 /// Commands that never need a controller and run normally.
 const LOCAL: &[&str] = &["completions", "skill", "tui"];
+
+/// 2026-03-18T15:30Z, the reference instant the demo fleet's own tests pin.
+const OBSERVED_AT_SECS: i64 = 1_773_847_800;
+
+/// When the demo fleet says it observed what a point-in-time annotation
+/// records, such as the `// last-seen` markers of `ports-export
+/// --with-clients`. The fleet's own clock starts at launch, so a fixed
+/// stamp is what lets the same seed export the same bytes on every run.
+pub fn observed_at() -> DateTime<Utc> {
+    DateTime::from_timestamp(OBSERVED_AT_SECS, 0).unwrap_or_default()
+}
 
 /// The subcommand path a parse resolved to, with aliases canonicalized
 /// (`unifly d ls` becomes `devices list`).
@@ -125,6 +137,14 @@ mod tests {
         assert_eq!(
             path_of(&["unifly", "firewall", "policies", "list", "--demo-fleet"]),
             "firewall policies list"
+        );
+    }
+
+    #[test]
+    fn observed_at_is_the_fixed_reference_instant() {
+        assert_eq!(
+            observed_at().format("%Y-%m-%dT%H:%MZ").to_string(),
+            "2026-03-18T15:30Z"
         );
     }
 
