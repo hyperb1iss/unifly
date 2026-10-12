@@ -510,9 +510,34 @@ that predate the command need an update.
     --color <MODE>       Color: auto, always, never
     --no-cache           Force fresh login (bypass session cache)
     --api-key <KEY>      Integration API key (one-shot override)
+    --demo               Sanitize PII in the TUI (env UNIFI_DEMO)
+    --demo-fleet         Use the synthetic offline demo fleet (env UNIFI_DEMO_FLEET)
+    --demo-seed <SEED>   Demo fleet seed (env UNIFI_DEMO_SEED)
 ```
 
 `--insecure` is tri-state: absent defers to the profile and `[defaults]`, `-k` / `--insecure` accepts self-signed certificates, and `--insecure=false` forces verification no matter what the config says. The explicit value requires the equals form (`--insecure false` does not parse). `--timeout` has no baked-in flag default; when the flag and `UNIFI_TIMEOUT` are absent, the profile's `timeout` wins, then `[defaults]`, then the built-in 30 seconds.
+
+## Demo Fleet
+
+`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) answers a curated set of read-only commands from the synthetic, offline fleet the [TUI demo mode](/reference/tui#demo-mode) uses, so CLI screenshots need no controller, credentials, or config file. Every output format works, and `--demo-seed <N>` picks a different fleet that is just as reproducible.
+
+| Area          | Commands                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| Devices       | `devices list`, `devices get`                                                                    |
+| Clients       | `clients list`, `clients get`, `clients find`, `clients roams`, `clients wifi`                   |
+| Networks      | `networks list`, `networks get`                                                                  |
+| WiFi          | `wifi list`, `wifi neighbors`, `wifi channels`                                                   |
+| Firewall      | `firewall policies list/get`, `firewall zones list/get`, `nat policies list/get`, `acl list/get` |
+| Events, stats | `events list`, `stats site`, `stats gateway`, `stats dpi`                                        |
+| Other         | `topology`, `sites list`                                                                         |
+
+Any other command exits with code 5 and a "not available in demo mode" error before it reads config or touches the network. Each run generates the fleet fresh from the seed, so names, MACs, IPs, and IDs match from one run to the next.
+
+```bash
+unifly --demo-fleet devices list
+unifly --demo-fleet clients list --all -o json | jq length
+unifly --demo-fleet --demo-seed 7 stats gateway -o json-compact
+```
 
 ## Output Formats
 

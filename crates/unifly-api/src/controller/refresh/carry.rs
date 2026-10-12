@@ -72,6 +72,7 @@ pub(super) fn session_device_fields(
             &mut device.uplink_port_idx,
             previous.uplink_port_idx.as_ref(),
         );
+        fill(&mut device.uplink_medium, previous.uplink_medium.as_ref());
         if device.ports.is_empty() {
             device.ports.clone_from(&previous.ports);
         }

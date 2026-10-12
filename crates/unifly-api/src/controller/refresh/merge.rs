@@ -43,6 +43,7 @@ pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[S
                 || device.radios.is_empty()
                 || device.uplink_device_mac.is_none()
                 || device.uplink_port_idx.is_none()
+                || device.uplink_medium.is_none()
             {
                 let session_dev: Device = Device::from((*legacy_device).clone());
                 if device.ports.is_empty() && !session_dev.ports.is_empty() {
@@ -56,6 +57,9 @@ pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[S
                 }
                 if device.uplink_port_idx.is_none() {
                     device.uplink_port_idx = session_dev.uplink_port_idx;
+                }
+                if device.uplink_medium.is_none() {
+                    device.uplink_medium = session_dev.uplink_medium;
                 }
             }
         }

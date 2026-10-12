@@ -10,6 +10,10 @@ impl Controller {
         end: Option<i64>,
         attrs: Option<&[String]>,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.site_stats(interval, start, end, chrono::Utc::now())));
+        }
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
         Ok(session.get_site_stats(interval, start, end, attrs).await?)
@@ -44,6 +48,10 @@ impl Controller {
         end: Option<i64>,
         attrs: Option<&[String]>,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.gateway_stats(interval, start, end, chrono::Utc::now())));
+        }
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
         Ok(session
@@ -56,6 +64,10 @@ impl Controller {
         group_by: &str,
         macs: Option<&[String]>,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.dpi_stats(group_by)));
+        }
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
         Ok(session.get_dpi_stats(group_by, macs).await?)

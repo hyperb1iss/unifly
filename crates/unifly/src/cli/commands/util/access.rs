@@ -6,7 +6,9 @@ pub async fn ensure_integration_access(
     controller: &Controller,
     operation: &str,
 ) -> Result<(), CliError> {
-    if controller.has_integration_access().await {
+    // The demo fleet holds every store-backed collection; the --demo-fleet
+    // allowlist keeps commands that need a live API from getting here.
+    if controller.is_demo() || controller.has_integration_access().await {
         return Ok(());
     }
 
@@ -20,7 +22,7 @@ pub async fn ensure_session_access(
     controller: &Controller,
     operation: &str,
 ) -> Result<(), CliError> {
-    if controller.has_session_access().await {
+    if controller.is_demo() || controller.has_session_access().await {
         return Ok(());
     }
 

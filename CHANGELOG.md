@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Synthetic demo fleet for screenshots and recordings.**
+  `unifly tui --demo-fleet` runs the real TUI against an offline, fictional
+  network with no controller, credentials, or network access: "Neon Harbor
+  Studios", with a UDM Pro Max gateway, three switches, nine access points,
+  about 140 clients on six VLANs and four SSIDs, a zone-based firewall, NAT,
+  ACLs, and a week of events. A once-a-second simulation keeps WAN traffic
+  (with render-upload and asset-sync bursts), device telemetry, client roams
+  and arrivals, and security events moving, and the on-demand queries behind
+  the Stats and WiFi screens answer from the same fleet. The same
+  `--demo-seed` replays the same fleet and the same animation. Device
+  actions (restart, locate, upgrade, PoE power cycle) and client actions
+  (block, unblock, kick) play out in the simulation; configuration changes
+  are refused with a clear error. Plain `--demo` still sanitizes a real
+  controller, and now falls back to the demo fleet when no controller is
+  configured instead of opening onboarding.
+  `--demo-fleet` and `--demo-seed` are global flags (`UNIFI_DEMO_FLEET`,
+  `UNIFI_DEMO_SEED`), and a curated set of read-only CLI commands answers
+  from the same fleet in every output format: devices, clients, networks,
+  WiFi, firewall, NAT, ACL, events, stats, topology, and sites listings.
+  Any other command fails with a "not available in demo mode" error before
+  it reads config or touches the network. Library users get the same fleet
+  from `Controller::demo` behind the new `demo` feature of `unifly-api`.
 - **`totp_command` profile setting: MFA sessions that renew themselves.** A
   profile can name a command that prints the current TOTP code, as an argv
   array run without a shell, e.g. `totp_command = ["op", "item", "get",
@@ -144,6 +166,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `config init` and
   `config set-password` classify keyring errors the same way. Credentials
   already kept in `config.toml` stay there.
+
+- **The Firewall screen's NAT tab was always empty.** NAT policy updates
+  reached the TUI but were never handed to the screens, so the tab stayed
+  blank on every controller.
+
+- **Stats time axis.** `stat/report` rows carry `time` in milliseconds and
+  the Stats screen plotted them as seconds, so the axis showed unrelated
+  clock times. Timestamps are converted before plotting.
+
+- **Event backlog order.** Events loaded at connect now reach the Events
+  screen and the dashboard oldest first; the store's unordered snapshot used
+  to arrive in arbitrary order.
+
+- **Topology draws the real uplink tree.** The Topology screen used to
+  connect every switch to every access point, whatever the cabling. It now
+  lays devices out under the device they report as their uplink, gateway at
+  the root, with the parent's port number on each wired link, uplinks the
+  controller reports as wireless (Session `uplink.type`, now carried as
+  `Device::uplink_medium`) dashed, and devices with no reported uplink
+  attached to the gateway by a dim dotted line. Boxes are sized to their
+  names and wide sibling sets wrap onto extra rows, so at 100% zoom every
+  name is drawn whole even at 80 columns.
 
 ### Performance
 

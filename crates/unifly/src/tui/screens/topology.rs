@@ -1,6 +1,7 @@
 //! Topology screen - canvas-based network graph.
 
 mod input;
+mod layout;
 mod render;
 mod state;
 
@@ -12,24 +13,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
 
-use unifly_api::{Device, DeviceState, DeviceType};
+use unifly_api::Device;
 
 use crate::tui::action::Action;
 use crate::tui::component::Component;
-
-#[allow(dead_code)]
-struct TopoNode {
-    label: String,
-    ip: String,
-    device_type: DeviceType,
-    state: DeviceState,
-    client_count: u32,
-    traffic_bytes_per_sec: u64,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
 
 pub struct TopologyScreen {
     focused: bool,

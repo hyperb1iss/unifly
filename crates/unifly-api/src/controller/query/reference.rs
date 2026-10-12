@@ -78,6 +78,10 @@ impl Controller {
     }
 
     pub async fn list_dpi_categories(&self) -> Result<Vec<DpiCategory>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.dpi_categories()));
+        }
         let (client, site_id) = integration_site_context(self, "list_dpi_categories").await?;
         let raw = client
             .paginate_all(200, |offset, limit| {
@@ -118,6 +122,10 @@ impl Controller {
     }
 
     pub async fn list_dpi_applications(&self) -> Result<Vec<DpiApplication>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.dpi_applications()));
+        }
         let (client, site_id) = integration_site_context(self, "list_dpi_applications").await?;
         let raw = client
             .paginate_all(200, |offset, limit| {

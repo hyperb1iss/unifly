@@ -248,3 +248,19 @@ profile; it is a configuration write. Regular Integration commands in cloud
 mode need a console host ID (automatically resolved when unambiguous).
 Cloud device host filters can be repeated. ISP query reports partial-success
 warnings when Site Manager returns incomplete results.
+
+## Demo fleet
+
+`--demo-fleet` (or `UNIFI_DEMO_FLEET=true`) answers from a synthetic,
+offline network with no controller, credentials, or config file. Only these
+read-only commands work, in every output format: `devices list|get`,
+`clients list|get|find|roams|wifi`, `networks list|get`,
+`wifi list|neighbors|channels`, `firewall policies list|get`,
+`firewall zones list|get`, `nat policies list|get`, `acl list|get`,
+`events list`, `stats site|gateway|dpi`, `topology`, and `sites list`. Any
+other command exits 5 with "not available in demo mode" before reading
+config or touching the network. `--demo-seed N` selects a different fleet;
+the same seed reproduces the same names, MACs, IPs, and IDs. The data is
+fictional, so never present it as the user's network. `unifly tui
+--demo-fleet` runs the dashboard against the same fleet, while plain
+`--demo` sanitizes a real controller's data in the TUI.

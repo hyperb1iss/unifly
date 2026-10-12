@@ -137,6 +137,16 @@ pub enum CliError {
     )]
     Unsupported { operation: String, required: String },
 
+    #[error("`unifly {command}` is not available in demo mode")]
+    #[diagnostic(
+        code(unifi::demo_unavailable),
+        help(
+            "The demo fleet is synthetic and offline and answers only these read-only \
+             commands: {supported}. Drop --demo-fleet to run this against a real controller."
+        )
+    )]
+    DemoUnavailable { command: String, supported: String },
+
     #[error("'{feature}' is not yet implemented")]
     #[diagnostic(
         code(unifi::not_implemented),
@@ -223,7 +233,9 @@ impl CliError {
             Self::Validation { .. }
             | Self::NonInteractiveRequiresYes { .. }
             | Self::SiteAmbiguous { .. } => exit_code::USAGE,
-            Self::Unsupported { .. } | Self::NotYetImplemented { .. } => exit_code::PERMISSION,
+            Self::Unsupported { .. }
+            | Self::NotYetImplemented { .. }
+            | Self::DemoUnavailable { .. } => exit_code::PERMISSION,
             _ => exit_code::GENERAL,
         }
     }

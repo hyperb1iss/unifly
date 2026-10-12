@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use crate::integration_types;
 use crate::model::common::{Bandwidth, DataSource};
-use crate::model::device::{Device, DeviceState, DeviceStats, DeviceType};
+use crate::model::device::{Device, DeviceState, DeviceStats, DeviceType, UplinkMedium};
 use crate::model::entity_id::{EntityId, MacAddress};
 use crate::session::models::{SessionDevice, SessionUplink};
 
@@ -54,18 +54,25 @@ fn map_device_state(code: i32) -> DeviceState {
     }
 }
 
-/// Extract the uplink device MAC and port index from a session uplink
-/// record. Returns `(None, None)` when the device has no uplink (gateways).
-fn parse_session_uplink(uplink: Option<&SessionUplink>) -> (Option<MacAddress>, Option<u32>) {
+/// Extract the uplink device MAC, port index, and medium from a session
+/// uplink record. All `None` when the device has no uplink (gateways).
+fn parse_session_uplink(
+    uplink: Option<&SessionUplink>,
+) -> (Option<MacAddress>, Option<u32>, Option<UplinkMedium>) {
     let Some(uplink) = uplink else {
-        return (None, None);
+        return (None, None, None);
     };
     let mac = uplink
         .uplink_mac
         .as_deref()
         .filter(|s| !s.is_empty())
         .map(MacAddress::new);
-    (mac, uplink.uplink_remote_port)
+    let medium = match uplink.uplink_type.as_deref() {
+        Some("wire") => Some(UplinkMedium::Wired),
+        Some("wireless") => Some(UplinkMedium::Wireless),
+        _ => None,
+    };
+    (mac, uplink.uplink_remote_port, medium)
 }
 
 impl From<SessionDevice> for Device {
@@ -77,7 +84,8 @@ impl From<SessionDevice> for Device {
         } else {
             d.id.clone()
         };
-        let (uplink_device_mac, uplink_port_idx) = parse_session_uplink(d.uplink.as_ref());
+        let (uplink_device_mac, uplink_port_idx, uplink_medium) =
+            parse_session_uplink(d.uplink.as_ref());
 
         let device_stats = {
             let mut s = DeviceStats {
@@ -125,6 +133,7 @@ impl From<SessionDevice> for Device {
             uplink_device_id: None,
             uplink_device_mac,
             uplink_port_idx,
+            uplink_medium,
             has_switching: device_type == DeviceType::Switch || device_type == DeviceType::Gateway,
             has_access_point: device_type == DeviceType::AccessPoint,
             stats: device_stats,
@@ -202,6 +211,7 @@ impl From<integration_types::DeviceResponse> for Device {
             uplink_device_id: None,
             uplink_device_mac: None,
             uplink_port_idx: None,
+            uplink_medium: None,
             has_switching: d.features.iter().any(|f| f == "switching"),
             has_access_point: d.features.iter().any(|f| f == "accessPoint"),
             stats: DeviceStats::default(),
@@ -349,6 +359,26 @@ mod tests {
             Some("58:d6:1f:62:33:01".into())
         );
         assert_eq!(device.uplink_port_idx, Some(4));
+        assert_eq!(device.uplink_medium, Some(UplinkMedium::Wired));
+    }
+
+    #[test]
+    fn session_device_carries_a_wireless_uplink_medium() {
+        let raw = json!({
+            "mac": "6c:63:f8:36:53:43",
+            "type": "uap",
+            "state": 1,
+            "uplink": {
+                "type": "wireless",
+                "uplink_mac": "6c:63:f8:36:53:42"
+            }
+        });
+
+        let session_device: SessionDevice = serde_json::from_value(raw).expect("deserialize");
+        let device: Device = session_device.into();
+
+        assert_eq!(device.uplink_medium, Some(UplinkMedium::Wireless));
+        assert!(device.uplink_port_idx.is_none());
     }
 
     #[test]

@@ -25,6 +25,7 @@ cli = [
     "dep:dialoguer",
     "dep:rpassword",
     "dep:serde_yaml_ng",
+    "unifly-api/demo",
 ]
 tui = [
     "cli",
