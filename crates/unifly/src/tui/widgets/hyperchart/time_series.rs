@@ -250,6 +250,7 @@ impl<'a> HyperChart<'a> {
             y,
             transformed_y: scene::transform_y(self.baseline, series.direction, y),
             color: series.line_color,
+            direction: series.direction,
         })
     }
 }

@@ -320,6 +320,7 @@ mod tests {
             y: 2.0,
             transformed_y: 2.0,
             color: Color::Cyan,
+            direction: SeriesDirection::Up,
         }];
 
         let image = rasterize_scene(
