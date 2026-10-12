@@ -536,3 +536,53 @@ fn stats_ranges_are_clamped_and_bounded() {
         "keeps the newest buckets"
     );
 }
+
+#[test]
+fn kicks_follow_unifi_wired_versus_wireless() {
+    let mut sim = Simulation::new(fleet());
+    let now = anchor();
+    let wired = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| client.client.client_type == ClientType::Wired)
+        .expect("wired client")
+        .client
+        .mac
+        .clone();
+    let error = sim
+        .apply_command(Command::KickClient { mac: wired.clone() }, now)
+        .expect_err("wired clients cannot be kicked");
+    assert!(matches!(error, CoreError::Rejected { .. }), "{error}");
+    let still = sim.client_index_by_mac(&wired).expect("wired client stays");
+    assert_eq!(
+        sim.fleet.clients[still].client.client_type,
+        ClientType::Wired
+    );
+
+    let wireless = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| client.mobile && client.client.client_type == ClientType::Wireless)
+        .expect("wireless client")
+        .client
+        .mac
+        .clone();
+    sim.apply_command(
+        Command::KickClient {
+            mac: wireless.clone(),
+        },
+        now,
+    )
+    .expect("wireless kick");
+    assert!(sim.client_index_by_mac(&wireless).is_none());
+    for tick in 1..=10 {
+        sim.step(now + Duration::seconds(tick));
+    }
+    let back = sim
+        .client_index_by_mac(&wireless)
+        .expect("kicked client rejoins");
+    let client = &sim.fleet.clients[back].client;
+    assert!(client.wireless.is_some() && client.switch_port.is_none());
+}

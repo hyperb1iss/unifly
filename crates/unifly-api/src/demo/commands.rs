@@ -11,7 +11,7 @@ use super::catalog::{self, AP_FIRMWARE};
 use super::sim::{Delta, Pending, Simulation, client_label};
 use crate::command::{Command, CommandResult};
 use crate::core_error::CoreError;
-use crate::model::{DeviceState, EntityId, EventCategory, EventSeverity, MacAddress};
+use crate::model::{ClientType, DeviceState, EntityId, EventCategory, EventSeverity, MacAddress};
 
 const DEVICE_INFO: (EventCategory, EventSeverity) = (EventCategory::Device, EventSeverity::Info);
 const CLIENT_INFO: (EventCategory, EventSeverity) = (EventCategory::Client, EventSeverity::Info);
@@ -83,6 +83,17 @@ impl Simulation {
             Command::UnblockClient { mac } => self.set_blocked(&mac, false, now, &mut delta)?,
             Command::KickClient { mac } => {
                 let index = self.require_client(&mac)?;
+                // UniFi kicks wireless stations off their AP; a wired port
+                // has nothing to deauthenticate.
+                let client = &self.fleet.clients[index].client;
+                if client.client_type != ClientType::Wireless {
+                    return Err(CoreError::Rejected {
+                        message: format!(
+                            "{} is wired; only wireless clients can be kicked",
+                            client_label(client)
+                        ),
+                    });
+                }
                 if let Some(mac) = self.disconnect(index, now, &mut delta, "EVT_WU_Kicked") {
                     self.returns.push((self.tick + KICK_RETURN_TICKS, mac));
                 }
