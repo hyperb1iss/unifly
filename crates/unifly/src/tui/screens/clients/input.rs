@@ -57,8 +57,7 @@ impl ClientsScreen {
     pub(super) fn apply_action(&mut self, action: &Action) {
         match action {
             Action::ClientsUpdated(clients) => {
-                self.clients = std::sync::Arc::clone(clients);
-                self.reconcile_selection_after_view_change(false);
+                self.apply_clients_update(clients);
             }
             Action::FilterClientType(filter) => {
                 self.filter = *filter;

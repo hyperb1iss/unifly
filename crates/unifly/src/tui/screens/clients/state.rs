@@ -5,7 +5,9 @@ use super::ClientsScreen;
 use ratatui::widgets::TableState;
 use unifly_api::{Client, ClientType, EntityId};
 
+use crate::cli::commands::util::order;
 use crate::tui::action::ClientTypeFilter;
+use crate::tui::table::reselect;
 
 impl ClientsScreen {
     pub fn new() -> Self {
@@ -111,15 +113,36 @@ impl ClientsScreen {
         self.table_state.select(Some(0));
     }
 
+    /// Store a refreshed client list in table order, keeping the selection
+    /// on the client it was on.
+    pub(super) fn apply_clients_update(&mut self, clients: &[Arc<Client>]) {
+        let selected = self.selected_client_id();
+        self.clients = Arc::new(order::clients(clients));
+        self.reconcile_selection(selected.as_ref(), false);
+    }
+
     pub(super) fn reconcile_selection_after_view_change(&mut self, reset_to_top: bool) {
-        let (filtered_len, detail_idx) = {
+        self.reconcile_selection(None, reset_to_top);
+    }
+
+    /// Re-point the selection after the visible rows changed: at the open
+    /// detail's client, else at `follow` when it is still listed, else at
+    /// the top (`reset_to_top`) or the same row index.
+    fn reconcile_selection(&mut self, follow: Option<&EntityId>, reset_to_top: bool) {
+        let (detail_idx, followed) = {
             let filtered = self.filtered_clients();
             let detail_idx = if self.detail_open {
                 self.detail_client_index(&filtered)
             } else {
                 None
             };
-            (filtered.len(), detail_idx)
+            let previous = if reset_to_top {
+                Some(0)
+            } else {
+                self.table_state.selected()
+            };
+            let followed = reselect(filtered.iter().map(|client| &client.id), follow, previous);
+            (detail_idx, followed)
         };
 
         if self.detail_open {
@@ -132,12 +155,7 @@ impl ClientsScreen {
             self.detail_client_id = None;
         }
 
-        if reset_to_top || filtered_len == 0 {
-            self.table_state.select(Some(0));
-        } else {
-            let idx = self.selected_index().min(filtered_len - 1);
-            self.table_state.select(Some(idx));
-        }
+        self.table_state.select(Some(followed.unwrap_or(0)));
     }
 
     pub(super) fn filter_index(&self) -> usize {
@@ -171,8 +189,8 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
-    use unifly_api::Client;
     use unifly_api::integration_types::ClientResponse;
+    use unifly_api::{Client, EntityId};
     use uuid::Uuid;
 
     use crate::tui::action::Action;
@@ -209,8 +227,8 @@ mod tests {
             Some(Action::OpenClientDetail(id)) if id == bravo.id
         ));
 
-        let refreshed = Arc::new(vec![Arc::clone(&bravo), Arc::clone(&alpha)]);
-        screen.clients = Arc::clone(&refreshed);
+        let renamed = test_client(alpha_id, "zulu", "aa:bb:cc:dd:ee:01");
+        let refreshed = Arc::new(vec![renamed, Arc::clone(&bravo)]);
         screen.apply_action(&Action::ClientsUpdated(refreshed));
 
         assert_eq!(screen.detail_client_id.as_ref(), Some(&bravo.id));
@@ -221,6 +239,40 @@ mod tests {
                 .handle_key_input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
             Some(Action::RequestKickClient(id)) if id == bravo.id
         ));
+    }
+
+    fn names(screen: &ClientsScreen) -> Vec<String> {
+        screen
+            .filtered_clients()
+            .iter()
+            .map(|client| client.name.clone().unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn clients_list_in_cli_order_and_selection_follows_the_client() {
+        let mut screen = ClientsScreen::new();
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            test_client(Uuid::from_u128(3), "charlie", "aa:bb:cc:dd:ee:03"),
+            test_client(Uuid::from_u128(1), "Alpha", "aa:bb:cc:dd:ee:01"),
+            test_client(Uuid::from_u128(2), "bravo", "aa:bb:cc:dd:ee:02"),
+        ])));
+        assert_eq!(names(&screen), vec!["Alpha", "bravo", "charlie"]);
+
+        screen.select(1);
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            test_client(Uuid::from_u128(2), "bravo", "aa:bb:cc:dd:ee:02"),
+            test_client(Uuid::from_u128(4), "aaron", "aa:bb:cc:dd:ee:04"),
+            test_client(Uuid::from_u128(3), "charlie", "aa:bb:cc:dd:ee:03"),
+            test_client(Uuid::from_u128(1), "Alpha", "aa:bb:cc:dd:ee:01"),
+        ])));
+
+        assert_eq!(names(&screen), vec!["aaron", "Alpha", "bravo", "charlie"]);
+        assert_eq!(screen.table_state.selected(), Some(2));
+        assert_eq!(
+            screen.selected_client_id(),
+            Some(EntityId::Uuid(Uuid::from_u128(2)))
+        );
     }
 
     #[test]

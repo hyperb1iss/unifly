@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 use ratatui::widgets::TableState;
 use serde_json::Value;
 use unifly_api::session_models::RogueAp;
-use unifly_api::{Client, ClientType, Device, DeviceType};
+use unifly_api::{Client, ClientType, Device, DeviceType, EntityId};
 
 use super::WifiScreen;
+use crate::cli::commands::util::order;
 use crate::tui::action::{Action, WifiBand, WifiSortField, WifiSubTab};
+use crate::tui::table::reselect;
 
 pub(super) const NEIGHBOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub(super) const CHANNEL_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
@@ -21,6 +23,14 @@ pub(super) struct ChannelOccupancy {
     pub neighbor_count: usize,
     pub signal: Option<i32>,
     pub conflict: bool,
+}
+
+/// Identities of the selected table rows, see [`WifiScreen::selected_rows`].
+#[derive(Default)]
+pub(super) struct SelectedRows {
+    ap: Option<EntityId>,
+    client: Option<EntityId>,
+    neighbor: Option<String>,
 }
 
 #[derive(Clone)]
@@ -69,17 +79,30 @@ impl WifiScreen {
         match action {
             Action::Tick => return self.tick_request(),
             Action::DevicesUpdated(devices) => {
-                self.devices = Arc::clone(devices);
+                let selected = self.selected_rows();
+                self.devices = Arc::new(order::devices(devices));
+                self.follow_rows(&selected);
                 self.sync_ap_selection();
                 self.sync_client_selection();
                 self.sync_neighbor_selection();
             }
             Action::ClientsUpdated(clients) => {
-                self.clients = Arc::clone(clients);
+                // The first client list reorders the health-sorted AP table
+                // wholesale; the cursor keeps its row rather than chasing
+                // whichever AP happened to be on top before.
+                let selected = if self.clients.is_empty() {
+                    SelectedRows::default()
+                } else {
+                    self.selected_rows()
+                };
+                self.clients = Arc::new(order::clients(clients));
+                self.follow_rows(&selected);
                 self.sync_client_selection();
             }
             Action::WifiNeighborsUpdated(neighbors) => {
+                let selected = self.selected_rows();
                 self.neighbors = Arc::clone(neighbors);
+                self.follow_rows(&selected);
                 self.sync_neighbor_selection();
             }
             Action::WifiChannelsUpdated(channels) => {
@@ -114,7 +137,9 @@ impl WifiScreen {
                 self.channel_map_open = !self.channel_map_open;
             }
             Action::WifiSortColumn(sort_field) => {
+                let selected = self.selected_rows();
                 self.sort_field = *sort_field;
+                self.follow_rows(&selected);
                 self.sync_ap_selection();
                 self.sync_client_selection();
                 self.sync_neighbor_selection();
@@ -208,16 +233,14 @@ impl WifiScreen {
             .filter(|device| self.matches_ap_query(device))
             .collect();
 
+        // `self.devices` is already in name order and the sort is stable, so
+        // ties (and the Name sort) keep that order.
         aps.sort_by(|left, right| match self.sort_field {
-            WifiSortField::Health => self
-                .ap_health(right)
-                .cmp(&self.ap_health(left))
-                .then_with(|| display_device_name(left).cmp(&display_device_name(right))),
+            WifiSortField::Health => self.ap_health(right).cmp(&self.ap_health(left)),
             WifiSortField::Clients => self
                 .ap_clients(right)
                 .len()
-                .cmp(&self.ap_clients(left).len())
-                .then_with(|| display_device_name(left).cmp(&display_device_name(right))),
+                .cmp(&self.ap_clients(left).len()),
             WifiSortField::Channel => self
                 .ap_channel_profile(left)
                 .map(|(channel, _)| channel)
@@ -227,9 +250,8 @@ impl WifiScreen {
                         .ap_channel_profile(right)
                         .map(|(channel, _)| channel)
                         .unwrap_or_default(),
-                )
-                .then_with(|| display_device_name(left).cmp(&display_device_name(right))),
-            _ => display_device_name(left).cmp(&display_device_name(right)),
+                ),
+            _ => Ordering::Equal,
         });
 
         aps
@@ -245,6 +267,8 @@ impl WifiScreen {
             .filter(|client| self.matches_client_query(client))
             .collect();
 
+        // `self.clients` is already in name order and the sort is stable, so
+        // ties (and the Name sort) keep that order.
         clients.sort_by(|left, right| match self.sort_field {
             WifiSortField::Health => right
                 .wireless
@@ -255,8 +279,7 @@ impl WifiScreen {
                         .wireless
                         .as_ref()
                         .and_then(|wireless| wireless.satisfaction),
-                )
-                .then_with(|| display_client_name(left).cmp(&display_client_name(right))),
+                ),
             WifiSortField::Signal => right
                 .wireless
                 .as_ref()
@@ -266,9 +289,8 @@ impl WifiScreen {
                         .wireless
                         .as_ref()
                         .and_then(|wireless| wireless.signal_dbm),
-                )
-                .then_with(|| display_client_name(left).cmp(&display_client_name(right))),
-            _ => display_client_name(left).cmp(&display_client_name(right)),
+                ),
+            _ => Ordering::Equal,
         });
 
         clients
@@ -315,6 +337,50 @@ impl WifiScreen {
         let clients = self.wireless_clients();
         let index = self.client_table_state.selected().unwrap_or(0);
         clients.get(index).copied()
+    }
+
+    pub(super) fn selected_neighbor(&self) -> Option<&RogueAp> {
+        let neighbors = self.visible_neighbors();
+        let index = self.neighbor_table_state.selected().unwrap_or(0);
+        neighbors.get(index).copied()
+    }
+
+    /// Identities of the rows selected in the AP, client, and neighbor
+    /// tables, taken before their rows change.
+    pub(super) fn selected_rows(&self) -> SelectedRows {
+        SelectedRows {
+            ap: self.selected_ap().map(|device| device.id.clone()),
+            client: self.selected_client().map(|client| client.id.clone()),
+            neighbor: self
+                .selected_neighbor()
+                .map(|neighbor| neighbor.bssid.clone()),
+        }
+    }
+
+    /// Point each table back at the rows captured by `selected_rows`, so a
+    /// refresh or re-sort keeps the cursor on the same AP, client, and
+    /// neighbor.
+    pub(super) fn follow_rows(&mut self, selected: &SelectedRows) {
+        let ap = reselect(
+            self.ap_devices().into_iter().map(|device| &device.id),
+            selected.ap.as_ref(),
+            self.ap_table_state.selected(),
+        );
+        let client = reselect(
+            self.wireless_clients().into_iter().map(|client| &client.id),
+            selected.client.as_ref(),
+            self.client_table_state.selected(),
+        );
+        let neighbor = reselect(
+            self.visible_neighbors()
+                .into_iter()
+                .map(|neighbor| neighbor.bssid.as_str()),
+            selected.neighbor.as_deref(),
+            self.neighbor_table_state.selected(),
+        );
+        self.ap_table_state.select(ap);
+        self.client_table_state.select(client);
+        self.neighbor_table_state.select(neighbor);
     }
 
     pub(super) fn selected_client_ip(&self) -> Option<String> {
@@ -869,3 +935,6 @@ fn format_timestamp(timestamp: i64) -> String {
 fn compare_timestamp(left: &str, right: &str) -> Ordering {
     left.cmp(right)
 }
+
+#[cfg(test)]
+mod tests;
