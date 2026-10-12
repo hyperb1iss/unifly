@@ -136,9 +136,12 @@ them out of logs and source control.
 
 ## JSON field names
 
-Typed records use snake_case keys, and every key is present: missing data is
-`null`, so there is no alternate spelling to fall back on. Enum values are
-PascalCase unless noted. For a field not listed here, read one record's keys
+Typed records use snake_case keys. The records below serialize every listed
+key on every record, with `null` when the controller did not report a value,
+so there is no alternate spelling to fall back on. Some nested structures
+omit empty keys instead: firewall policy traffic filters drop an absent
+`ports` and an empty `mac_addresses`. Enum values are PascalCase unless
+noted. For a field not listed here, read one record's keys
 (`jq '.[0] | keys'`) rather than guessing. The controller's wire names, such
 as `uplink`, `radio_table`, `system_stats`, `datetime`, or `msg`, do not
 appear in typed output.
@@ -161,9 +164,13 @@ Clients: `id`, `mac`, `ip`, `name` (the alias), `hostname`, `client_type`
 `uplink_device_id`, `uplink_device_mac`, `switch_port`, `network_id`,
 `vlan`, `is_guest`, `blocked`, `tx_bytes`, `rx_bytes`, `bandwidth` (bytes
 per second, as on devices), `os_name`, `device_class`, `use_fixedip`,
-`fixed_ip`, and `wireless`: `null` for wired clients, otherwise `ssid`,
-`bssid`, `channel`, `frequency_ghz`, `signal_dbm`, `noise_dbm`,
-`satisfaction`, `tx_rate_kbps`, `rx_rate_kbps`.
+`fixed_ip`, and `wireless` (`ssid`, `bssid`, `channel`, `frequency_ghz`,
+`signal_dbm`, `noise_dbm`, `satisfaction`, `tx_rate_kbps`, `rx_rate_kbps`).
+`wireless` is `null` for wired clients and also whenever the controller
+reported no radio details, as with cloud or Integration-only access, so
+read `client_type` to tell wired from wireless. Telemetry such as
+`bandwidth`, byte counters, and `uplink_device_mac` is likewise `null` when
+only the Integration API answered.
 
 Events: `id`, `timestamp` (RFC 3339), `category` (`Device`, `Client`,
 `Network`, `System`, `Admin`, `Firewall`, `Vpn`, `Unknown`), `severity`
