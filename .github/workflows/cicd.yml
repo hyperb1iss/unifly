@@ -145,7 +145,7 @@ jobs:
           if [[ -z "$PREVIOUS_TAG" ]]; then
             PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
           fi
-          echo "tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
       - name: Download release notes from release workflow
         id: download_notes
         if: ${{ inputs.release_run_id != '' }}
@@ -236,13 +236,19 @@ jobs:
       - name: Calculate checksums
         id: sha
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           RELEASE_URL="https://github.com/hyperb1iss/unifly/releases/download/${GITHUB_REF_NAME}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-          echo "macos_arm64=$(curl -fsSL "${RELEASE_URL}/unifly-macos-arm64" | shasum -a 256 | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "linux_arm64=$(curl -fsSL "${RELEASE_URL}/unifly-linux-arm64" | shasum -a 256 | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "linux_amd64=$(curl -fsSL "${RELEASE_URL}/unifly-linux-amd64" | shasum -a 256 | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          # Finish every checked download before publishing any step outputs.
+          MACOS_ARM64_SHA=$(curl -fsSL "${RELEASE_URL}/unifly-macos-arm64" | shasum -a 256 | cut -d' ' -f1)
+          LINUX_ARM64_SHA=$(curl -fsSL "${RELEASE_URL}/unifly-linux-arm64" | shasum -a 256 | cut -d' ' -f1)
+          LINUX_AMD64_SHA=$(curl -fsSL "${RELEASE_URL}/unifly-linux-amd64" | shasum -a 256 | cut -d' ' -f1)
+          {
+            echo "version=$VERSION"
+            echo "macos_arm64=$MACOS_ARM64_SHA"
+            echo "linux_arm64=$LINUX_ARM64_SHA"
+            echo "linux_amd64=$LINUX_AMD64_SHA"
+          } >> "$GITHUB_OUTPUT"
       - name: Generate formula
         run: |
           cat > homebrew-tap/Formula/unifly.rb << 'FORMULA'
