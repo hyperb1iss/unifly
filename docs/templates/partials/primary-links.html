@@ -1,0 +1,24 @@
+{#- Top-level documentation sections. Rendered in the desktop nav bar and, below
+the tablet breakpoint, inside the mobile drawer. The including template sets
+primary_link_class to pick the link styling. -#} {% set cp = current_path |
+default(value="") %}
+<a
+  class="{{ primary_link_class }}{% if cp is starting_with('/guide/') %} {{ primary_link_class }}--active{% endif %}"
+  href="{{ get_url(path='@/guide/_index.md') }}"
+  >Guide</a
+>
+<a
+  class="{{ primary_link_class }}{% if cp is starting_with('/reference/') %} {{ primary_link_class }}--active{% endif %}"
+  href="{{ get_url(path='@/reference/_index.md') }}"
+  >Reference</a
+>
+<a
+  class="{{ primary_link_class }}{% if cp is starting_with('/architecture/') %} {{ primary_link_class }}--active{% endif %}"
+  href="{{ get_url(path='@/architecture/_index.md') }}"
+  >Architecture</a
+>
+<a
+  class="{{ primary_link_class }}{% if cp is starting_with('/troubleshooting') %} {{ primary_link_class }}--active{% endif %}"
+  href="{{ get_url(path='@/troubleshooting.md') }}"
+  >Troubleshooting</a
+>

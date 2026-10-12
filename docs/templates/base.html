@@ -87,8 +87,10 @@
   <body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
 
-    {% include "partials/nav.html" %} {% block content %}{% endblock content %}
-    {% include "partials/footer.html" %} {% include "partials/search.html" %}
+    {% include "partials/nav.html" %}
+    <div class="nav-overlay" id="nav-overlay" aria-hidden="true"></div>
+    {% block content %}{% endblock content %} {% include "partials/footer.html"
+    %} {% include "partials/search.html" %}
 
     <script defer src="{{ get_url(path='js/theme-toggle.js') }}"></script>
     <script defer src="{{ get_url(path='js/search.js') }}"></script>
