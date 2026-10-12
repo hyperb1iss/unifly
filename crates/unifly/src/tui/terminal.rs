@@ -70,6 +70,15 @@ impl Tui {
             self.terminal.backend_mut().queue(BeginSynchronizedUpdate)?;
         }
 
+        // New chart images go out ahead of the frame, so no placeholder in it
+        // refers to an image the terminal has not received.
+        #[cfg(feature = "tui-graphics")]
+        if let Some(transmits) = crate::tui::graphics::take_pending_image_transmits() {
+            self.terminal
+                .backend_mut()
+                .write_all(transmits.as_bytes())?;
+        }
+
         let result = self.terminal.draw(render).map(|_| ());
 
         // Chart images the cache dropped before this frame cannot appear in

@@ -101,6 +101,8 @@ struct ChartCache {
     last_queued_by_slot: HashMap<ChartSlotKey, Instant>,
     /// Images dropped from the cache whose terminal copies await deletion.
     retired: Vec<KittyImage>,
+    /// Transmit commands for new images, sent ahead of the next frame.
+    transmits: Vec<String>,
 }
 
 pub fn probe_stdio() -> GraphicsProtocol {
@@ -227,6 +229,38 @@ pub fn queue_chart(
     })
 }
 
+/// Transmit commands for chart images new since the last frame.
+///
+/// The caller writes them before the frame, so every placeholder in it
+/// refers to an image the terminal already holds.
+pub fn take_pending_image_transmits() -> Option<String> {
+    let manager = CHARTS.get()?;
+    let mut cache = manager.cache.lock().ok()?;
+    let transmits = std::mem::take(&mut cache.transmits);
+    (!transmits.is_empty()).then(|| transmits.concat())
+}
+
+/// Kitty's Unicode image placeholder character.
+const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
+
+/// Pull a kitty image's one-shot transmit command out of its protocol.
+///
+/// ratatui-image puts the transmit in the first placeholder cell the first
+/// time a protocol renders and never sends it again, so a widget drawn over
+/// that cell later in the frame (the help overlay, a dialog) would drop the
+/// image for good. Rendering once into a scratch cell takes the command
+/// out, and every later render carries only placeholders.
+fn take_transmit(protocol: &Protocol) -> Option<String> {
+    let area = Rect::new(0, 0, 1, 1);
+    let mut scratch = Buffer::empty(area);
+    Image::new(protocol)
+        .allow_clipping(true)
+        .render(area, &mut scratch);
+    let symbol = scratch.cell((0, 0))?.symbol();
+    let (transmit, _) = symbol.split_once(KITTY_PLACEHOLDER)?;
+    (!transmit.is_empty()).then(|| transmit.to_owned())
+}
+
 /// Kitty delete commands for chart images the cache has dropped.
 ///
 /// The caller writes them after a frame: a dropped image can no longer be
@@ -243,6 +277,7 @@ pub fn take_all_image_deletes() -> Option<String> {
     let mut cache = manager.cache.lock().ok()?;
     let mut images = std::mem::take(&mut cache.retired);
     images.extend(cache.ready.drain().filter_map(|(_, entry)| entry.kitty));
+    cache.transmits.clear();
     cache.order.clear();
     cache.latest_by_slot.clear();
     delete_commands(&images)
@@ -420,6 +455,11 @@ impl ChartManager {
                 cache.pending.remove(&response.key);
                 match response.result {
                     Ok(encoded) => {
+                        if encoded.kitty.is_some()
+                            && let Some(transmit) = take_transmit(&encoded.protocol)
+                        {
+                            cache.transmits.push(transmit);
+                        }
                         cache.insert_ready(response.slot, response.key, encoded);
                     }
                     Err(error) => {
@@ -641,6 +681,16 @@ mod tests {
         assert!(cache.ready.is_empty());
         assert!(cache.order.is_empty());
         assert_eq!(retired_ids(&cache), vec![70]);
+    }
+
+    #[test]
+    fn a_new_image_hands_over_its_transmit_once() {
+        let encoded = kitty_chart(42);
+
+        let transmit = super::take_transmit(&encoded.protocol).expect("first render transmits");
+        assert!(transmit.starts_with("\x1b_G"));
+        assert!(transmit.contains("i=42"));
+        assert_eq!(super::take_transmit(&encoded.protocol), None);
     }
 
     #[test]
