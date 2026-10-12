@@ -84,6 +84,8 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
     }
 
     match cli.command {
+        Command::Skill(args) => unifly::cli::skill::handle(&args),
+
         Command::Cloud(args) => {
             init_tracing(cli.global.verbose);
             commands::cloud::handle(args, &cli.global).await

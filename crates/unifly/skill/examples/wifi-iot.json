@@ -2,7 +2,7 @@
   "name": "IoT-WiFi",
   "ssid": "IoT-WiFi",
   "security_mode": "Wpa2Personal",
-  "passphrase": "IoTSecure2024!",
+  "passphrase": "REPLACE_WITH_UNIQUE_WIFI_PASSPHRASE",
   "enabled": true,
   "network_id": "REPLACE_WITH_IOT_NETWORK_UUID",
   "hide_ssid": false,

@@ -18,11 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (with render-upload and asset-sync bursts), device telemetry, client roams
   and arrivals, and security events moving, and the on-demand queries behind
   the Stats and WiFi screens answer from the same fleet. The same
-  `--demo-seed` replays the same fleet and the same animation. Device actions (restart, locate, upgrade,
-  PoE power cycle) and client actions (block, unblock, kick) play out in the
-  simulation; configuration changes are refused with a clear error. Plain
-  `--demo` still sanitizes a real controller, and now falls back to the demo
-  fleet when no controller is configured instead of opening onboarding.
+  `--demo-seed` replays the same fleet and the same animation. Device
+  actions (restart, locate, upgrade, PoE power cycle) and client actions
+  (block, unblock, kick) play out in the simulation; configuration changes
+  are refused with a clear error. Plain `--demo` still sanitizes a real
+  controller, and now falls back to the demo fleet when no controller is
+  configured instead of opening onboarding.
   `--demo-fleet` and `--demo-seed` are global flags (`UNIFI_DEMO_FLEET`,
   `UNIFI_DEMO_SEED`), and a curated set of read-only CLI commands answers
   from the same fleet in every output format: devices, clients, networks,
@@ -30,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Any other command fails with a "not available in demo mode" error before
   it reads config or touches the network. Library users get the same fleet
   from `Controller::demo` behind the new `demo` feature of `unifly-api`.
+
+- **Version-matched agent guidance** via `unifly skill`, available offline
+  without controller configuration. The installed skill and network manager
+  agent now load the binary's guide, with on-demand concepts, workflows,
+  payload examples, and a command inventory generated from Clap. Corrected
+  authentication boundaries, raw API paths, identifiers, and output recipes.
+  Older binaries need an update before they can serve the new discovery skill.
 
 ### Security
 

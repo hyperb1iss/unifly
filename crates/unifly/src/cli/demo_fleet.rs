@@ -42,7 +42,7 @@ pub const SUPPORTED: &[&str] = &[
 ];
 
 /// Commands that never need a controller and run normally.
-const LOCAL: &[&str] = &["completions", "tui"];
+const LOCAL: &[&str] = &["completions", "skill", "tui"];
 
 /// The subcommand path a parse resolved to, with aliases canonicalized
 /// (`unifly d ls` becomes `devices list`).

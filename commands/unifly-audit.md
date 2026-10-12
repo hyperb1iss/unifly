@@ -1,6 +1,6 @@
 ---
 name: unifly-audit
-description: Security audit of UniFi configuration. Checks for open WiFi, permissive firewall rules, and misconfigurations
+description: Read-only audit of UniFi WiFi security, firewall policy, and network isolation
 arguments:
   - name: profile
     description: "Config profile to use (e.g., home, office)"
@@ -9,84 +9,20 @@ arguments:
 
 # UniFi Security Audit
 
-Perform a security-focused audit of the UniFi configuration.
+Load `unifly skill` and `unifly skill commands` before inspecting the network.
+Use the installed guide and command help for authentication, enumeration,
+identifiers, and output fields. Inspect returned schemas before filtering.
 
-## Execution
+Apply the optional profile argument consistently; when omitted, retain the
+configured default. Review WiFi security settings, firewall policy scope and
+ordering, device firmware availability, and network isolation. Distinguish
+intended guest access from an unintended exposure. Assess findings against
+the user's network requirements instead of assigning severity from a single
+field such as missing logging or WPA2 support.
 
-Run each check and compile findings into a security report.
+Keep the audit read-only. Report evidence, impact, proposed remediation, and
+checks unavailable with the current access. Failed dependency queries leave
+resource usage unknown; they do not establish that deletion is safe.
 
-### 1. WiFi Security Check
-
-Identify SSIDs with weak or no security:
-
-```bash
-unifly wifi list -p {{profile}} -o json | jq '[
-  .[] | {
-    name,
-    security,
-    enabled,
-    alert: (if .security == "open" then "CRITICAL: Open network"
-            elif .security == "wpa2-personal" then "MODERATE: WPA2 only"
-            else "OK" end)
-  } | select(.alert != "OK")
-]'
-```
-
-### 2. Firewall Policy Review
-
-Check for overly permissive rules:
-
-```bash
-# All allow rules
-unifly firewall policies list -p {{profile}} -o json | jq '[
-  .[] | select(.action == "ALLOW") | {id, description, source_zone, dest_zone}
-]'
-
-# Rules without logging
-unifly firewall policies list -p {{profile}} -o json | jq '[
-  .[] | select(.logging == false) | {id, description, action}
-]'
-```
-
-### 3. Device Firmware Check
-
-Identify devices with outdated firmware:
-
-```bash
-unifly devices list --all -p {{profile}} -o json | jq '[
-  .[] | select(.upgrade_available == true) | {name, mac, model, current_version}
-]'
-```
-
-### 4. Network Isolation Check
-
-Verify IoT and guest networks are properly isolated:
-
-```bash
-unifly networks list --all -p {{profile}} -o json | jq '[
-  .[] | {name, vlan_id, isolation}
-]'
-```
-
-### 5. Unused Resources
-
-Find networks with no cross-references:
-
-```bash
-unifly networks list --all -p {{profile}} -o json
-```
-
-For each network, check `unifly networks refs <id>` for cross-references.
-
-When `-p {{profile}}` is provided, the `-p {{profile}}` flag is already wired into every command above; no further substitution is needed.
-
-## Result Reporting
-
-Compile findings into a report with severity levels:
-
-- **CRITICAL**: Open WiFi networks, no firewall between zones
-- **HIGH**: WPA2-only networks, allow-all firewall rules, no logging
-- **MODERATE**: Outdated firmware, unused networks
-- **INFO**: Network isolation status, device counts
-
-Recommend specific remediation steps for each finding.
+If `unifly skill` is unavailable, use `unifly --help` and explain that the
+binary needs updating before it can supply version-matched guidance.

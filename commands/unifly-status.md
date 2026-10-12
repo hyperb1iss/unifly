@@ -1,6 +1,6 @@
 ---
 name: unifly-status
-description: Quick health check of UniFi infrastructure. Shows controller health, device status, and alerts
+description: Read-only health check of UniFi infrastructure, including devices and alerts
 arguments:
   - name: profile
     description: "Config profile to use (e.g., home, office)"
@@ -9,50 +9,15 @@ arguments:
 
 # UniFi Status Check
 
-Run a comprehensive health check of the UniFi infrastructure.
+Load the installed operating guide with `unifly skill`, then use
+`unifly skill workflows` for diagnostic patterns. Follow that binary's help
+and output contracts instead of assuming field names or authentication support.
 
-## Execution
+Inspect the requested profile's health, devices, clients, and available alarms.
+Apply the optional profile argument consistently; when omitted, retain the
+configured default. Use reads supported by the profile's local or cloud access.
+Report device counts by observed state, offline devices, active alarms, and
+any unavailable checks. Keep the status check read-only.
 
-1. Verify controller connectivity via `unifly system health`
-2. Count online vs offline devices via `unifly devices list --all -o json`
-3. Check for active alarms via `unifly alarms list --unarchived -o json`
-4. Report findings in a clear summary
-
-### Basic Status
-
-```bash
-unifly system health -p {{profile}} -o json
-```
-
-### Full Status Report
-
-```bash
-# Controller health
-unifly system health -p {{profile}} -o json
-
-# Device summary
-unifly devices list --all -p {{profile}} -o json | jq '{
-  total: length,
-  online: [.[] | select(.state == "ONLINE")] | length,
-  offline: [.[] | select(.state == "OFFLINE")] | length,
-  pending: [.[] | select(.state == "PENDING")] | length
-}'
-
-# Active alarms
-unifly alarms list --unarchived -p {{profile}} -o json | jq 'length'
-
-# Client count
-unifly clients list --all -p {{profile}} -o json | jq 'length'
-```
-
-When `-p {{profile}}` is provided, the `-p {{profile}}` flag is already wired into every command above; no further substitution is needed.
-
-## Result Reporting
-
-Summarize the health check:
-
-- Controller status (healthy/degraded/unreachable)
-- Device counts by state
-- Number of active alarms (highlight if > 0)
-- Connected client count
-- Any offline devices (list names and MACs)
+If `unifly skill` is unavailable, use `unifly --help` and explain that the
+binary needs updating before it can supply version-matched guidance.

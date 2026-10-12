@@ -47,7 +47,7 @@ graphics-protocol charts are opt-in with `tui-graphics`.
 
 ### CLI (`unifly`)
 
-- **clap-derived** command tree with 28 top-level commands
+- **clap-derived** command tree with 29 top-level commands
 - **Output formatting**: Table, JSON, YAML, plain text via `tabled`
 - **Shell completions**: Bash, Zsh, Fish via `clap_complete`
 - **Man pages**: Generated at build time via `clap_mangen`

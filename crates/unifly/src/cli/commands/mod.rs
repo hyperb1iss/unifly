@@ -76,8 +76,10 @@ async fn dispatch_extended(
         Command::Vpn(args) => vpn::handle(controller, args, global).await,
         Command::Wans(args) => wans::handle(controller, args, global).await,
         Command::Wifi(args) => wifi::handle(controller, args, global).await,
-        // Cloud, Config, Completions, and Tui are handled before dispatch
-        Command::Cloud(_) | Command::Config(_) | Command::Completions(_) => unreachable!(),
+        // Local commands, cloud fleet queries, and Tui are handled before dispatch.
+        Command::Cloud(_) | Command::Config(_) | Command::Completions(_) | Command::Skill(_) => {
+            unreachable!()
+        }
         #[cfg(feature = "tui")]
         Command::Tui(_) => unreachable!(),
         _ => unreachable!(),

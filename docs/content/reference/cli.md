@@ -1,6 +1,6 @@
 +++
 title = "CLI Reference"
-description = "All 28 commands, flags, output formats, and gotchas"
+description = "All 29 commands, flags, output formats, and gotchas"
 weight = 1
 +++
 
@@ -365,7 +365,7 @@ unifly vpn settings set teleport --enabled true # Toggle a VPN setting
 unifly vpn settings patch peer-to-peer -F peer.json   # Apply a JSON payload
 ```
 
-Gotchas: `servers` and `tunnels` are read-only Integration API inventory; everything else is Session-backed and works with an API key on UniFi OS. Create and update for `site-to-site`, `remote-access`, `clients`, and `peers` are payload-driven: build the JSON with `--from-file` (see the [examples/](https://github.com/hyperb1iss/unifly/tree/main/skills/unifly/examples) templates). Sensitive material such as WireGuard private keys and IPsec pre-shared keys is **redacted** in both `get` and `create` output; reconstruct those fields explicitly in update payloads if the controller requires them unchanged. The full walkthrough lives on the [VPN page](/guide/vpn).
+Gotchas: `servers` and `tunnels` are read-only Integration API inventory; everything else is Session-backed and works with an API key on UniFi OS. Create and update for `site-to-site`, `remote-access`, `clients`, and `peers` are payload-driven: build the JSON with `--from-file` (see the [examples/](https://github.com/hyperb1iss/unifly/tree/main/crates/unifly/skill/examples) templates). Sensitive material such as WireGuard private keys and IPsec pre-shared keys is **redacted** in both `get` and `create` output; reconstruct those fields explicitly in update payloads if the controller requires them unchanged. The full walkthrough lives on the [VPN page](/guide/vpn).
 
 ## Settings
 
@@ -423,7 +423,7 @@ unifly api integration/v1/sites/<site-id>/hotspot/vouchers/<id> -m DELETE       
 ```bash
 unifly config init                              # Interactive setup wizard
 unifly config cloud-setup                       # Guided Site Manager (cloud) profile
-unifly config show                              # Show resolved config
+unifly config show -o table                     # Show saved config with secrets masked
 unifly config set auth_mode hybrid              # Set a config value
 unifly config set-password                      # Store password in keyring
 unifly config set-password --profile office     # For a specific profile
@@ -446,7 +446,7 @@ unifly networks create -F network.json
 unifly firewall policies create -F policy.json
 ```
 
-See [examples/](https://github.com/hyperb1iss/unifly/tree/main/skills/unifly/examples) for payload templates.
+See [examples/](https://github.com/hyperb1iss/unifly/tree/main/crates/unifly/skill/examples) for payload templates.
 
 ## List Filtering (`--filter`)
 
@@ -475,6 +475,25 @@ ZONE_ID=$(unifly firewall zones create --name "IoT Zone" -o plain)
 ```
 
 `sites create` is the exception: the controller returns no record to print. VPN create output has sensitive fields (private keys, PSKs) redacted, same as `get`.
+
+## Offline Agent Guide
+
+The installed binary serves its matching agent guidance without connecting
+to a controller or reading credentials:
+
+```bash
+unifly skill
+unifly skill commands
+unifly skill concepts
+unifly skill workflows
+unifly skill examples
+unifly skill examples network-iot-vlan.json > network.json
+```
+
+The command inventory is generated from the CLI parser. Guide topics print
+plain Markdown; named examples print the raw file, regardless of `--output`.
+The installable agent skill is a small stub that loads this guide. Binaries
+that predate the command need an update.
 
 ## Global Flags
 
