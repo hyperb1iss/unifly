@@ -34,7 +34,7 @@ jobs:
     name: Windows Smoke Build
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -50,7 +50,7 @@ jobs:
     name: Maintainability Guardrails
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check maintainability hotspots
         run: scripts/check-maintainability.sh
 
@@ -76,7 +76,7 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -91,7 +91,7 @@ jobs:
       - name: Build release binaries
         run: cargo build --workspace --release --locked --target ${{ matrix.target }}
       - name: Upload unifly artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unifly-${{ matrix.build }}
           path: |
@@ -120,12 +120,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Reading the release workflow's notes artifact is a cross-run
+      # download, which needs actions:read on GITHUB_TOKEN.
+      actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
       - name: Prepare release assets
@@ -149,7 +152,7 @@ jobs:
       - name: Download release notes from release workflow
         id: download_notes
         if: ${{ inputs.release_run_id != '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-notes
           run-id: ${{ inputs.release_run_id }}
@@ -168,7 +171,7 @@ jobs:
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           output-file: RELEASE_NOTES.md
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ github.ref_name }}
           draft: false
@@ -183,10 +186,10 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Authenticate ClawHub CLI
@@ -205,13 +208,13 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Update pkgver
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" aur/PKGBUILD
       - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
+        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
           pkgname: unifly-bin
           pkgbuild: aur/PKGBUILD
@@ -228,7 +231,7 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: hyperb1iss/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
