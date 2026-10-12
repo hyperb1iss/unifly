@@ -1254,6 +1254,23 @@ fn test_demo_fleet_lists_come_out_in_the_same_order_every_run() {
 }
 
 #[test]
+fn test_demo_fleet_topology_reads_the_same_every_run() {
+    let run = || {
+        let output = unifly_cmd()
+            .args(["--demo-fleet", "topology", "--color", "never"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", combined_output(&output));
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let first = run();
+    assert!(first.contains("gw-harbor"), "{first}");
+    for _ in 0..3 {
+        assert_eq!(run(), first, "topology reordered between runs");
+    }
+}
+
+#[test]
 fn test_demo_fleet_pages_are_stable_and_disjoint() {
     let all = demo_ids(&["clients", "list", "--all"]);
     assert!(all.len() > 50, "fleet too small to page: {}", all.len());
