@@ -29,8 +29,8 @@ fi
 # Stage the result beside the original (same filesystem, same mode via
 # cp -p) and rename it into place, so a failure never leaves a partial file.
 tmp="$(dirname "$changelog")/.changelog-cut.$$"
-cp -p "$changelog" "$tmp"
 trap 'rm -f "$tmp"' EXIT
+cp -p "$changelog" "$tmp"
 
 awk -v version="$version" -v date="$date" '
   BEGIN { state = "before"; notes = 0; unreleased = 0; link = 0 }
