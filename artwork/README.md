@@ -27,7 +27,10 @@ avatar is 512×512; the browser icon is 32×32; the touch icon is 180×180.
 The standalone mark PNG is 1280×720, and horizontal logo PNGs are 1120×320.
 Logo and mark PNGs preserve transparency.
 
-The README banner is 1600×480. The docs hero is 1536×1024. Both remain SVG
+The README uses the transparent 640×480 stacked logo at up to 360px wide,
+with matching dark and light versions. Its tagline and audience line live
+in README text so they stay readable on small screens. The horizontal
+README banner is 1600×480, and the docs hero is 1536×1024. These remain SVG
 so their flat shapes stay sharp at any display density.
 
 ## Typography and source
