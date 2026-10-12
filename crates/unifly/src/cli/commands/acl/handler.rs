@@ -21,9 +21,10 @@ pub(super) async fn handle(
     match args.command {
         AclCommand::List(list) => {
             let all = controller.acl_rules_snapshot();
-            let snapshot = util::apply_list_args(all.iter().cloned(), &list, |rule, filter| {
-                util::matches_json_filter(rule, filter)
-            });
+            let snapshot =
+                util::apply_list_args(util::order::acl_rules(&all), &list, |rule, filter| {
+                    util::matches_json_filter(rule, filter)
+                });
             let out = output::render_list(
                 &global.output,
                 &snapshot,

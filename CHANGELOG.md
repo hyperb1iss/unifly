@@ -87,6 +87,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **List output and paging are deterministic.** Lists read from the
+  controller store came out in a different order on every run, because the
+  store is a concurrent map, so `--offset`/`--limit` pages could overlap or
+  skip records and `--limit` on `events list` kept arbitrary events instead
+  of the newest. Every store-backed list now sorts before filtering and
+  paging, and every output format gets the same order. Devices, clients,
+  networks, WiFi, sites, zones, firewall groups, DNS policies, and traffic
+  lists sort case-insensitively by name with a stable tie-breaker (clients
+  by alias, else hostname, then IP and MAC). `firewall policies list` shows
+  policies in evaluation order: grouped by source then destination zone, by
+  ascending `index` within each pair (user rules, then system rules, then
+  the pair's default). ACL rules follow their evaluation `index` and NAT
+  rules their `rule_index`, both now carried in JSON output. Events and
+  hotspot vouchers list newest first.
 - **Session expiry no longer kills a long-running TUI.** The session cookie
   lapses roughly an hour in; previously every Session-backed fetch (client
   details, health, events, NAT, firewall groups, Wi-Fi neighbours, switch

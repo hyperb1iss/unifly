@@ -81,10 +81,10 @@ pub async fn handle(
 
     match args.command {
         HotspotCommand::List { limit, offset } => {
-            let all = controller.vouchers_snapshot();
+            let all = util::order::vouchers(&controller.vouchers_snapshot());
             let offset = usize::try_from(offset).unwrap_or(usize::MAX);
             let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-            let snap: Vec<_> = all.iter().skip(offset).take(limit).cloned().collect();
+            let snap: Vec<_> = all.into_iter().skip(offset).take(limit).collect();
             let out = output::render_list(
                 &global.output,
                 &snap,

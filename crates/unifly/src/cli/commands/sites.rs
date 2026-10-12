@@ -49,7 +49,7 @@ pub async fn handle(
     match args.command {
         SitesCommand::List(list) => {
             let all = controller.sites_snapshot();
-            let snap = util::apply_list_args(all.iter().cloned(), &list, |s, filter| {
+            let snap = util::apply_list_args(util::order::sites(&all), &list, |s, filter| {
                 util::matches_json_filter(s, filter)
             });
             let out = output::render_list(

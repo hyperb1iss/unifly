@@ -35,9 +35,10 @@ pub(super) async fn handle(
     match args.command {
         DevicesCommand::List(list) => {
             let all = controller.devices_snapshot();
-            let snapshot = util::apply_list_args(all.iter().cloned(), &list, |device, filter| {
-                util::matches_json_filter(device, filter)
-            });
+            let snapshot =
+                util::apply_list_args(util::order::devices(&all), &list, |device, filter| {
+                    util::matches_json_filter(device, filter)
+                });
             let out = output::render_list(
                 &global.output,
                 &snapshot,

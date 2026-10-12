@@ -30,10 +30,16 @@ impl Controller {
                 .collect());
         }
 
+        // Store snapshots carry no stable order, so sort by MAC to keep
+        // paged output repeatable.
         let snapshot = self.devices_snapshot();
-        Ok(snapshot
+        let mut pending: Vec<_> = snapshot
             .iter()
             .filter(|device| device.state == crate::model::DeviceState::PendingAdoption)
+            .collect();
+        pending.sort_by(|left, right| left.mac.as_str().cmp(right.mac.as_str()));
+        Ok(pending
+            .into_iter()
             .map(|device| serde_json::to_value(device.as_ref()).unwrap_or_default())
             .collect())
     }
