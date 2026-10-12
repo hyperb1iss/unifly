@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Settings output no longer leaks credentials.** `settings export`, and
+  JSON/YAML output from `settings list` and `settings get`, used to include
+  every `x_`-prefixed credential field (only the table view masked them).
+  They now leave those fields out at any depth, and a new `--with-secrets`
+  flag includes them when you need the real values. Table output from
+  `settings get` now masks nested credentials too, not just top-level ones.
+  `settings set` carries over credentials that an update leaves out of an
+  object (at any depth), so an edited export can be applied back safely.
+  An array that holds credentials is replaced only when the update's
+  version carries at least one of them, and the update is then taken as
+  written; otherwise `set` refuses and names the fields.
+  `--allow-secret-removal` overrides the check. Scripts that read `x_`
+  fields from these commands need `--with-secrets`.
+
 ### Fixed
 
 - **Session expiry no longer kills a long-running TUI.** The session cookie

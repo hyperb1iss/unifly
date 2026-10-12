@@ -10,20 +10,34 @@ pub struct SettingsArgs {
 pub enum SettingsCommand {
     /// List all site setting sections (session API)
     #[command(alias = "ls")]
-    List,
+    List {
+        /// Include `x_`-prefixed credential fields in JSON/YAML output
+        #[arg(long)]
+        with_secrets: bool,
+    },
 
     /// Get a specific setting section by key (session API)
     Get {
         /// Setting section key (e.g. "ips", "dpi", "usg", "radio_ai")
         key: String,
+
+        /// Show `x_`-prefixed credential fields instead of hiding them
+        #[arg(long)]
+        with_secrets: bool,
     },
 
     /// Update a field in a setting section (session API).
     /// Fields prefixed with `x_` contain credentials and internal secrets.
     Set(SettingsSetArgs),
 
-    /// Export all settings as raw JSON (session API)
-    Export,
+    /// Export all settings as JSON (session API).
+    /// `x_`-prefixed credential fields are left out unless `--with-secrets`
+    /// is given.
+    Export {
+        /// Include `x_`-prefixed credential fields in the export
+        #[arg(long)]
+        with_secrets: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -42,4 +56,8 @@ pub struct SettingsSetArgs {
     /// Merge a JSON object into the section
     #[arg(long, conflicts_with_all = ["field", "value"])]
     pub data: Option<String>,
+
+    /// Write the update even if it removes stored `x_` credential fields
+    #[arg(long)]
+    pub allow_secret_removal: bool,
 }

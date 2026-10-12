@@ -25,7 +25,7 @@ unifly settings get ips -o json
 ```
 
 {% tip() %}
-In table mode, `get` masks fields prefixed with `x_` — those hold credentials and internal secrets. Use `-o json` to see the real values when you actually need them.
+Fields prefixed with `x_` hold credentials and internal secrets. The table view shows them as `***`, and JSON or YAML output leaves them out entirely. Add `--with-secrets` when you actually need the real values.
 {% end %}
 
 ## Writing a Field
@@ -51,15 +51,22 @@ Settings sections control controller-wide behavior — IPS modes, management acc
 
 ## Exporting Everything
 
-`settings export` dumps every section as raw JSON, regardless of the `--output` flag — **including `x_`-prefixed credential fields that the table view masks**. Treat the output as secret material: never commit it to version control as-is. Strip the sensitive fields first if you want change tracking:
+`settings export` dumps every section as JSON, regardless of the `--output` flag. Credential fields (`x_`-prefixed, at any depth) are left out by default, so the export is safe to commit for change tracking. A note on stderr says how many were removed.
 
 ```bash
+# Snapshot for change tracking
+unifly settings export > settings-$(date +%F).json
+
 # One-off inspection
 unifly settings export | jq '.[] | select(.key == "ips")'
 
-# Sanitized snapshot safe for change tracking
-unifly settings export | jq 'walk(if type == "object" then with_entries(select(.key | startswith("x_") | not)) else . end)' > settings-$(date +%F).json
+# Full dump including credentials: treat as secret material
+unifly settings export --with-secrets > settings-full.json
 ```
+
+Leaving the fields out, rather than masking them, keeps edited exports safe to apply. When `set` writes a section back, it carries over any credential your JSON left out of an object, at any depth.
+
+Arrays are all or nothing, because their entries have no identity to match on. If you send an array that holds credentials and your version includes any of them, unifly treats your array as authoritative, so rotating, clearing, reordering, and removing entries all work as written. If your version includes none, which is what a stripped export looks like, `set` refuses and names the credentials it would erase. Export that section with `--with-secrets` to edit such an array, or pass `--allow-secret-removal` when dropping them is the point.
 
 ## Relationship to Other Commands
 
