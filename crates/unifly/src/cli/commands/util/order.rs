@@ -4,7 +4,8 @@
 //! changes from run to run. Every list command that reads a snapshot sorts it
 //! here before `apply_list_args` filters and pages, which keeps
 //! `--offset`/`--limit` pages stable and disjoint and gives every output
-//! format the same rows in the same order.
+//! format the same rows in the same order. The TUI list screens sort with
+//! these same functions, so both surfaces show one order.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;

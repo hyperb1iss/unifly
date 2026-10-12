@@ -46,7 +46,7 @@ impl DevicesScreen {
     pub(super) fn apply_action(&mut self, action: &Action) {
         match action {
             Action::DevicesUpdated(devices) => {
-                self.apply_devices_update(std::sync::Arc::clone(devices));
+                self.apply_devices_update(devices);
             }
             Action::ClientsUpdated(clients) => {
                 self.clients = std::sync::Arc::clone(clients);

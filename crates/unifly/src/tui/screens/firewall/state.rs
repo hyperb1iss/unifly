@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use ratatui::widgets::TableState;
+use unifly_api::EntityId;
+use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
+use crate::cli::commands::util::order;
 use crate::tui::action::{Action, Direction, FirewallSubTab};
+use crate::tui::table::reselect;
 
 use super::FirewallScreen;
 
@@ -82,39 +86,115 @@ impl FirewallScreen {
     pub(super) fn apply_action(&mut self, action: &Action) {
         match action {
             Action::FirewallPoliciesUpdated(policies) => {
-                self.policies = Arc::clone(policies);
+                let ordered = order::firewall_policies(policies, &self.zones);
+                replace_rows(&mut self.policies, &mut self.policy_table, ordered);
             }
             Action::FirewallZonesUpdated(zones) => {
-                self.zones = Arc::clone(zones);
+                let first_zones = self.zones.is_empty();
+                replace_rows(
+                    &mut self.zones,
+                    &mut self.zone_table,
+                    order::firewall_zones(zones),
+                );
+                // Policies group by zone name, so renamed zones can move them.
+                // Before the first zones arrive that grouping is provisional,
+                // so the cursor keeps its row instead of chasing a policy.
+                let regrouped = order::firewall_policies(&self.policies, &self.zones);
+                if first_zones {
+                    self.policies = Arc::new(regrouped);
+                } else {
+                    replace_rows(&mut self.policies, &mut self.policy_table, regrouped);
+                }
             }
             Action::AclRulesUpdated(rules) => {
-                self.acl_rules = Arc::clone(rules);
+                let ordered = order::acl_rules(rules);
+                replace_rows(&mut self.acl_rules, &mut self.acl_table, ordered);
             }
             Action::NatPoliciesUpdated(policies) => {
-                self.nat_policies = Arc::clone(policies);
+                let ordered = order::nat_policies(policies);
+                replace_rows(&mut self.nat_policies, &mut self.nat_table, ordered);
             }
             Action::FirewallSubTab(tab) => {
                 self.sub_tab = *tab;
             }
-            Action::ReorderPolicy(index, direction) => {
-                let len = self.policies.len();
-                if len < 2 {
-                    return;
-                }
-
-                let target = match direction {
-                    Direction::Up if *index > 0 => index - 1,
-                    Direction::Down if *index + 1 < len => index + 1,
-                    _ => return,
-                };
-
-                let policies = Arc::make_mut(&mut self.policies);
-                policies.swap(*index, target);
-                self.select(target);
-            }
+            Action::ReorderPolicy(index, direction) => self.reorder_policy(*index, *direction),
             _ => {}
         }
     }
+
+    /// Move a policy one row within its zone pair. Policies only ever run
+    /// against the other policies of their own zone pair, so a move across
+    /// the boundary into a neighbouring pair's rows is refused.
+    fn reorder_policy(&mut self, index: usize, direction: Direction) {
+        let len = self.policies.len();
+        let target = match direction {
+            Direction::Up if index > 0 => index - 1,
+            Direction::Down if index + 1 < len => index + 1,
+            _ => return,
+        };
+
+        let (Some(moving), Some(other)) = (self.policies.get(index), self.policies.get(target))
+        else {
+            return;
+        };
+        let same_pair = moving.source.zone_id == other.source.zone_id
+            && moving.destination.zone_id == other.destination.zone_id;
+        if !same_pair {
+            return;
+        }
+
+        Arc::make_mut(&mut self.policies).swap(index, target);
+        self.select(target);
+    }
+}
+
+/// Rows the firewall tables list, identified by their entity ID.
+trait FirewallRow {
+    fn row_id(&self) -> &EntityId;
+}
+
+impl FirewallRow for FirewallPolicy {
+    fn row_id(&self) -> &EntityId {
+        &self.id
+    }
+}
+
+impl FirewallRow for FirewallZone {
+    fn row_id(&self) -> &EntityId {
+        &self.id
+    }
+}
+
+impl FirewallRow for AclRule {
+    fn row_id(&self) -> &EntityId {
+        &self.id
+    }
+}
+
+impl FirewallRow for NatPolicy {
+    fn row_id(&self) -> &EntityId {
+        &self.id
+    }
+}
+
+/// Swap in a refreshed, already ordered row list, keeping the table's
+/// selection on the entity it was on.
+fn replace_rows<T: FirewallRow>(
+    rows: &mut Arc<Vec<Arc<T>>>,
+    table: &mut TableState,
+    next: Vec<Arc<T>>,
+) {
+    let previous = table.selected();
+    let selected = previous
+        .and_then(|index| rows.get(index))
+        .map(|row| row.row_id().clone());
+    *rows = Arc::new(next);
+    let followed = reselect(
+        rows.iter().map(|row| row.row_id()),
+        selected.as_ref(),
+        previous,
+    );
+    table.select(followed.or(previous));
 }
 
 #[cfg(test)]
@@ -124,17 +204,26 @@ mod tests {
     use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone};
 
     fn policy(name: &str) -> Arc<FirewallPolicy> {
+        zoned_policy(name, None, None, 1)
+    }
+
+    fn zoned_policy(
+        name: &str,
+        source: Option<&str>,
+        destination: Option<&str>,
+        index: i32,
+    ) -> Arc<FirewallPolicy> {
         Arc::new(
             serde_json::from_value(serde_json::json!({
                 "id": name,
                 "name": name,
                 "description": null,
                 "enabled": true,
-                "index": 1,
+                "index": index,
                 "action": "Allow",
                 "ip_version": "Both",
-                "source": { "zone_id": null, "filter": null },
-                "destination": { "zone_id": null, "filter": null },
+                "source": { "zone_id": source, "filter": null },
+                "destination": { "zone_id": destination, "filter": null },
                 "source_summary": "src",
                 "destination_summary": "dst",
                 "protocol_summary": "Any",
@@ -226,5 +315,96 @@ mod tests {
 
         screen.sub_tab = FirewallSubTab::AclRules;
         assert_eq!(screen.selected_index(), 3);
+    }
+
+    fn policy_names(screen: &FirewallScreen) -> Vec<&str> {
+        screen
+            .policies
+            .iter()
+            .map(|policy| policy.name.as_str())
+            .collect()
+    }
+
+    fn zoned_fixture() -> (Vec<Arc<FirewallZone>>, Vec<Arc<FirewallPolicy>>) {
+        let zones = vec![zone("lan"), zone("wan"), zone("iot")];
+        let policies = vec![
+            zoned_policy("wan-lan default", Some("wan"), Some("lan"), i32::MAX),
+            zoned_policy("lan-wan second", Some("lan"), Some("wan"), 10_001),
+            zoned_policy("iot-lan block", Some("iot"), Some("lan"), 10_000),
+            zoned_policy("lan-wan first", Some("lan"), Some("wan"), 10_000),
+            zoned_policy("wan-lan allow", Some("wan"), Some("lan"), 10_000),
+        ];
+        (zones, policies)
+    }
+
+    #[test]
+    fn policies_list_in_evaluation_order_per_zone_pair() {
+        let (zones, policies) = zoned_fixture();
+        let mut screen = FirewallScreen::new();
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
+        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
+
+        assert_eq!(
+            policy_names(&screen),
+            vec![
+                "iot-lan block",
+                "lan-wan first",
+                "lan-wan second",
+                "wan-lan allow",
+                "wan-lan default",
+            ]
+        );
+    }
+
+    #[test]
+    fn policy_selection_follows_the_policy_across_refreshes() {
+        let (zones, mut policies) = zoned_fixture();
+        let mut screen = FirewallScreen::new();
+        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies.clone())));
+        screen.select(2);
+        assert_eq!(policy_names(&screen)[2], "lan-wan second");
+
+        policies.push(zoned_policy(
+            "iot-lan allow",
+            Some("iot"),
+            Some("lan"),
+            9_000,
+        ));
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
+
+        assert_eq!(screen.policy_table.selected(), Some(3));
+        assert_eq!(policy_names(&screen)[3], "lan-wan second");
+    }
+
+    #[test]
+    fn first_zones_regroup_policies_without_moving_the_cursor() {
+        let (zones, policies) = zoned_fixture();
+        let mut screen = FirewallScreen::new();
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
+        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
+
+        assert_eq!(screen.policy_table.selected(), Some(0));
+        assert_eq!(policy_names(&screen)[0], "iot-lan block");
+    }
+
+    #[test]
+    fn reorder_stays_inside_the_zone_pair() {
+        let (zones, policies) = zoned_fixture();
+        let mut screen = FirewallScreen::new();
+        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
+        screen.select(1);
+
+        screen.apply_action(&Action::ReorderPolicy(1, Direction::Up));
+        assert_eq!(policy_names(&screen)[0], "iot-lan block");
+        assert_eq!(screen.policy_table.selected(), Some(1));
+
+        screen.apply_action(&Action::ReorderPolicy(1, Direction::Down));
+        assert_eq!(
+            policy_names(&screen)[1..3],
+            ["lan-wan second", "lan-wan first"]
+        );
+        assert_eq!(screen.policy_table.selected(), Some(2));
     }
 }

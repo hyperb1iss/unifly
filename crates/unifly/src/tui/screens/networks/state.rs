@@ -6,7 +6,9 @@ use ratatui::widgets::TableState;
 
 use unifly_api::{Network, UpdateNetworkRequest};
 
+use crate::cli::commands::util::order;
 use crate::tui::action::Action;
+use crate::tui::table::reselect;
 
 /// Editable fields for a network. Initialized from the selected `Network`.
 #[allow(clippy::struct_excessive_bools)]
@@ -186,20 +188,36 @@ impl NetworksScreen {
 
     pub(super) fn apply_action(&mut self, action: &Action) {
         if let Action::NetworksUpdated(networks) = action {
-            self.networks = Arc::clone(networks);
-            if !self.networks.is_empty() && self.selected_index() >= self.networks.len() {
-                self.select(self.networks.len() - 1);
-            }
+            self.apply_networks_update(networks);
         }
+    }
+
+    /// Store a refreshed network list in table order, keeping the selection
+    /// on the network it was on.
+    fn apply_networks_update(&mut self, networks: &[Arc<Network>]) {
+        let selected = self.selected_network().map(|network| network.id.clone());
+        let previous = self.table_state.selected();
+        self.networks = Arc::new(order::networks(networks));
+        let next = reselect(
+            self.networks.iter().map(|network| &network.id),
+            selected.as_ref(),
+            previous,
+        );
+        self.table_state.select(next.or(previous));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{NetworkEditState, format_lease_time};
+    use std::sync::Arc;
+
+    use super::{NetworkEditState, NetworksScreen, format_lease_time};
 
     use serde_json::json;
-    use unifly_api::Network;
+    use unifly_api::{EntityId, Network};
+    use uuid::Uuid;
+
+    use crate::tui::action::Action;
 
     fn test_network() -> Network {
         serde_json::from_value(json!({
@@ -251,6 +269,41 @@ mod tests {
         assert_eq!(request.enabled, Some(false));
         assert_eq!(request.dhcp_enabled, Some(true));
         assert_eq!(request.ipv6_enabled, Some(true));
+    }
+
+    #[test]
+    fn networks_list_by_name_and_selection_follows_the_network() {
+        let network = |id: u128, name: &str, vlan: u16| -> Arc<Network> {
+            let mut network = test_network();
+            network.id = EntityId::Uuid(Uuid::from_u128(id));
+            network.name = name.to_owned();
+            network.vlan_id = Some(vlan);
+            Arc::new(network)
+        };
+        let names = |screen: &NetworksScreen| -> Vec<String> {
+            screen.networks.iter().map(|n| n.name.clone()).collect()
+        };
+
+        let mut screen = NetworksScreen::new();
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            network(3, "Studio", 10),
+            network(1, "guest", 30),
+            network(2, "IoT", 40),
+        ])));
+        assert_eq!(names(&screen), vec!["guest", "IoT", "Studio"]);
+
+        screen.select(1);
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            network(2, "IoT", 40),
+            network(4, "Cameras", 50),
+            network(3, "Studio", 10),
+            network(1, "guest", 30),
+        ])));
+        assert_eq!(names(&screen), vec!["Cameras", "guest", "IoT", "Studio"]);
+        assert_eq!(
+            screen.selected_network().map(|n| n.name.as_str()),
+            Some("IoT")
+        );
     }
 
     #[test]

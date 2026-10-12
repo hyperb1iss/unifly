@@ -5,6 +5,8 @@ use super::DevicesScreen;
 use ratatui::widgets::TableState;
 use unifly_api::{Client, Device, EntityId};
 
+use crate::cli::commands::util::order;
+
 impl DevicesScreen {
     pub fn new() -> Self {
         Self {
@@ -21,8 +23,10 @@ impl DevicesScreen {
         }
     }
 
+    /// Devices shown in the table: the name-ordered list, narrowed by the
+    /// search query.
     pub(super) fn filtered_devices(&self) -> Vec<&Arc<Device>> {
-        let mut devices: Vec<_> = if self.search_query.is_empty() {
+        if self.search_query.is_empty() {
             self.devices.iter().collect()
         } else {
             let query = self.search_query.to_lowercase();
@@ -49,16 +53,7 @@ impl DevicesScreen {
                         || device.mac.to_string().contains(&query)
                 })
                 .collect()
-        };
-
-        devices.sort_by_cached_key(|device| {
-            (
-                device.name.as_deref().unwrap_or("").to_ascii_lowercase(),
-                device.model.as_deref().unwrap_or("").to_ascii_lowercase(),
-                device.mac.to_string(),
-            )
-        });
-        devices
+        }
     }
 
     pub(super) fn selected_index(&self) -> usize {
@@ -172,8 +167,8 @@ impl DevicesScreen {
             .collect()
     }
 
-    pub(super) fn apply_devices_update(&mut self, devices: Arc<Vec<Arc<Device>>>) {
-        self.devices = devices;
+    pub(super) fn apply_devices_update(&mut self, devices: &[Arc<Device>]) {
+        self.devices = Arc::new(order::devices(devices));
 
         if self
             .detail_device_id
@@ -265,8 +260,8 @@ mod tests {
         )
     }
 
-    fn apply_devices(screen: &mut DevicesScreen, devices: Vec<Arc<Device>>) {
-        screen.apply_devices_update(Arc::new(devices));
+    fn apply_devices(screen: &mut DevicesScreen, devices: &[Arc<Device>]) {
+        screen.apply_devices_update(devices);
     }
 
     #[test]
@@ -274,7 +269,7 @@ mod tests {
         let mut screen = DevicesScreen::new();
         apply_devices(
             &mut screen,
-            vec![
+            &[
                 test_device("device-b", "Zulu AP"),
                 test_device("device-a", "alpha AP"),
             ],
@@ -294,7 +289,7 @@ mod tests {
         let mut screen = DevicesScreen::new();
         apply_devices(
             &mut screen,
-            vec![
+            &[
                 test_device("device-a", "Alpha AP"),
                 test_device("device-b", "Zulu AP"),
             ],
@@ -303,7 +298,7 @@ mod tests {
 
         apply_devices(
             &mut screen,
-            vec![
+            &[
                 test_device("device-a", "Zulu AP"),
                 test_device("device-b", "Aaron AP"),
             ],
@@ -323,7 +318,7 @@ mod tests {
         let mut screen = DevicesScreen::new();
         apply_devices(
             &mut screen,
-            vec![
+            &[
                 test_device("device-a", "Alpha AP"),
                 test_device("device-b", "Beta AP"),
             ],
