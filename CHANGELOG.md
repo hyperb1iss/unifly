@@ -48,6 +48,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   correct password. The WebSocket reads its cookie from the session client on
   every reconnect, and a server-side clean close now waits the initial
   backoff instead of reconnecting immediately.
+- **A failed fetch during refresh keeps the last known data.** Firewall
+  policies, firewall zones, ACL rules, DNS policies, vouchers, NAT policies,
+  firewall groups, and events come from optional endpoints. A timeout, 5xx,
+  or 404 on any of them used to count as an empty list, so one transient
+  error wiped that collection from the store while the refresh still
+  reported success, and the TUI and CLI showed nothing until the next good
+  refresh. A failed optional fetch now leaves its collection untouched, and
+  only a successful response (empty or not) replaces it. Site health follows
+  the same rule, so a successful empty health response now clears it.
+- **Networks and NAT rules survive partial failures during refresh.** A
+  network whose detail fetch failed used to drop out of the refresh and
+  vanish from the store; it now keeps its last known record, or its summary
+  if it was never loaded. A NAT listing that answers HTTP 200 with something
+  other than a rule array (UniFi OS can wrap errors this way) is now an error
+  instead of an empty list, so the refresh keeps the current NAT rules
+  rather than clearing them.
+- **Clients and devices keep their session details through a failed session
+  fetch.** When a session lookup that enriches Integration data failed,
+  clients lost their hostname, traffic counters, Wi-Fi details, uplink, and
+  DHCP reservation for a refresh cycle, and devices lost their client count,
+  WAN IPv6, uplink, ports, and radios, so the TUI flickered to blanks. Those
+  fields now carry over from the last good refresh, and anything the
+  Integration API reports itself still wins.
 
 ### Performance
 

@@ -567,6 +567,49 @@ async fn test_legacy_api_error() {
     }
 }
 
+// ── NAT rule tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_list_nat_rules() {
+    let (server, client) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"_id": "nat-1", "type": "DNAT", "description": "web"},
+        ])))
+        .mount(&server)
+        .await;
+
+    let rules = client.list_nat_rules().await.unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["_id"], "nat-1");
+}
+
+#[tokio::test]
+async fn test_list_nat_rules_rejects_non_array_body() {
+    let (server, client) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": {"code": 500, "message": "internal error"},
+        })))
+        .mount(&server)
+        .await;
+
+    let result = client.list_nat_rules().await;
+    match result {
+        Err(Error::Deserialization { ref body, .. }) => {
+            assert!(
+                body.contains("internal error"),
+                "expected the raw body in the error, got: {body}"
+            );
+        }
+        other => panic!("expected Deserialization error, got: {other:?}"),
+    }
+}
+
 // ── WireGuard peer tests ────────────────────────────────────────────
 
 #[tokio::test]

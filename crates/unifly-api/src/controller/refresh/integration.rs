@@ -5,23 +5,28 @@ use tracing::{info, warn};
 
 use crate::IntegrationClient;
 use crate::core_error::CoreError;
+use crate::integration_types::NetworkResponse;
 use crate::model::{
     AclRule, Client, Device, DnsPolicy, EntityId, FirewallPolicy, FirewallZone, Network, Site,
     TrafficMatchingList, Voucher, WifiBroadcast,
 };
+use crate::store::DataStore;
 
 use super::super::REFRESH_DETAIL_CONCURRENCY;
+use super::optional::keep_on_failure;
 
+/// Integration data for one refresh. `Option` fields come from optional
+/// endpoints, where `None` means the fetch failed (see [`keep_on_failure`]).
 pub(super) struct IntegrationRefresh {
     pub(super) devices: Vec<Device>,
     pub(super) clients: Vec<Client>,
     pub(super) networks: Vec<Network>,
     pub(super) wifi: Vec<WifiBroadcast>,
-    pub(super) policies: Vec<FirewallPolicy>,
-    pub(super) zones: Vec<FirewallZone>,
-    pub(super) acls: Vec<AclRule>,
-    pub(super) dns: Vec<DnsPolicy>,
-    pub(super) vouchers: Vec<Voucher>,
+    pub(super) policies: Option<Vec<FirewallPolicy>>,
+    pub(super) zones: Option<Vec<FirewallZone>>,
+    pub(super) acls: Option<Vec<AclRule>>,
+    pub(super) dns: Option<Vec<DnsPolicy>>,
+    pub(super) vouchers: Option<Vec<Voucher>>,
     pub(super) sites: Vec<Site>,
     pub(super) traffic_matching_lists: Vec<TrafficMatchingList>,
 }
@@ -29,6 +34,7 @@ pub(super) struct IntegrationRefresh {
 pub(super) async fn fetch(
     integration: Arc<IntegrationClient>,
     site_id: uuid::Uuid,
+    store: &DataStore,
 ) -> Result<IntegrationRefresh, CoreError> {
     let page_limit = 200;
 
@@ -74,15 +80,13 @@ pub(super) async fn fetch(
 
     let devices: Vec<Device> = devices_res?.into_iter().map(Device::from).collect();
     let clients: Vec<Client> = clients_res?.into_iter().map(Client::from).collect();
-    let network_ids: Vec<uuid::Uuid> = networks_res?
-        .into_iter()
-        .map(|network| network.id)
-        .collect();
+    let network_summaries = networks_res?;
     info!(
-        network_count = network_ids.len(),
+        network_count = network_summaries.len(),
         "fetching network details"
     );
-    let networks = fetch_network_details(Arc::clone(&integration), site_id, network_ids).await;
+    let networks =
+        fetch_network_details(Arc::clone(&integration), site_id, network_summaries, store).await;
     let wifi: Vec<WifiBroadcast> = wifi_res?.into_iter().map(WifiBroadcast::from).collect();
     let sites: Vec<Site> = sites_res?.into_iter().map(Site::from).collect();
     let traffic_matching_lists: Vec<TrafficMatchingList> = tml_res?
@@ -90,15 +94,16 @@ pub(super) async fn fetch(
         .map(TrafficMatchingList::from)
         .collect();
 
-    let policies = unwrap_or_empty("firewall/policies", policies_res);
-    let zones = unwrap_or_empty("firewall/zones", zones_res);
-    let acls = unwrap_or_empty("acl/rules", acls_res);
-    let dns = unwrap_or_empty_with(
-        "dns/policies",
-        dns_res,
-        crate::convert::dns_policy_from_integration,
-    );
-    let vouchers = unwrap_or_empty("vouchers", vouchers_res);
+    let policies = optional_list("firewall/policies", policies_res);
+    let zones = optional_list("firewall/zones", zones_res);
+    let acls = optional_list("acl-rules", acls_res);
+    let dns = keep_on_failure("dns/policies", dns_res).map(|items| {
+        items
+            .into_iter()
+            .filter_map(crate::convert::dns_policy_from_integration)
+            .collect()
+    });
+    let vouchers = optional_list("hotspot/vouchers", vouchers_res);
 
     info!(
         device_count = devices.len(),
@@ -121,25 +126,39 @@ pub(super) async fn fetch(
     })
 }
 
+/// Fetch each network's detail record concurrently.
+///
+/// The list endpoint returns summaries without `ipv4Configuration`, so the
+/// detail fetch is what fills in subnet, gateway, and DHCP. A network whose
+/// detail fetch fails stays in the snapshot instead of being dropped (which
+/// would prune it from the store): it keeps its last known stored record,
+/// since a summary would blank those fields for a cycle, and falls back to
+/// the summary only when the store has never seen it.
 async fn fetch_network_details(
     integration: Arc<IntegrationClient>,
     site_id: uuid::Uuid,
-    network_ids: Vec<uuid::Uuid>,
+    summaries: Vec<NetworkResponse>,
+    store: &DataStore,
 ) -> Vec<Network> {
-    stream::iter(network_ids.into_iter().map(|network_id| {
+    stream::iter(summaries.into_iter().map(|summary| {
         let integration = Arc::clone(&integration);
         async move {
-            match integration.get_network(&site_id, &network_id).await {
-                Ok(detail) => Some(Network::from(detail)),
+            match integration.get_network(&site_id, &summary.id).await {
+                Ok(detail) => Network::from(detail),
                 Err(error) => {
-                    warn!(network_id = %network_id, error = %error, "network detail fetch failed");
-                    None
+                    warn!(
+                        network_id = %summary.id,
+                        error = %error,
+                        "network detail fetch failed; keeping last known record"
+                    );
+                    store
+                        .network_by_id(&EntityId::Uuid(summary.id))
+                        .map_or_else(|| Network::from(summary), |cached| (*cached).clone())
                 }
             }
         }
     }))
     .buffer_unordered(REFRESH_DETAIL_CONCURRENCY)
-    .filter_map(async move |network| network)
     .collect::<Vec<_>>()
     .await
 }
@@ -180,31 +199,11 @@ async fn fetch_device_statistics(
     .await
 }
 
-/// Downgrade a failed paginated fetch to an empty `Vec` so one optional
-/// endpoint cannot abort the whole refresh. 404s (endpoints missing on older
-/// firmware) log at debug; every other error logs at warn.
-fn unwrap_or_empty<S, D>(endpoint: &str, result: Result<Vec<S>, crate::error::Error>) -> Vec<D>
+/// Convert an optional paginated fetch into its snapshot field, mapping
+/// each item into the domain type on success.
+fn optional_list<S, D>(endpoint: &str, result: Result<Vec<S>, crate::Error>) -> Option<Vec<D>>
 where
     D: From<S>,
 {
-    unwrap_or_empty_with(endpoint, result, |item| Some(D::from(item)))
-}
-
-/// Like [`unwrap_or_empty`], for conversions that can reject individual items.
-fn unwrap_or_empty_with<S, D>(
-    endpoint: &str,
-    result: Result<Vec<S>, crate::error::Error>,
-    convert: impl Fn(S) -> Option<D>,
-) -> Vec<D> {
-    match result {
-        Ok(items) => items.into_iter().filter_map(convert).collect(),
-        Err(ref error) if error.is_not_found() => {
-            tracing::debug!("{endpoint}: not available (404), treating as empty");
-            Vec::new()
-        }
-        Err(error) => {
-            warn!("{endpoint}: unexpected error {error}, treating as empty");
-            Vec::new()
-        }
-    }
+    keep_on_failure(endpoint, result).map(|items| items.into_iter().map(D::from).collect())
 }

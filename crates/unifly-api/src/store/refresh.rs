@@ -32,25 +32,51 @@ fn upsert_and_prune<T: Clone + Send + Sync + 'static>(
     }
 }
 
-/// All collections fetched during a single Integration API refresh cycle.
+/// Apply one collection from a refresh snapshot. `Some` is authoritative and
+/// goes through [`upsert_and_prune`], so `Some(empty)` clears the collection.
+/// `None` means the fetch failed, and the collection keeps its last known
+/// contents untouched.
+fn sync_collection<T: Clone + Send + Sync + 'static>(
+    collection: &EntityCollection<T>,
+    items: Option<Vec<T>>,
+    keyed: impl Fn(&T) -> (String, EntityId),
+) {
+    let Some(items) = items else {
+        return;
+    };
+    upsert_and_prune(
+        collection,
+        items
+            .into_iter()
+            .map(|item| {
+                let (key, id) = keyed(&item);
+                (key, id, item)
+            })
+            .collect(),
+    );
+}
+
+/// All collections fetched during a single refresh cycle.
 ///
-/// Bundles the 12 entity vectors that `apply_integration_snapshot` needs,
-/// keeping the function signature manageable.
+/// Plain `Vec` fields come from required fetches, whose failure aborts the
+/// whole refresh before a snapshot exists. `Option` fields come from
+/// optional fetches: `None` means that fetch failed and the stored
+/// collection must be left as is, never treated as empty.
 pub(crate) struct RefreshSnapshot {
     pub devices: Vec<Device>,
     pub clients: Vec<Client>,
     pub networks: Vec<Network>,
     pub wifi: Vec<WifiBroadcast>,
-    pub policies: Vec<FirewallPolicy>,
-    pub zones: Vec<FirewallZone>,
-    pub acls: Vec<AclRule>,
-    pub nat: Vec<NatPolicy>,
-    pub dns: Vec<DnsPolicy>,
-    pub vouchers: Vec<Voucher>,
+    pub policies: Option<Vec<FirewallPolicy>>,
+    pub zones: Option<Vec<FirewallZone>>,
+    pub acls: Option<Vec<AclRule>>,
+    pub nat: Option<Vec<NatPolicy>>,
+    pub dns: Option<Vec<DnsPolicy>>,
+    pub vouchers: Option<Vec<Voucher>>,
     pub sites: Vec<Site>,
-    pub events: Vec<Event>,
+    pub events: Option<Vec<Event>>,
     pub traffic_matching_lists: Vec<TrafficMatchingList>,
-    pub firewall_groups: Vec<FirewallGroup>,
+    pub firewall_groups: Option<Vec<FirewallGroup>>,
 }
 
 pub(crate) fn event_storage_key(event: &Event) -> String {
@@ -91,180 +117,59 @@ pub(crate) fn event_storage_id(event: &Event, key: &str) -> EntityId {
 }
 
 impl DataStore {
-    /// Apply a full Integration API data refresh.
+    /// Apply a full refresh snapshot.
     ///
     /// Uses upsert-then-prune: incoming entities are upserted first, then
     /// any keys not present in the incoming set are removed. This avoids the
     /// brief "empty" state that a clear-then-insert approach would cause.
-    #[allow(clippy::too_many_lines)]
+    /// Collections whose optional fetch failed (`None`) are skipped.
     pub(crate) fn apply_integration_snapshot(&self, snap: RefreshSnapshot) {
-        upsert_and_prune(
-            &self.devices,
-            snap.devices
-                .into_iter()
-                .map(|d| {
-                    let key = d.mac.as_str().to_owned();
-                    let id = d.id.clone();
-                    (key, id, d)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.clients,
-            snap.clients
-                .into_iter()
-                .map(|c| {
-                    let key = c.mac.as_str().to_owned();
-                    let id = c.id.clone();
-                    (key, id, c)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.networks,
-            snap.networks
-                .into_iter()
-                .map(|n| {
-                    let key = format!("net:{}", n.id);
-                    let id = n.id.clone();
-                    (key, id, n)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.wifi_broadcasts,
-            snap.wifi
-                .into_iter()
-                .map(|wb| {
-                    let key = format!("wifi:{}", wb.id);
-                    let id = wb.id.clone();
-                    (key, id, wb)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.firewall_policies,
-            snap.policies
-                .into_iter()
-                .map(|p| {
-                    let key = format!("fwp:{}", p.id);
-                    let id = p.id.clone();
-                    (key, id, p)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.firewall_zones,
-            snap.zones
-                .into_iter()
-                .map(|z| {
-                    let key = format!("fwz:{}", z.id);
-                    let id = z.id.clone();
-                    (key, id, z)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.acl_rules,
-            snap.acls
-                .into_iter()
-                .map(|a| {
-                    let key = format!("acl:{}", a.id);
-                    let id = a.id.clone();
-                    (key, id, a)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.nat_policies,
-            snap.nat
-                .into_iter()
-                .map(|n| {
-                    let key = format!("nat:{}", n.id);
-                    let id = n.id.clone();
-                    (key, id, n)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.dns_policies,
-            snap.dns
-                .into_iter()
-                .map(|d| {
-                    let key = format!("dns:{}", d.id);
-                    let id = d.id.clone();
-                    (key, id, d)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.vouchers,
-            snap.vouchers
-                .into_iter()
-                .map(|v| {
-                    let key = format!("vch:{}", v.id);
-                    let id = v.id.clone();
-                    (key, id, v)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.sites,
-            snap.sites
-                .into_iter()
-                .map(|s| {
-                    let key = format!("site:{}", s.id);
-                    let id = s.id.clone();
-                    (key, id, s)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
-            &self.events,
-            snap.events
-                .into_iter()
-                .map(|e| {
-                    let key = event_storage_key(&e);
-                    let id = event_storage_id(&e, &key);
-                    (key, id, e)
-                })
-                .collect(),
-        );
-
-        upsert_and_prune(
+        sync_collection(&self.devices, Some(snap.devices), |d| {
+            (d.mac.as_str().to_owned(), d.id.clone())
+        });
+        sync_collection(&self.clients, Some(snap.clients), |c| {
+            (c.mac.as_str().to_owned(), c.id.clone())
+        });
+        sync_collection(&self.networks, Some(snap.networks), |n| {
+            (format!("net:{}", n.id), n.id.clone())
+        });
+        sync_collection(&self.wifi_broadcasts, Some(snap.wifi), |wb| {
+            (format!("wifi:{}", wb.id), wb.id.clone())
+        });
+        sync_collection(&self.firewall_policies, snap.policies, |p| {
+            (format!("fwp:{}", p.id), p.id.clone())
+        });
+        sync_collection(&self.firewall_zones, snap.zones, |z| {
+            (format!("fwz:{}", z.id), z.id.clone())
+        });
+        sync_collection(&self.acl_rules, snap.acls, |a| {
+            (format!("acl:{}", a.id), a.id.clone())
+        });
+        sync_collection(&self.nat_policies, snap.nat, |n| {
+            (format!("nat:{}", n.id), n.id.clone())
+        });
+        sync_collection(&self.dns_policies, snap.dns, |d| {
+            (format!("dns:{}", d.id), d.id.clone())
+        });
+        sync_collection(&self.vouchers, snap.vouchers, |v| {
+            (format!("vch:{}", v.id), v.id.clone())
+        });
+        sync_collection(&self.sites, Some(snap.sites), |s| {
+            (format!("site:{}", s.id), s.id.clone())
+        });
+        sync_collection(&self.events, snap.events, |e| {
+            let key = event_storage_key(e);
+            let id = event_storage_id(e, &key);
+            (key, id)
+        });
+        sync_collection(
             &self.traffic_matching_lists,
-            snap.traffic_matching_lists
-                .into_iter()
-                .map(|t| {
-                    let key = format!("tml:{}", t.id);
-                    let id = t.id.clone();
-                    (key, id, t)
-                })
-                .collect(),
+            Some(snap.traffic_matching_lists),
+            |t| (format!("tml:{}", t.id), t.id.clone()),
         );
-
-        upsert_and_prune(
-            &self.firewall_groups,
-            snap.firewall_groups
-                .into_iter()
-                .map(|g| {
-                    let key = format!("fwg:{}", g.id);
-                    let id = g.id.clone();
-                    (key, id, g)
-                })
-                .collect(),
-        );
+        sync_collection(&self.firewall_groups, snap.firewall_groups, |g| {
+            (format!("fwg:{}", g.id), g.id.clone())
+        });
 
         let _ = self.last_full_refresh.send(Some(Utc::now()));
     }
@@ -299,53 +204,112 @@ mod tests {
         assert_eq!(collection.snapshot().len(), 2);
     }
 
-    #[test]
-    fn event_snapshot_keeps_distinct_id_less_events_with_same_timestamp() {
-        let store = DataStore::new();
-        let timestamp = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-
-        store.apply_integration_snapshot(RefreshSnapshot {
+    /// A snapshot whose required collections are empty and whose optional
+    /// collections all failed to fetch.
+    fn failed_optional_snapshot() -> RefreshSnapshot {
+        RefreshSnapshot {
             devices: Vec::new(),
             clients: Vec::new(),
             networks: Vec::new(),
             wifi: Vec::new(),
-            policies: Vec::new(),
-            zones: Vec::new(),
-            acls: Vec::new(),
-            nat: Vec::new(),
-            dns: Vec::new(),
-            vouchers: Vec::new(),
+            policies: None,
+            zones: None,
+            acls: None,
+            nat: None,
+            dns: None,
+            vouchers: None,
             sites: Vec::new(),
-            events: vec![
-                Event {
-                    id: None,
-                    timestamp,
-                    category: EventCategory::System,
-                    severity: EventSeverity::Info,
-                    event_type: "EVT_TEST".into(),
-                    message: "first".into(),
-                    device_mac: None,
-                    client_mac: None,
-                    site_id: None,
-                    raw_key: Some("EVT_TEST".into()),
-                    source: crate::model::common::DataSource::SessionApi,
-                },
-                Event {
-                    id: None,
-                    timestamp,
-                    category: EventCategory::System,
-                    severity: EventSeverity::Info,
-                    event_type: "EVT_TEST".into(),
-                    message: "second".into(),
-                    device_mac: None,
-                    client_mac: None,
-                    site_id: None,
-                    raw_key: Some("EVT_TEST".into()),
-                    source: crate::model::common::DataSource::SessionApi,
-                },
-            ],
+            events: None,
             traffic_matching_lists: Vec::new(),
-            firewall_groups: Vec::new(),
+            firewall_groups: None,
+        }
+    }
+
+    fn test_event(message: &str) -> Event {
+        Event {
+            id: None,
+            timestamp: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            category: EventCategory::System,
+            severity: EventSeverity::Info,
+            event_type: "EVT_TEST".into(),
+            message: message.into(),
+            device_mac: None,
+            client_mac: None,
+            site_id: None,
+            raw_key: Some("EVT_TEST".into()),
+            source: crate::model::common::DataSource::SessionApi,
+        }
+    }
+
+    #[test]
+    fn sync_collection_skips_failed_fetch_and_prunes_authoritative_empty() {
+        let string_key = |item: &String| (item.clone(), EntityId::from(item.clone()));
+        let collection: EntityCollection<String> = EntityCollection::new();
+        sync_collection(&collection, Some(vec!["a".into(), "b".into()]), string_key);
+        assert_eq!(collection.len(), 2);
+
+        let version_rx = collection.version_receiver();
+        let before = *version_rx.borrow();
+        sync_collection(&collection, None, string_key);
+        assert_eq!(collection.len(), 2);
+        assert_eq!(
+            *version_rx.borrow(),
+            before,
+            "a failed fetch must not mutate"
+        );
+
+        sync_collection(&collection, Some(Vec::new()), string_key);
+        assert_eq!(collection.len(), 0);
+    }
+
+    #[test]
+    fn failed_optional_fetches_keep_last_known_entries() {
+        let store = DataStore::new();
+        let nat = crate::convert::nat_policy_from_v2(&serde_json::json!({
+            "_id": "nat-1",
+            "type": "DNAT",
+            "description": "web",
+        }))
+        .unwrap();
+        let group = crate::convert::firewall_group_from_session(&serde_json::json!({
+            "_id": "fwg-1",
+            "name": "web-ports",
+        }))
+        .unwrap();
+
+        store.apply_integration_snapshot(RefreshSnapshot {
+            nat: Some(vec![nat]),
+            events: Some(vec![test_event("first")]),
+            firewall_groups: Some(vec![group]),
+            ..failed_optional_snapshot()
+        });
+        assert_eq!(store.nat_policies_snapshot().len(), 1);
+        assert_eq!(store.events_snapshot().len(), 1);
+        assert_eq!(store.firewall_groups_snapshot().len(), 1);
+
+        store.apply_integration_snapshot(failed_optional_snapshot());
+        assert_eq!(store.nat_policies_snapshot().len(), 1);
+        assert_eq!(store.events_snapshot().len(), 1);
+        assert_eq!(store.firewall_groups_snapshot().len(), 1);
+
+        store.apply_integration_snapshot(RefreshSnapshot {
+            nat: Some(Vec::new()),
+            events: Some(Vec::new()),
+            firewall_groups: Some(Vec::new()),
+            ..failed_optional_snapshot()
+        });
+        assert_eq!(store.nat_policies_snapshot().len(), 0);
+        assert_eq!(store.events_snapshot().len(), 0);
+        assert_eq!(store.firewall_groups_snapshot().len(), 0);
+    }
+
+    #[test]
+    fn event_snapshot_keeps_distinct_id_less_events_with_same_timestamp() {
+        let store = DataStore::new();
+
+        store.apply_integration_snapshot(RefreshSnapshot {
+            events: Some(vec![test_event("first"), test_event("second")]),
+            ..failed_optional_snapshot()
         });
 
         assert_eq!(store.events_snapshot().len(), 2);

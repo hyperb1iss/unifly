@@ -11,8 +11,10 @@ use crate::store::{DataStore, RefreshSnapshot, event_storage_key};
 
 use super::Controller;
 
+mod carry;
 mod integration;
 mod merge;
+mod optional;
 mod poll;
 mod session;
 
@@ -49,22 +51,39 @@ impl Controller {
         integration: Arc<crate::IntegrationClient>,
         site_id: uuid::Uuid,
     ) -> Result<(), CoreError> {
-        let mut integration = integration::fetch(integration, site_id).await?;
+        let mut integration = integration::fetch(integration, site_id, self.store()).await?;
         let session_client = self.inner.session_client.lock().await.clone();
         let session = session::fetch_optional(session_client).await;
 
-        merge::merge_session_clients(&mut integration.clients, &session.clients, &session.users);
-        merge::merge_session_devices(&mut integration.devices, &session.devices);
+        merge::merge_session_clients(
+            &mut integration.clients,
+            session.clients.as_deref().unwrap_or_default(),
+            session.users.as_deref().unwrap_or_default(),
+        );
+        merge::merge_session_devices(
+            &mut integration.devices,
+            session.devices.as_deref().unwrap_or_default(),
+        );
 
-        if !session.health.is_empty() {
-            let health = Arc::new(session.health);
-            self.inner
-                .store
-                .site_health
-                .send_modify(|current| *current = Arc::clone(&health));
+        // A failed session fetch would otherwise store these records without
+        // their session-merged fields for a cycle.
+        let store = self.store();
+        carry::session_client_fields(
+            &mut integration.clients,
+            session.clients.is_none(),
+            session.users.is_none(),
+            |mac| store.client_by_mac(mac),
+        );
+        if session.devices.is_none() {
+            carry::session_device_fields(&mut integration.devices, |mac| store.device_by_mac(mac));
         }
 
-        let fresh_events = unseen_events(self.store(), &session.events);
+        if let Some(health) = session.health {
+            let _previous = self.inner.store.site_health.send_replace(Arc::new(health));
+        }
+
+        let fresh_events =
+            unseen_events(self.store(), session.events.as_deref().unwrap_or_default());
         self.inner
             .store
             .apply_integration_snapshot(RefreshSnapshot {
@@ -99,6 +118,8 @@ impl Controller {
         let session = session::fetch_required(session_client).await?;
         let fresh_events = unseen_events(self.store(), &session.events);
 
+        // Without the Integration API this connection has no source for the
+        // Integration-only collections, so they are authoritatively empty.
         self.inner
             .store
             .apply_integration_snapshot(RefreshSnapshot {
@@ -106,14 +127,14 @@ impl Controller {
                 clients: session.clients,
                 networks: Vec::new(),
                 wifi: Vec::new(),
-                policies: Vec::new(),
-                zones: Vec::new(),
-                acls: Vec::new(),
+                policies: Some(Vec::new()),
+                zones: Some(Vec::new()),
+                acls: Some(Vec::new()),
                 nat: session.nat,
-                dns: Vec::new(),
-                vouchers: Vec::new(),
+                dns: Some(Vec::new()),
+                vouchers: Some(Vec::new()),
                 sites: session.sites,
-                events: session.events,
+                events: Some(session.events),
                 traffic_matching_lists: Vec::new(),
                 firewall_groups: session.firewall_groups,
             });
