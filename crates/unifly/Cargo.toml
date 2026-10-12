@@ -54,7 +54,7 @@ required-features = ["cli"]
 # ── Shared dependencies (always present) ─────────────────────────
 [dependencies]
 unifly-api         = { workspace = true }
-tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal", "process", "io-util"] }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 clap               = { workspace = true }
@@ -98,6 +98,9 @@ tiny-skia          = { workspace = true, optional = true }
 futures            = { workspace = true, optional = true }
 tokio-util         = { workspace = true, optional = true }
 json_comments = "0.2.2"
+
+[target.'cfg(unix)'.dependencies]
+rustix             = { workspace = true }
 
 [build-dependencies]
 clap               = { workspace = true }

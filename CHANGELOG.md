@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (no stdin, 10 s limit, trimmed stdout) for every login that needs a code,
   so a long-running TUI on an MFA account keeps its Session-backed features
   past the first cookie expiry. A non-zero exit, a timeout, or empty output
-  counts as no code and is logged without the output; a locked password
+  counts as no code and is logged without the output, and on Unix a
+  timeout stops the command's whole process group; a locked password
   manager may prompt on each attempt, about every 30 s while the session
   is expired. An explicit one-off
   code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves the first

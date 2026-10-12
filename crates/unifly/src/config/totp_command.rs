@@ -4,12 +4,12 @@
 //! code. That is what lets an MFA session renew itself long after startup,
 //! where a code read once from a flag or an environment variable is spent.
 
-use std::io::Read;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::time::Duration;
 
 use secrecy::SecretString;
+use tokio::io::AsyncReadExt;
+use tokio::time::Instant;
 use tracing::warn;
 use unifly_api::TotpProvider;
 
@@ -18,11 +18,12 @@ use unifly_api::TotpProvider;
 /// a hung command does not stall a login for long.
 pub const TOTP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Far more than any code needs; output past this is not read.
-const MAX_OUTPUT_BYTES: u64 = 1024;
+/// How long to keep reading after the command exits, for output still in
+/// flight, before giving up on a pipe that something it started holds open.
+const OUTPUT_GRACE: Duration = Duration::from_millis(100);
 
-/// How often a running command is checked for exit.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// Far more than any code needs; output past this is not read.
+const MAX_OUTPUT_BYTES: usize = 1024;
 
 /// Wrap `argv` (the program, then its arguments) as a [`TotpProvider`].
 pub fn provider(argv: Vec<String>) -> TotpProvider {
@@ -34,53 +35,95 @@ pub fn provider(argv: Vec<String>) -> TotpProvider {
 /// A command that cannot start, exits non-zero, outlives `timeout`, or
 /// prints nothing yields `None`. Failures are logged by program name only:
 /// neither the arguments nor the output reach a log line.
+///
+/// It runs on a private single-threaded runtime, so reading its output is
+/// an async read that is simply dropped when time runs out. A blocking read
+/// on a thread could not be abandoned, and would stay stuck for as long as
+/// anything the command started held the pipe open.
 fn run(argv: &[String], timeout: Duration) -> Option<SecretString> {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            warn!(%error, "totp_command could not get a runtime to run on");
+            return None;
+        }
+    };
+    runtime.block_on(run_async(argv, timeout))
+}
+
+async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     let (program, arguments) = argv.split_first()?;
     let deadline = Instant::now() + timeout;
-    let mut child = match Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-    {
+        .kill_on_drop(true);
+    // Its own process group, so stopping it reaches everything it started.
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             warn!(%error, %program, "totp_command could not be started");
             return None;
         }
     };
-    let Some(stdout) = child.stdout.take() else {
-        stop(&mut child);
-        return None;
+    let group = child.id();
+    let mut stdout = child.stdout.take()?;
+
+    // Read while waiting, so a command never stalls on a full pipe.
+    let mut output = Vec::new();
+    let mut chunk = [0_u8; 256];
+    let mut reading = true;
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status,
+            read = stdout.read(&mut chunk), if reading => {
+                reading = take_chunk(&read, &chunk, &mut output);
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                warn!(%program, ?timeout, "totp_command timed out and was stopped");
+                kill_group(group);
+                let _ = child.kill().await;
+                return None;
+            }
+        }
     };
 
-    // Drain stdout on its own thread, so neither a full pipe nor something
-    // the command spawned that keeps the pipe open can hold us past the
-    // deadline.
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let read = stdout.take(MAX_OUTPUT_BYTES).read_to_end(&mut output);
-        let _ = tx.send(read.map(|_| output));
-    });
+    // It has exited, so whatever it printed is already in the pipe. Drain
+    // that, but only until the pipe closes or a short grace passes:
+    // something it started may hold the pipe open indefinitely.
+    if reading {
+        let drained = tokio::time::timeout(OUTPUT_GRACE, async {
+            while take_chunk(&stdout.read(&mut chunk).await, &chunk, &mut output) {}
+        })
+        .await;
+        if drained.is_err() {
+            // That something outlived the command; stop it with the rest of
+            // the group rather than leave it running.
+            kill_group(group);
+        }
+    }
+    drop(stdout);
 
-    let status = wait_until(&mut child, deadline, program, timeout)?;
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            warn!(%error, %program, "totp_command could not be waited on");
+            return None;
+        }
+    };
     if !status.success() {
         warn!(%program, %status, "totp_command failed");
         return None;
     }
-    let output = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            warn!(%error, %program, "totp_command output could not be read");
-            return None;
-        }
-        Err(_) => {
-            warn!(%program, "totp_command exited but its output never closed");
-            return None;
-        }
-    };
     let Ok(output) = String::from_utf8(output) else {
         warn!(%program, "totp_command printed something other than text");
         return None;
@@ -93,39 +136,38 @@ fn run(argv: &[String], timeout: Duration) -> Option<SecretString> {
     Some(SecretString::from(code.to_owned()))
 }
 
-/// Wait for `child` to exit, killing it if it is still running at
-/// `deadline`.
-fn wait_until(
-    child: &mut Child,
-    deadline: Instant,
-    program: &str,
-    timeout: Duration,
-) -> Option<ExitStatus> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {}
-            Err(error) => {
-                warn!(%error, %program, "totp_command could not be waited on");
-                stop(child);
-                return None;
-            }
+/// Append one read's bytes to `output`. Returns whether to keep reading:
+/// not after end of file, an error, or once the output limit is reached.
+fn take_chunk(read: &std::io::Result<usize>, chunk: &[u8], output: &mut Vec<u8>) -> bool {
+    match *read {
+        Ok(0) | Err(_) => false,
+        Ok(len) => {
+            output.extend_from_slice(chunk.get(..len).unwrap_or_default());
+            output.len() < MAX_OUTPUT_BYTES
         }
-        let now = Instant::now();
-        if now >= deadline {
-            warn!(%program, ?timeout, "totp_command timed out and was stopped");
-            stop(child);
-            return None;
-        }
-        std::thread::sleep(POLL_INTERVAL.min(deadline - now));
     }
 }
 
-/// Kill `child` and reap it so it does not linger as a zombie.
-fn stop(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+/// Send SIGKILL to the command's process group (its leader's pid), which
+/// takes down anything it started that did not leave the group.
+#[cfg(unix)]
+fn kill_group(group: Option<u32>) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+
+    let Some(pid) = group
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(Pid::from_raw)
+    else {
+        return;
+    };
+    // An empty group (everything already exited) is not an error here.
+    let _ = kill_process_group(pid, Signal::KILL);
 }
+
+/// Without process groups, only the command itself is stopped (by
+/// `kill_on_drop` and the explicit kill on timeout).
+#[cfg(not(unix))]
+fn kill_group(_group: Option<u32>) {}
 
 #[cfg(test)]
 mod tests {
@@ -135,6 +177,29 @@ mod tests {
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+
+    /// Whether the process `pid` still exists, reaped or not. A killed
+    /// orphan is reaped by init shortly after, so callers poll.
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(pid: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while alive(pid) {
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
     }
 
     #[cfg(unix)]
@@ -184,6 +249,55 @@ mod tests {
             "the timeout was not enforced: {:?}",
             started.elapsed()
         );
+    }
+
+    /// A command that exits while something it backgrounded holds stdout
+    /// open: the code it printed still counts, the call returns promptly
+    /// instead of waiting on the open pipe, and the straggler is stopped.
+    #[cfg(unix)]
+    #[test]
+    fn a_backgrounded_descendant_holding_stdout_is_stopped() {
+        use secrecy::ExposeSecret;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("descendant.pid");
+        let script = format!(
+            "sleep 86400 & echo $! > '{}'; printf 123456",
+            pid_file.display()
+        );
+
+        let started = std::time::Instant::now();
+        let code = run(&argv(&["sh", "-c", &script]), Duration::from_secs(5))
+            .expect("the code printed before exiting counts");
+        assert_eq!(code.expose_secret(), "123456");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "waited on the held pipe: {:?}",
+            started.elapsed()
+        );
+
+        let pid = std::fs::read_to_string(&pid_file).expect("descendant pid");
+        assert!(wait_for_exit(pid.trim()), "the descendant {pid} still runs");
+    }
+
+    /// On timeout the whole process group goes, not just the command.
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_stops_the_whole_process_group() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("descendant.pid");
+        let script = format!(
+            "sleep 86400 & echo $! > '{}'; exec sleep 86400",
+            pid_file.display()
+        );
+
+        let started = std::time::Instant::now();
+        let code = run(&argv(&["sh", "-c", &script]), Duration::from_millis(300));
+        assert!(code.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let pid = std::fs::read_to_string(&pid_file).expect("descendant pid");
+        assert!(wait_for_exit(pid.trim()), "the descendant {pid} still runs");
     }
 
     #[test]
