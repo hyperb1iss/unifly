@@ -470,3 +470,36 @@ fn fit_cells_never_splits_a_wide_character() {
     assert_eq!(super::fit_cells("ap-roof", 4), "ap-r");
     assert_eq!(super::fit_cells("ap", 10), "ap");
 }
+
+/// The stem and bus a parent shares with all its children take one style.
+/// A guessed orphan or an offline child must not repaint the line its
+/// siblings use; their state shows on their own drop instead.
+#[test]
+fn shared_trunks_keep_one_style_per_parent() {
+    use super::super::render::{MESH_DASH, trunk_styles};
+
+    let mut devices = fleet();
+    // Take ap-a offline: its drop turns red, the trunk under core must not.
+    for device in &mut devices {
+        if device.name.as_deref() == Some("ap-a") {
+            let mut offline = Arc::unwrap_or_clone(Arc::clone(device));
+            offline.state = unifly_api::DeviceState::Offline;
+            *device = Arc::new(offline);
+        }
+    }
+    let layout = layout(&devices, WIDE);
+    let trunks = trunk_styles(&layout.nodes, &layout.edges);
+
+    // gw has a wired switch and a guessed orphan: one solid trunk.
+    let gw = trunks[&index(&layout, "gw")];
+    assert_eq!(gw.1, None, "a mixed parent keeps a solid trunk");
+
+    // core has an offline AP and an online switch: no error-red trunk.
+    let core = trunks[&index(&layout, "core")];
+    assert_ne!(core.0, crate::tui::theme::error());
+    assert_eq!(core.1, None);
+
+    // ap-a reaches its only child over mesh: the whole link is dashed.
+    let ap_a = trunks[&index(&layout, "ap-a")];
+    assert_eq!(ap_a.1, MESH_DASH);
+}

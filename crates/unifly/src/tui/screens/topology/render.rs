@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -75,8 +77,13 @@ impl TopologyScreen {
             .x_bounds([left, left + x_span])
             .y_bounds([-(top + y_span), -top])
             .paint(|ctx: &mut Context<'_>| {
+                let trunks = trunk_styles(&tree.nodes, &tree.edges);
                 for edge in &tree.edges {
-                    draw_edge(ctx, &tree.nodes, edge);
+                    let trunk = trunks
+                        .get(&edge.parent)
+                        .copied()
+                        .unwrap_or_else(|| edge_style(&tree.nodes, edge));
+                    draw_edge(ctx, &tree.nodes, edge, trunk);
                 }
                 for node in &tree.nodes {
                     draw_node(ctx, node);
@@ -167,7 +174,62 @@ fn draw_node(ctx: &mut Context<'_>, node: &TopoNode) {
 /// Org-chart connector: a stub down from the parent, a horizontal run at
 /// mid-gap, and a drop into the child. Wired drops thicken with traffic;
 /// mesh links are dashed, and guessed links are dotted and dim.
-fn draw_edge(ctx: &mut Context<'_>, nodes: &[TopoNode], edge: &TopoEdge) {
+pub(super) type LinkStyle = (Color, Option<(f64, f64)>);
+
+pub(super) const MESH_DASH: Option<(f64, f64)> = Some((1.6, 1.0));
+const GUESS_DOTS: Option<(f64, f64)> = Some((0.5, 0.9));
+
+/// How one child's own drop is drawn: its state and link kind.
+fn edge_style(nodes: &[TopoNode], edge: &TopoEdge) -> LinkStyle {
+    let online = nodes
+        .get(edge.child)
+        .is_some_and(|child| child.state.is_online());
+    match edge.kind {
+        LinkKind::Wired if online => (
+            nodes
+                .get(edge.child)
+                .map_or_else(theme::text_secondary, node_color),
+            None,
+        ),
+        LinkKind::Wired => (theme::error(), None),
+        LinkKind::Wireless => (theme::info(), MESH_DASH),
+        LinkKind::Inferred => (theme::border_unfocused(), GUESS_DOTS),
+    }
+}
+
+/// One style per parent for the stem and bus its children share. Every
+/// child redraws its stretch of that trunk, so styling it per child would
+/// let whichever child is drawn last (an offline device, a guessed orphan)
+/// repaint the line its siblings use. The trunk is dashed when every child
+/// is a mesh link, dim and dotted when every child is a guess, and
+/// otherwise solid in the parent's colour; each child's state stays on its
+/// own drop.
+pub(super) fn trunk_styles(nodes: &[TopoNode], edges: &[TopoEdge]) -> HashMap<usize, LinkStyle> {
+    let mut kinds: HashMap<usize, Vec<LinkKind>> = HashMap::new();
+    for edge in edges {
+        kinds.entry(edge.parent).or_default().push(edge.kind);
+    }
+    kinds
+        .into_iter()
+        .map(|(parent, kinds)| {
+            let style = if kinds.iter().all(|kind| *kind == LinkKind::Wireless) {
+                (theme::info(), MESH_DASH)
+            } else if kinds.iter().all(|kind| *kind == LinkKind::Inferred) {
+                (theme::border_unfocused(), GUESS_DOTS)
+            } else {
+                (
+                    nodes
+                        .get(parent)
+                        .map_or_else(theme::text_secondary, node_color),
+                    None,
+                )
+            };
+            (parent, style)
+        })
+        .collect()
+}
+
+fn draw_edge(ctx: &mut Context<'_>, nodes: &[TopoNode], edge: &TopoEdge, trunk: LinkStyle) {
     let (Some(parent), Some(child)) = (nodes.get(edge.parent), nodes.get(edge.child)) else {
         return;
     };
@@ -176,20 +238,16 @@ fn draw_edge(ctx: &mut Context<'_>, nodes: &[TopoNode], edge: &TopoEdge) {
     let child_top = up(child.y);
     let bus = up(edge.bus_y);
 
-    let (color, dash) = match edge.kind {
-        LinkKind::Wired if child.state.is_online() => (node_color(child), None),
-        LinkKind::Wired => (theme::error(), None),
-        LinkKind::Wireless => (theme::info(), Some((1.6, 1.0))),
-        LinkKind::Inferred => (theme::border_unfocused(), Some((0.5, 0.9))),
-    };
-
+    let (trunk_color, trunk_dash) = trunk;
     let segments = [
         ((stem, parent_bottom), (stem, bus)),
         ((stem, bus), (cx, bus)),
     ];
     for (from, to) in segments {
-        draw_segment(ctx, from, to, color, dash);
+        draw_segment(ctx, from, to, trunk_color, trunk_dash);
     }
+
+    let (color, dash) = edge_style(nodes, edge);
 
     let strands: &[f64] = match (edge.kind, edge_weight(child.traffic_bytes_per_sec)) {
         (LinkKind::Wired, 2) => &[-0.22, 0.22],
