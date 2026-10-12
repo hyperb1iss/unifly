@@ -84,17 +84,7 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Roams { client, limit } => {
-            // Roam history outlives the connection, so a MAC the snapshot
-            // lacks is still worth asking the controller about.
-            let snapshot = controller.clients_snapshot();
-            let mac = match util::lookup::lookup(snapshot.as_slice(), &client)? {
-                Some(found) => found.mac.clone(),
-                None => client
-                    .trim()
-                    .parse::<MacAddress>()
-                    .map_err(|_| util::lookup::not_found::<Client>(&client))?,
-            };
-            let mac = mac.to_string();
+            let mac = util::resolve_client_mac(controller, &client)?.to_string();
             let events = controller.get_client_roams(&mac, Some(limit)).await?;
             let out = output::render_list(
                 &global.output,
@@ -113,21 +103,7 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Wifi { client } => {
-            // WiFi experience is keyed by IP; an IPv4 address the snapshot
-            // lacks goes to the controller as is.
-            let snapshot = controller.clients_snapshot();
-            let ip = match util::lookup::lookup(snapshot.as_slice(), &client)? {
-                Some(found) => found.ip.ok_or_else(|| CliError::Validation {
-                    field: "client".into(),
-                    reason: format!("client '{client}' has no IP address to look up"),
-                })?,
-                None => client
-                    .trim()
-                    .parse::<Ipv4Addr>()
-                    .map(std::net::IpAddr::V4)
-                    .map_err(|_| util::lookup::not_found::<Client>(&client))?,
-            };
-            let ip = ip.to_string();
+            let ip = util::resolve_client_ip(controller, &client)?.to_string();
             let data = controller.get_client_wifi_experience(&ip).await?;
             let out = output::render_single(
                 &global.output,
