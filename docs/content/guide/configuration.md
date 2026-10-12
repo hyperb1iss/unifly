@@ -124,21 +124,23 @@ unifly config set timeout 60
 
 All settings can be overridden via environment variables. Useful for CI/CD, scripting, and ephemeral environments.
 
-| Variable         | Description                           |
-| ---------------- | ------------------------------------- |
-| `UNIFI_API_KEY`  | Integration API key                   |
-| `UNIFI_URL`      | Controller URL                        |
-| `UNIFI_USERNAME` | Session API username                  |
-| `UNIFI_PASSWORD` | Session API password                  |
-| `UNIFI_PROFILE`  | Active profile name                   |
-| `UNIFI_SITE`     | Target site name or UUID              |
-| `UNIFI_OUTPUT`   | Default output format                 |
-| `UNIFI_INSECURE` | `1` to accept self-signed certs       |
-| `UNIFI_TIMEOUT`  | Request timeout in seconds            |
-| `UNIFI_TOTP`     | One-time password for MFA controllers |
-| `UNIFI_HOST_ID`  | Site Manager console ID (cloud mode)  |
-| `UNIFI_DEMO`     | `1` to sanitize PII in output         |
-| `NO_COLOR`       | Disable colored output (standard)     |
+| Variable           | Description                           |
+| ------------------ | ------------------------------------- |
+| `UNIFI_API_KEY`    | Integration API key                   |
+| `UNIFI_URL`        | Controller URL                        |
+| `UNIFI_USERNAME`   | Session API username                  |
+| `UNIFI_PASSWORD`   | Session API password                  |
+| `UNIFI_PROFILE`    | Active profile name                   |
+| `UNIFI_SITE`       | Target site name or UUID              |
+| `UNIFI_OUTPUT`     | Default output format                 |
+| `UNIFI_INSECURE`   | `1` to accept self-signed certs       |
+| `UNIFI_TIMEOUT`    | Request timeout in seconds            |
+| `UNIFI_TOTP`       | One-time password for MFA controllers |
+| `UNIFI_HOST_ID`    | Site Manager console ID (cloud mode)  |
+| `UNIFI_DEMO`       | `1` to sanitize PII in output         |
+| `UNIFI_DEMO_FLEET` | `1` to use the synthetic demo fleet   |
+| `UNIFI_DEMO_SEED`  | Seed for the demo fleet               |
+| `NO_COLOR`         | Disable colored output (standard)     |
 
 ### Example: CI/CD Pipeline
 

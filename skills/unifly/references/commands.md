@@ -28,12 +28,23 @@ UniFi OS counts). Consult `concepts.md` for the full gate matrix.
     --api-key <KEY>     One-shot Integration API key override
     --theme <NAME>      Color theme for CLI and TUI (env UNIFLY_THEME)
     --demo              Sanitize PII in output (env UNIFI_DEMO)
+    --demo-fleet        Answer from the synthetic offline demo fleet (env UNIFI_DEMO_FLEET)
+    --demo-seed <N>     Demo fleet seed (env UNIFI_DEMO_SEED)
     --no-effects        Disable TUI visual effects
 ```
 
 Most accept a matching `UNIFI_*` environment variable; the exceptions
 are `--theme` (`UNIFLY_THEME`) and `--no-effects` (`NO_EFFECTS=1`).
 See concepts.md for the complete table.
+
+`--demo-fleet` needs no controller, credentials, or config. It answers
+only these read-only commands, in every output format: `devices list|get`,
+`clients list|get|find|roams|wifi`, `networks list|get`,
+`wifi list|neighbors|channels`, `firewall policies list|get`,
+`firewall zones list|get`, `nat policies list|get`, `acl list|get`,
+`events list`, `stats site|gateway|dpi`, `topology`, `sites list`, and
+`tui`. Anything else exits 5 with "not available in demo mode". The data
+is fictional; never report it as the user's network.
 
 Hidden but useful for cloud mode:
 
@@ -693,13 +704,12 @@ unifly cloud sdwan status <id>
 
 - `unifly topology`: Pretty-print the gateway > switch > AP > client tree
   (Hybrid recommended for complete uplink data).
-- `unifly tui [--theme NAME] [--log-file PATH] [--demo-fleet] [--demo-seed N]`:
-  Launches the Ratatui dashboard. `UNIFLY_THEME` env var also sets the
-  theme. `--demo-fleet` runs against a synthetic offline fleet (no
-  controller, credentials, or network); the same `--demo-seed` replays the
-  same fleet and animation. Plain `--demo` sanitizes a real controller and
-  falls back to the demo fleet when none is configured. The demo fleet is
-  TUI-only; CLI commands still need a controller.
+- `unifly tui [--theme NAME] [--log-file PATH]`: Launches the Ratatui
+  dashboard. `UNIFLY_THEME` env var also sets the theme. With the global
+  `--demo-fleet` it runs against the synthetic offline fleet; the same
+  `--demo-seed` replays the same fleet and animation. Plain `--demo`
+  sanitizes a real controller and falls back to the demo fleet when none
+  is configured.
 - `unifly completions bash|zsh|fish|powershell|elvish`: Emit completion
   script to stdout.
 - `unifly config init | cloud-setup | show | set | profiles | use | set-password | theme`:

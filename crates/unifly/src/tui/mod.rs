@@ -61,7 +61,7 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     );
 
     let cfg = loaded_config.as_ref();
-    let (controller, demo_fleet) = demo_fleet::select_controller(global, &args, || {
+    let (controller, demo_fleet) = demo_fleet::select_controller(global, || {
         build_controller_direct(global, cfg).or_else(|| build_controller_from_config(global, cfg))
     });
 

@@ -614,6 +614,8 @@ mod tests {
             totp: None,
             no_cache: false,
             demo: false,
+            demo_fleet: false,
+            demo_seed: None,
             output: OutputFormat::Plain,
             color: ColorMode::Never,
             theme: None,

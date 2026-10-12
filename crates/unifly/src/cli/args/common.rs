@@ -63,8 +63,26 @@ pub struct GlobalOpts {
     pub no_cache: bool,
 
     /// Sanitize PII for demo recordings (uses [demo] config section)
-    #[arg(long, env = "UNIFI_DEMO", global = true)]
+    #[arg(
+        long,
+        env = "UNIFI_DEMO",
+        global = true,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     pub demo: bool,
+
+    /// Use the synthetic offline demo fleet instead of a controller (TUI and read-only commands)
+    #[arg(
+        long,
+        env = "UNIFI_DEMO_FLEET",
+        global = true,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub demo_fleet: bool,
+
+    /// Demo fleet seed; the same seed replays the same fleet
+    #[arg(long, env = "UNIFI_DEMO_SEED", global = true, value_name = "SEED")]
+    pub demo_seed: Option<u64>,
 
     /// Accept self-signed TLS certificates (--insecure=false forces verification)
     #[arg(
@@ -140,14 +158,6 @@ pub struct TuiArgs {
     /// Log file path
     #[arg(long, default_value_os_t = default_tui_log_path())]
     pub log_file: std::path::PathBuf,
-
-    /// Run against a synthetic, offline demo fleet (no controller needed)
-    #[arg(long)]
-    pub demo_fleet: bool,
-
-    /// Demo fleet seed (with --demo-fleet or the --demo fallback); same seed, same replay
-    #[arg(long, value_name = "SEED")]
-    pub demo_seed: Option<u64>,
 }
 
 #[cfg(feature = "tui")]

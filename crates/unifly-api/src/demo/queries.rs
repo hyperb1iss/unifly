@@ -25,7 +25,18 @@ fn bucket_secs(interval: &str) -> i64 {
     match interval {
         "5minutes" => 300,
         "daily" => 86_400,
+        "monthly" => 30 * 86_400,
         _ => 3_600,
+    }
+}
+
+/// Report bounds arrive in milliseconds from the TUI (the controller's
+/// unit) and in seconds from the CLI's `--start`/`--end`; accept both.
+fn epoch_secs(value: i64) -> i64 {
+    if value.unsigned_abs() >= 100_000_000_000 {
+        value / 1_000
+    } else {
+        value
     }
 }
 
@@ -33,6 +44,7 @@ fn default_span_secs(interval: &str) -> i64 {
     match interval {
         "5minutes" => 12 * 3_600,
         "daily" => 30 * 86_400,
+        "monthly" => 365 * 86_400,
         _ => 7 * 86_400,
     }
 }
@@ -57,8 +69,8 @@ impl Simulation {
         now: DateTime<Utc>,
     ) -> Vec<DateTime<Utc>> {
         let bucket = bucket_secs(interval);
-        let end_secs = end.map_or(now.timestamp(), |ms| ms / 1_000);
-        let start_secs = start.map_or(end_secs - default_span_secs(interval), |ms| ms / 1_000);
+        let end_secs = end.map_or(now.timestamp(), epoch_secs);
+        let start_secs = start.map_or(end_secs - default_span_secs(interval), epoch_secs);
         let first = start_secs.div_euclid(bucket) * bucket;
         let mut cursor = first;
         let mut out = Vec::new();

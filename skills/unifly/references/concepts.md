@@ -240,22 +240,24 @@ platform-native `%APPDATA%`. Agents should not assume Unix paths on Windows.
 Agent operations should prefer the `UNIFI_` prefix environment variables
 over CLI flags when running in automation contexts:
 
-| Variable         | Purpose                                              |
-| ---------------- | ---------------------------------------------------- |
-| `UNIFI_URL`      | Controller URL (overrides profile)                   |
-| `UNIFI_API_KEY`  | Integration API key                                  |
-| `UNIFI_USERNAME` | Session API username                                 |
-| `UNIFI_PASSWORD` | Session API password (prefer keyring in interactive) |
-| `UNIFI_SITE`     | Target site name or UUID                             |
-| `UNIFI_PROFILE`  | Active profile                                       |
-| `UNIFI_OUTPUT`   | Default output format                                |
-| `UNIFI_INSECURE` | `1` to accept self-signed TLS certs                  |
-| `UNIFI_TIMEOUT`  | Request timeout in seconds                           |
-| `UNIFI_TOTP`     | One-time password for MFA-protected accounts         |
-| `UNIFI_HOST_ID`  | Site Manager console/host ID for cloud mode          |
-| `UNIFI_DEMO`     | `1` to sanitize PII in output (demo mode)            |
-| `NO_COLOR`       | Standard no-color flag (respected by output painter) |
-| `UNIFLY_THEME`   | Color theme name for both CLI output and the TUI     |
+| Variable           | Purpose                                              |
+| ------------------ | ---------------------------------------------------- |
+| `UNIFI_URL`        | Controller URL (overrides profile)                   |
+| `UNIFI_API_KEY`    | Integration API key                                  |
+| `UNIFI_USERNAME`   | Session API username                                 |
+| `UNIFI_PASSWORD`   | Session API password (prefer keyring in interactive) |
+| `UNIFI_SITE`       | Target site name or UUID                             |
+| `UNIFI_PROFILE`    | Active profile                                       |
+| `UNIFI_OUTPUT`     | Default output format                                |
+| `UNIFI_INSECURE`   | `1` to accept self-signed TLS certs                  |
+| `UNIFI_TIMEOUT`    | Request timeout in seconds                           |
+| `UNIFI_TOTP`       | One-time password for MFA-protected accounts         |
+| `UNIFI_HOST_ID`    | Site Manager console/host ID for cloud mode          |
+| `UNIFI_DEMO`       | `1` to sanitize PII in output (demo mode)            |
+| `UNIFI_DEMO_FLEET` | `1` to answer from the synthetic demo fleet          |
+| `UNIFI_DEMO_SEED`  | Seed for the demo fleet                              |
+| `NO_COLOR`         | Standard no-color flag (respected by output painter) |
+| `UNIFLY_THEME`     | Color theme name for both CLI output and the TUI     |
 
 Resolution priority (highest wins): CLI flags > environment variables >
 config file > built-in defaults.

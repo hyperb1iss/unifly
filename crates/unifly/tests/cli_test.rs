@@ -30,7 +30,10 @@ fn unifly_cmd() -> assert_cmd::Command {
         .env_remove("UNIFI_INSECURE")
         .env_remove("UNIFI_TIMEOUT")
         .env_remove("UNIFI_USERNAME")
-        .env_remove("UNIFI_PASSWORD");
+        .env_remove("UNIFI_PASSWORD")
+        .env_remove("UNIFI_DEMO")
+        .env_remove("UNIFI_DEMO_FLEET")
+        .env_remove("UNIFI_DEMO_SEED");
     cmd
 }
 
@@ -51,7 +54,10 @@ fn unifly_cmd_in(config_home: &std::path::Path) -> assert_cmd::Command {
         .env_remove("UNIFI_INSECURE")
         .env_remove("UNIFI_TIMEOUT")
         .env_remove("UNIFI_USERNAME")
-        .env_remove("UNIFI_PASSWORD");
+        .env_remove("UNIFI_PASSWORD")
+        .env_remove("UNIFI_DEMO")
+        .env_remove("UNIFI_DEMO_FLEET")
+        .env_remove("UNIFI_DEMO_SEED");
     cmd
 }
 
@@ -1060,4 +1066,88 @@ fn test_config_subcommands_exist() {
                 .and(predicate::str::contains("show"))
                 .and(predicate::str::contains("profiles")),
         );
+}
+
+// ── Demo fleet ──────────────────────────────────────────────────────
+
+fn demo_json(args: &[&str]) -> serde_json::Value {
+    let output = unifly_cmd()
+        .arg("--demo-fleet")
+        .args(args)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", combined_output(&output));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn test_demo_fleet_devices_list_table_runs_offline() {
+    unifly_cmd()
+        .args(["--demo-fleet", "devices", "list", "--color", "never"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gw-harbor"))
+        .stdout(predicate::str::contains("USW Pro Max 24 PoE"))
+        .stdout(predicate::str::contains("203.0.113.42"));
+}
+
+#[test]
+fn test_demo_fleet_clients_list_json_holds_the_whole_fleet() {
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let count = clients.as_array().map_or(0, Vec::len);
+    assert!(
+        (120..=180).contains(&count),
+        "unexpected client count {count}"
+    );
+}
+
+#[test]
+fn test_demo_fleet_networks_and_stats_answer_offline() {
+    let networks = demo_json(&["networks", "list"]);
+    let names: Vec<&str> = networks
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|network| network["name"].as_str())
+        .collect();
+    assert!(names.contains(&"Render"), "{names:?}");
+
+    let rows = demo_json(&["stats", "gateway"]);
+    let first = &rows.as_array().unwrap()[0];
+    assert_eq!(first["o"], "gw");
+    assert!(first["wan-rx_bytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn test_demo_fleet_seed_reproduces_the_fleet() {
+    let ids = |seed: &str| {
+        let mut ids: Vec<String> = demo_json(&["--demo-seed", seed, "devices", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|device| device["id"].as_str().map(str::to_owned))
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids("7"), ids("7"));
+    assert_ne!(ids("7"), ids("8"));
+}
+
+#[test]
+fn test_demo_fleet_refuses_commands_it_cannot_answer() {
+    for args in [
+        &["devices", "restart", "00:00:00:00:00:01"][..],
+        &["networks", "delete", "x"][..],
+        &["config", "show"][..],
+    ] {
+        unifly_cmd()
+            .arg("--demo-fleet")
+            .args(args)
+            .assert()
+            .failure()
+            .code(5)
+            .stderr(predicate::str::contains("not available in demo mode"));
+    }
 }

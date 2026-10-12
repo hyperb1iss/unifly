@@ -1,9 +1,10 @@
 //! Controller selection for the synthetic demo fleet.
 
 use tracing::{info, warn};
-use unifly_api::{Controller, DEFAULT_DEMO_SEED, DemoFleetOptions};
+use unifly_api::Controller;
 
-use crate::cli::args::{GlobalOpts, TuiArgs};
+use crate::cli::args::GlobalOpts;
+use crate::cli::demo_fleet;
 
 /// Pick this session's controller and report whether it is the demo fleet.
 ///
@@ -13,11 +14,10 @@ use crate::cli::args::{GlobalOpts, TuiArgs};
 /// of opening onboarding.
 pub(super) fn select_controller(
     global: &GlobalOpts,
-    args: &TuiArgs,
     resolve: impl FnOnce() -> Option<Controller>,
 ) -> (Option<Controller>, bool) {
-    let options = DemoFleetOptions::with_seed(args.demo_seed.unwrap_or(DEFAULT_DEMO_SEED));
-    if args.demo_fleet {
+    let options = demo_fleet::options(global);
+    if global.demo_fleet {
         info!(
             seed = options.seed,
             "launching against the synthetic demo fleet"
@@ -27,7 +27,7 @@ pub(super) fn select_controller(
 
     match resolve() {
         Some(controller) => {
-            if args.demo_seed.is_some() {
+            if global.demo_seed.is_some() {
                 warn!("--demo-seed ignored: a real controller is configured");
             }
             (Some(controller), false)
@@ -51,12 +51,10 @@ mod tests {
     use super::*;
     use crate::cli::args::{Cli, Command};
 
-    fn parse(argv: &[&str]) -> (GlobalOpts, TuiArgs) {
+    fn parse(argv: &[&str]) -> GlobalOpts {
         let cli = Cli::try_parse_from(argv).expect("valid arguments");
-        let Command::Tui(tui) = cli.command else {
-            panic!("expected the tui subcommand");
-        };
-        (cli.global, tui)
+        assert!(matches!(cli.command, Command::Tui(_)), "expected tui");
+        cli.global
     }
 
     fn real() -> Controller {
@@ -65,8 +63,8 @@ mod tests {
 
     #[test]
     fn demo_fleet_flag_never_resolves_a_controller() {
-        let (global, args) = parse(&["unifly", "tui", "--demo-fleet", "--demo-seed", "7"]);
-        let (controller, fleet) = select_controller(&global, &args, || {
+        let global = parse(&["unifly", "tui", "--demo-fleet", "--demo-seed", "7"]);
+        let (controller, fleet) = select_controller(&global, || {
             panic!("--demo-fleet must not touch config or credentials")
         });
         assert!(fleet);
@@ -75,24 +73,24 @@ mod tests {
 
     #[test]
     fn plain_demo_keeps_a_real_controller() {
-        let (global, args) = parse(&["unifly", "--demo", "tui"]);
-        let (controller, fleet) = select_controller(&global, &args, || Some(real()));
+        let global = parse(&["unifly", "--demo", "tui"]);
+        let (controller, fleet) = select_controller(&global, || Some(real()));
         assert!(!fleet);
         assert!(controller.is_some_and(|controller| !controller.is_demo()));
     }
 
     #[test]
     fn plain_demo_falls_back_to_the_fleet_without_a_controller() {
-        let (global, args) = parse(&["unifly", "--demo", "tui"]);
-        let (controller, fleet) = select_controller(&global, &args, || None);
+        let global = parse(&["unifly", "--demo", "tui"]);
+        let (controller, fleet) = select_controller(&global, || None);
         assert!(fleet);
         assert!(controller.is_some_and(|controller| controller.is_demo()));
     }
 
     #[test]
     fn no_controller_and_no_demo_opens_onboarding() {
-        let (global, args) = parse(&["unifly", "tui"]);
-        let (controller, fleet) = select_controller(&global, &args, || None);
+        let global = parse(&["unifly", "tui"]);
+        let (controller, fleet) = select_controller(&global, || None);
         assert!(!fleet);
         assert!(controller.is_none());
     }

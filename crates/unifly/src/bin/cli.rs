@@ -1,10 +1,11 @@
 //! `unifly` — kubectl-style CLI for managing UniFi Network controllers.
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use tracing_subscriber::EnvFilter;
 
 use unifly::cli::args::{Cli, Command, ConfigCommand, EventsCommand, GlobalOpts};
 use unifly::cli::commands;
+use unifly::cli::demo_fleet;
 use unifly::cli::error::CliError;
 use unifly::config::resolve;
 
@@ -13,7 +14,9 @@ use unifly_api::Controller;
 /// Parses the CLI, then builds the runtime by hand rather than using
 /// `#[tokio::main]`, so the worker-thread count can depend on the command.
 fn main() {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let command_path = demo_fleet::command_path(&matches);
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
 
     let runtime = match build_runtime(worker_threads_for(&cli.command)) {
         Ok(runtime) => runtime,
@@ -23,7 +26,7 @@ fn main() {
         }
     };
 
-    if let Err(err) = runtime.block_on(run(cli)) {
+    if let Err(err) = runtime.block_on(run(cli, &command_path)) {
         let code = err.exit_code();
         eprintln!("{:?}", miette::Report::new(err));
         std::process::exit(code);
@@ -74,7 +77,12 @@ fn init_tracing(verbosity: u8) {
 }
 
 #[allow(clippy::future_not_send)]
-async fn run(cli: Cli) -> Result<(), CliError> {
+async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
+    // Refuse before anything reads config, the keyring, or the network.
+    if cli.global.demo_fleet && !demo_fleet::supports(command_path) {
+        return Err(demo_fleet::refuse(command_path));
+    }
+
     match cli.command {
         Command::Cloud(args) => {
             init_tracing(cli.global.verbose);
@@ -110,9 +118,13 @@ async fn run(cli: Cli) -> Result<(), CliError> {
 
         cmd => {
             init_tracing(cli.global.verbose);
-            let mut controller_config = build_controller_config(&cli.global).await?;
-            controller_config.websocket_enabled = command_uses_websocket(&cmd);
-            let controller = Controller::new(controller_config);
+            let controller = if cli.global.demo_fleet {
+                demo_fleet::controller(&cli.global)
+            } else {
+                let mut controller_config = build_controller_config(&cli.global).await?;
+                controller_config.websocket_enabled = command_uses_websocket(&cmd);
+                Controller::new(controller_config)
+            };
             if command_needs_initial_refresh(&cmd) {
                 controller.connect().await.map_err(CliError::from)?;
             } else {

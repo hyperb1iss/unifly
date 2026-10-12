@@ -155,7 +155,7 @@ Two flags make the TUI safe to show on screen.
 
 `--demo` (or `UNIFI_DEMO=1`, or `[demo] enabled = true` in config) connects to your real controller and swaps names, MACs, IPs, and SSIDs for deterministic fakes before anything is drawn.
 
-`--demo-fleet` skips the controller entirely. The TUI runs against a synthetic, offline network for a fictional creative studio, Neon Harbor Studios, and a simulation animates it about once a second:
+`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) skips the controller entirely. The TUI runs against a synthetic, offline network for a fictional creative studio, Neon Harbor Studios, and a simulation animates it about once a second:
 
 - **The fleet**: a UDM Pro Max gateway, three switches, and nine access points (one offline, one finishing a firmware upgrade, one with an update waiting), about 140 clients on six VLANs and four SSIDs, firewall zones and policies, NAT, ACLs, and a week of event history.
 - **What moves**: WAN throughput (with render-upload and asset-sync bursts), device CPU, memory, and load, client traffic and signal, roams, arrivals and departures, and security events such as IPS alerts and firewall drops.
@@ -170,6 +170,8 @@ unifly tui --demo                        # Falls back to the demo fleet when no 
 The same seed produces the same fleet and the same animation from launch, so a screenshot or a recording can be reshot identically; only wall-clock timestamps differ. When `--demo` is set and no controller can be resolved from flags, environment, or config, the TUI opens the demo fleet instead of onboarding and logs that it did. The sanitizer never runs on the demo fleet, because its data is fictional already: documentation and private address ranges, locally administered MACs, and invented names.
 
 Device actions (restart, locate, upgrade, PoE power cycle) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Power cycling the dark camera port on `sw-core` brings that camera back. Changes that need a real controller, such as editing a network or deleting a policy, are refused with a clear error.
+
+`--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 
 For recordings, `--no-effects` (or `NO_EFFECTS=1`) skips the launch animation.
 
