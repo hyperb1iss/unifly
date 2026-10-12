@@ -886,7 +886,8 @@ and CLI-only builds, and check Cargo packaging includes every guide asset.
 - **`justfile`**: task recipes
 - **`.github/workflows/`**: CI + release + docs workflows
 - **`docs/images/`**: shipped screenshots. The README's promo video is a GitHub
-  `user-attachments` upload (a repo file cannot play inline in a README);
-  the source cuts ship as release assets
+  `user-attachments` upload (a repo file cannot play inline in a README).
+  The source cuts are attached to the v0.11.0 release only; later releases
+  do not carry them
 - **`aur/update-aur.sh`**: AUR package refresh script used by
   `just aur-update`
