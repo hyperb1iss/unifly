@@ -124,6 +124,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   not use, so agents stop probing with `jq` fallbacks such as
   `.uplink // .uplink_info`. A test checks every listed key against real
   output.
+- **TUI tables use the room a wide terminal gives them.** From 120 columns
+  the Devices table adds Clients and Firmware, marking a version that has an
+  update waiting with an arrow; its filter bar counts pending firmware
+  updates at any width. The Clients table adds Network and Uplink: the
+  access point for a wireless client, the switch and port for a wired one
+  ("sw-core port 14"). The WiFi AP Health table lists every radio in 2.4, 5,
+  and 6 GHz columns as channel and width instead of one band per AP, and the
+  wireless client table adds each client's band and channel. Firewall
+  policies show their source and destination zone from 96 columns, zones
+  list their member networks and how many policies touch them, and ACL and
+  NAT rules lead with their index.
+- **`Client::network_name` in `unifly-api`**, the network name the Session
+  API reports for a client, filled by the session conversion and the hybrid
+  merge. Session `network_id`s are legacy record IDs that never match the
+  Integration API's network UUIDs, so this name is what ties a hybrid or
+  session client to its network. JSON and YAML client output gains the
+  field.
 
 ### Security
 
@@ -258,6 +275,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   attached to the gateway by a dim dotted line. Boxes are sized to their
   names and wide sibling sets wrap onto extra rows, so at 100% zoom every
   name is drawn whole even at 80 columns.
+- **TUI table columns fit what they hold.** Name columns took every spare
+  cell while fixed-width columns clipped their values ("U6 Enterprise",
+  "151.4G/352.0G", the IPv6 mode), and short headers rendered as "Sta" and
+  "Typ". Columns are now sized from their contents, spare width spreads
+  over the gaps between them, and a narrow terminal shrinks name columns
+  first, so every table stays readable at 80 by 24. `Ipv6Mode` now displays
+  "Prefix Delegation" instead of the truncated "Prefix Del".
+- **TUI lists follow the CLI's order and keep the selection on the same
+  entity.** Devices, clients, networks, firewall policies, zones, ACL
+  rules, and NAT rules appeared in raw store order, so firewall policies
+  read like a shuffled evaluation order. The list screens now sort with the
+  same functions as the CLI list commands (policies grouped by zone pair,
+  then by index), the WiFi tables break ties the same way, and a refresh or
+  re-sort keeps the cursor on the entity it was on.
+- **The Events heatmap lines up.** Its hour labels sat at a fixed spacing
+  wider than the grid and pointed at the wrong hours; each label now starts
+  over its own hour, and the grid widens with the terminal instead of
+  staying a 24-cell strip. The live event list also keeps the newest event
+  on screen, where it used to fall one row below the bottom edge.
+- **A TUI network edit saves to the network it was opened on.** Enter saved
+  to whichever network held the selected row, so a refresh that removed the
+  network being edited sent the edit to a different one.
 
 ### Performance
 
