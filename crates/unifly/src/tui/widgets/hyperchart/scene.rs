@@ -39,6 +39,7 @@ pub struct Annotation {
     pub y: f64,
     pub transformed_y: f64,
     pub color: Color,
+    pub direction: SeriesDirection,
 }
 
 #[derive(Debug, Clone)]
@@ -104,8 +105,12 @@ pub(super) fn transform_y(baseline: Baseline<'_>, direction: SeriesDirection, va
             },
             SeriesDirection::Down,
         ) => {
-            let lower_max = lower_max.max(1.0);
-            -(value.min(lower_max) / lower_max) * mirror_lower_extent(upper_max)
+            let fraction = if lower_max > 0.0 {
+                value.min(lower_max) / lower_max
+            } else {
+                0.0
+            };
+            -fraction * mirror_lower_extent(upper_max)
         }
         (Baseline::Mirror { upper_max, .. }, SeriesDirection::Up) => value.min(upper_max),
         _ => value,
@@ -212,6 +217,16 @@ mod tests {
         assert!((full + 600.0).abs() < f64::EPSILON);
         assert!((half + 300.0).abs() < f64::EPSILON);
         assert!((mirror_lower_extent(1_200.0) - 600.0).abs() < f64::EPSILON);
+
+        // A sub-unit lower scale still saturates at its own maximum.
+        let tiny = Baseline::Mirror {
+            upper_max: 1_200.0,
+            lower_max: 0.5,
+            upper_label: "RX",
+            lower_label: "TX",
+        };
+        let above_max = transform_y(tiny, SeriesDirection::Down, 0.75);
+        assert!((above_max + 600.0).abs() < f64::EPSILON);
     }
 
     #[test]

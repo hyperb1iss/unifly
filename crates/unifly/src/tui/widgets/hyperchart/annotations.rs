@@ -5,6 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use super::geometry::{render_text, x_to_col, y_to_row};
+use super::model::SeriesDirection;
 use super::scene::{Annotation, AnnotationKind, ChartScene, PlotBounds};
 use super::time_series::HyperChart;
 
@@ -69,7 +70,7 @@ fn render_rail(
     for annotation in now_points {
         let Some(row) = free_rail_row(
             y_to_row(plot_area, scene.bounds, annotation.transformed_y),
-            annotation.transformed_y >= 0.0,
+            matches!(annotation.direction, SeriesDirection::Up),
             rail,
             &occupied,
         ) else {
@@ -91,7 +92,8 @@ fn render_rail(
 }
 
 /// The marker's own row, or the nearest free row away from the baseline when
-/// another label already sits there (both lanes idle at zero, say).
+/// another label already sits there (both lanes idle at zero, say). Upward
+/// series move up and downward series move down, staying in their lanes.
 fn free_rail_row(row: u16, upward: bool, rail: Rect, occupied: &[u16]) -> Option<u16> {
     let mut row = row;
     while occupied.contains(&row) {
@@ -233,6 +235,7 @@ mod tests {
                 y: 1_024.0,
                 transformed_y: 1_024.0,
                 color: Color::Cyan,
+                direction: SeriesDirection::Up,
             }],
         };
 
@@ -266,6 +269,7 @@ mod tests {
             y,
             transformed_y: y,
             color,
+            direction: SeriesDirection::Up,
         }
     }
 
@@ -299,6 +303,38 @@ mod tests {
             .map(|cell| buf[cell].symbol().to_string())
             .collect();
         assert!(rail_text.contains('─'));
+    }
+
+    #[test]
+    fn idle_lanes_keep_their_rail_labels_on_their_own_side() {
+        let series: [Series<'_>; 0] = [];
+        let chart = HyperChart::new(Line::raw(""), &series, (0.0, 10.0), 1_024.0)
+            .domain(Domain::Rate)
+            .baseline(Baseline::Zero { y_max: 1_024.0 });
+        let area = Rect::new(0, 0, 48, 9);
+        let mut buf = Buffer::empty(area);
+        let (plot_area, overlay) = split_value_rail(area);
+        let mut scene = now_scene(vec![
+            now_at(0.0, Color::Magenta),
+            Annotation {
+                transformed_y: -0.0,
+                direction: SeriesDirection::Down,
+                ..now_at(0.0, Color::Cyan)
+            },
+        ]);
+        scene.bounds.y_min = -512.0;
+
+        render(&chart, &scene, plot_area, overlay, &mut buf);
+
+        let row_of = |color: Color| {
+            (0..area.height).find(|&y| {
+                let cell = &buf[(plot_area.right(), y)];
+                cell.symbol() == "─" && cell.fg == color
+            })
+        };
+        let rx = row_of(Color::Magenta).expect("RX label");
+        let tx = row_of(Color::Cyan).expect("TX label");
+        assert!(tx > rx, "TX label at row {tx} should sit below RX at {rx}");
     }
 
     #[test]
