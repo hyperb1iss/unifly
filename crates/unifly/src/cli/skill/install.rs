@@ -70,12 +70,18 @@ const PUBLISHED_DIGESTS: &[u64] = &[
     0x4f8b_2a6f_2e51_ba7c,
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Outcome {
     Installed,
     Unchanged,
     Updated,
     Replaced,
+    /// The skill directory or file is a symlink, so something else (a
+    /// checkout, `npx skills add` in link mode) manages it. Never written.
+    Linked {
+        link: PathBuf,
+        target: PathBuf,
+    },
 }
 
 /// Install the discovery skill, report what happened on stderr, and print
@@ -93,11 +99,21 @@ pub(super) fn run(args: &SkillArgs, quiet: bool, output: &mut impl Write) -> Res
 
     if !quiet {
         let shown = path.display();
-        match outcome {
+        match &outcome {
             Outcome::Installed => eprintln!("Installed the unifly agent skill at {shown}"),
             Outcome::Unchanged => eprintln!("The unifly agent skill at {shown} is up to date"),
             Outcome::Updated => eprintln!("Updated the unifly agent skill at {shown}"),
             Outcome::Replaced => eprintln!("Replaced {shown} with the unifly agent skill"),
+            Outcome::Linked { link, target } => eprintln!(
+                "{} is a symlink to {}; leaving it alone{}",
+                link.display(),
+                target.display(),
+                if args.force {
+                    " (--force never follows or replaces a symlink)"
+                } else {
+                    ""
+                }
+            ),
         }
         if outcome == Outcome::Updated {
             let others = other_entries(&skill_dir);
@@ -109,7 +125,11 @@ pub(super) fn run(args: &SkillArgs, quiet: bool, output: &mut impl Write) -> Res
                 );
             }
         }
-        if default_target && outcome != Outcome::Unchanged && claude_lacks_skill() {
+        let wrote = matches!(
+            outcome,
+            Outcome::Installed | Outcome::Updated | Outcome::Replaced
+        );
+        if default_target && wrote && claude_lacks_skill() {
             eprintln!(
                 "To install it for Claude Code as well, run `unifly skill --install --claude`"
             );
@@ -121,7 +141,16 @@ pub(super) fn run(args: &SkillArgs, quiet: bool, output: &mut impl Write) -> Res
 }
 
 /// Write the discovery skill unless an unrecognized file is in the way.
+/// A symlinked skill directory or file is left alone, even with `force`.
 fn install(path: &Path, force: bool) -> Result<Outcome, CliError> {
+    for component in [path.parent(), Some(path)].into_iter().flatten() {
+        if let Some(target) = symlink_target(component)? {
+            return Ok(Outcome::Linked {
+                link: component.to_path_buf(),
+                target,
+            });
+        }
+    }
     let outcome = match fs::read(path) {
         Ok(existing) if existing == DISCOVERY_SKILL.as_bytes() => return Ok(Outcome::Unchanged),
         Ok(existing) if PUBLISHED_DIGESTS.contains(&digest(&existing)) => Outcome::Updated,
@@ -138,14 +167,44 @@ fn install(path: &Path, force: bool) -> Result<Outcome, CliError> {
     fs::create_dir_all(parent).map_err(|error| install_failed(parent, error))?;
     // Write beside the target and rename over it, so an interrupted write
     // never leaves a truncated SKILL.md that the next run would refuse.
+    // create_new refuses any existing entry, a symlink included, instead of
+    // following it, and only a file created here is ever cleaned up.
     let staged = parent.join(format!(".{SKILL_FILE}.{}.tmp", std::process::id()));
-    fs::write(&staged, DISCOVERY_SKILL)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .map_err(|error| install_failed(&staged, error))?;
+    let written = file.write_all(DISCOVERY_SKILL.as_bytes());
+    drop(file);
+    written
         .and_then(|()| fs::rename(&staged, path))
         .map_err(|error| {
             fs::remove_file(&staged).ok();
             install_failed(path, error)
         })?;
     Ok(outcome)
+}
+
+/// The target of `path` when it is a symlink (dangling or not). A missing
+/// path, or one under a regular file, is not a symlink; the read that
+/// follows reports any real problem.
+fn symlink_target(path: &Path) -> Result<Option<PathBuf>, CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::read_link(path)
+            .map(Some)
+            .map_err(|error| install_failed(path, error)),
+        Ok(_) => Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(install_failed(path, error)),
+    }
 }
 
 /// 64-bit FNV-1a with CRLF read as LF, so a checkout or copy that converted
@@ -276,5 +335,76 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name())
             .collect();
         assert_eq!(entries, [SKILL_FILE], "no staged file is left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_skill_directories_and_files_are_never_written() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let elsewhere = directory.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("create link target");
+
+        let linked_dir = directory.path().join("dir-root/unifly");
+        fs::create_dir_all(linked_dir.parent().expect("root")).expect("create root");
+        symlink(&elsewhere, &linked_dir).expect("link skill dir");
+        let outcome = install(&linked_dir.join(SKILL_FILE), true).expect("linked dir");
+        assert!(matches!(outcome, Outcome::Linked { ref link, .. } if *link == linked_dir));
+        assert!(
+            !elsewhere.join(SKILL_FILE).exists(),
+            "nothing written through"
+        );
+
+        let dangling = directory.path().join("file-root/unifly/SKILL.md");
+        fs::create_dir_all(dangling.parent().expect("skill dir")).expect("create skill dir");
+        symlink(elsewhere.join("missing.md"), &dangling).expect("link skill file");
+        let outcome = install(&dangling, true).expect("dangling link");
+        assert_eq!(
+            outcome,
+            Outcome::Linked {
+                link: dangling.clone(),
+                target: elsewhere.join("missing.md"),
+            }
+        );
+        assert!(
+            !elsewhere.join("missing.md").exists(),
+            "link target not created"
+        );
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_staging_path_is_never_followed_or_removed() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let victim = directory.path().join("victim.md");
+        fs::write(&victim, "not yours\n").expect("write victim");
+        let path = directory.path().join("skills/unifly/SKILL.md");
+        let skill_dir = path.parent().expect("skill dir");
+        fs::create_dir_all(skill_dir).expect("create skill dir");
+        let staged = skill_dir.join(format!(".{SKILL_FILE}.{}.tmp", std::process::id()));
+        symlink(&victim, &staged).expect("plant staging link");
+
+        assert!(matches!(
+            install(&path, true),
+            Err(CliError::SkillInstallFailed { .. })
+        ));
+        assert_eq!(fs::read_to_string(&victim).expect("victim"), "not yours\n");
+        assert!(!path.exists(), "nothing installed");
+        assert!(
+            fs::symlink_metadata(&staged)
+                .expect("planted link")
+                .file_type()
+                .is_symlink(),
+            "an entry this run did not create is not removed"
+        );
     }
 }

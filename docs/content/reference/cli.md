@@ -503,7 +503,8 @@ unifly skill --install --dir <DIR>     # DIR/unifly/SKILL.md
 
 `--install` prints the installed path on stdout. It leaves an identical skill
 alone, upgrades one from `npx skills add` or an earlier release, and refuses
-(exit code 6) to replace any other `SKILL.md` without `--force`.
+(exit code 6) to replace any other `SKILL.md` without `--force`. It never
+writes through a symlinked skill directory or file.
 
 ## Global Flags
 

@@ -32,7 +32,10 @@ on stdout and its status on stderr (`--quiet` keeps only the path). Running
 it again is safe: an identical skill is left alone, and one installed by
 `npx skills add` or an earlier release is upgraded in place. Any other
 `SKILL.md` at that path, such as a locally edited copy, stays untouched and the
-command exits with code 6 unless you pass `--force`.
+command exits with code 6 unless you pass `--force`. A symlinked skill
+directory or `SKILL.md` means something else manages the skill (a checkout, or
+`npx skills add` in link mode), so the command reports where the link points
+and writes nothing, even with `--force`.
 
 The quick install scripts run this step for you (set `UNIFLY_NO_SKILL=1` to
 skip it). `install.sh` skips it when run as root, since that home directory may
