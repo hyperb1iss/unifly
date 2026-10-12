@@ -17,9 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `settings get` now masks nested credentials too, not just top-level ones.
   `settings set` carries over credentials that an update leaves out
   (including inside nested objects), so an edited export can be applied
-  back safely. It refuses an update that would still erase one, such as
-  inside a replaced array element, and names the field. Scripts that read
-  `x_` fields from these commands need `--with-secrets`.
+  back safely. It refuses an update that would still erase one (array
+  entries are matched by content, so reordering is fine) and names the
+  field; `--allow-secret-removal` overrides that. Scripts that read `x_`
+  fields from these commands need `--with-secrets`.
 
 ### Fixed
 

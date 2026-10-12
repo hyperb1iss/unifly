@@ -64,7 +64,7 @@ unifly settings export | jq '.[] | select(.key == "ips")'
 unifly settings export --with-secrets > settings-full.json
 ```
 
-Leaving the fields out, rather than masking them, keeps edited exports safe to apply. When `set` writes a section back, it carries over any credential your JSON left out, including ones nested inside objects. If an update would still erase one (for example inside an array element you replaced), `set` refuses and names the field. To clear a credential on purpose, set it explicitly, for example to `""`.
+Leaving the fields out, rather than masking them, keeps edited exports safe to apply. When `set` writes a section back, it carries over any credential your JSON left out, including ones nested inside objects. Inside arrays, entries are matched by content rather than position, so reordering entries or removing ones without credentials is fine. If an update would still erase a credential (for example by dropping the array entry that holds it), `set` refuses and names the field. To clear a credential on purpose, set it explicitly (for example to `""`) or pass `--allow-secret-removal`.
 
 ## Relationship to Other Commands
 

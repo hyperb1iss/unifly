@@ -56,4 +56,8 @@ pub struct SettingsSetArgs {
     /// Merge a JSON object into the section
     #[arg(long, conflicts_with_all = ["field", "value"])]
     pub data: Option<String>,
+
+    /// Write the update even if it removes stored `x_` credential fields
+    #[arg(long)]
+    pub allow_secret_removal: bool,
 }

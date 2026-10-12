@@ -141,6 +141,32 @@ fn carry_secrets(current: &serde_json::Value, incoming: &mut serde_json::Value) 
     }
 }
 
+/// Gather every secret field under `value` as (path, key, value).
+fn collect_secrets<'a>(
+    value: &'a serde_json::Value,
+    path: &str,
+    found: &mut Vec<(String, &'a str, &'a serde_json::Value)>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, field) in map {
+                let child = format!("{path}.{key}");
+                if is_secret_field(key) {
+                    found.push((child, key.as_str(), field));
+                } else {
+                    collect_secrets(field, &child, found);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_secrets(item, &format!("{path}[{index}]"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Collect the paths of secret fields present in `current` that `merged`
 /// no longer has, such as one inside an array element the update replaced.
 fn dropped_secrets(
@@ -167,10 +193,20 @@ fn dropped_secrets(
                 }
             }
         }
-        serde_json::Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                let next = merged.and_then(|m| m.get(index));
-                dropped_secrets(item, next, &format!("{path}[{index}]"), dropped);
+        // Positions are not identities: entries can move, and a neighbor can
+        // be removed. A credential inside an array counts as kept when the
+        // same field still holds the same value anywhere in the update.
+        serde_json::Value::Array(_) => {
+            let mut kept = Vec::new();
+            if let Some(merged) = merged {
+                collect_secrets(merged, path, &mut kept);
+            }
+            let mut live = Vec::new();
+            collect_secrets(current, path, &mut live);
+            for (live_path, key, value) in live {
+                if !kept.iter().any(|(_, k, v)| *k == key && *v == value) {
+                    dropped.push(live_path);
+                }
             }
         }
         _ => {}
@@ -194,7 +230,8 @@ fn guard_secrets(
         field: "data".into(),
         reason: format!(
             "this update would erase credential field(s) {}; include them \
-             (export with --with-secrets) or set them explicitly",
+             (export with --with-secrets), set them explicitly, or pass \
+             --allow-secret-removal if removing them is intended",
             dropped.join(", ")
         ),
     })
@@ -350,7 +387,9 @@ async fn handle_set(
     obj.remove("key");
 
     let mut update = serde_json::Value::Object(obj);
-    guard_secrets(&current, &mut update)?;
+    if !args.allow_secret_removal {
+        guard_secrets(&current, &mut update)?;
+    }
 
     controller.update_site_setting(&args.key, &update).await?;
 
@@ -531,6 +570,22 @@ mod tests {
             error.to_string().contains("servers[0].x_shared_secret"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn reordering_array_entries_keeps_their_secrets() {
+        let current = serde_json::json!({
+            "servers": [{ "ip": "A", "x_shared_secret": "s3cr3t" }, { "ip": "B" }]
+        });
+        let mut reordered = serde_json::json!({
+            "servers": [{ "ip": "B" }, { "ip": "A", "x_shared_secret": "s3cr3t" }]
+        });
+        guard_secrets(&current, &mut reordered).expect("the secret moved, not vanished");
+
+        let mut trimmed = serde_json::json!({
+            "servers": [{ "ip": "A", "x_shared_secret": "s3cr3t" }]
+        });
+        guard_secrets(&current, &mut trimmed).expect("removing a secretless entry is fine");
     }
 
     #[test]

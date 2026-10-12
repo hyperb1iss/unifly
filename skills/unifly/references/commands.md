@@ -498,9 +498,10 @@ unifly settings export [--with-secrets]
   mode (at any depth) and are omitted, at any depth, from JSON/YAML output of
   `list`/`get` and from `export`. Pass `--with-secrets` to include them.
 - `set` carries over credentials an update leaves out (nested objects
-  included) and refuses an update that would still erase one (e.g. inside a
-  replaced array element), naming the field. Clear a credential on purpose
-  by setting it explicitly (e.g. `""`).
+  included) and refuses an update that would still erase one, naming the
+  field. Array entries are matched by content, so reordering is fine.
+  Clear a credential on purpose by setting it explicitly (e.g. `""`) or
+  pass `--allow-secret-removal`.
 - `set` performs a read-modify-write: fetches the current section, patches
   the specified field, and PUTs the full section back. Values are parsed as
   bool (`true`/`false`), number, or string fallback.
