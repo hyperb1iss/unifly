@@ -21,8 +21,10 @@ JSON for table/plain output. Port export always emits JSONC.
 Plain output (`-o plain`) usually emits record IDs. IDs may be Integration
 UUIDs or Session IDs; a command accepting a MAC needs the `mac` field instead.
 Network and WiFi get commands take IDs, not names. Resolve names through list
-output first. Device get accepts an ID or MAC. Client find searches IP, name,
-hostname, and MAC case-insensitively.
+output first. Device commands accept a name (case-insensitive), ID, IP, or
+MAC in any spelling (colons, dashes, dots, or none; any case). A name two
+devices share fails with exit 2 and lists the candidates; pass an ID then.
+Client find searches IP, name, hostname, and MAC case-insensitively.
 
 Most lists default to 25 entries. Pass `--all` for complete enumeration when
 available. The shared list handler applies filtering, offset, and limit to

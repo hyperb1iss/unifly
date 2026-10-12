@@ -16,13 +16,13 @@ pub enum DevicesCommand {
 
     /// Get adopted device details
     Get {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
     },
 
     /// Adopt a pending device
     Adopt {
-        /// MAC address of the device to adopt
+        /// MAC address of the pending device to adopt (any common spelling)
         #[arg(value_name = "MAC")]
         mac: String,
 
@@ -33,19 +33,19 @@ pub enum DevicesCommand {
 
     /// Remove (unadopt) a device
     Remove {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
     },
 
     /// Restart a device
     Restart {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
     },
 
     /// Toggle locate LED (blink to identify device)
     Locate {
-        /// Device MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
 
         /// Turn locate on (default) or off
@@ -55,7 +55,7 @@ pub enum DevicesCommand {
 
     /// Power-cycle a PoE port
     PortCycle {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
 
         /// Port index to power-cycle
@@ -65,7 +65,7 @@ pub enum DevicesCommand {
 
     /// Get real-time device statistics
     Stats {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
     },
 
@@ -74,7 +74,7 @@ pub enum DevicesCommand {
 
     /// Upgrade device firmware (session API)
     Upgrade {
-        /// Device MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
 
         /// External firmware URL (optional)
@@ -84,7 +84,7 @@ pub enum DevicesCommand {
 
     /// Force re-provision device configuration (session API)
     Provision {
-        /// Device MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
     },
 
@@ -96,7 +96,7 @@ pub enum DevicesCommand {
 
     /// List switch ports with VLAN configuration (session API)
     Ports {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
 
         /// Include the wired clients and adopted devices (APs, downstream
@@ -114,7 +114,7 @@ pub enum DevicesCommand {
     /// Pass `--all` to emit every port at its current state (useful for
     /// first-time bootstrapping a config file).
     PortsExport {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
 
         /// Emit every port, including those without an override entry
@@ -134,7 +134,7 @@ pub enum DevicesCommand {
 
     /// Configure a switch port (session API)
     PortSet {
-        /// Device ID (UUID) or MAC address
+        /// Device name, ID, IP, or MAC address
         device: String,
 
         /// Port index to configure (1-based). Required for single-port

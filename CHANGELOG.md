@@ -83,6 +83,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   installers run as the user, so they install the skill themselves once the
   binary supports it (skip with `UNIFLY_NO_SKILL=1`, or `-NoSkill` in
   PowerShell); `install.sh` skips it when running as root.
+- **Device commands accept names, IPs, and any MAC spelling.** `devices
+  get`, `stats`, `restart`, `locate`, `upgrade`, `provision`, `remove`,
+  `port-cycle`, `ports`, `ports-export`, and `port-set` used to need the
+  exact device ID or a lowercase, colon-separated MAC, so `unifly devices
+  get ap-roof` failed with "not found". They now take the ID, the device
+  name (case-insensitive), its IP, or its MAC with colons, dashes, dots
+  (`aabb.ccdd.eeff`), or no separators, in any case. A name two devices
+  share is an error that lists both (exit 2), never a guess, and an
+  identifier that matches nothing exits 4 and points at `devices list`.
+  `devices adopt` stays MAC-only, since a pending device is not in the
+  adopted inventory yet, and now rejects a malformed MAC before sending it.
+  `MacAddress` in `unifly-api` parses the dotted form too.
 
 ### Security
 

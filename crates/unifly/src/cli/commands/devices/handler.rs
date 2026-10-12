@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use unifly_api::{
-    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, Device, MacAddress,
-    PoeMode, PortMode, PortProfileUpdate, PortSpeedSetting,
+    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, MacAddress, PoeMode,
+    PortMode, PortProfileUpdate, PortSpeedSetting,
 };
 
 use crate::cli::args::{DevicesArgs, DevicesCommand, GlobalOpts, PoeArg, PortModeArg, SpeedArg};
@@ -15,14 +13,6 @@ use super::render::{
     enrich_with_connections, enriched_port_row, inject_last_seen_markers, pending_device_identity,
     pending_device_row, port_row, stats_detail,
 };
-
-fn find_device(controller: &Controller, needle: &str) -> Option<Arc<Device>> {
-    controller
-        .devices_snapshot()
-        .iter()
-        .find(|candidate| candidate.id.to_string() == needle || candidate.mac.to_string() == needle)
-        .cloned()
-}
 
 #[allow(clippy::too_many_lines)]
 pub(super) async fn handle(
@@ -50,28 +40,30 @@ pub(super) async fn handle(
         }
 
         DevicesCommand::Get { device } => {
-            match find_device(controller, &device) {
-                Some(device) => {
-                    let out = output::render_single(&global.output, &device, detail, |device| {
-                        device.id.to_string()
-                    });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "device".into(),
-                        identifier: device,
-                        list_command: "devices list".into(),
-                    });
-                }
-            }
+            let device = util::resolve_device(controller, &device)?;
+            let out = output::render_single(&global.output, &device, detail, |device| {
+                device.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 
         DevicesCommand::Adopt { mac, ignore_limit } => {
+            // A pending device is not in the adopted snapshot yet, so only
+            // its MAC can name it.
+            let mac = mac
+                .trim()
+                .parse::<MacAddress>()
+                .map_err(|_| CliError::Validation {
+                    field: "mac".into(),
+                    reason: format!(
+                        "'{mac}' is not a MAC address; adopt takes the MAC of a pending \
+                         device (see `unifly devices pending`)"
+                    ),
+                })?;
             controller
                 .execute(CoreCommand::AdoptDevice {
-                    mac: MacAddress::new(&mac),
+                    mac,
                     ignore_device_limit: ignore_limit,
                 })
                 .await?;
@@ -131,22 +123,11 @@ pub(super) async fn handle(
         }
 
         DevicesCommand::Stats { device } => {
-            match find_device(controller, &device) {
-                Some(device) => {
-                    let out =
-                        output::render_single(&global.output, &device, stats_detail, |device| {
-                            device.id.to_string()
-                        });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "device".into(),
-                        identifier: device,
-                        list_command: "devices list".into(),
-                    });
-                }
-            }
+            let device = util::resolve_device(controller, &device)?;
+            let out = output::render_single(&global.output, &device, stats_detail, |device| {
+                device.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 
