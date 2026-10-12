@@ -58,6 +58,23 @@ pub(crate) struct ControllerProfileDraft {
     pub(crate) password: String,
     pub(crate) site: String,
     pub(crate) insecure: bool,
+    /// What the form does not edit, from the profile it was loaded from.
+    /// `None` for a new profile.
+    pub(crate) loaded: Option<LoadedProfileFields>,
+}
+
+/// Profile settings the form has no field for, kept from the loaded
+/// profile so saving writes them back unchanged instead of erasing them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LoadedProfileFields {
+    totp_env: Option<String>,
+    totp_command: Option<Vec<String>>,
+    ca_cert: Option<std::path::PathBuf>,
+    timeout: Option<u64>,
+    /// The stored `insecure`, which may be unset (inherit `[defaults]`).
+    /// The toggle can only show a bool, so an untouched toggle writes this
+    /// back rather than turning "unset" into an explicit `false`.
+    insecure: Option<bool>,
 }
 
 impl Default for ControllerProfileDraft {
@@ -73,6 +90,7 @@ impl Default for ControllerProfileDraft {
             password: String::new(),
             site: "default".into(),
             insecure: true,
+            loaded: None,
         }
     }
 }
@@ -90,9 +108,25 @@ impl ControllerProfileDraft {
             password: profile.password.clone().unwrap_or_default(),
             site: profile.site.clone(),
             insecure: profile.insecure.unwrap_or(false),
+            loaded: Some(LoadedProfileFields {
+                totp_env: profile.totp_env.clone(),
+                totp_command: profile.totp_command.clone(),
+                ca_cert: profile.ca_cert.clone(),
+                timeout: profile.timeout,
+                insecure: profile.insecure,
+            }),
         };
         draft.apply_auth_mode_defaults();
         draft
+    }
+
+    /// The `insecure` value to save: the stored one while the toggle still
+    /// shows what was loaded, otherwise the toggle.
+    fn insecure_to_save(&self) -> Option<bool> {
+        match &self.loaded {
+            Some(loaded) if self.insecure == loaded.insecure.unwrap_or(false) => loaded.insecure,
+            _ => Some(self.insecure),
+        }
     }
 
     pub(crate) fn apply_auth_mode_defaults(&mut self) {
@@ -182,6 +216,7 @@ impl ControllerProfileDraft {
     }
 
     pub(crate) fn to_profile(&self) -> crate::config::Profile {
+        let loaded = self.loaded.clone().unwrap_or_default();
         crate::config::Profile {
             controller: self.url.trim().to_string(),
             site: self.site.trim().to_string(),
@@ -220,11 +255,11 @@ impl ControllerProfileDraft {
                 AuthMode::Session | AuthMode::Hybrid => Some(self.password.clone()),
                 AuthMode::ApiKey | AuthMode::Cloud => None,
             },
-            totp_env: None,
-            totp_command: None,
-            ca_cert: None,
-            insecure: Some(self.insecure),
-            timeout: None,
+            totp_env: loaded.totp_env,
+            totp_command: loaded.totp_command,
+            ca_cert: loaded.ca_cert,
+            insecure: self.insecure_to_save(),
+            timeout: loaded.timeout,
         }
     }
 }
@@ -245,6 +280,7 @@ mod tests {
             password: "hunter2".into(),
             site: "default".into(),
             insecure: false,
+            loaded: None,
         }
     }
 
@@ -335,6 +371,63 @@ mod tests {
         assert_eq!(saved.api_key_env.as_deref(), Some("UNIFI_CLOUD_API_KEY"));
         assert_eq!(saved.host_id, None);
         assert_eq!(saved.host_id_env.as_deref(), Some("UNIFI_HOST_ID"));
+    }
+
+    /// Saving from the settings form must write back every profile field
+    /// the form does not show, exactly as loaded.
+    #[test]
+    fn saving_keeps_every_field_the_form_does_not_show() {
+        for insecure in [None, Some(false), Some(true)] {
+            let profile = crate::config::Profile {
+                controller: "https://192.168.1.1".into(),
+                site: "default".into(),
+                auth_mode: "hybrid".into(),
+                api_key: Some("api-key".into()),
+                api_key_env: None,
+                host_id: None,
+                host_id_env: None,
+                username: Some("bliss".into()),
+                password: Some("hunter2".into()),
+                totp_env: Some("UNIFI_TOTP".into()),
+                totp_command: Some(vec![
+                    "op".into(),
+                    "item".into(),
+                    "get".into(),
+                    "UniFi".into(),
+                    "--otp".into(),
+                ]),
+                ca_cert: Some("/etc/ssl/certs/unifi-ca.pem".into()),
+                insecure,
+                timeout: Some(45),
+            };
+
+            let saved = ControllerProfileDraft::from_profile(&profile).to_profile();
+
+            assert_eq!(
+                toml::to_string(&saved).expect("profile serializes"),
+                toml::to_string(&profile).expect("profile serializes"),
+                "insecure = {insecure:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_changed_insecure_toggle_is_saved_explicitly() {
+        let mut draft = sample_draft();
+        draft.loaded = Some(super::LoadedProfileFields::default());
+        draft.insecure = true;
+
+        assert_eq!(draft.to_profile().insecure, Some(true));
+
+        draft.insecure = false;
+        assert_eq!(draft.to_profile().insecure, None, "back to what was loaded");
+
+        draft.loaded = None;
+        assert_eq!(
+            draft.to_profile().insecure,
+            Some(false),
+            "a new profile always saves the toggle"
+        );
     }
 
     #[test]

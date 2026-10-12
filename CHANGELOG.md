@@ -106,6 +106,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   WAN IPv6, uplink, ports, and radios, so the TUI flickered to blanks. Those
   fields now carry over from the last good refresh, and anything the
   Integration API reports itself still wins.
+- **Saving in the TUI settings screen no longer erases profile settings.**
+  Test and Apply rebuilt the profile from the form alone, so `totp_env`,
+  `totp_command`, `ca_cert`, and `timeout` were deleted from `config.toml`,
+  and an unset `insecure` came back as an explicit `false` that overrode
+  `[defaults].insecure`. Fields the form does not show are now written back
+  as loaded, and `insecure` keeps its stored value unless the toggle
+  changes.
 
 ### Performance
 
