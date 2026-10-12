@@ -174,6 +174,13 @@ fn stronger_tiers_win_and_empty_tiers_fall_through() {
 }
 
 #[test]
+fn ip_addresses_never_match_as_macs() {
+    let fleet = fleet();
+    // Twelve hex digits once the colons go: the MAC of ap-roof.
+    assert!(matches!(lookup(&fleet, "::3624:909d:f310"), Ok(None)));
+}
+
+#[test]
 fn misses_point_at_the_list_command() {
     let fleet = fleet();
     assert!(matches!(lookup(&fleet, ""), Ok(None)));
