@@ -1311,11 +1311,33 @@ fn test_demo_fleet_answers_wifi_get_and_device_stats_by_name() {
     assert!(stats["stats"]["cpu_utilization_pct"].is_number(), "{stats}");
 }
 
-/// `unifly skill concepts` lists JSON field names so agents stop guessing;
-/// every listed key must exist in real output, and the guide must name it.
+/// The `path: keys` lines of the JSON field block in `unifly skill
+/// concepts`, in order. Indented lines continue the previous path.
+fn documented_json_keys() -> Vec<(String, Vec<String>)> {
+    let guide = include_str!("../skill/concepts.md");
+    let section = &guide[guide.find("## JSON field names").unwrap()..];
+    let block = section.split("```text\n").nth(1).unwrap();
+    let block = &block[..block.find("```").unwrap()];
+    let mut records: Vec<(String, Vec<String>)> = Vec::new();
+    for line in block.lines() {
+        let words = if line.starts_with(' ') {
+            line
+        } else {
+            let (path, keys) = line.split_once(": ").unwrap();
+            records.push((path.to_owned(), Vec::new()));
+            keys
+        };
+        let (_, keys) = records.last_mut().unwrap();
+        keys.extend(words.split_whitespace().map(str::to_owned));
+    }
+    records
+}
+
+/// Every key the field guide lists must exist at its own record path in
+/// real output, so a renamed (`speed_gbps`) or misplaced key fails, and
+/// every record path must be one this test knows how to fetch.
 #[test]
 fn test_demo_fleet_json_keys_match_the_skill_guide() {
-    let guide = include_str!("../skill/concepts.md");
     let device = demo_json(&["devices", "get", "ap-roof"]);
     let clients = demo_json(&["clients", "list", "--all"]);
     let wireless = clients
@@ -1323,56 +1345,46 @@ fn test_demo_fleet_json_keys_match_the_skill_guide() {
         .unwrap()
         .iter()
         .find(|client| client["client_type"] == "Wireless")
-        .unwrap();
-    let cases = [
+        .unwrap()
+        .clone();
+    let fetched = [
+        ("device", device.clone()),
+        ("device.ports[]", device["ports"][0].clone()),
+        ("device.radios[]", device["radios"][0].clone()),
+        ("device.stats", device["stats"].clone()),
         (
-            device.clone(),
-            "id mac ip name model serial device_type state firmware_version \
-             firmware_updatable adopted_at last_seen client_count uplink_device_id \
-             uplink_device_mac uplink_port_idx uplink_medium ports radios stats",
-        ),
-        (
-            device["stats"].clone(),
-            "uptime_secs cpu_utilization_pct memory_utilization_pct load_average_1m \
-             load_average_5m load_average_15m last_heartbeat uplink_bandwidth",
-        ),
-        (
+            "device.stats.uplink_bandwidth",
             device["stats"]["uplink_bandwidth"].clone(),
-            "tx_bytes_per_sec rx_bytes_per_sec",
         ),
+        ("client", wireless.clone()),
+        ("client.bandwidth", wireless["bandwidth"].clone()),
+        ("client.wireless", wireless["wireless"].clone()),
+        ("event", demo_json(&["events", "list"])[0].clone()),
+        ("alarm", demo_json(&["alarms", "list"])[0].clone()),
+        ("health[]", demo_json(&["system", "health"])[0].clone()),
+        ("wan", demo_json(&["wans", "list"])[0].clone()),
+        ("report.site[]", demo_json(&["stats", "site"])[0].clone()),
         (
-            device["radios"][0].clone(),
-            "frequency_ghz channel channel_width_mhz wlan_standard \
-             channel_utilization_pct tx_retries_pct",
+            "report.gateway[]",
+            demo_json(&["stats", "gateway"])[0].clone(),
         ),
-        (
-            wireless.clone(),
-            "id mac ip name hostname client_type connected_at uplink_device_id \
-             uplink_device_mac switch_port network_id vlan is_guest blocked tx_bytes \
-             rx_bytes bandwidth os_name device_class use_fixedip fixed_ip wireless",
-        ),
-        (
-            wireless["wireless"].clone(),
-            "ssid bssid channel frequency_ghz signal_dbm noise_dbm satisfaction \
-             tx_rate_kbps rx_rate_kbps",
-        ),
-        (
-            demo_json(&["events", "list"])[0].clone(),
-            "id timestamp category severity event_type raw_key message device_mac \
-             client_mac site_id",
-        ),
-        (demo_json(&["alarms", "list"])[0].clone(), "archived"),
-        (
-            demo_json(&["system", "health"])[0].clone(),
-            "subsystem status num_adopted num_sta tx_bytes_r rx_bytes_r latency wan_ip \
-             gateways extra",
-        ),
-        (demo_json(&["wans", "list"])[0].clone(), "gateway dns"),
     ];
-    for (record, keys) in &cases {
-        for key in keys.split_whitespace() {
-            assert!(record.get(key).is_some(), "output lacks `{key}`: {record}");
-            assert!(guide.contains(&format!("`{key}`")), "guide omits `{key}`");
+
+    let documented = documented_json_keys();
+    let paths: Vec<&str> = documented.iter().map(|(path, _)| path.as_str()).collect();
+    let known: Vec<&str> = fetched.iter().map(|(path, _)| *path).collect();
+    assert_eq!(
+        paths, known,
+        "guide record paths and fetched records differ"
+    );
+    for ((path, keys), (_, record)) in documented.iter().zip(&fetched) {
+        assert!(record.is_object(), "{path} is not an object: {record}");
+        assert!(!keys.is_empty(), "{path} lists no keys");
+        for key in keys {
+            assert!(
+                record.get(key).is_some(),
+                "guide lists `{key}` under {path}, output lacks it: {record}"
+            );
         }
     }
 }
