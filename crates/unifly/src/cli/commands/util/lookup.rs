@@ -2,11 +2,15 @@
 //!
 //! Commands that target a single record accept whatever a person or an
 //! agent reaches for first: the record ID, a MAC address in any common
-//! spelling, an IP address, or the display name. Matching runs in tiers,
-//! strongest first (ID, MAC, IP, name), and the first tier with any match
-//! decides. One match resolves; several are an error listing every
-//! candidate, never a guess. Names compare case-insensitively and exactly;
-//! partial matching stays with `clients find` and list filters.
+//! spelling, an IP address, or the display name. The record ID is tried
+//! first. After that the identifier's [`Shape`] alone decides how it is
+//! read: an IP address matches only IP addresses, a MAC only MACs, and
+//! anything else only display names (case-insensitive, exact). A MAC- or
+//! IP-shaped identifier never falls through to names, so a device named
+//! after some other MAC or IP can never capture a command aimed at that
+//! address. One match resolves; several are an error listing every
+//! candidate, never a guess. Partial matching stays with `clients find`
+//! and list filters.
 
 mod records;
 #[cfg(test)]
@@ -46,6 +50,32 @@ pub trait Lookup {
     fn describe(&self) -> String;
 }
 
+/// What an identifier is, judged by its spelling before any record is
+/// consulted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shape {
+    Ip(IpAddr),
+    Mac(MacAddress),
+    /// Neither: a display name (or an ID, which is tried first anyway).
+    Name,
+}
+
+impl Shape {
+    pub fn of(needle: &str) -> Self {
+        let needle = needle.trim();
+        // IP before MAC: MAC parsing drops every colon, so an IPv6 address
+        // with twelve hex digits would otherwise pass for a MAC. No MAC
+        // spelling parses as an IP address.
+        if let Ok(ip) = needle.parse::<IpAddr>() {
+            Self::Ip(ip)
+        } else if let Ok(mac) = needle.parse::<MacAddress>() {
+            Self::Mac(mac)
+        } else {
+            Self::Name
+        }
+    }
+}
+
 /// Find the record `needle` identifies. `Ok(None)` means nothing matched;
 /// more than one match in the deciding tier is an [`CliError::Ambiguous`].
 pub fn lookup<'a, T: Lookup>(
@@ -62,6 +92,19 @@ pub fn lookup<'a, T: Lookup>(
 /// [`lookup`], with a not-found error that points at the list command.
 pub fn resolve<'a, T: Lookup>(records: &'a [Arc<T>], needle: &str) -> Result<&'a Arc<T>, CliError> {
     lookup(records, needle)?.ok_or_else(|| not_found::<T>(needle))
+}
+
+/// The MAC of the record `needle` identifies. A MAC-shaped `needle` that
+/// matches no record passes through unchanged, so MAC-addressed commands
+/// can reach something the snapshot lacks; any other miss is not found.
+pub fn lookup_mac<T: Lookup>(records: &[Arc<T>], needle: &str) -> Result<MacAddress, CliError> {
+    if let Some(record) = lookup(records, needle)? {
+        return record.mac().cloned().ok_or_else(|| not_found::<T>(needle));
+    }
+    match Shape::of(needle) {
+        Shape::Mac(mac) => Ok(mac),
+        Shape::Ip(_) | Shape::Name => Err(not_found::<T>(needle)),
+    }
 }
 
 /// The error for an identifier that matches no `T`.
@@ -85,30 +128,19 @@ fn matching<'a, T: Lookup>(records: &'a [Arc<T>], needle: &str) -> Vec<&'a Arc<T
     if !identified.is_empty() {
         return identified;
     }
-    let ip = needle.parse::<IpAddr>().ok();
-    // MAC parsing drops every colon, so an IPv6 address with twelve hex
-    // digits would otherwise pass for a MAC.
-    if ip.is_none()
-        && let Ok(mac) = needle.parse::<MacAddress>()
-    {
-        let by_hardware = tier(&|record| record.mac() == Some(&mac));
-        if !by_hardware.is_empty() {
-            return by_hardware;
+    match Shape::of(needle) {
+        Shape::Ip(ip) => tier(&|record| record.ip() == Some(ip)),
+        Shape::Mac(mac) => tier(&|record| record.mac() == Some(&mac)),
+        Shape::Name => {
+            let name = needle.to_lowercase();
+            tier(&|record| {
+                record
+                    .names()
+                    .iter()
+                    .any(|candidate| candidate.to_lowercase() == name)
+            })
         }
     }
-    if let Some(ip) = ip {
-        let by_address = tier(&|record| record.ip() == Some(ip));
-        if !by_address.is_empty() {
-            return by_address;
-        }
-    }
-    let name = needle.to_lowercase();
-    tier(&|record| {
-        record
-            .names()
-            .iter()
-            .any(|candidate| candidate.to_lowercase() == name)
-    })
 }
 
 fn ambiguous<T: Lookup>(needle: &str, found: &[&Arc<T>]) -> CliError {

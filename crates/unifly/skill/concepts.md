@@ -83,12 +83,15 @@ identifier in command help before composing a pipeline. In particular,
 
 Commands that target one device, client lookups, and the `get` commands
 for networks, WiFi, firewall, NAT, ACL, DNS, traffic lists, and vouchers
-resolve the identifier in tiers: ID first, then MAC (any separator or
-case), then IP, then the display name compared exactly but
-case-insensitively. The first tier with a match decides. Two matches fail
-with exit 2 and list each candidate's ID instead of guessing, so prefer IDs
-in scripts that must not stop. VPN, cloud, and settings commands keep their
-own IDs and keys.
+try the record ID first. After that the identifier's spelling decides how
+it is read: an IP address matches only IP addresses, a MAC (any separator
+or case) only MACs, and anything else only display names, compared exactly
+but case-insensitively. A MAC- or IP-shaped identifier never falls back to
+names, so a record named `10.0.0.5` answers only to its ID. Commands that
+take a device MAC pass an unmatched MAC through unchanged; an unmatched IP
+or name is not found (exit 4). Two matches fail with exit 2 and list each
+candidate's ID instead of guessing, so prefer IDs in scripts that must not
+stop. VPN, cloud, and settings commands keep their own IDs and keys.
 
 Client lookup with `clients find` searches name, hostname, IP, and MAC.
 The observability commands `clients roams` and `clients wifi` resolve names

@@ -21,21 +21,14 @@ pub fn resolve_device_id(controller: &Controller, identifier: &str) -> Result<En
     resolve_device(controller, identifier).map(|device| device.id.clone())
 }
 
-/// The MAC of the device `identifier` names. A well-formed MAC absent from
-/// the snapshot passes through, so MAC-addressed Session commands can still
-/// reach a device the snapshot does not hold.
+/// The MAC of the device `identifier` names. A MAC absent from the snapshot
+/// passes through, so MAC-addressed Session commands can still reach a
+/// device the snapshot does not hold; names and IPs never pass through.
 pub fn resolve_device_mac(
     controller: &Controller,
     identifier: &str,
 ) -> Result<MacAddress, CliError> {
-    let snapshot = controller.devices_snapshot();
-    if let Some(device) = lookup::lookup(snapshot.as_slice(), identifier)? {
-        return Ok(device.mac.clone());
-    }
-    identifier
-        .trim()
-        .parse::<MacAddress>()
-        .map_err(|_| lookup::not_found::<Device>(identifier))
+    lookup::lookup_mac(controller.devices_snapshot().as_slice(), identifier)
 }
 
 /// The client `identifier` names in the current snapshot.
@@ -57,6 +50,20 @@ mod tests {
                 Ok(mac) => assert_eq!(mac.as_str(), "aa:bb:cc:dd:ee:ff"),
                 Err(error) => panic!("expected valid MAC fallback, got {error:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn resolve_device_mac_never_passes_an_ip_address_through() {
+        let controller = Controller::new(ControllerConfig::default());
+        for needle in ["::aabb:ccdd:eeff", "10.40.0.18"] {
+            assert!(
+                matches!(
+                    resolve_device_mac(&controller, needle),
+                    Err(crate::cli::error::CliError::NotFound { .. })
+                ),
+                "{needle} must not pass through as a MAC"
+            );
         }
     }
 

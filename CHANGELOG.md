@@ -95,9 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exact device ID or a lowercase, colon-separated MAC, so `unifly devices
   get ap-roof` failed with "not found". They now take the ID, the device
   name (case-insensitive), its IP, or its MAC with colons, dashes, dots
-  (`aabb.ccdd.eeff`), or no separators, in any case. A name two devices
-  share is an error that lists both (exit 2), never a guess, and an
-  identifier that matches nothing exits 4 and points at `devices list`.
+  (`aabb.ccdd.eeff`), or no separators, in any case. An identifier spelled
+  like a MAC or IP only ever matches a MAC or IP, never a device name, so a
+  device named after another address cannot capture a command aimed at
+  it. A name two devices share is an error that lists both (exit 2), never
+  a guess, and an identifier that matches nothing exits 4 and points at
+  `devices list`.
   `devices adopt` stays MAC-only, since a pending device is not in the
   adopted inventory yet, and now rejects a malformed MAC before sending it.
   `MacAddress` in `unifly-api` parses the dotted form too.
