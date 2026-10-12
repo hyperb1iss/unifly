@@ -45,7 +45,7 @@ CONFIG --> P3["[profiles.warehouse]<br/>Self-hosted, Session"]
 unifly config init             # Create or update a profile interactively
 unifly config profiles         # List all profiles (* marks the active one)
 unifly config use office       # Switch the default profile
-unifly config show             # Show the current effective config
+unifly config show -o table    # Show saved config with secrets masked
 unifly -p home devices list    # Use a specific profile for one command
 ```
 

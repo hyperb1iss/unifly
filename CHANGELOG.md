@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Version-matched agent guidance** via `unifly skill`, available offline
+  without controller configuration. The installed skill and network manager
+  agent now load the binary's guide, with on-demand concepts, workflows,
+  payload examples, and a command inventory generated from Clap. Corrected
+  authentication boundaries, raw API paths, identifiers, and output recipes.
+  Older binaries need an update before they can serve the new discovery skill.
+
 ### Security
 
 - **Settings output no longer leaks credentials.** `settings export`, and

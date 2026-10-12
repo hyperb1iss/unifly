@@ -70,7 +70,7 @@ A minimal IPsec payload names the peer, the pre-shared key, and the remote subne
 }
 ```
 
-The [examples/](https://github.com/hyperb1iss/unifly/tree/main/skills/unifly/examples) directory in the repository has complete templates with the full cipher configuration.
+The [examples/](https://github.com/hyperb1iss/unifly/tree/main/crates/unifly/skill/examples) directory in the repository has complete templates with the full cipher configuration.
 
 ## Remote Access
 

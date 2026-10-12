@@ -15,7 +15,7 @@ Common issues and how to fix them.
 curl -kI https://192.168.1.1
 
 # Check your profile config
-unifly config show
+unifly config show -o table
 ```
 
 - Ensure the URL includes `https://` (not `http://`)
@@ -64,7 +64,7 @@ If it persists, check that your credentials are still valid on the controller.
 
 ```bash
 # Check your auth mode
-unifly config show
+unifly config show -o table
 
 # Switch to hybrid or integration
 unifly config set auth_mode hybrid

@@ -47,7 +47,6 @@ jobs:
         .claude-plugin/plugin.json
         .claude-plugin/marketplace.json|.plugins[0].version
         .cursor-plugin/plugin.json
-        skills/unifly/SKILL.md
     permissions:
       contents: write
       actions: write

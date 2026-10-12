@@ -43,6 +43,8 @@ mod radius;
 mod settings;
 #[path = "args/sites.rs"]
 mod sites;
+#[path = "args/skill.rs"]
+mod skill;
 #[path = "args/stats.rs"]
 mod stats;
 #[path = "args/system.rs"]
@@ -75,6 +77,7 @@ pub use networks::*;
 pub use radius::*;
 pub use settings::*;
 pub use sites::*;
+pub use skill::*;
 pub use stats::*;
 pub use system::*;
 pub use traffic_lists::*;
@@ -107,7 +110,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Send a raw API request (GET or POST) to an arbitrary endpoint
+    /// Send a raw API request (GET, POST, PUT, PATCH, or DELETE)
     Api(ApiArgs),
 
     /// Manage ACL rules
@@ -170,6 +173,9 @@ pub enum Command {
 
     /// Manage sites
     Sites(SitesArgs),
+
+    /// Print version-matched agent guidance without connecting to a controller
+    Skill(SkillArgs),
 
     /// Query statistics and reports
     Stats(StatsArgs),
