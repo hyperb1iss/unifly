@@ -70,36 +70,39 @@ impl Tui {
             self.terminal.backend_mut().queue(BeginSynchronizedUpdate)?;
         }
 
+        // Close the synchronized update even when the frame fails, so the
+        // terminal does not hold back output until its own timeout.
+        let result = self.draw_frame(render);
+
+        if sync {
+            self.terminal.backend_mut().queue(EndSynchronizedUpdate)?;
+        }
+        self.terminal.backend_mut().flush()?;
+
+        result
+    }
+
+    fn draw_frame<F>(&mut self, render: F) -> Result<()>
+    where
+        F: FnOnce(&mut ratatui::Frame),
+    {
         // New chart images go out ahead of the frame, so no placeholder in it
         // refers to an image the terminal has not received.
         #[cfg(feature = "tui-graphics")]
-        if let Some(transmits) = crate::tui::graphics::take_pending_image_transmits() {
-            self.terminal
-                .backend_mut()
-                .write_all(transmits.as_bytes())?;
+        for transmit in crate::tui::graphics::take_pending_image_transmits() {
+            self.terminal.backend_mut().write_all(transmit.as_bytes())?;
         }
 
-        let result = self.terminal.draw(render).map(|_| ());
+        self.terminal.draw(render)?;
 
         // Chart images the cache dropped before this frame cannot appear in
         // it, so the frame has replaced their cells; free them in the same
         // update so the terminal's image store does not fill up.
         #[cfg(feature = "tui-graphics")]
-        if result.is_ok()
-            && let Some(deletes) = crate::tui::graphics::take_retired_image_deletes()
-        {
+        if let Some(deletes) = crate::tui::graphics::take_retired_image_deletes() {
             self.terminal.backend_mut().write_all(deletes.as_bytes())?;
-            if !sync {
-                self.terminal.backend_mut().flush()?;
-            }
         }
 
-        if sync {
-            self.terminal.backend_mut().queue(EndSynchronizedUpdate)?;
-            self.terminal.backend_mut().flush()?;
-        }
-
-        result?;
         Ok(())
     }
 
