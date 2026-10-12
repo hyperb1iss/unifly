@@ -153,3 +153,40 @@ fn ap_selection_survives_the_first_client_snapshot() {
         Some(Action::RequestRestart(id)) if id == access_point("02", "ap-b").id
     ));
 }
+
+#[test]
+fn sorting_from_the_keyboard_keeps_the_selected_ap() {
+    let mut screen = WifiScreen::new();
+    screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![
+        access_point("01", "ap-a"),
+        access_point("02", "ap-b"),
+        access_point("03", "ap-c"),
+    ])));
+    // ap-a: three clients at 80; ap-b: one client at 95; ap-c: none.
+    screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+        wireless_client(1, "aa:bb:cc:dd:ee:01", 80),
+        wireless_client(2, "aa:bb:cc:dd:ee:01", 80),
+        wireless_client(3, "aa:bb:cc:dd:ee:01", 80),
+        wireless_client(4, "aa:bb:cc:dd:ee:02", 95),
+    ])));
+    let _ = screen.handle_key_input(key(KeyCode::Char('g')));
+    assert_eq!(ap_names(&screen), vec!["ap-b", "ap-a", "ap-c"]);
+    assert_eq!(screen.ap_table_state.selected(), Some(0));
+
+    let sort = screen.handle_key_input(key(KeyCode::Char('s')));
+    assert_eq!(
+        screen.sort_field,
+        WifiSortField::Health,
+        "key must not sort"
+    );
+    let sort = sort.expect("s yields a sort action");
+    screen.apply_action(&sort);
+
+    assert_eq!(screen.sort_field, WifiSortField::Clients);
+    assert_eq!(ap_names(&screen), vec!["ap-a", "ap-b", "ap-c"]);
+    assert_eq!(screen.ap_table_state.selected(), Some(1));
+    assert_eq!(
+        screen.selected_ap().and_then(|ap| ap.name.clone()),
+        Some("ap-b".to_owned())
+    );
+}
