@@ -60,10 +60,10 @@ impl ClientsScreen {
                 self.apply_clients_update(clients);
             }
             Action::DevicesUpdated(devices) => {
-                self.devices = std::sync::Arc::clone(devices);
+                self.links.set_devices(devices);
             }
             Action::NetworksUpdated(networks) => {
-                self.networks = std::sync::Arc::clone(networks);
+                self.links.set_networks(networks);
             }
             Action::FilterClientType(filter) => {
                 self.filter = *filter;
