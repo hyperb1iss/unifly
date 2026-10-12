@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use tracing::{debug, warn};
 
 /// A parsed event from the UniFi WebSocket stream.
 ///
@@ -28,8 +29,169 @@ pub struct UnifiEvent {
     pub datetime: Option<String>,
 
     /// All remaining fields the controller sends.
+    ///
+    /// Populated for `EVT_*` events, where the message template needs
+    /// arbitrary keys. For `device:sync` / `device:update` frames this is
+    /// `Value::Null` and the stats live in [`device_sync`](Self::device_sync)
+    /// instead, so the full device record is never retained.
     #[serde(flatten)]
     pub extra: serde_json::Value,
+
+    /// Typed live stats extracted from `device:sync` / `device:update`.
+    #[serde(skip)]
+    pub device_sync: Option<Box<DeviceSync>>,
+}
+
+/// The subset of a `device:sync` frame that feeds live device stats.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DeviceSync {
+    #[serde(default)]
+    pub mac: Option<String>,
+    #[serde(default)]
+    pub sys_stats: Option<DeviceSyncSysStats>,
+    #[serde(default)]
+    pub uplink: Option<DeviceSyncUplink>,
+    #[serde(default, rename = "tx_bytes-r")]
+    pub tx_bytes_r: Option<NumOrStr>,
+    #[serde(default, rename = "rx_bytes-r")]
+    pub rx_bytes_r: Option<NumOrStr>,
+    #[serde(default, rename = "_uptime")]
+    pub underscore_uptime: Option<NumOrStr>,
+    #[serde(default)]
+    pub uptime: Option<NumOrStr>,
+    #[serde(default)]
+    pub num_sta: Option<NumOrStr>,
+    #[serde(default)]
+    pub wan1: Option<DeviceSyncWan>,
+    #[serde(default)]
+    pub ipv6: Option<serde_json::Value>,
+}
+
+/// `sys_stats` inside a `device:sync` frame. Numbers arrive as either JSON
+/// numbers or strings depending on firmware.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DeviceSyncSysStats {
+    #[serde(default)]
+    pub cpu: Option<NumOrStr>,
+    #[serde(default)]
+    pub mem_used: Option<NumOrStr>,
+    #[serde(default)]
+    pub mem_total: Option<NumOrStr>,
+    #[serde(default)]
+    pub loadavg_1: Option<NumOrStr>,
+    #[serde(default)]
+    pub loadavg_5: Option<NumOrStr>,
+    #[serde(default)]
+    pub loadavg_15: Option<NumOrStr>,
+}
+
+/// `uplink` inside a `device:sync` frame; only the byte rates are retained.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DeviceSyncUplink {
+    #[serde(default, rename = "tx_bytes-r", alias = "tx_bytes_r")]
+    pub tx_bytes_r: Option<NumOrStr>,
+    #[serde(default, rename = "rx_bytes-r", alias = "rx_bytes_r")]
+    pub rx_bytes_r: Option<NumOrStr>,
+}
+
+/// `wan1` inside a `device:sync` frame; only IPv6 is retained.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DeviceSyncWan {
+    #[serde(default)]
+    pub ipv6: Option<serde_json::Value>,
+}
+
+/// Overwrite each field of `target` that `newer` carries, keeping the rest.
+fn take_newer<T: Clone>(target: &mut Option<T>, newer: Option<&T>) {
+    if let Some(value) = newer {
+        *target = Some(value.clone());
+    }
+}
+
+impl DeviceSync {
+    /// Fold a later frame for the same device into this one. Frames can be
+    /// partial, so a field the newer frame omits keeps its earlier value
+    /// instead of being lost when several frames coalesce before a flush.
+    pub fn merge_newer(&mut self, newer: &Self) {
+        take_newer(&mut self.mac, newer.mac.as_ref());
+        match (&mut self.sys_stats, &newer.sys_stats) {
+            (Some(sys), Some(next)) => sys.merge_newer(next),
+            (slot, next) => take_newer(slot, next.as_ref()),
+        }
+        // Byte rates and uptime each have two spellings, and the store
+        // prefers one of them. A newer frame that carries either spelling
+        // replaces both, so an older frame's preferred spelling cannot mask
+        // the newer value.
+        let newer_tx = newer.uplink.as_ref().and_then(|u| u.tx_bytes_r.clone());
+        if newer_tx.is_some() || newer.tx_bytes_r.is_some() {
+            self.uplink.get_or_insert_with(Default::default).tx_bytes_r = newer_tx;
+            self.tx_bytes_r.clone_from(&newer.tx_bytes_r);
+        }
+        let newer_rx = newer.uplink.as_ref().and_then(|u| u.rx_bytes_r.clone());
+        if newer_rx.is_some() || newer.rx_bytes_r.is_some() {
+            self.uplink.get_or_insert_with(Default::default).rx_bytes_r = newer_rx;
+            self.rx_bytes_r.clone_from(&newer.rx_bytes_r);
+        }
+        if newer.underscore_uptime.is_some() || newer.uptime.is_some() {
+            self.underscore_uptime.clone_from(&newer.underscore_uptime);
+            self.uptime.clone_from(&newer.uptime);
+        }
+        take_newer(&mut self.num_sta, newer.num_sta.as_ref());
+        match (&mut self.wan1, &newer.wan1) {
+            (Some(wan), Some(next)) => take_newer(&mut wan.ipv6, next.ipv6.as_ref()),
+            (slot, next) => take_newer(slot, next.as_ref()),
+        }
+        take_newer(&mut self.ipv6, newer.ipv6.as_ref());
+    }
+}
+
+impl DeviceSyncSysStats {
+    fn merge_newer(&mut self, newer: &Self) {
+        take_newer(&mut self.cpu, newer.cpu.as_ref());
+        take_newer(&mut self.mem_used, newer.mem_used.as_ref());
+        take_newer(&mut self.mem_total, newer.mem_total.as_ref());
+        take_newer(&mut self.loadavg_1, newer.loadavg_1.as_ref());
+        take_newer(&mut self.loadavg_5, newer.loadavg_5.as_ref());
+        take_newer(&mut self.loadavg_15, newer.loadavg_15.as_ref());
+    }
+}
+
+/// A JSON number that some firmware versions encode as a string.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum NumOrStr {
+    Num(f64),
+    Str(String),
+}
+
+impl NumOrStr {
+    /// Numeric value, or `None` for an empty / unparseable string.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Num(n) => Some(*n),
+            Self::Str(s) => s.trim().parse().ok(),
+        }
+    }
+
+    /// Non-negative whole number, or `None` (negative, fractional, or text).
+    pub fn as_u64(&self) -> Option<u64> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::as_conversions
+        )]
+        self.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0 && f.fract() == 0.0)
+            .map(|f| f as u64)
+    }
+
+    /// Whole number, or `None` (fractional or text).
+    pub fn as_i64(&self) -> Option<i64> {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        self.as_f64()
+            .filter(|f| f.is_finite() && f.fract() == 0.0)
+            .map(|f| f as i64)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,7 +225,7 @@ pub(in crate::websocket) fn parse_and_broadcast(
 
     for data in envelope.data {
         let event = match msg_type {
-            "events" => match serde_json::from_value::<UnifiEvent>(data.clone()) {
+            "events" => match UnifiEvent::deserialize(&data) {
                 Ok(event) => event,
                 Err(error) => {
                     tracing::debug!(
@@ -71,28 +233,69 @@ pub(in crate::websocket) fn parse_and_broadcast(
                         msg_type,
                         "Could not deserialize event, constructing from raw data"
                     );
-                    event_from_raw(msg_type, &data)
+                    event_from_raw(msg_type, data)
                 }
             },
-            _ => event_from_raw(msg_type, &data),
+            _ => event_from_raw(msg_type, data),
         };
 
         let _ = event_tx.send(Arc::new(event));
     }
 }
 
-fn event_from_raw(msg_type: &str, data: &serde_json::Value) -> UnifiEvent {
+/// Build an event from an untyped frame.
+///
+/// `device:sync` / `device:update` frames carry the whole device record
+/// (tens of KB each, several per second). Only the live-stats subset is
+/// kept for those; every other frame keeps its full payload in `extra`.
+fn event_from_raw(msg_type: &str, data: serde_json::Value) -> UnifiEvent {
+    let key = data["key"].as_str().unwrap_or(msg_type).to_string();
+    let subsystem = data["subsystem"].as_str().unwrap_or("unknown").to_string();
+    let site_id = data["site_id"].as_str().unwrap_or("").to_string();
+    let message = data["msg"]
+        .as_str()
+        .or_else(|| data["message"].as_str())
+        .map(String::from);
+    let datetime = data["datetime"].as_str().map(String::from);
+
+    let (extra, device_sync) = if is_device_sync(&key) {
+        let sync = match DeviceSync::deserialize(&data) {
+            Ok(sync) => Some(Box::new(sync)),
+            Err(error) => {
+                // Loud once, quiet afterwards: this fires per frame and the
+                // shape is the same for every frame from a given firmware.
+                if SYNC_DECODE_WARNED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    debug!(%key, %error, "device sync frame did not decode");
+                } else {
+                    warn!(%key, %error, "device sync frame did not decode; live device stats disabled until this is fixed");
+                }
+                None
+            }
+        };
+        (serde_json::Value::Null, sync)
+    } else {
+        (data, None)
+    };
+
     UnifiEvent {
-        key: data["key"].as_str().unwrap_or(msg_type).to_string(),
-        subsystem: data["subsystem"].as_str().unwrap_or("unknown").to_string(),
-        site_id: data["site_id"].as_str().unwrap_or("").to_string(),
-        message: data["msg"]
-            .as_str()
-            .or_else(|| data["message"].as_str())
-            .map(String::from),
-        datetime: data["datetime"].as_str().map(String::from),
-        extra: data.clone(),
+        key,
+        subsystem,
+        site_id,
+        message,
+        datetime,
+        extra,
+        device_sync,
     }
+}
+
+/// Set once the first undecodable device-sync frame has been reported, so a
+/// broken payload warns loudly one time instead of on every frame.
+static SYNC_DECODE_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a WebSocket key is a live device-stats frame.
+pub fn is_device_sync(key: &str) -> bool {
+    key == "device:sync" || key == "device:update"
 }
 
 #[cfg(test)]
@@ -112,7 +315,7 @@ mod tests {
             "ssid": "MyNetwork"
         });
 
-        let event = event_from_raw("events", &data);
+        let event = event_from_raw("events", data);
         assert_eq!(event.key, "EVT_WU_Connected");
         assert_eq!(event.subsystem, "wlan");
         assert_eq!(event.site_id, "abc123");
@@ -131,10 +334,109 @@ mod tests {
             "site_id": "site1"
         });
 
-        let event = event_from_raw("device:sync", &data);
+        let event = event_from_raw("device:sync", data);
         assert_eq!(event.key, "device:sync");
         assert_eq!(event.subsystem, "unknown");
         assert_eq!(event.site_id, "site1");
+        assert!(
+            event.extra.is_null(),
+            "sync frames must not retain the payload"
+        );
+        let sync = event.device_sync.expect("typed sync stats");
+        assert_eq!(sync.mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+    }
+
+    #[test]
+    fn device_sync_merge_keeps_fields_a_partial_frame_omits() {
+        let first = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "sys_stats": { "cpu": 40, "mem_used": 10, "mem_total": 100 },
+                "num_sta": 3
+            }),
+        );
+        let second = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "sys_stats": { "mem_used": 20 },
+                "num_sta": 5
+            }),
+        );
+        let mut merged = *first.device_sync.expect("first frame decodes");
+        merged.merge_newer(&second.device_sync.expect("second frame decodes"));
+
+        let sys = merged.sys_stats.expect("sys_stats survives the merge");
+        assert_eq!(sys.cpu.and_then(|v| v.as_f64()), Some(40.0));
+        assert_eq!(sys.mem_used.and_then(|v| v.as_f64()), Some(20.0));
+        assert_eq!(sys.mem_total.and_then(|v| v.as_f64()), Some(100.0));
+        assert_eq!(merged.num_sta.as_ref().and_then(NumOrStr::as_u64), Some(5));
+    }
+
+    #[test]
+    fn device_sync_merge_lets_a_newer_spelling_replace_an_older_one() {
+        let first = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "uplink": { "tx_bytes-r": 100, "rx_bytes-r": 200 },
+                "_uptime": 10
+            }),
+        );
+        let second = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "tx_bytes-r": 300,
+                "rx_bytes-r": 400,
+                "uptime": 20
+            }),
+        );
+        let mut merged = *first.device_sync.expect("first frame decodes");
+        merged.merge_newer(&second.device_sync.expect("second frame decodes"));
+
+        let nested = merged.uplink.as_ref().expect("uplink block kept");
+        assert!(nested.tx_bytes_r.is_none() && nested.rx_bytes_r.is_none());
+        assert_eq!(
+            merged.tx_bytes_r.as_ref().and_then(NumOrStr::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            merged.rx_bytes_r.as_ref().and_then(NumOrStr::as_u64),
+            Some(400)
+        );
+        assert!(merged.underscore_uptime.is_none());
+        assert_eq!(merged.uptime.as_ref().and_then(NumOrStr::as_i64), Some(20));
+    }
+
+    #[test]
+    fn device_sync_extracts_stats_and_tolerates_string_numbers() {
+        let data = serde_json::json!({
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "sys_stats": { "cpu": "12.5", "mem_used": 50.0, "mem_total": "200", "loadavg_1": 0.5 },
+            "uplink": { "tx_bytes-r": 100, "rx_bytes-r": 200 },
+            "_uptime": 42,
+            "num_sta": 3,
+            "some_huge_field": [1, 2, 3]
+        });
+        let event = event_from_raw("device:sync", data);
+        let sync = event.device_sync.expect("typed sync stats");
+        let sys = sync.sys_stats.expect("sys_stats");
+        assert_eq!(sys.cpu.and_then(|v| v.as_f64()), Some(12.5));
+        assert_eq!(sys.loadavg_1.and_then(|v| v.as_f64()), Some(0.5));
+        assert_eq!(
+            sync.uplink
+                .as_ref()
+                .and_then(|u| u.tx_bytes_r.as_ref())
+                .and_then(NumOrStr::as_u64),
+            Some(100)
+        );
+        assert_eq!(
+            sync.underscore_uptime.as_ref().and_then(NumOrStr::as_i64),
+            Some(42)
+        );
+        assert_eq!(sync.num_sta.as_ref().and_then(NumOrStr::as_u64), Some(3));
     }
 
     #[test]

@@ -53,16 +53,16 @@ fn pick_ipv6_from_value(value: &Value) -> Option<String> {
     first_link_local
 }
 
-pub(crate) fn parse_legacy_wan_ipv6(extra: &serde_json::Map<String, Value>) -> Option<String> {
-    if let Some(v) = extra
-        .get("wan1")
-        .and_then(|wan| wan.get("ipv6"))
-        .and_then(pick_ipv6_from_value)
-    {
+/// Pick the device's public IPv6 from `wan1.ipv6` first, then the top-level
+/// `ipv6` field. Either may be a string or an array of strings.
+pub(crate) fn parse_legacy_wan_ipv6(
+    wan1_ipv6: Option<&Value>,
+    ipv6: Option<&Value>,
+) -> Option<String> {
+    if let Some(v) = wan1_ipv6.and_then(pick_ipv6_from_value) {
         return Some(v);
     }
-
-    extra.get("ipv6").and_then(pick_ipv6_from_value)
+    ipv6.and_then(pick_ipv6_from_value)
 }
 
 pub(crate) fn extra_bool(extra: &HashMap<String, Value>, key: &str) -> bool {

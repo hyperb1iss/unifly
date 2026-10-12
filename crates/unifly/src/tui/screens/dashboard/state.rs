@@ -6,9 +6,9 @@ use crate::tui::widgets::hyperchart::axis;
 use unifly_api::DeviceType;
 
 use super::{
-    BANDWIDTH_SCALE_PERCENTILE, BANDWIDTH_SCALE_WINDOW_SAMPLES, BANDWIDTH_SMOOTHING_ALPHA,
-    BANDWIDTH_TICK_COUNT, BandwidthSample, DashboardScreen, LIVE_CHART_SAMPLE_INTERVAL,
-    LIVE_CHART_WINDOW_SAMPLES, MIN_BANDWIDTH_SCALE,
+    BANDWIDTH_SCALE_PERCENTILE, BANDWIDTH_SCALE_WINDOW_SAMPLES, BANDWIDTH_TICK_COUNT,
+    BandwidthSample, DashboardScreen, LIVE_CHART_SAMPLE_INTERVAL, LIVE_CHART_WINDOW_SAMPLES,
+    MIN_BANDWIDTH_SCALE,
 };
 
 impl DashboardScreen {
@@ -112,61 +112,48 @@ impl DashboardScreen {
         }
 
         let (tx_bps, rx_bps) = self.current_bandwidth()?;
+        let peak_changed = self.push_bandwidth_sample(tx_bps, rx_bps);
+        self.last_chart_sample_at = Some(now);
+        Some(peak_changed)
+    }
 
-        let target_upload_bps = tx_bps as f64;
-        let target_download_bps = rx_bps as f64;
+    /// Right edge of the chart's x-range at `now`: the last sample index plus
+    /// the fraction of the sample interval that has elapsed since it, so the
+    /// plot scrolls continuously between samples instead of stepping.
+    pub(super) fn chart_x_max(&self, now: Instant) -> f64 {
+        let fraction = self.last_chart_sample_at.map_or(0.0, |last| {
+            now.duration_since(last).as_secs_f64() / LIVE_CHART_SAMPLE_INTERVAL.as_secs_f64()
+        });
+        self.sample_counter.max(0.0) + fraction.clamp(0.0, 1.0)
+    }
 
-        let next_upload_bps = self
-            .display_tx_bps
-            .map_or(target_upload_bps, |current_tx_bps| {
-                let smoothed = current_tx_bps
-                    + (target_upload_bps - current_tx_bps) * BANDWIDTH_SMOOTHING_ALPHA;
-                if (target_upload_bps - smoothed).abs() < 1.0 {
-                    target_upload_bps
-                } else {
-                    smoothed
-                }
-            });
-        let next_download_bps = self
-            .display_rx_bps
-            .map_or(target_download_bps, |current_rx_bps| {
-                let smoothed = current_rx_bps
-                    + (target_download_bps - current_rx_bps) * BANDWIDTH_SMOOTHING_ALPHA;
-                if (target_download_bps - smoothed).abs() < 1.0 {
-                    target_download_bps
-                } else {
-                    smoothed
-                }
-            });
-
-        self.display_tx_bps = Some(next_upload_bps);
-        self.display_rx_bps = Some(next_download_bps);
-        #[allow(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            clippy::as_conversions
-        )]
+    /// Copy of a series with its last real value held flat out to `x_max`,
+    /// so the line reaches "now" without inventing a measurement.
+    pub(super) fn series_held_to(series: &[(f64, f64)], x_max: f64) -> Vec<(f64, f64)> {
+        let mut held = Vec::with_capacity(series.len() + 1);
+        held.extend_from_slice(series);
+        if let Some(&(last_x, last_value)) = series.last()
+            && x_max > last_x
         {
-            let peak_changed = self.push_bandwidth_sample(
-                next_upload_bps.round() as u64,
-                next_download_bps.round() as u64,
-            );
-            self.last_chart_sample_at = Some(now);
-            Some(peak_changed)
+            held.push((x_max, last_value));
         }
+        held
     }
 
     pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {
         match action {
             Action::Tick => {
-                if let Some(peak_changed) = self.sample_bandwidth_if_due(Instant::now())
-                    && self.focused
-                {
-                    return Some(if peak_changed {
-                        Action::ChartPeak
-                    } else {
-                        Action::Invalidate
-                    });
+                // Sample regardless of focus so the history stays continuous;
+                // redraw on every tick while focused so the chart scrolls
+                // smoothly between the once-a-second samples.
+                let sampled = self.sample_bandwidth_if_due(Instant::now());
+                if self.focused {
+                    if sampled == Some(true) {
+                        return Some(Action::ChartPeak);
+                    }
+                    if sampled.is_some() || !self.bandwidth_tx.is_empty() {
+                        return Some(Action::Invalidate);
+                    }
                 }
             }
             Action::DevicesUpdated(devices) => {
@@ -299,6 +286,38 @@ mod tests {
         assert!(matches!(action, Some(Action::ChartPeak)));
         assert_eq!(screen.bandwidth_tx.len(), 1);
         assert_eq!(screen.bandwidth_rx.len(), 1);
+    }
+
+    #[test]
+    fn chart_x_max_advances_between_samples() {
+        let mut screen = DashboardScreen::new();
+        let now = Instant::now();
+        screen.device_bandwidth = Some(BandwidthSample {
+            tx_bps: 1,
+            rx_bps: 1,
+            captured_at: now,
+        });
+        assert_eq!(screen.sample_bandwidth_if_due(now), Some(true));
+        assert!((screen.chart_x_max(now) - 1.0).abs() < f64::EPSILON);
+        let half = now + LIVE_CHART_SAMPLE_INTERVAL / 2;
+        assert!((screen.chart_x_max(half) - 1.5).abs() < 0.01);
+        // never runs ahead of the next sample slot
+        let late = now + LIVE_CHART_SAMPLE_INTERVAL * 3;
+        assert!((screen.chart_x_max(late) - 2.0).abs() < f64::EPSILON);
+        // and a second sample is not taken before the interval elapses
+        assert_eq!(screen.sample_bandwidth_if_due(half), None);
+    }
+
+    #[test]
+    fn series_held_to_extends_last_value_without_new_points() {
+        let series = [(1.0, 10.0), (2.0, 30.0)];
+        let held = DashboardScreen::series_held_to(&series, 2.6);
+        assert_eq!(held, vec![(1.0, 10.0), (2.0, 30.0), (2.6, 30.0)]);
+        assert_eq!(
+            DashboardScreen::series_held_to(&series, 2.0),
+            series.to_vec()
+        );
+        assert_eq!(DashboardScreen::series_held_to(&[], 5.0), Vec::new());
     }
 
     #[test]

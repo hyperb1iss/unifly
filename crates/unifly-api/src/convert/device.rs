@@ -4,7 +4,7 @@ use crate::integration_types;
 use crate::model::common::{Bandwidth, DataSource};
 use crate::model::device::{Device, DeviceState, DeviceStats, DeviceType};
 use crate::model::entity_id::{EntityId, MacAddress};
-use crate::session::models::SessionDevice;
+use crate::session::models::{SessionDevice, SessionUplink};
 
 use super::helpers::{epoch_to_datetime, parse_ip, parse_iso, parse_legacy_wan_ipv6};
 use super::interface::{
@@ -54,22 +54,18 @@ fn map_device_state(code: i32) -> DeviceState {
     }
 }
 
-fn parse_session_uplink(
-    extra: &serde_json::Map<String, serde_json::Value>,
-) -> (Option<MacAddress>, Option<u32>) {
-    let Some(uplink) = extra.get("uplink").and_then(|v| v.as_object()) else {
+/// Extract the uplink device MAC and port index from a session uplink
+/// record. Returns `(None, None)` when the device has no uplink (gateways).
+fn parse_session_uplink(uplink: Option<&SessionUplink>) -> (Option<MacAddress>, Option<u32>) {
+    let Some(uplink) = uplink else {
         return (None, None);
     };
     let mac = uplink
-        .get("uplink_mac")
-        .and_then(|v| v.as_str())
+        .uplink_mac
+        .as_deref()
         .filter(|s| !s.is_empty())
         .map(MacAddress::new);
-    let port = uplink
-        .get("uplink_remote_port")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok());
-    (mac, port)
+    (mac, uplink.uplink_remote_port)
 }
 
 impl From<SessionDevice> for Device {
@@ -81,7 +77,7 @@ impl From<SessionDevice> for Device {
         } else {
             d.id.clone()
         };
-        let (uplink_device_mac, uplink_port_idx) = parse_session_uplink(&d.extra);
+        let (uplink_device_mac, uplink_port_idx) = parse_session_uplink(d.uplink.as_ref());
 
         let device_stats = {
             let mut s = DeviceStats {
@@ -109,7 +105,10 @@ impl From<SessionDevice> for Device {
             id: EntityId::from(entity_id),
             mac: MacAddress::new(&d.mac),
             ip: parse_ip(d.ip.as_ref()),
-            wan_ipv6: parse_legacy_wan_ipv6(&d.extra),
+            wan_ipv6: parse_legacy_wan_ipv6(
+                d.wan1.as_ref().and_then(|wan| wan.ipv6.as_ref()),
+                d.ipv6.as_ref(),
+            ),
             name: d.name,
             model: d.model,
             device_type,
@@ -121,8 +120,8 @@ impl From<SessionDevice> for Device {
             last_seen: epoch_to_datetime(d.last_seen),
             serial: d.serial,
             supported: true,
-            ports: parse_session_ports(&d.extra),
-            radios: parse_session_radios(&d.extra),
+            ports: parse_session_ports(&d.port_table),
+            radios: parse_session_radios(&d.radio_table, &d.radio_table_stats),
             uplink_device_id: None,
             uplink_device_mac,
             uplink_port_idx,

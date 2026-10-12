@@ -13,7 +13,10 @@ use super::Controller;
 
 mod integration;
 mod merge;
+mod poll;
 mod session;
+
+pub(super) use poll::stats_poll_task;
 
 impl Controller {
     /// Fetch all data from the controller and update the DataStore.

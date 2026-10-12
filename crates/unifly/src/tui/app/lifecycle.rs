@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn settings_overlay_round_trips_focus_and_history() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
         app.active_screen = ScreenId::Dashboard;
         app.screens
             .get_mut(&ScreenId::Dashboard)

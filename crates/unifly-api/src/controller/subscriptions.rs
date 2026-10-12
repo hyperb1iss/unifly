@@ -179,6 +179,7 @@ mod tests {
     use crate::{ControllerPlatform, SessionClient};
 
     fn session_client(auth: SessionAuth) -> Arc<SessionClient> {
+        crate::transport::ensure_crypto_provider();
         Arc::new(SessionClient::with_client(
             reqwest::Client::new(),
             Url::parse("https://controller.example").expect("valid test URL"),

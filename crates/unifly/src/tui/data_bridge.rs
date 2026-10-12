@@ -287,10 +287,12 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        tokio::time::timeout(
+        // Boxed: the bridge future is just over clippy's large_futures
+        // threshold, and this is a test stack, not a hot path.
+        Box::pin(tokio::time::timeout(
             Duration::from_secs(10),
             spawn_data_bridge(controller, tx, cancel, None),
-        )
+        ))
         .await
         .expect("cancelled bridge should exit immediately");
 

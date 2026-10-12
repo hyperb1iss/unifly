@@ -52,7 +52,7 @@ impl Controller {
         let session = require_session(guard.as_ref())?;
 
         let device = session
-            .get_device(device_mac.as_str())
+            .get_device_raw(device_mac.as_str())
             .await?
             .ok_or_else(|| CoreError::DeviceNotFound {
                 identifier: device_mac.to_string(),
@@ -61,13 +61,11 @@ impl Controller {
         let network_lookup = build_network_lookup(&session.list_network_conf().await?);
 
         let overrides = device
-            .extra
             .get("port_overrides")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
         let port_table = device
-            .extra
             .get("port_table")
             .and_then(Value::as_array)
             .cloned()
@@ -183,7 +181,7 @@ impl Controller {
         let session = require_session(guard.as_ref())?;
 
         let device = session
-            .get_device(device_mac.as_str())
+            .get_device_raw(device_mac.as_str())
             .await?
             .ok_or_else(|| CoreError::DeviceNotFound {
                 identifier: device_mac.to_string(),
@@ -194,7 +192,6 @@ impl Controller {
         // index, so without this check `port-set <8-port-switch> 99 ...`
         // reports success and persists a dangling override forever.
         let known_ports: Vec<u32> = device
-            .extra
             .get("port_table")
             .and_then(Value::as_array)
             .map(|table| table.iter().filter_map(port_idx).collect())
@@ -209,7 +206,6 @@ impl Controller {
         }
 
         let mut overrides: Vec<Value> = device
-            .extra
             .get("port_overrides")
             .and_then(Value::as_array)
             .cloned()
@@ -234,7 +230,7 @@ impl Controller {
 
         debug!(port_idx_target, "updating port_overrides");
         session
-            .update_device_port_overrides(device.id.as_str(), overrides)
+            .update_device_port_overrides(raw_device_id(&device, device_mac)?, overrides)
             .await?;
         Ok(())
     }
@@ -260,7 +256,7 @@ impl Controller {
         // Fetch device + network list once. resolve_network_session_id
         // would re-fetch the network list per call.
         let device = session
-            .get_device(device_mac.as_str())
+            .get_device_raw(device_mac.as_str())
             .await?
             .ok_or_else(|| CoreError::DeviceNotFound {
                 identifier: device_mac.to_string(),
@@ -288,7 +284,6 @@ impl Controller {
         }
 
         let mut overrides: Vec<Value> = device
-            .extra
             .get("port_overrides")
             .and_then(Value::as_array)
             .cloned()
@@ -331,7 +326,7 @@ impl Controller {
             "applying batch port_overrides",
         );
         session
-            .update_device_port_overrides(device.id.as_str(), overrides)
+            .update_device_port_overrides(raw_device_id(&device, device_mac)?, overrides)
             .await?;
         Ok(summary)
     }
@@ -366,14 +361,13 @@ impl Controller {
         let session = require_session(guard.as_ref())?;
 
         let device = session
-            .get_device(device_mac.as_str())
+            .get_device_raw(device_mac.as_str())
             .await?
             .ok_or_else(|| CoreError::DeviceNotFound {
                 identifier: device_mac.to_string(),
             })?;
 
         let overrides: Vec<Value> = device
-            .extra
             .get("port_overrides")
             .and_then(Value::as_array)
             .cloned()
@@ -387,7 +381,6 @@ impl Controller {
         if include_all {
             let covered: std::collections::HashSet<u32> = entries.iter().map(|e| e.index).collect();
             let port_table: Vec<Value> = device
-                .extra
                 .get("port_table")
                 .and_then(Value::as_array)
                 .cloned()
@@ -668,6 +661,21 @@ fn parse_apply_speed(raw: &str) -> Result<PortSpeedSetting, CoreError> {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/// The `_id` of a raw session device record.
+///
+/// The per-device `rest/device/{id}` endpoint cannot identify a device
+/// without it, so a missing or empty `_id` is an error rather than an empty
+/// path segment that would PUT against the collection.
+fn raw_device_id<'a>(device: &'a Value, mac: &MacAddress) -> Result<&'a str, CoreError> {
+    device
+        .get("_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| CoreError::DeviceNotFound {
+            identifier: mac.to_string(),
+        })
+}
 
 fn port_idx(value: &Value) -> Option<u32> {
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]

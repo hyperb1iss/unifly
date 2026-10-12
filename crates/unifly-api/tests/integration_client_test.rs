@@ -17,6 +17,7 @@ use unifly_api::{ControllerPlatform, Error, IntegrationClient};
 // ── Helpers ─────────────────────────────────────────────────────────
 
 async fn setup() -> (MockServer, IntegrationClient) {
+    unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     // Classic = no proxy prefix, so wiremock paths start at /integration/
     let client = IntegrationClient::from_reqwest(
@@ -29,6 +30,7 @@ async fn setup() -> (MockServer, IntegrationClient) {
 }
 
 async fn setup_cloud(host_id: &str) -> (MockServer, IntegrationClient) {
+    unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     let client = IntegrationClient::from_reqwest(
         &format!("{}/v1/connector/consoles/{host_id}", server.uri()),

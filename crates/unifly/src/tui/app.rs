@@ -111,9 +111,8 @@ impl App {
         controller: Option<Controller>,
         sanitizer: Option<Arc<Sanitizer>>,
         effects_enabled: bool,
+        show_donate: bool,
     ) -> Self {
-        let show_donate = crate::config::load_config().map_or(true, |c| c.defaults.show_donate);
-
         let (action_tx, action_rx) = mpsc::unbounded_channel();
 
         let mut screens: HashMap<ScreenId, Box<dyn Component>> =
@@ -265,7 +264,7 @@ mod tests {
 
     #[test]
     fn render_gate_skips_clean_static_frames() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
 
         assert!(app.should_draw());
 
@@ -278,7 +277,7 @@ mod tests {
 
     #[test]
     fn render_gate_reopens_after_state_change() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
         app.needs_redraw = false;
 
         app.process_action(&Action::Resize(120, 40))
@@ -289,7 +288,7 @@ mod tests {
 
     #[test]
     fn chart_peak_starts_effect_when_enabled() {
-        let mut app = App::new(None, None, true);
+        let mut app = App::new(None, None, true, true);
 
         app.process_action(&Action::ChartPeak)
             .expect("chart peak should be handled");
@@ -300,7 +299,7 @@ mod tests {
 
     #[test]
     fn chart_peak_respects_disabled_effects() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
 
         app.process_action(&Action::ChartPeak)
             .expect("chart peak should be handled");

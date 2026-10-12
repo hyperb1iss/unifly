@@ -8,6 +8,7 @@ use unifly_api::site_manager_types::IspMetricInterval;
 use unifly_api::{Error, SiteManagerClient};
 
 async fn setup() -> (MockServer, SiteManagerClient) {
+    unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     let client = SiteManagerClient::from_reqwest(&server.uri(), reqwest::Client::new()).unwrap();
     (server, client)

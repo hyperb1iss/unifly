@@ -59,13 +59,15 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
         "starting unifly tui"
     );
 
+    let cfg = loaded_config.as_ref();
     let controller =
-        build_controller_direct(global).or_else(|| build_controller_from_config(global));
+        build_controller_direct(global, cfg).or_else(|| build_controller_from_config(global, cfg));
 
-    let sanitizer = resolve_sanitizer(global);
-    let effects_enabled = resolve_effects_enabled(global);
+    let sanitizer = resolve_sanitizer(global, cfg);
+    let effects_enabled = resolve_effects_enabled(global, cfg);
+    let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 
-    let mut app = app::App::new(controller, sanitizer, effects_enabled);
+    let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate);
     app.run().await?;
 
     Ok(())
@@ -75,14 +77,14 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
 ///
 /// Resolution order (first "off" wins):
 ///   `--no-effects` flag → `NO_EFFECTS` env var → `[defaults].effects` config → default on.
-fn resolve_effects_enabled(global: &GlobalOpts) -> bool {
+fn resolve_effects_enabled(global: &GlobalOpts, cfg: Option<&config::Config>) -> bool {
     if global.no_effects {
         return false;
     }
     if std::env::var_os("NO_EFFECTS").is_some() {
         return false;
     }
-    config::load_config().map_or(true, |c| c.defaults.effects)
+    cfg.is_none_or(|c| c.defaults.effects)
 }
 
 fn setup_tracing(verbosity: u8, log_file: &std::path::Path) -> WorkerGuard {
@@ -118,7 +120,12 @@ fn setup_tracing(verbosity: u8, log_file: &std::path::Path) -> WorkerGuard {
     guard
 }
 
-fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
+/// Build a controller from explicit CLI flags and environment variables,
+/// bypassing the config profile.
+fn build_controller_direct(
+    global: &GlobalOpts,
+    cfg: Option<&config::Config>,
+) -> Option<Controller> {
     let is_cloud = global.host_id.is_some();
     let url_str = global.controller.as_deref().or({
         if is_cloud {
@@ -143,7 +150,7 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
             host_id: host_id.clone(),
         }
     } else {
-        try_hybrid_from_config(&api_key, global).unwrap_or(AuthCredentials::ApiKey(api_key))
+        try_hybrid_from_config(&api_key, global, cfg).unwrap_or(AuthCredentials::ApiKey(api_key))
     };
 
     let tls = if is_cloud {
@@ -178,8 +185,15 @@ fn build_controller_direct(global: &GlobalOpts) -> Option<Controller> {
     Some(Controller::new(controller_config))
 }
 
-fn try_hybrid_from_config(api_key: &SecretString, global: &GlobalOpts) -> Option<AuthCredentials> {
-    let cfg = config::load_config().ok()?;
+/// Pair an API key with profile credentials to upgrade an Integration-only
+/// connection to hybrid auth. Returns `None` when the profile has no
+/// username/password to add.
+fn try_hybrid_from_config(
+    api_key: &SecretString,
+    global: &GlobalOpts,
+    cfg: Option<&config::Config>,
+) -> Option<AuthCredentials> {
+    let cfg = cfg?;
     let name = global
         .profile
         .as_deref()
@@ -191,7 +205,18 @@ fn try_hybrid_from_config(api_key: &SecretString, global: &GlobalOpts) -> Option
         return None;
     }
 
-    let (username, password) = config::resolve_session_credentials(profile, name).ok()?;
+    let (username, password) = match config::resolve_session_credentials(profile, name) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            tracing::warn!(
+                profile = name,
+                %error,
+                "profile is hybrid but session credentials are unavailable; \
+                 continuing with API key only (no WebSocket, statistics polled instead)"
+            );
+            return None;
+        }
+    };
 
     Some(AuthCredentials::Hybrid {
         api_key: api_key.clone(),
@@ -200,13 +225,15 @@ fn try_hybrid_from_config(api_key: &SecretString, global: &GlobalOpts) -> Option
     })
 }
 
-fn build_controller_from_config(global: &GlobalOpts) -> Option<Controller> {
-    let cfg = match config::load_config() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::warn!("failed to load config: {e}");
-            return None;
-        }
+/// Build a controller from the active config profile. Returns `None` when no
+/// config is loaded or the profile is unusable.
+fn build_controller_from_config(
+    global: &GlobalOpts,
+    cfg: Option<&config::Config>,
+) -> Option<Controller> {
+    let Some(cfg) = cfg else {
+        tracing::warn!("no config file loaded; cannot build controller from profile");
+        return None;
     };
 
     let profile_name = global
@@ -241,8 +268,10 @@ fn build_controller_from_config(global: &GlobalOpts) -> Option<Controller> {
     }
 }
 
-fn resolve_sanitizer(global: &GlobalOpts) -> Option<Arc<Sanitizer>> {
-    let mut demo_config = config::load_config().map(|c| c.demo).unwrap_or_default();
+/// Resolve demo-mode PII sanitization from the `--demo` flag and config,
+/// with the flag forcing it on. Returns `None` when demo mode is off.
+fn resolve_sanitizer(global: &GlobalOpts, cfg: Option<&config::Config>) -> Option<Arc<Sanitizer>> {
+    let mut demo_config = cfg.map(|c| c.demo.clone()).unwrap_or_default();
 
     if global.demo {
         demo_config.enabled = true;

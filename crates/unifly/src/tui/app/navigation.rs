@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn tab_navigation_cycles_between_primary_screens() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
         app.active_screen = ScreenId::Dashboard;
 
         let action = app
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn search_input_updates_query_and_can_close() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
         app.active_screen = ScreenId::Dashboard;
         app.search_active = true;
 
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn onboarding_input_reopens_render_gate() {
-        let mut app = App::new(None, None, false);
+        let mut app = App::new(None, None, false, true);
         app.needs_redraw = false;
 
         let action = app

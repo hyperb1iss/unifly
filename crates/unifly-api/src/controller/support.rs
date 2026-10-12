@@ -38,18 +38,16 @@ fn pick_ipv6_from_value(value: &serde_json::Value) -> Option<String> {
     first_link_local
 }
 
+/// Pick the device's public IPv6 from `wan1.ipv6` first, then the top-level
+/// `ipv6` field. Either may be a string or an array of strings.
 pub(super) fn parse_session_device_wan_ipv6(
-    extra: &serde_json::Map<String, serde_json::Value>,
+    wan1_ipv6: Option<&serde_json::Value>,
+    ipv6: Option<&serde_json::Value>,
 ) -> Option<String> {
-    if let Some(value) = extra
-        .get("wan1")
-        .and_then(|wan| wan.get("ipv6"))
-        .and_then(pick_ipv6_from_value)
-    {
+    if let Some(value) = wan1_ipv6.and_then(pick_ipv6_from_value) {
         return Some(value);
     }
-
-    extra.get("ipv6").and_then(pick_ipv6_from_value)
+    ipv6.and_then(pick_ipv6_from_value)
 }
 
 pub(super) fn convert_health_summaries(raw: Vec<serde_json::Value>) -> Vec<HealthSummary> {

@@ -86,6 +86,23 @@ impl<T: Clone + Send + Sync + 'static> EntityCollection<T> {
         is_new
     }
 
+    /// Rewrite an existing entity while holding its key's shard lock, so a
+    /// concurrent upsert or removal cannot land between the read and the
+    /// write. Returns `false` and changes nothing when the key is absent.
+    ///
+    /// `update` must keep the entity's id and must not touch this
+    /// collection: the shard lock is held while it runs.
+    pub(crate) fn update_existing(&self, key: &str, update: impl FnOnce(&T) -> T) -> bool {
+        let Some(mut entry) = self.by_key.get_mut(key) else {
+            return false;
+        };
+        let next = update(entry.value());
+        *entry.value_mut() = Arc::new(next);
+        drop(entry);
+        self.mark_mutated();
+        true
+    }
+
     /// Remove an entity by key. Returns the removed entity if it existed.
     pub(crate) fn remove(&self, key: &str) -> Option<Arc<T>> {
         let removed = self.by_key.remove(key).map(|(_, v)| v);
@@ -202,6 +219,22 @@ mod tests {
     use super::*;
     use crate::model::EntityId;
     use uuid::Uuid;
+
+    #[test]
+    fn update_existing_rewrites_present_keys_and_skips_absent_ones() {
+        let col: EntityCollection<String> = EntityCollection::new();
+        col.upsert("key1".into(), EntityId::from("id-1"), "old".into());
+
+        assert!(col.update_existing("key1", |current| format!("{current}+stats")));
+        assert_eq!(
+            col.get_by_key("key1").as_deref().map(String::as_str),
+            Some("old+stats")
+        );
+
+        assert!(!col.update_existing("gone", |_| "resurrected".into()));
+        assert!(col.get_by_key("gone").is_none());
+        assert_eq!(col.len(), 1);
+    }
 
     #[test]
     fn upsert_returns_true_for_new_key() {

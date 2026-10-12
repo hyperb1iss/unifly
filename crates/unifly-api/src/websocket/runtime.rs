@@ -14,6 +14,11 @@ use crate::transport::TlsMode;
 use super::parser::{UnifiEvent, parse_and_broadcast};
 use super::tls::build_tls_connector;
 
+/// Broadcast ring depth. The parser sends every record of an envelope
+/// without yielding, so the ring must absorb a whole burst before the bridge
+/// task drains it. A slot only holds its event until the last subscriber has
+/// read it, which is why [`WebSocketHandle`] keeps the sender rather than an
+/// idle receiver that would pin every slot.
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// Exponential backoff configuration for WebSocket reconnection.
@@ -40,12 +45,21 @@ impl Default for ReconnectConfig {
     }
 }
 
+/// Supplies the `Cookie` header for each connection attempt.
+///
+/// Read fresh on every (re)connect so that a session re-login performed
+/// elsewhere (see `SessionClient::enable_reauth`) is picked up without
+/// tearing the stream down by hand.
+pub type CookieProvider = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// Handle to a running WebSocket event stream.
 ///
 /// Cheaply cloneable via the inner broadcast sender. Drop all handles
 /// and call [`shutdown`](Self::shutdown) to tear down the background task.
 pub struct WebSocketHandle {
-    event_rx: broadcast::Receiver<Arc<UnifiEvent>>,
+    /// Sender side only: holding a `Receiver` here would pin every slot in
+    /// the ring for a consumer that never reads.
+    event_tx: broadcast::Sender<Arc<UnifiEvent>>,
     cancel: CancellationToken,
 }
 
@@ -59,17 +73,18 @@ impl WebSocketHandle {
         ws_url: Url,
         reconnect: ReconnectConfig,
         cancel: CancellationToken,
-        cookie: Option<String>,
+        cookie: CookieProvider,
         tls_mode: TlsMode,
     ) -> Result<Self, Error> {
-        let (event_tx, event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
         let task_cancel = cancel.clone();
+        let loop_tx = event_tx.clone();
         tokio::spawn(async move {
-            ws_loop(ws_url, event_tx, reconnect, task_cancel, cookie, tls_mode).await;
+            ws_loop(ws_url, loop_tx, reconnect, task_cancel, cookie, tls_mode).await;
         });
 
-        Ok(Self { event_rx, cancel })
+        Ok(Self { event_tx, cancel })
     }
 
     /// Get a new broadcast receiver for the event stream.
@@ -77,7 +92,7 @@ impl WebSocketHandle {
     /// Multiple consumers can subscribe concurrently. If a consumer falls
     /// behind, it receives [`broadcast::error::RecvError::Lagged`].
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<UnifiEvent>> {
-        self.event_rx.resubscribe()
+        self.event_tx.subscribe()
     }
 
     /// Signal the background task to shut down gracefully.
@@ -91,20 +106,31 @@ async fn ws_loop(
     event_tx: broadcast::Sender<Arc<UnifiEvent>>,
     reconnect: ReconnectConfig,
     cancel: CancellationToken,
-    cookie: Option<String>,
+    cookie: CookieProvider,
     tls_mode: TlsMode,
 ) {
     let mut attempt: u32 = 0;
 
     loop {
+        let current_cookie = cookie();
         tokio::select! {
             biased;
             () = cancel.cancelled() => break,
-            result = connect_and_read(&ws_url, &event_tx, &cancel, cookie.as_deref(), &tls_mode) => {
+            result = connect_and_read(&ws_url, &event_tx, &cancel, current_cookie.as_deref(), &tls_mode) => {
                 match result {
                     Ok(()) => {
+                        // A server-side close (e.g. the session cookie lapsed)
+                        // used to reconnect immediately, which spins when the
+                        // controller keeps accepting and closing. Pause for the
+                        // initial backoff instead; the cookie provider hands us
+                        // a fresh cookie once the session re-authenticates.
                         tracing::info!("WebSocket disconnected cleanly, reconnecting");
                         attempt = 0;
+                        tokio::select! {
+                            biased;
+                            () = cancel.cancelled() => break,
+                            () = tokio::time::sleep(reconnect.initial_delay) => {}
+                        }
                     }
                     Err(error) => {
                         tracing::warn!(error = %error, attempt, "WebSocket error");

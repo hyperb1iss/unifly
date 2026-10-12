@@ -11,7 +11,7 @@ use crate::transport::TlsMode;
 pub(in crate::websocket) fn build_tls_connector(
     tls_mode: &TlsMode,
 ) -> Result<Option<Connector>, Error> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    crate::transport::ensure_crypto_provider();
 
     match tls_mode {
         TlsMode::System => Ok(None),

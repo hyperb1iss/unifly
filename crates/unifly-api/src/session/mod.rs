@@ -22,4 +22,4 @@ pub mod vpn;
 pub mod wifi;
 pub mod wireguard;
 
-pub use client::{SessionAuth, SessionClient};
+pub use client::{ReauthCredentials, SessionAuth, SessionClient};

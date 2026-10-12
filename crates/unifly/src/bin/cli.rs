@@ -10,15 +10,49 @@ use unifly::config::resolve;
 
 use unifly_api::Controller;
 
-#[tokio::main]
-async fn main() {
+/// Parses the CLI, then builds the runtime by hand rather than using
+/// `#[tokio::main]`, so the worker-thread count can depend on the command.
+fn main() {
     let cli = Cli::parse();
 
-    if let Err(err) = run(cli).await {
+    let runtime = match build_runtime(worker_threads_for(&cli.command)) {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to start async runtime: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(err) = runtime.block_on(run(cli)) {
         let code = err.exit_code();
         eprintln!("{:?}", miette::Report::new(err));
         std::process::exit(code);
     }
+}
+
+/// Pick the tokio worker-thread count for a command.
+///
+/// Tokio's default is one worker per core, which on a many-core machine
+/// means dozens of idle threads and, with glibc malloc, one heap arena per
+/// thread that touched the allocator. Every path in unifly is I/O bound and
+/// nothing blocks the runtime, so the TUI runs on a single worker and the
+/// CLI on two.
+fn worker_threads_for(command: &Command) -> usize {
+    match command {
+        #[cfg(feature = "tui")]
+        Command::Tui(_) => 1,
+        _ => 2,
+    }
+}
+
+/// Build the tokio runtime with an explicit worker count; see
+/// [`worker_threads_for`] for why the default is not one-per-core.
+fn build_runtime(worker_threads: usize) -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .thread_name("unifly-rt")
+        .enable_all()
+        .build()
 }
 
 fn init_tracing(verbosity: u8) {

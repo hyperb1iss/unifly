@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session expiry no longer kills a long-running TUI.** The session cookie
+  lapses roughly an hour in; previously every Session-backed fetch (client
+  details, health, events, NAT, firewall groups, Wi-Fi neighbours, switch
+  ports) failed with "Session expired" from then on and the WebSocket never
+  came back, because login only ever ran at connect. `SessionClient` now
+  keeps the login credentials (`enable_reauth`) and on `SessionExpired`
+  re-logs in once and refreshes the session cache. A **read** is then
+  retried transparently; a **state-changing request is not replayed** --
+  the client re-authenticates so the next call succeeds and surfaces the
+  error, because a 401 is normally raised before the controller dispatches
+  the write but nothing in the API contract guarantees it, and a replayed
+  `POST` would create a second record or repeat a device command. Failed
+  re-logins are rate-limited to one per 30 s, and a successful one clears
+  that cooldown so a later expiry is not blocked by it. Each request records
+  the session generation it was sent under, so a late 401 for a cookie that
+  another request already replaced retries on the new session instead of
+  clearing it. Stale cookies are cleared before the re-login and a login that
+  returns no new cookie is reported as a failure rather than silently
+  retried. Sessions opened with a TOTP code do not renew themselves, because
+  replaying a spent code would fail every attempt while still presenting the
+  correct password. The WebSocket reads its cookie from the session client on
+  every reconnect, and a server-side clean close now waits the initial
+  backoff instead of reconnecting immediately.
+
+### Performance
+
+- **TUI memory and idle CPU.** The dashboard used ~100 MB RSS at start and
+  grew without bound overnight (250 MB+). Root cause was glibc per-thread
+  malloc arena fragmentation fed by a full controller refresh every 10 s
+  that parsed the entire `stat/device` / `stat/sta` / `rest/user` payloads
+  into flattened `serde_json` maps on a one-worker-per-core tokio runtime.
+  - The binary now builds its own tokio runtime: one worker for `tui`, two
+    for CLI commands, instead of tokio's one-per-core default. Refresh
+    cadence is unchanged.
+  - `polling_interval_secs` is now honoured: when no WebSocket is available
+    (API-key or cloud auth) and it is shorter than the full refresh, the
+    controller polls only per-device statistics from the Integration API in
+    between. Results are applied onto the current store records, so a full
+    refresh that lands mid-poll keeps its names, ports, and removals.
+    Previously the setting was unused.
+  - WebSocket `device:sync` decode failures are logged (once at warn) instead
+    of silently disabling live stats; all numeric fields accept number or
+    string encodings.
+  - Session models (`SessionDevice`, `SessionClientEntry`, `SessionUserEntry`)
+    carry typed fields instead of a `#[serde(flatten)]` catch-all map; the
+    switch-port commands fetch the raw record on demand.
+  - WebSocket `device:sync` frames are parsed into a typed `DeviceSync`
+    instead of retaining the raw JSON and coalesced into one store snapshot
+    per second, merging partial frames field by field. `WebSocketHandle` no
+    longer holds an idle broadcast receiver, which had kept every one of the
+    ring's 1024 slots (each a full device record) alive indefinitely.
+  - Session list responses decode per record: a record with an unexpected
+    shape is skipped with a warning instead of failing the whole collection.
+  - Session bodies decode from bytes without an intermediate UTF-8 `String`.
+  - Dashboard traffic chart records one real sample per second (was four,
+    with exponential smoothing interpolating between controller updates that
+    arrive ~1/s). The chart still redraws on every 250 ms tick while focused,
+    scrolling continuously by the fraction of the interval elapsed and
+    holding the last real value out to "now", so motion is smooth without
+    plotting invented points. Window is 60 samples (one minute).
+- **Binary size.** Release builds use fat LTO, reqwest is built with
+  `rustls-no-provider` so only `ring` is linked (aws-lc-rs removed), and 17
+  unused dependencies were dropped (six ratatui widget crates, two panic
+  handlers, `strum`, `arc-swap`, `async-stream`, `bytes`, `indicatif`,
+  `bytesize`, `humantime`, `indexmap`, `flate2`, plus the unused
+  `tracing-subscriber/json` feature). Stripped x86_64 binary: 22.0 MB → 18.2 MB.
+  A new `release-small` cargo profile (`opt-level = "s"`) builds a 13.0 MB
+  binary for low-power hosts at ~5% more TUI CPU.
+
+### Changed
+
+- **`unifly-api` breaking changes.** `SessionDevice`, `SessionClientEntry`,
+  and `SessionUserEntry` no longer carry a flattened `extra` map; use
+  `SessionClient::get_device_raw` when the full device record is needed.
+  `WebSocketHandle::new` takes a `CookieProvider` closure instead of a fixed
+  cookie string, and `SessionClient::enable_reauth` with `ReauthCredentials`
+  is new.
+
 ## [0.10.0] - 2026-08-07
 
 This section also covers 0.9.0, 0.9.1, and 0.9.2, which shipped from the

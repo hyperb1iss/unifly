@@ -30,6 +30,18 @@ impl SessionClient {
         Ok(devices.into_iter().next())
     }
 
+    /// Get a single device as the untyped session record.
+    ///
+    /// Used by the switch-port surface, which must round-trip
+    /// `port_overrides` and read arbitrary `port_table` columns. Everything
+    /// else should prefer the typed [`get_device`](Self::get_device).
+    pub async fn get_device_raw(&self, mac: &str) -> Result<Option<serde_json::Value>, Error> {
+        let url = self.site_url("stat/device");
+        let body = json!({ "macs": [mac.to_lowercase()] });
+        let devices: Vec<serde_json::Value> = self.post(url, &body).await?;
+        Ok(devices.into_iter().next())
+    }
+
     /// Adopt a pending device.
     ///
     /// `POST /api/s/{site}/cmd/devmgr` with `{"cmd": "adopt", "mac": "..."}`

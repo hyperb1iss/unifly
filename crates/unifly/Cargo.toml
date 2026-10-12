@@ -23,7 +23,6 @@ cli = [
     "dep:tabled",
     "dep:owo-colors",
     "dep:dialoguer",
-    "dep:indicatif",
     "dep:rpassword",
     "dep:serde_yaml_ng",
 ]
@@ -31,29 +30,17 @@ tui = [
     "cli",
     "dep:opaline",
     "dep:ratatui",
-    "dep:ratatui-macros",
     "dep:crossterm",
     "dep:tachyonfx",
-    "dep:tui-input",
-    "dep:tui-scrollview",
-    "dep:tui-widget-list",
-    "dep:tui-tree-widget",
-    "dep:tui-popup",
     "dep:throbber-widgets-tui",
     "dep:color-eyre",
-    "dep:better-panic",
-    "dep:human-panic",
     "dep:tracing-appender",
-    "dep:bytesize",
-    "dep:humantime",
-    "dep:indexmap",
     "dep:futures",
     "dep:tokio-util",
 ]
 tui-graphics = [
     "tui",
     "dep:image",
-    "dep:flate2",
     "dep:ratatui-image",
     "dep:tiny-skia",
 ]
@@ -67,7 +54,7 @@ required-features = ["cli"]
 # ── Shared dependencies (always present) ─────────────────────────
 [dependencies]
 unifly-api         = { workspace = true }
-tokio              = { workspace = true, features = ["full"] }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 clap               = { workspace = true }
@@ -94,33 +81,20 @@ miette             = { workspace = true, optional = true }
 tabled             = { workspace = true, optional = true }
 owo-colors         = { workspace = true, optional = true }
 dialoguer          = { workspace = true, optional = true }
-indicatif          = { workspace = true, optional = true }
 rpassword          = { workspace = true, optional = true }
 serde_yaml_ng      = { workspace = true, optional = true }
 
 # ── TUI/theme deps (optional) ────────────────────────────────────
 opaline            = { workspace = true, optional = true }
 ratatui            = { workspace = true, optional = true }
-ratatui-macros     = { workspace = true, optional = true }
 crossterm          = { workspace = true, optional = true }
 tachyonfx          = { workspace = true, optional = true, features = ["sendable"] }
-tui-input          = { workspace = true, optional = true }
-tui-scrollview     = { workspace = true, optional = true }
-tui-widget-list    = { workspace = true, optional = true }
-tui-tree-widget    = { workspace = true, optional = true }
-tui-popup          = { workspace = true, optional = true }
 throbber-widgets-tui = { workspace = true, optional = true }
 ratatui-image     = { workspace = true, optional = true }
 color-eyre         = { workspace = true, optional = true }
-better-panic       = { workspace = true, optional = true }
-human-panic        = { workspace = true, optional = true }
 tracing-appender   = { workspace = true, optional = true }
-bytesize           = { workspace = true, optional = true }
-humantime          = { workspace = true, optional = true }
 image              = { workspace = true, optional = true }
-flate2             = { workspace = true, optional = true }
 tiny-skia          = { workspace = true, optional = true }
-indexmap            = { workspace = true, optional = true }
 futures            = { workspace = true, optional = true }
 tokio-util         = { workspace = true, optional = true }
 json_comments = "0.2.2"

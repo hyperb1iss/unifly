@@ -53,7 +53,8 @@ command -v unifly >/dev/null 2>&1 && unifly --version || echo "unifly not instal
 
 If unifly is not installed, prefer `brew install hyperb1iss/tap/unifly` on
 macOS or `cargo install --git https://github.com/hyperb1iss/unifly.git unifly`
-elsewhere. After install, run `unifly config init` for a local controller or
+elsewhere (add `--profile release-small` for a smaller binary on low-power
+hosts). After install, run `unifly config init` for a local controller or
 `unifly config cloud-setup` for Site Manager. See `examples/config.toml` for
 manual configuration.
 

@@ -11,6 +11,7 @@ use unifly_api::{ControllerPlatform, Error, SessionClient, TransportConfig, sess
 // ── Helpers ─────────────────────────────────────────────────────────
 
 async fn setup() -> (MockServer, SessionClient) {
+    unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     let base_url = Url::parse(&server.uri()).unwrap();
     let client = SessionClient::with_client(
@@ -24,6 +25,7 @@ async fn setup() -> (MockServer, SessionClient) {
 }
 
 async fn setup_api_key() -> (MockServer, SessionClient) {
+    unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     let base_url = Url::parse(&server.uri()).unwrap();
     let client = SessionClient::with_client(
@@ -41,6 +43,27 @@ async fn setup_with_jar() -> (MockServer, SessionClient) {
     let server = MockServer::start().await;
     let base_url = Url::parse(&server.uri()).unwrap();
     let transport = TransportConfig::default().with_cookie_jar();
+    let client = SessionClient::new(
+        base_url,
+        "default".into(),
+        ControllerPlatform::ClassicController,
+        &transport,
+    )
+    .unwrap();
+    (server, client)
+}
+
+/// Cookie-jar client pre-seeded with a stale session cookie, as after a
+/// cache restore whose token has since expired.
+async fn setup_with_stale_cookie() -> (MockServer, SessionClient) {
+    let server = MockServer::start().await;
+    let base_url = Url::parse(&server.uri()).unwrap();
+    let transport = TransportConfig::default().with_cookie_jar();
+    transport
+        .cookie_jar
+        .as_ref()
+        .unwrap()
+        .add_cookie_str("TOKEN=stale", &base_url);
     let client = SessionClient::new(
         base_url,
         "default".into(),
@@ -838,4 +861,195 @@ async fn test_mfa_rejects_invalid_totp_format() {
         matches!(result, Err(Error::Authentication { .. })),
         "expected Authentication error for bad TOTP, got: {result:?}"
     );
+}
+
+// ── Session re-authentication ───────────────────────────────────────
+
+/// A minimal successful `stat/health` body, used as the post-re-login
+/// response in the re-authentication tests.
+fn health_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "meta": {"rc": "ok"},
+        "data": [{"subsystem": "wan", "status": "ok"}]
+    }))
+}
+
+#[tokio::test]
+async fn expired_cookie_session_relogs_in_and_retries_once() {
+    let (server, client) = setup().await;
+    client
+        .enable_reauth(unifly_api::session::ReauthCredentials {
+            username: "admin".into(),
+            password: secrecy::SecretString::from("pw".to_string()),
+            cache: None,
+        })
+        .await;
+
+    // First call: cookie rejected. Then a login, then the retry succeeds.
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(body_json(json!({"username": "admin", "password": "pw"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"meta": {"rc": "ok"}})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(health_ok())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let value = client.raw_get("api/s/default/stat/health").await.unwrap();
+    assert_eq!(value["meta"]["rc"], "ok");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn expired_cookie_session_without_credentials_surfaces_error() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let error = client
+        .raw_get("api/s/default/stat/health")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::SessionExpired), "got {error:?}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn failed_relogin_is_rate_limited() {
+    let (server, client) = setup().await;
+    client
+        .enable_reauth(unifly_api::session::ReauthCredentials {
+            username: "admin".into(),
+            password: secrecy::SecretString::from("wrong".to_string()),
+            cache: None,
+        })
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(2)
+        .mount(&server)
+        .await;
+    // Two expired requests in quick succession must produce exactly one
+    // login attempt: the second is inside the cooldown after a failure.
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("bad credentials"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    for _ in 0..2 {
+        let error = client
+            .raw_get("api/s/default/stat/health")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::SessionExpired), "got {error:?}");
+    }
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn relogin_with_cookie_jar_replaces_stale_cookie_and_retries() {
+    let (server, client) = setup_with_stale_cookie().await;
+    client
+        .enable_reauth(unifly_api::session::ReauthCredentials {
+            username: "admin".into(),
+            password: secrecy::SecretString::from("pw".to_string()),
+            cache: None,
+        })
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .and(wiremock::matchers::header("cookie", "TOKEN=stale"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The login must arrive WITHOUT the stale cookie and hands out a new one.
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(wiremock::matchers::header_exists("cookie"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("stale cookie sent to login"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("set-cookie", "TOKEN=fresh; Path=/")
+                .set_body_json(json!({"meta": {"rc": "ok"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .and(wiremock::matchers::header("cookie", "TOKEN=fresh"))
+        .respond_with(health_ok())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let value = client.raw_get("api/s/default/stat/health").await.unwrap();
+    assert_eq!(value["meta"]["rc"], "ok");
+    assert_eq!(client.cookie_header().as_deref(), Some("TOKEN=fresh"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn relogin_that_returns_no_cookie_is_treated_as_failure() {
+    let (server, client) = setup_with_stale_cookie().await;
+    client
+        .enable_reauth(unifly_api::session::ReauthCredentials {
+            username: "admin".into(),
+            password: secrecy::SecretString::from("pw".to_string()),
+            cache: None,
+        })
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/s/default/stat/health"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // "Successful" login that never sets a cookie: must not be counted as
+    // a recovery, and the request must not be retried with nothing.
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"meta": {"rc": "ok"}})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = client
+        .raw_get("api/s/default/stat/health")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::SessionExpired), "got {error:?}");
+    server.verify().await;
 }

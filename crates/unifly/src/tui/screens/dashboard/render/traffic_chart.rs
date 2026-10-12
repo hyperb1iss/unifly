@@ -60,8 +60,10 @@ impl DashboardScreen {
         ]);
 
         let window_span = LIVE_CHART_WINDOW_SAMPLES.saturating_sub(1) as f64;
-        let x_max = self.sample_counter.max(0.0);
+        let x_max = self.chart_x_max(std::time::Instant::now());
         let x_min = x_max - window_span;
+        let rx_series = Self::series_held_to(&self.bandwidth_rx, x_max);
+        let tx_series = Self::series_held_to(&self.bandwidth_tx, x_max);
         let tx_y_max = self.chart_tx_y_max.max(MIN_BANDWIDTH_SCALE);
         let rx_y_max = self.chart_rx_y_max.max(MIN_BANDWIDTH_SCALE);
         let (rx_start, rx_end) = theme::rx_gradient_endpoints();
@@ -70,14 +72,14 @@ impl DashboardScreen {
         let series = [
             Series {
                 name: "RX",
-                data: SeriesData::Dense(&self.bandwidth_rx),
+                data: SeriesData::Dense(&rx_series),
                 line_color: theme::accent_tertiary(),
                 fill: FillStyle::Gradient(ChartGradient::new(rx_start, rx_end)),
                 direction: SeriesDirection::Up,
             },
             Series {
                 name: "TX",
-                data: SeriesData::Dense(&self.bandwidth_tx),
+                data: SeriesData::Dense(&tx_series),
                 line_color: theme::accent_secondary(),
                 fill: FillStyle::Gradient(ChartGradient::new(tx_start, tx_end)),
                 direction: SeriesDirection::Down,

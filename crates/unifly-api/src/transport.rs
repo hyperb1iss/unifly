@@ -28,6 +28,15 @@ pub struct TransportConfig {
     pub cookie_jar: Option<Arc<Jar>>,
 }
 
+/// Install `ring` as the process-wide rustls crypto provider.
+///
+/// reqwest is built with `rustls-no-provider`, so a single provider (ring,
+/// enabled on our direct `rustls` dependency) is linked instead of both
+/// ring and aws-lc-rs. Installing is idempotent; a second call is a no-op.
+pub fn ensure_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
@@ -41,6 +50,7 @@ impl Default for TransportConfig {
 impl TransportConfig {
     /// Build a `reqwest::Client` from this config.
     pub fn build_client(&self) -> Result<reqwest::Client, crate::error::Error> {
+        ensure_crypto_provider();
         let mut builder = reqwest::Client::builder()
             .timeout(self.timeout)
             .user_agent("unifly/0.1.0");
@@ -76,6 +86,7 @@ impl TransportConfig {
         &self,
         headers: reqwest::header::HeaderMap,
     ) -> Result<reqwest::Client, crate::error::Error> {
+        ensure_crypto_provider();
         let mut builder = reqwest::Client::builder()
             .timeout(self.timeout)
             .user_agent("unifly/0.1.0")

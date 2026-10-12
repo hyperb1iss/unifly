@@ -31,7 +31,13 @@ pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[S
                     .and_then(|count| count.try_into().ok());
             }
             if device.wan_ipv6.is_none() {
-                device.wan_ipv6 = parse_session_device_wan_ipv6(&legacy_device.extra);
+                device.wan_ipv6 = parse_session_device_wan_ipv6(
+                    legacy_device
+                        .wan1
+                        .as_ref()
+                        .and_then(|wan| wan.ipv6.as_ref()),
+                    legacy_device.ipv6.as_ref(),
+                );
             }
             if device.ports.is_empty()
                 || device.radios.is_empty()
