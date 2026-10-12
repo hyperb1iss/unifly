@@ -281,7 +281,7 @@ mod tests {
         .expect("request should deserialize");
 
         assert_eq!(request.preshared_key, "");
-        assert!(request.allowed_ips.is_empty());
+        assert_eq!(request.allowed_ips, Vec::<String>::new());
         assert!(request.private_key.is_none());
     }
 }

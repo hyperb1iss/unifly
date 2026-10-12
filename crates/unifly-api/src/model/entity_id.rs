@@ -121,12 +121,12 @@ fn normalize_mac(raw: &str) -> Option<String> {
 
     let bytes = compact.as_bytes();
     let mut normalized = String::with_capacity(17);
-    for (idx, pair) in bytes.chunks_exact(2).enumerate() {
+    for (idx, &[hi, lo]) in bytes.as_chunks::<2>().0.iter().enumerate() {
         if idx > 0 {
             normalized.push(':');
         }
-        normalized.push(char::from(pair[0]));
-        normalized.push(char::from(pair[1]));
+        normalized.push(char::from(hi));
+        normalized.push(char::from(lo));
     }
 
     Some(normalized)
