@@ -102,14 +102,16 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     let mut output = Vec::new();
     let mut chunk = [0_u8; 256];
     let mut pipe = Pipe::Open;
-    let status = loop {
+    let exit = loop {
         tokio::select! {
-            status = child.wait() => break status,
+            exit = exited(&mut child) => break exit,
             read = stdout.read(&mut chunk), if pipe == Pipe::Open => {
                 pipe = take_chunk(&read, &chunk, &mut output);
             }
             () = tokio::time::sleep_until(deadline) => {
                 warn!(%program, ?timeout, "totp_command timed out and was stopped");
+                // Signal while the command is still unreaped, then reap it;
+                // the guard is spent, so it never signals a reused group id.
                 group.stop();
                 let _ = child.kill().await;
                 return None;
@@ -132,12 +134,22 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     // End of file means every writer closed the pipe: nothing the command
     // started still holds it, so a helper that properly detached (a cache
     // daemon with its output redirected) is left running. Anything still
-    // holding the pipe, a read error, or a failed wait stops the group.
-    if pipe == Pipe::Closed && status.is_ok() {
+    // holding the pipe, a read error, or a failed wait stops the group, but
+    // only while the command is unreaped: once it is reaped its pid, and so
+    // the group id, may already belong to someone else.
+    if child.id().is_none() || (pipe == Pipe::Closed && exit.is_ok()) {
         group.disarm();
+    } else {
+        group.stop();
     }
     drop(group);
 
+    // Now reap it. On platforms where the exit was seen without reaping,
+    // this collects the status; elsewhere it returns the one already read.
+    let status = match exit {
+        Ok(()) => child.wait().await,
+        Err(error) => Err(error),
+    };
     let status = match status {
         Ok(status) => status,
         Err(error) => {
@@ -187,11 +199,63 @@ fn take_chunk(read: &std::io::Result<usize>, chunk: &[u8], output: &mut Vec<u8>)
     }
 }
 
-/// Stops the command's process group when dropped, unless disarmed. A run
-/// disarms it only after a clean exit whose stdout reached end of file, so
-/// every other way out (a timeout, a failed wait or read, something still
-/// holding the pipe, an early return) leaves nothing behind that the
-/// command started in its group.
+/// Wait for the command to exit without reaping it, so it stays a zombie
+/// and its pid, which is also its process group id, cannot be handed to
+/// another process until `child.wait()` reaps it.
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "openbsd",
+        target_os = "redox",
+        target_os = "cygwin",
+        target_os = "horizon"
+    ))
+))]
+async fn exited(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+
+    /// How often a running command is checked for exit.
+    const EXIT_POLL: Duration = Duration::from_millis(20);
+
+    let Some(pid) = child
+        .id()
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(Pid::from_raw)
+    else {
+        // Already reaped, so it has exited.
+        return Ok(());
+    };
+    let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
+    loop {
+        match waitid(WaitId::Pid(pid), options) {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => tokio::time::sleep(EXIT_POLL).await,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Elsewhere the exit can only be seen by reaping, after which the group
+/// id is no longer safe to signal; the caller checks for that.
+#[cfg(not(all(
+    unix,
+    not(any(
+        target_os = "openbsd",
+        target_os = "redox",
+        target_os = "cygwin",
+        target_os = "horizon"
+    ))
+)))]
+async fn exited(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    child.wait().await.map(drop)
+}
+
+/// Stops the command's process group, at most once: when told to, or when
+/// dropped while still armed. A run disarms it only after a clean exit
+/// whose stdout reached end of file, so every other way out (a timeout, a
+/// failed wait or read, something still holding the pipe, an early return)
+/// leaves nothing behind that the command started in its group.
 struct GroupReaper {
     group: Option<u32>,
     armed: bool,
@@ -202,8 +266,15 @@ impl GroupReaper {
         Self { group, armed: true }
     }
 
-    fn stop(&self) {
+    /// Signal the group if this guard has not already; either way it is
+    /// spent afterwards. Returns whether a signal was sent.
+    fn stop(&mut self) -> bool {
+        if !self.armed {
+            return false;
+        }
+        self.armed = false;
         kill_group(self.group);
+        true
     }
 
     fn disarm(&mut self) {
@@ -213,9 +284,7 @@ impl GroupReaper {
 
 impl Drop for GroupReaper {
     fn drop(&mut self) {
-        if self.armed {
-            self.stop();
-        }
+        self.stop();
     }
 }
 
@@ -244,7 +313,7 @@ fn kill_group(_group: Option<u32>) {}
 mod tests {
     use std::time::Duration;
 
-    use super::{block_on_detached, run};
+    use super::{GroupReaper, block_on_detached, run};
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_owned()).collect()
@@ -443,6 +512,21 @@ mod tests {
             "waited for the blocking task: {:?}",
             started.elapsed()
         );
+    }
+
+    /// The group is signaled at most once: after a stop the guard is spent,
+    /// so neither a second stop nor its drop can signal a group id that may
+    /// have been reused once the command was reaped.
+    #[test]
+    fn the_group_is_signaled_at_most_once() {
+        let mut reaper = GroupReaper::armed(None);
+        assert!(reaper.stop(), "the first stop signals");
+        assert!(!reaper.armed, "a stop spends the guard");
+        assert!(!reaper.stop(), "a second stop does nothing");
+
+        let mut disarmed = GroupReaper::armed(None);
+        disarmed.disarm();
+        assert!(!disarmed.stop(), "a disarmed guard never signals");
     }
 
     #[test]
