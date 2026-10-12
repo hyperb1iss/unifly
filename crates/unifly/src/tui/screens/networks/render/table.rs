@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -9,6 +7,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 use unifly_api::Network;
 
 use crate::tui::screens::networks::NetworksScreen;
+use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
 
 use super::detail::render_detail;
@@ -41,35 +40,35 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
 
     let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(table_area);
 
-    let header = Row::new(vec![
-        Cell::from("Name").style(theme::table_header()),
-        Cell::from("VLAN").style(theme::table_header()),
-        Cell::from("Gateway").style(theme::table_header()),
-        Cell::from("Subnet").style(theme::table_header()),
-        Cell::from("DHCP").style(theme::table_header()),
-        Cell::from("Type").style(theme::table_header()),
-        Cell::from("IPv6").style(theme::table_header()),
-    ]);
-
     let selected_idx = screen.selected_index();
-    let rows: Vec<Row> = screen
+    let cells: Vec<NetworkCells> = screen
         .networks
         .iter()
+        .map(|n| NetworkCells::new(n))
+        .collect();
+    let columns = [
+        Column::fit("Name", cells.iter().map(|c| &c.name), 32)
+            .pad(1)
+            .shrink_to(9),
+        Column::fit("VLAN", cells.iter().map(|c| &c.vlan), 6),
+        Column::fit("Gateway", cells.iter().map(|c| &c.gateway), 39).shrink_to(15),
+        Column::fit("Subnet", cells.iter().map(|c| &c.subnet), 43).shrink_to(18),
+        Column::fit("DHCP", cells.iter().map(|c| c.dhcp), 4),
+        Column::fit("Type", cells.iter().map(|c| &c.management), 12),
+        Column::fit("IPv6", cells.iter().map(|c| &c.ipv6), 18),
+    ];
+    let header = Row::new(
+        ["Name", "VLAN", "Gateway", "Subnet", "DHCP", "Type", "IPv6"]
+            .into_iter()
+            .map(|label| Cell::from(label).style(theme::table_header())),
+    );
+    let rows: Vec<Row> = cells
+        .into_iter()
         .enumerate()
-        .map(|(index, network)| render_table_row(index, selected_idx, network))
+        .map(|(index, cells)| render_table_row(index == selected_idx, cells))
         .collect();
 
-    let widths = [
-        Constraint::Min(14),
-        Constraint::Length(6),
-        Constraint::Length(16),
-        Constraint::Length(18),
-        Constraint::Length(5),
-        Constraint::Length(10),
-        Constraint::Length(10),
-    ];
-
-    let table = Table::new(rows, widths)
+    let table = Table::new(rows, plan_columns(&columns, layout[0].width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
@@ -99,56 +98,119 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
     }
 }
 
-fn render_table_row(index: usize, selected_idx: usize, network: &Arc<Network>) -> Row<'static> {
-    let is_selected = index == selected_idx;
+/// One network's table cells as text, measured once for column sizing and
+/// then styled into a row.
+struct NetworkCells {
+    name: String,
+    vlan: String,
+    gateway: String,
+    subnet: String,
+    dhcp: &'static str,
+    management: String,
+    ipv6: String,
+}
+
+impl NetworkCells {
+    fn new(network: &Network) -> Self {
+        Self {
+            name: network.name.clone(),
+            vlan: network
+                .vlan_id
+                .map_or_else(|| "─".into(), |value| value.to_string()),
+            gateway: network
+                .gateway_ip
+                .map_or_else(|| "─".into(), |ip| ip.to_string()),
+            subnet: network.subnet.clone().unwrap_or_else(|| "─".into()),
+            dhcp: network
+                .dhcp
+                .as_ref()
+                .map_or("─", |dhcp| if dhcp.enabled { "On" } else { "Off" }),
+            management: network
+                .management
+                .as_ref()
+                .map_or_else(|| "─".into(), |value| format!("{value:?}")),
+            ipv6: if network.ipv6_enabled {
+                network
+                    .ipv6_mode
+                    .as_ref()
+                    .map_or_else(|| "On".into(), ToString::to_string)
+            } else {
+                "Off".into()
+            },
+        }
+    }
+}
+
+fn render_table_row(is_selected: bool, cells: NetworkCells) -> Row<'static> {
     let prefix = if is_selected { "▸" } else { " " };
+    let name_style = Style::default()
+        .fg(theme::accent_secondary())
+        .add_modifier(if is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
 
-    let vlan = network
-        .vlan_id
-        .map_or_else(|| "—".into(), |value| value.to_string());
-    let gateway = network
-        .gateway_ip
-        .map_or_else(|| "—".into(), |ip| ip.to_string());
-    let subnet = network.subnet.as_deref().unwrap_or("—");
-    let dhcp = network
-        .dhcp
-        .as_ref()
-        .map_or("—", |dhcp| if dhcp.enabled { "On" } else { "Off" });
-    let management = network
-        .management
-        .as_ref()
-        .map_or_else(|| "—".into(), |value| format!("{value:?}"));
-    let ipv6 = if network.ipv6_enabled {
-        network
-            .ipv6_mode
-            .as_ref()
-            .map_or_else(|| "On".into(), ToString::to_string)
-    } else {
-        "Off".into()
-    };
-
-    let row_style = if is_selected {
+    Row::new(vec![
+        Cell::from(format!("{prefix}{}", cells.name)).style(name_style),
+        Cell::from(cells.vlan),
+        Cell::from(cells.gateway).style(Style::default().fg(theme::accent_tertiary())),
+        Cell::from(cells.subnet).style(Style::default().fg(theme::accent_tertiary())),
+        Cell::from(cells.dhcp),
+        Cell::from(cells.management),
+        Cell::from(cells.ipv6),
+    ])
+    .style(if is_selected {
         theme::table_selected()
     } else {
         theme::table_row()
-    };
+    })
+}
 
-    Row::new(vec![
-        Cell::from(format!("{prefix}{}", network.name)).style(
-            Style::default()
-                .fg(theme::accent_secondary())
-                .add_modifier(if is_selected {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        ),
-        Cell::from(vlan),
-        Cell::from(gateway).style(Style::default().fg(theme::accent_tertiary())),
-        Cell::from(subnet.to_string()).style(Style::default().fg(theme::accent_tertiary())),
-        Cell::from(dhcp),
-        Cell::from(management),
-        Cell::from(ipv6),
-    ])
-    .style(row_style)
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use unifly_api::Network;
+
+    use crate::tui::action::Action;
+    use crate::tui::screens::networks::NetworksScreen;
+    use crate::tui::table::render_lines;
+
+    fn network(name: &str, vlan: u16, ipv6_mode: Option<&str>) -> Arc<Network> {
+        Arc::new(
+            serde_json::from_value(json!({
+                "id": format!("net-{vlan}"), "name": name, "vlan_id": vlan, "enabled": true,
+                "management": "Gateway", "purpose": "Corporate", "is_default": false,
+                "subnet": format!("10.40.{vlan}.0/24"), "gateway_ip": format!("10.40.{vlan}.1"),
+                "isolation_enabled": false, "internet_access_enabled": true,
+                "mdns_forwarding_enabled": false, "ipv6_enabled": ipv6_mode.is_some(),
+                "ipv6_mode": ipv6_mode, "ipv6_prefix": null, "dhcpv6_enabled": false,
+                "slaac_enabled": false, "ntp_server": null, "pxe_enabled": false,
+                "tftp_server": null, "firewall_zone_id": null,
+                "cellular_backup_enabled": false, "origin": null, "dhcp": null
+            }))
+            .expect("network fixture should deserialize"),
+        )
+    }
+
+    #[test]
+    fn ipv6_mode_and_subnets_render_whole_at_80_columns() {
+        let mut screen = NetworksScreen::new();
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            network("Studio Floor", 10, Some("PrefixDelegation")),
+            network("IoT", 140, None),
+        ])));
+
+        let text = render_lines(80, 8, |frame, area| screen.render_screen(frame, area)).join("\n");
+        for expected in [
+            "Studio Floor",
+            "10.40.140.0/24",
+            "10.40.140.1",
+            "Prefix Delegation",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+        }
+    }
 }
