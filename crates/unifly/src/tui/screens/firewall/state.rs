@@ -121,15 +121,26 @@ impl FirewallScreen {
             Action::FirewallSubTab(tab) => {
                 self.sub_tab = *tab;
             }
-            Action::ReorderPolicy(index, direction) => self.reorder_policy(*index, *direction),
+            Action::ReorderPolicy(id, direction) => self.reorder_policy(id, *direction),
             _ => {}
         }
     }
 
-    /// Move a policy one row within its zone pair. Policies only ever run
-    /// against the other policies of their own zone pair, so a move across
-    /// the boundary into a neighbouring pair's rows is refused.
-    fn reorder_policy(&mut self, index: usize, direction: Direction) {
+    /// The ID of the policy on the selected row of the Policies table.
+    pub(super) fn selected_policy_id(&self) -> Option<EntityId> {
+        let index = self.policy_table.selected().unwrap_or(0);
+        self.policies.get(index).map(|policy| policy.id.clone())
+    }
+
+    /// Move a policy one row within its zone pair. The policy is found by
+    /// ID at the time the action is handled, since refreshes drained before
+    /// it may have moved its row. Policies only ever run against the other
+    /// policies of their own zone pair, so a move across the boundary into
+    /// a neighbouring pair's rows is refused.
+    fn reorder_policy(&mut self, id: &EntityId, direction: Direction) {
+        let Some(index) = self.policies.iter().position(|policy| &policy.id == id) else {
+            return;
+        };
         let len = self.policies.len();
         let target = match direction {
             Direction::Up if index > 0 => index - 1,
@@ -287,7 +298,7 @@ mod tests {
         screen.policies = Arc::new(vec![policy("one"), policy("two"), policy("three")]);
         screen.policy_table.select(Some(1));
 
-        screen.apply_action(&Action::ReorderPolicy(1, Direction::Down));
+        screen.apply_action(&Action::ReorderPolicy(policy_id("two"), Direction::Down));
 
         let names: Vec<_> = screen
             .policies
@@ -400,15 +411,60 @@ mod tests {
         screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
         screen.select(1);
 
-        screen.apply_action(&Action::ReorderPolicy(1, Direction::Up));
+        screen.apply_action(&Action::ReorderPolicy(
+            policy_id("lan-wan first"),
+            Direction::Up,
+        ));
         assert_eq!(policy_names(&screen)[0], "iot-lan block");
         assert_eq!(screen.policy_table.selected(), Some(1));
 
-        screen.apply_action(&Action::ReorderPolicy(1, Direction::Down));
+        screen.apply_action(&Action::ReorderPolicy(
+            policy_id("lan-wan first"),
+            Direction::Down,
+        ));
         assert_eq!(
             policy_names(&screen)[1..3],
             ["lan-wan second", "lan-wan first"]
         );
         assert_eq!(screen.policy_table.selected(), Some(2));
+    }
+
+    fn policy_id(name: &str) -> EntityId {
+        policy(name).id.clone()
+    }
+
+    #[test]
+    fn reorder_follows_the_policy_through_a_queued_refresh() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let zones = vec![zone("lan"), zone("wan")];
+        let pair = |name: &str, index: i32| zoned_policy(name, Some("lan"), Some("wan"), index);
+        let mut screen = FirewallScreen::new();
+        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
+            pair("first", 10_000),
+            pair("second", 10_001),
+            pair("third", 10_002),
+        ])));
+        screen.select(1);
+
+        let reorder = screen
+            .handle_key_input(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE))
+            .expect("K yields a reorder action");
+
+        // A refresh lands before the reorder is handled and shifts the rows.
+        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
+            pair("zeroth", 9_000),
+            pair("first", 10_000),
+            pair("second", 10_001),
+            pair("third", 10_002),
+        ])));
+        screen.apply_action(&reorder);
+
+        assert_eq!(
+            policy_names(&screen),
+            vec!["zeroth", "second", "first", "third"]
+        );
+        assert_eq!(screen.policy_table.selected(), Some(1));
     }
 }

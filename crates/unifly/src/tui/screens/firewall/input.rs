@@ -52,14 +52,12 @@ impl FirewallScreen {
                 };
                 Some(Action::FirewallSubTab(self.sub_tab))
             }
-            KeyCode::Char('K') if self.sub_tab == FirewallSubTab::Policies => {
-                let index = self.selected_index();
-                Some(Action::ReorderPolicy(index, Direction::Up))
-            }
-            KeyCode::Char('J') if self.sub_tab == FirewallSubTab::Policies => {
-                let index = self.selected_index();
-                Some(Action::ReorderPolicy(index, Direction::Down))
-            }
+            KeyCode::Char('K') if self.sub_tab == FirewallSubTab::Policies => self
+                .selected_policy_id()
+                .map(|id| Action::ReorderPolicy(id, Direction::Up)),
+            KeyCode::Char('J') if self.sub_tab == FirewallSubTab::Policies => self
+                .selected_policy_id()
+                .map(|id| Action::ReorderPolicy(id, Direction::Down)),
             _ => None,
         }
     }
