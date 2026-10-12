@@ -26,7 +26,10 @@ if grep -q "^## \[$version\]" "$changelog"; then
   exit 1
 fi
 
-tmp="$(mktemp)"
+# Stage the result beside the original (same filesystem, same mode via
+# cp -p) and rename it into place, so a failure never leaves a partial file.
+tmp="$(dirname "$changelog")/.changelog-cut.$$"
+cp -p "$changelog" "$tmp"
 trap 'rm -f "$tmp"' EXIT
 
 awk -v version="$version" -v date="$date" '
@@ -44,7 +47,8 @@ awk -v version="$version" -v date="$date" '
   }
 
   state == "inside" && /^## \[/ { state = "after" }
-  state == "inside" && NF > 0 { notes = 1 }
+  # Headings and link definitions are scaffolding, not release notes.
+  state == "inside" && NF > 0 && !/^#/ && !/^\[[^]]+\]: / { notes = 1 }
 
   # Compare links: Unreleased now starts at the new tag, and the new
   # version spans from the previous tag to it.
@@ -70,5 +74,5 @@ awk -v version="$version" -v date="$date" '
   }
 ' "$changelog" >"$tmp"
 
-cat "$tmp" >"$changelog"
+mv -f "$tmp" "$changelog"
 echo "Cut [$version] - $date in $changelog"

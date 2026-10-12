@@ -514,8 +514,9 @@ Releases use the shared workflow at
 
 Run `just changelog-cut X.Y.Z` and commit the result. It moves the
 `[Unreleased]` notes under `## [X.Y.Z] - <date>`, opens a fresh empty
-`[Unreleased]`, and updates the compare links. Skipping it leaves shipped
-notes in `[Unreleased]`, where the next release republishes them.
+`[Unreleased]`, and updates the compare links. Skipping it leaves the
+shipped notes under `[Unreleased]`, so the changelog credits them to the
+next release.
 
 ### Steps (handled automatically once triggered)
 
@@ -531,15 +532,25 @@ notes in `[Unreleased]`, where the next release republishes them.
    not trigger cicd):
    - Rebuilds and tests via the shared rust-ci workflow
    - Builds release artifacts for 4 targets (linux amd64+arm64, macOS
-     arm64, Windows gnu)
+     arm64, Windows x86_64 MSVC)
    - Publishes `unifly-api` and `unifly` to crates.io (shared rust-publish)
    - Creates a GitHub Release with all artifacts and the notes artifact
      from the release run (git-iris regenerates them only as a fallback)
    - Updates the Homebrew formula, the AUR package, and the ClawHub skill
 
-If the dispatch or a downstream job fails after the tag exists, rerun
-`release.yml` with the same `version` and `resume_release` set. It never
-moves the tag. Pushing a tag by hand does not release anything.
+Recovering a failed release depends on how far it got:
+
+- **Nothing published yet** (the dispatch never ran, or the cicd run failed
+  before `publish`): rerun `release.yml` with the same `version` and
+  `resume_release` set. It regenerates the notes and dispatches a fresh
+  cicd run on the existing tag without moving it.
+- **Crates already on crates.io** (a later job such as the GitHub Release,
+  Homebrew, or AUR failed): rerun just the failed jobs of the existing
+  cicd run (`gh run rerun <run-id> --failed`). A fresh dispatch would try
+  to publish again and fail, because `cargo publish` rejects a version
+  that already exists.
+
+Pushing a tag by hand does not release anything.
 
 ---
 
