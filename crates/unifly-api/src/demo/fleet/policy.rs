@@ -363,6 +363,7 @@ fn nat_policies(fleet: &Fleet, rng: &mut DemoRng) -> Vec<NatPolicy> {
         dst_port: None,
         translated_address: None,
         translated_port: None,
+        rule_index: None,
         origin: Some(EntityOrigin::UserDefined),
         data_source: DataSource::SessionApi,
     };
@@ -392,7 +393,11 @@ fn nat_policies(fleet: &Fleet, rng: &mut DemoRng) -> Vec<NatPolicy> {
         .clone_from(&fleet.network("render").subnet);
     egress.translated_address = Some("203.0.113.43".into());
 
-    vec![masquerade, review, dashboard, egress]
+    let mut rules = vec![masquerade, review, dashboard, egress];
+    for (rule, index) in rules.iter_mut().zip(1..) {
+        rule.rule_index = Some(index);
+    }
+    rules
 }
 
 fn acl_rules(rng: &mut DemoRng) -> Vec<AclRule> {
@@ -404,6 +409,7 @@ fn acl_rules(rng: &mut DemoRng) -> Vec<AclRule> {
         id: EntityId::Uuid(uuid_from(rng)),
         name: name.into(),
         enabled: true,
+        index: None,
         rule_type,
         action,
         source_summary: Some(src.into()),
@@ -419,7 +425,7 @@ fn acl_rules(rng: &mut DemoRng) -> Vec<AclRule> {
         ("unlisted MACs", "any"),
     );
     quarantine.enabled = false;
-    vec![
+    let mut rules = vec![
         rule(
             rng,
             "IoT off the management VLAN",
@@ -442,5 +448,9 @@ fn acl_rules(rng: &mut DemoRng) -> Vec<AclRule> {
             ("10.40.50.0/24", "10.40.20.5"),
         ),
         quarantine,
-    ]
+    ];
+    for (rule, index) in rules.iter_mut().zip(1..) {
+        rule.index = Some(index);
+    }
+    rules
 }

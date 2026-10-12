@@ -52,6 +52,7 @@ impl From<integration_types::NatPolicyResponse> for NatPolicy {
             dst_port,
             translated_address: r.translated_address,
             translated_port: r.translated_port,
+            rule_index: None,
             origin: r.metadata.as_ref().and_then(origin_from_metadata),
             data_source: DataSource::IntegrationApi,
         }
@@ -117,7 +118,31 @@ pub fn nat_policy_from_v2(v: &serde_json::Value) -> Option<NatPolicy> {
             .get("port")
             .and_then(|v| v.as_str())
             .map(ToOwned::to_owned),
+        rule_index: v.get("rule_index").and_then(serde_json::Value::as_u64),
         origin: None,
         data_source: DataSource::SessionApi,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::nat_policy_from_v2;
+
+    #[test]
+    fn v2_nat_rule_keeps_its_rule_index() {
+        let rule = nat_policy_from_v2(&json!({
+            "_id": "nat-7",
+            "type": "DNAT",
+            "description": "web",
+            "enabled": true,
+            "rule_index": 7
+        }))
+        .expect("v2 NAT rule should parse");
+        assert_eq!(rule.rule_index, Some(7));
+
+        let unindexed = nat_policy_from_v2(&json!({"_id": "nat-8"})).expect("should parse");
+        assert_eq!(unindexed.rule_index, None);
+    }
 }
