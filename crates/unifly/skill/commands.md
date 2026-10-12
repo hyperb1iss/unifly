@@ -8,7 +8,8 @@ Load `unifly skill concepts` for authentication and configuration, or
 ## Output, limits, and identifiers
 
 Choose `-o json` for automation. List output is normally an array; get output
-is normally an object. Compact JSON (`-o json-compact`) serializes the same
+is normally an object. `unifly skill concepts` lists the JSON field names for
+devices, clients, events, alarms, health, WANs, and stats. Compact JSON (`-o json-compact`) serializes the same
 value on one line, including the whole array for lists. Convert list output
 to one object per line with `jq -c '.[]'` when needed. Event watching emits
 one compact JSON event per line with either JSON format.

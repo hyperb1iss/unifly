@@ -9,7 +9,7 @@ Load only the detail needed for the task:
 | Command                                    | When to use it                                                  |
 | ------------------------------------------ | --------------------------------------------------------------- |
 | `unifly skill commands`                    | Discover all commands and read operational gotchas              |
-| `unifly skill concepts`                    | Choose authentication, target a site, understand IDs and output |
+| `unifly skill concepts`                    | Choose auth, target a site, understand IDs and JSON field names |
 | `unifly skill workflows`                   | Diagnose connectivity or plan configuration changes             |
 | `unifly skill examples`                    | List configuration and payload templates                        |
 | `unifly skill examples switch-ports.jsonc` | Print one template verbatim for saving to a file                |
