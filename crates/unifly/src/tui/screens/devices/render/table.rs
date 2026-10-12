@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use unifly_api::{Device, DeviceState};
 
+use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
 use crate::tui::widgets::{bytes_fmt, status_indicator};
 
@@ -74,7 +75,7 @@ fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect, show
             Style::default().fg(theme::warning()),
         )
     };
-    let filter_line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" Filter: ", Style::default().fg(theme::text_secondary())),
         filter_text,
         Span::styled("  Sort: ", Style::default().fg(theme::text_secondary())),
@@ -83,8 +84,86 @@ fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect, show
             format!("  {:>width$}", format!("{shown} devices"), width = 20),
             Style::default().fg(theme::text_secondary()),
         ),
-    ]);
-    frame.render_widget(Paragraph::new(filter_line), area);
+    ];
+    let updates = screen
+        .devices
+        .iter()
+        .filter(|device| device.firmware_updatable)
+        .count();
+    if updates > 0 {
+        let noun = if updates == 1 { "update" } else { "updates" };
+        spans.push(Span::styled(
+            format!("  {} {updates} firmware {noun}", UPDATE_MARKER.trim_start()),
+            Style::default().fg(theme::warning()),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Table width from which the Devices table adds its Firmware and Clients columns:
+/// a 120-column terminal, less the screen border.
+const WIDE_TABLE: u16 = 118;
+
+/// Marker after a firmware version that has an update waiting.
+const UPDATE_MARKER: &str = " ↑";
+
+/// One device's table cells as text, measured once for column sizing and
+/// then styled into a row.
+struct DeviceCells {
+    name: String,
+    model: String,
+    ip: String,
+    firmware: String,
+    update_available: bool,
+    clients: String,
+    cpu: String,
+    mem: String,
+    traffic: String,
+    uptime: String,
+}
+
+impl DeviceCells {
+    fn new(device: &Device) -> Self {
+        Self {
+            name: device.name.as_deref().unwrap_or("Unknown").to_owned(),
+            model: device.model.as_deref().unwrap_or("─").to_owned(),
+            ip: device.ip.map_or_else(|| "─".into(), |ip| ip.to_string()),
+            firmware: device
+                .firmware_version
+                .clone()
+                .unwrap_or_else(|| "─".into()),
+            update_available: device.firmware_updatable,
+            clients: device
+                .client_count
+                .map_or_else(|| "─".into(), |count| count.to_string()),
+            cpu: device
+                .stats
+                .cpu_utilization_pct
+                .map_or_else(|| "·····".into(), |value| format!("{value:.0}%")),
+            mem: device
+                .stats
+                .memory_utilization_pct
+                .map_or_else(|| "·····".into(), |value| format!("{value:.0}%")),
+            traffic: device.stats.uplink_bandwidth.as_ref().map_or_else(
+                || "···/···".into(),
+                |bandwidth| {
+                    bytes_fmt::fmt_tx_rx(bandwidth.tx_bytes_per_sec, bandwidth.rx_bytes_per_sec)
+                },
+            ),
+            uptime: device
+                .stats
+                .uptime_secs
+                .map_or_else(|| "···".into(), bytes_fmt::fmt_uptime),
+        }
+    }
+
+    fn firmware_label(&self) -> String {
+        if self.update_available {
+            format!("{}{UPDATE_MARKER}", self.firmware)
+        } else {
+            self.firmware.clone()
+        }
+    }
 }
 
 fn render_device_table(
@@ -94,35 +173,53 @@ fn render_device_table(
     filtered: &[&Arc<Device>],
     selected_index: Option<usize>,
 ) {
-    let header = Row::new(vec![
-        Cell::from("Status").style(theme::table_header()),
-        Cell::from("Name").style(theme::table_header()),
-        Cell::from("Model").style(theme::table_header()),
-        Cell::from("IP").style(theme::table_header()),
-        Cell::from("CPU").style(theme::table_header()),
-        Cell::from("Mem").style(theme::table_header()),
-        Cell::from("TX/RX").style(theme::table_header()),
-        Cell::from("Uptime").style(theme::table_header()),
-    ]);
-
-    let rows: Vec<Row> = filtered
+    let wide = area.width >= WIDE_TABLE;
+    let cells: Vec<DeviceCells> = filtered
         .iter()
-        .enumerate()
-        .map(|(index, device)| render_table_row(index, selected_index, device))
+        .map(|device| DeviceCells::new(device))
         .collect();
 
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Min(14),
-        Constraint::Length(12),
-        Constraint::Length(15),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(11),
-        Constraint::Length(8),
+    let mut headers = vec!["", "Name", "Model", "IP"];
+    let mut columns = vec![
+        Column::fixed(2).tight(),
+        Column::fit("Name", cells.iter().map(|c| &c.name), 32).shrink_to(10),
+        Column::fit("Model", cells.iter().map(|c| &c.model), 24).shrink_to(10),
+        Column::fit("IP", cells.iter().map(|c| &c.ip), 39).shrink_to(15),
     ];
+    if wide {
+        headers.extend(["Firmware", "Clients"]);
+        columns.extend([
+            Column::fit(
+                "Firmware",
+                cells.iter().map(DeviceCells::firmware_label),
+                24,
+            ),
+            Column::fit("Clients", cells.iter().map(|c| &c.clients), 7),
+        ]);
+    }
+    headers.extend(["CPU", "Mem", "TX/RX", "Uptime"]);
+    columns.extend([
+        Column::fit("CPU", cells.iter().map(|c| &c.cpu), 5),
+        Column::fit("Mem", cells.iter().map(|c| &c.mem), 5),
+        Column::fit("TX/RX", cells.iter().map(|c| &c.traffic), 15).at_least(9),
+        Column::fit("Uptime", cells.iter().map(|c| &c.uptime), 8).at_least(7),
+    ]);
 
-    let table = Table::new(rows, widths)
+    let header = Row::new(
+        headers
+            .into_iter()
+            .map(|label| Cell::from(label).style(theme::table_header())),
+    );
+    let rows: Vec<Row> = filtered
+        .iter()
+        .zip(cells)
+        .enumerate()
+        .map(|(index, (device, cells))| {
+            render_table_row(Some(index) == selected_index, device, cells, wide)
+        })
+        .collect();
+
+    let table = Table::new(rows, plan_columns(&columns, area.width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
@@ -131,33 +228,13 @@ fn render_device_table(
 }
 
 fn render_table_row(
-    index: usize,
-    selected_index: Option<usize>,
-    device: &Arc<Device>,
+    is_selected: bool,
+    device: &Device,
+    cells: DeviceCells,
+    wide: bool,
 ) -> Row<'static> {
-    let is_selected = Some(index) == selected_index;
     let prefix = if is_selected { "▸" } else { " " };
     let status = status_indicator::status_char(device.state);
-    let name = device.name.as_deref().unwrap_or("Unknown");
-    let model = device.model.as_deref().unwrap_or("─");
-    let ip = device.ip.map_or_else(|| "─".into(), |ip| ip.to_string());
-    let cpu = device
-        .stats
-        .cpu_utilization_pct
-        .map_or_else(|| "·····".into(), |value| format!("{value:.0}%"));
-    let mem = device
-        .stats
-        .memory_utilization_pct
-        .map_or_else(|| "·····".into(), |value| format!("{value:.0}%"));
-    let traffic = device.stats.uplink_bandwidth.as_ref().map_or_else(
-        || "···/···".into(),
-        |bandwidth| bytes_fmt::fmt_tx_rx(bandwidth.tx_bytes_per_sec, bandwidth.rx_bytes_per_sec),
-    );
-    let uptime = device
-        .stats
-        .uptime_secs
-        .map_or_else(|| "···".into(), bytes_fmt::fmt_uptime);
-
     let status_color = match device.state {
         DeviceState::Online => theme::success(),
         DeviceState::Offline | DeviceState::ConnectionInterrupted | DeviceState::Isolated => {
@@ -167,31 +244,48 @@ fn render_table_row(
         _ => theme::warning(),
     };
 
-    let row_style = if is_selected {
+    let name_style = Style::default()
+        .fg(theme::accent_secondary())
+        .add_modifier(if is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
+
+    let mut row = vec![
+        Cell::from(format!("{prefix}{status}")).style(Style::default().fg(status_color)),
+        Cell::from(cells.name).style(name_style),
+        Cell::from(cells.model),
+        Cell::from(cells.ip).style(Style::default().fg(theme::accent_tertiary())),
+    ];
+    if wide {
+        let firmware = if cells.update_available {
+            Line::from(vec![
+                Span::raw(cells.firmware),
+                Span::styled(
+                    UPDATE_MARKER,
+                    Style::default()
+                        .fg(theme::warning())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+        } else {
+            Line::from(cells.firmware)
+        };
+        row.extend([Cell::from(firmware), Cell::from(cells.clients)]);
+    }
+    row.extend([
+        Cell::from(cells.cpu),
+        Cell::from(cells.mem),
+        Cell::from(cells.traffic),
+        Cell::from(cells.uptime),
+    ]);
+
+    Row::new(row).style(if is_selected {
         theme::table_selected()
     } else {
         theme::table_row()
-    };
-
-    Row::new(vec![
-        Cell::from(format!("{prefix}{status}")).style(Style::default().fg(status_color)),
-        Cell::from(name.to_string()).style(
-            Style::default()
-                .fg(theme::accent_secondary())
-                .add_modifier(if is_selected {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        ),
-        Cell::from(model.to_string()),
-        Cell::from(ip).style(Style::default().fg(theme::accent_tertiary())),
-        Cell::from(cpu),
-        Cell::from(mem),
-        Cell::from(traffic),
-        Cell::from(uptime),
-    ])
-    .style(row_style)
+    })
 }
 
 fn render_table_hints(frame: &mut Frame, area: Rect) {
@@ -206,4 +300,97 @@ fn render_table_hints(frame: &mut Frame, area: Rect) {
         Span::styled("locate", theme::key_hint()),
     ]);
     frame.render_widget(Paragraph::new(hints), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use unifly_api::Device;
+
+    use crate::tui::action::Action;
+    use crate::tui::screens::devices::DevicesScreen;
+    use crate::tui::table::render_lines;
+
+    fn device(index: u8, name: &str, model: &str, firmware: &str, updatable: bool) -> Arc<Device> {
+        Arc::new(
+            serde_json::from_value(json!({
+                "id": format!("device-{index}"),
+                "mac": format!("aa:bb:cc:dd:ee:{index:02x}"),
+                "ip": format!("10.40.0.{index}"),
+                "wan_ipv6": null,
+                "name": name,
+                "model": model,
+                "device_type": "AccessPoint",
+                "state": "Online",
+                "firmware_version": firmware,
+                "firmware_updatable": updatable,
+                "adopted_at": null,
+                "provisioned_at": null,
+                "last_seen": null,
+                "serial": null,
+                "supported": true,
+                "ports": [],
+                "radios": [],
+                "uplink_device_id": null,
+                "uplink_device_mac": null,
+                "has_switching": false,
+                "has_access_point": true,
+                "stats": { "uptime_secs": 3_542_400 },
+                "client_count": 16,
+                "origin": null
+            }))
+            .expect("device fixture should deserialize"),
+        )
+    }
+
+    fn screen() -> DevicesScreen {
+        let mut screen = DevicesScreen::new();
+        screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![
+            device(15, "ap-atrium", "U6 Enterprise", "8.1.113", false),
+            device(18, "ap-roof", "U7 Outdoor", "8.0.26", true),
+            device(2, "sw-core", "USW Pro Max 24 PoE", "7.2.123", false),
+        ])));
+        screen
+    }
+
+    fn render(width: u16) -> String {
+        let screen = screen();
+        render_lines(width, 12, |frame, area| screen.render_screen(frame, area)).join("\n")
+    }
+
+    #[test]
+    fn wide_table_shows_whole_values_and_the_firmware_columns() {
+        for width in [120, 183] {
+            let text = render(width);
+            for expected in [
+                "U6 Enterprise",
+                "USW Pro Max 24 PoE",
+                "8.0.26 ↑",
+                "Firmware",
+                "Clients",
+            ] {
+                assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+            }
+            assert!(!text.contains("Sta "), "clipped status header:\n{text}");
+        }
+    }
+
+    #[test]
+    fn narrow_table_keeps_the_core_columns_whole() {
+        let text = render(80);
+        for expected in [
+            "U6 Enterprise",
+            "USW Pro Max 24 PoE",
+            "10.40.0.15",
+            "Uptime",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+        }
+        assert!(
+            !text.contains("Firmware"),
+            "wide-only column at 80:\n{text}"
+        );
+    }
 }
