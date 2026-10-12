@@ -394,7 +394,17 @@ mod tests {
     /// A command that exits while something it backgrounded holds stdout
     /// open: the code it printed still counts, the call returns promptly
     /// instead of waiting on the open pipe, and the straggler is stopped.
-    #[cfg(unix)]
+    // Needs waitid(WNOWAIT): without it the leader is reaped before the
+    // post-exit group kill could run, so that kill is skipped by design.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "cygwin",
+            target_os = "horizon"
+        ))
+    ))]
     #[test]
     fn a_backgrounded_descendant_holding_stdout_is_stopped() {
         use secrecy::ExposeSecret;
@@ -423,7 +433,17 @@ mod tests {
     /// Output past the limit stops the read early; that must not skip the
     /// cleanup. A helper that prints more than the limit, leaves a process
     /// holding stdout, and exits still leaves no survivor.
-    #[cfg(unix)]
+    // Needs waitid(WNOWAIT): without it the leader is reaped before the
+    // post-exit group kill could run, so that kill is skipped by design.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "cygwin",
+            target_os = "horizon"
+        ))
+    ))]
     #[test]
     fn output_past_the_limit_does_not_skip_cleanup() {
         let dir = tempfile::tempdir().expect("temp dir");
