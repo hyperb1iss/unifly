@@ -2,6 +2,7 @@ pub mod action;
 pub mod app;
 pub mod component;
 pub mod data_bridge;
+mod demo_fleet;
 pub mod effects;
 pub mod event;
 pub(crate) mod forms;
@@ -60,10 +61,14 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     );
 
     let cfg = loaded_config.as_ref();
-    let controller =
-        build_controller_direct(global, cfg).or_else(|| build_controller_from_config(global, cfg));
+    let (controller, demo_fleet) = demo_fleet::select_controller(global, &args, || {
+        build_controller_direct(global, cfg).or_else(|| build_controller_from_config(global, cfg))
+    });
 
-    let sanitizer = resolve_sanitizer(global, cfg);
+    // The demo fleet is fictional already; sanitizing it would only scramble it.
+    let sanitizer = (!demo_fleet)
+        .then(|| resolve_sanitizer(global, cfg))
+        .flatten();
     let effects_enabled = resolve_effects_enabled(global, cfg);
     let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 

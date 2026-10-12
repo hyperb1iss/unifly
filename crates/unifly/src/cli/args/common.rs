@@ -140,6 +140,14 @@ pub struct TuiArgs {
     /// Log file path
     #[arg(long, default_value_os_t = default_tui_log_path())]
     pub log_file: std::path::PathBuf,
+
+    /// Run against a synthetic, offline demo fleet (no controller needed)
+    #[arg(long)]
+    pub demo_fleet: bool,
+
+    /// Demo fleet seed (with --demo-fleet or the --demo fallback); same seed, same replay
+    #[arg(long, value_name = "SEED")]
+    pub demo_seed: Option<u64>,
 }
 
 #[cfg(feature = "tui")]

@@ -37,6 +37,7 @@ tui = [
     "dep:tracing-appender",
     "dep:futures",
     "dep:tokio-util",
+    "unifly-api/demo",
 ]
 tui-graphics = [
     "tui",
