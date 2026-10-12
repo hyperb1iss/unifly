@@ -50,10 +50,7 @@ impl App {
 
             if let Ok(gateway_stats) = gateway_res {
                 for entry in &gateway_stats {
-                    let ts = entry
-                        .get("time")
-                        .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(0.0);
+                    let ts = report_time_secs(entry);
                     if let Some(tx_bytes) = entry
                         .get("wan-tx_bytes")
                         .or_else(|| entry.get("tx_bytes"))
@@ -75,10 +72,7 @@ impl App {
 
             if let Ok(site_stats) = site_res {
                 for entry in &site_stats {
-                    let ts = entry
-                        .get("time")
-                        .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(0.0);
+                    let ts = report_time_secs(entry);
                     if let Some(count) = entry
                         .get("num_sta")
                         .or_else(|| entry.get("wlan-num_sta"))
@@ -127,6 +121,16 @@ impl App {
             let _ = tx.send(Action::StatsUpdated(data));
         });
     }
+}
+
+/// Bucket start of a `stat/report` row in epoch seconds. The controller
+/// reports `time` in milliseconds; the charts plot seconds.
+fn report_time_secs(entry: &serde_json::Value) -> f64 {
+    let time = entry
+        .get("time")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    if time > 1e11 { time / 1000.0 } else { time }
 }
 
 /// Well-known UniFi DPI category IDs → human-readable names.
