@@ -14,8 +14,10 @@ use crate::cli::error::CliError;
 
 #[allow(clippy::too_many_lines, clippy::unused_async)]
 pub async fn handle(controller: &Controller, global: &GlobalOpts) -> Result<(), CliError> {
-    let devices = controller.devices_snapshot();
-    let clients = controller.clients_snapshot();
+    // Snapshots come out of a hash map; sort so the tree reads the same on
+    // every run (devices and clients by name, as the list commands do).
+    let devices = super::util::order::devices(&controller.devices_snapshot());
+    let clients = super::util::order::clients(&controller.clients_snapshot());
     let networks = controller.networks_snapshot();
     let p = crate::cli::output::Painter::new(global);
 
@@ -27,7 +29,7 @@ pub async fn handle(controller: &Controller, global: &GlobalOpts) -> Result<(), 
     let mut clients_by_uplink: HashMap<String, Vec<&Arc<Client>>> = HashMap::new();
     let mut unlinked: Vec<&Arc<Client>> = Vec::new();
 
-    for client in clients.iter() {
+    for client in &clients {
         if let Some(ref uplink_mac) = client.uplink_device_mac {
             clients_by_uplink
                 .entry(uplink_mac.to_string())
@@ -44,11 +46,10 @@ pub async fn handle(controller: &Controller, global: &GlobalOpts) -> Result<(), 
         .find(|d| d.device_type == unifly_api::DeviceType::Gateway);
 
     // Separate infrastructure devices (non-gateway)
-    let mut infra: Vec<&Arc<Device>> = devices
+    let infra: Vec<&Arc<Device>> = devices
         .iter()
         .filter(|d| d.device_type != unifly_api::DeviceType::Gateway)
         .collect();
-    infra.sort_by_key(|d| d.name.as_deref().unwrap_or(""));
 
     // Print gateway
     if let Some(gw) = gateway {
