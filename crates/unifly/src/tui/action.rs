@@ -371,7 +371,10 @@ pub enum Action {
 
     // ── Firewall ──────────────────────────────────────────────────
     SelectZonePair(EntityId, EntityId),
-    ReorderPolicy(usize, Direction),
+    /// Move the policy with this ID one row within its zone pair. The ID,
+    /// not a row index, so refreshes queued ahead of the action cannot
+    /// redirect the move to another policy.
+    ReorderPolicy(EntityId, Direction),
     FirewallSubTab(FirewallSubTab),
 
     // ── Network Editing ──────────────────────────────────────────
