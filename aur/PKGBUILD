@@ -9,6 +9,7 @@ license=('Apache-2.0')
 provides=('unifly')
 conflicts=('unifly')
 depends=('gcc-libs' 'openssl' 'dbus')
+install=unifly-bin.install
 
 source_x86_64=("${pkgname}-${pkgver}-x86_64::https://github.com/hyperb1iss/unifly/releases/download/v${pkgver}/unifly-linux-amd64")
 source_aarch64=("${pkgname}-${pkgver}-aarch64::https://github.com/hyperb1iss/unifly/releases/download/v${pkgver}/unifly-linux-arm64")

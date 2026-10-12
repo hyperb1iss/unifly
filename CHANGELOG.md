@@ -75,6 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   controller. A rerun is a no-op, and a skill from `npx skills add` or an
   earlier release is upgraded in place; any other `SKILL.md` stays untouched
   unless `--force` is given. The installed path is printed on stdout.
+  Homebrew and AUR install system-wide and cannot write into a home
+  directory, so the formula's caveats and the AUR package's install message
+  point users at the command instead.
 
 ### Security
 
