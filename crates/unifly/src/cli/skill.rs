@@ -7,6 +7,8 @@ use clap::CommandFactory;
 use super::args::{Cli, SkillArgs, SkillTopic};
 use super::error::CliError;
 
+mod install;
+
 const CORE: &str = include_str!("../../skill/core.md");
 const COMMANDS: &str = include_str!("../../skill/commands.md");
 const CONCEPTS: &str = include_str!("../../skill/concepts.md");
@@ -32,10 +34,17 @@ const EXAMPLES: &[(&str, &str)] = examples![
     "wifi-iot.json",
 ];
 
-/// Print guidance without reading configuration, credentials, or the network.
-/// A closed downstream pipe is normal for documentation consumers such as `head`.
-pub fn handle(args: &SkillArgs) -> Result<(), CliError> {
-    match write_guide(args, &mut io::stdout().lock()) {
+/// Print guidance, or install the discovery skill, without reading
+/// configuration, credentials, or the network. A closed downstream pipe is
+/// normal for documentation consumers such as `head`.
+pub fn handle(args: &SkillArgs, quiet: bool) -> Result<(), CliError> {
+    let output = &mut io::stdout().lock();
+    let result = if args.install {
+        install::run(args, quiet, output)
+    } else {
+        write_guide(args, output)
+    };
+    match result {
         Err(CliError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         result => result,
     }

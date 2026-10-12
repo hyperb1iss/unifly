@@ -174,7 +174,7 @@ pub enum Command {
     /// Manage sites
     Sites(SitesArgs),
 
-    /// Print version-matched agent guidance without connecting to a controller
+    /// Print version-matched agent guidance, or install the agent skill, offline
     Skill(SkillArgs),
 
     /// Query statistics and reports

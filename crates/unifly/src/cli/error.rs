@@ -201,6 +201,25 @@ pub enum CliError {
     )]
     Timeout { seconds: u64 },
 
+    // ── Agent skill ──────────────────────────────────────────────────
+    #[error("{path} exists and is not a unifly skill this version recognizes")]
+    #[diagnostic(
+        code(unifi::skill_exists),
+        help(
+            "It may hold local edits, or come from a newer unifly release.\n\
+             Review it, then rerun with --force to replace it."
+        )
+    )]
+    SkillFileExists { path: String },
+
+    #[error("Could not install the agent skill at {path}")]
+    #[diagnostic(code(unifi::skill_install))]
+    SkillInstallFailed {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     // ── IO / Serialization ────────────────────────────────────────────
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -228,7 +247,7 @@ impl CliError {
             Self::ConnectionFailed { .. } | Self::TlsError { .. } => exit_code::CONNECTION,
             Self::AuthFailed { .. } | Self::NoCredentials { .. } => exit_code::AUTH,
             Self::NotFound { .. } | Self::SiteNotFound { .. } => exit_code::NOT_FOUND,
-            Self::Conflict { .. } => exit_code::CONFLICT,
+            Self::Conflict { .. } | Self::SkillFileExists { .. } => exit_code::CONFLICT,
             Self::Timeout { .. } => exit_code::TIMEOUT,
             Self::Validation { .. }
             | Self::NonInteractiveRequiresYes { .. }
