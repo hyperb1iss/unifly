@@ -65,13 +65,20 @@ impl Controller {
         self.inner.demo.get()
     }
 
-    /// Demo `connect()`: seed the store and start the simulation.
+    /// Demo `connect()`: seed the store and start the simulation. Calling
+    /// it again restarts the simulation task rather than adding a second
+    /// one, so connect is safe to repeat.
     pub(super) async fn demo_connect(&self, runtime: Arc<DemoRuntime>) -> Result<(), CoreError> {
         self.inner
             .connection_state
             .send_replace(ConnectionState::Connecting);
         let child = self.inner.cancel.child_token();
-        *self.inner.cancel_child.lock().await = child.clone();
+        let previous = std::mem::replace(&mut *self.inner.cancel_child.lock().await, child.clone());
+        previous.cancel();
+        let stale: Vec<_> = self.inner.task_handles.lock().await.drain(..).collect();
+        for handle in stale {
+            let _ = handle.await;
+        }
 
         let (snapshot, health) = runtime.with(|sim| (sim.refresh_snapshot(), sim.health()));
         self.inner.store.apply_integration_snapshot(snapshot);
@@ -173,5 +180,26 @@ fn apply_delta(store: &DataStore, events: &broadcast::Sender<Arc<Event>>, delta:
         for event in delta.events {
             let _ = events.send(Arc::new(event));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::Controller;
+    use crate::demo::DemoFleetOptions;
+
+    #[tokio::test]
+    async fn repeated_connect_keeps_one_simulation_and_disconnects() {
+        let controller = Controller::demo(DemoFleetOptions::default());
+        for _ in 0..3 {
+            controller.connect().await.expect("connect");
+        }
+        assert_eq!(controller.inner.task_handles.lock().await.len(), 1);
+        tokio::time::timeout(Duration::from_secs(5), controller.disconnect())
+            .await
+            .expect("disconnect must not hang on a stale simulation task");
+        assert_eq!(controller.inner.task_handles.lock().await.len(), 0);
     }
 }
