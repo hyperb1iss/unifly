@@ -48,6 +48,16 @@ impl Controller {
         &self,
         device_mac: &MacAddress,
     ) -> Result<Vec<PortProfile>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            let (device, networks) =
+                demo.with(|sim| (sim.session_device(device_mac), sim.network_conf()));
+            let device = device.ok_or_else(|| CoreError::DeviceNotFound {
+                identifier: device_mac.to_string(),
+            })?;
+            return Ok(port_profiles(&device, &networks));
+        }
+
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
 
@@ -312,6 +322,16 @@ impl Controller {
         device_mac: &MacAddress,
         include_all: bool,
     ) -> Result<ApplyPortsRequest, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            let device = demo
+                .with(|sim| sim.session_device(device_mac))
+                .ok_or_else(|| CoreError::DeviceNotFound {
+                    identifier: device_mac.to_string(),
+                })?;
+            return Ok(export_ports(&device, include_all));
+        }
+
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
 
