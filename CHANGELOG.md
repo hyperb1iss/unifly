@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cookie string, and `SessionClient::enable_reauth` with `ReauthCredentials`
   is new.
 
+## [0.10.0] - 2026-08-07
+
+This section also covers 0.9.0, 0.9.1, and 0.9.2, which shipped from the
+same running notes. Each of those releases has its own notes on the
+[GitHub releases page](https://github.com/hyperb1iss/unifly/releases).
 
 ### Added
 
@@ -431,7 +436,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/hyperb1iss/unifly/compare/v0.8.0...v0.10.0
 [0.8.0]: https://github.com/hyperb1iss/unifly/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/hyperb1iss/unifly/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/hyperb1iss/unifly/compare/v0.2.0...v0.6.0
