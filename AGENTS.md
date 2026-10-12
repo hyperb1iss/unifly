@@ -885,6 +885,8 @@ and CLI-only builds, and check Cargo packaging includes every guide asset.
 - **`Cargo.toml`**: workspace version, lints, dependencies, profiles
 - **`justfile`**: task recipes
 - **`.github/workflows/`**: CI + release + docs workflows
-- **`docs/images/`**: shipped screenshots and the animated TUI tour GIF
+- **`docs/images/`**: shipped screenshots. The README's promo video is a GitHub
+  `user-attachments` upload (a repo file cannot play inline in a README);
+  the source cuts ship as release assets
 - **`aur/update-aur.sh`**: AUR package refresh script used by
   `just aur-update`

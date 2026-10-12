@@ -46,9 +46,7 @@
   <a href="#-development">Development</a>
 </p>
 
-<p align="center">
-  <img src="docs/images/tui-tour.gif" alt="unifly TUI animated tour of the Dashboard, Devices, Clients, Firewall, Topology, Events, Stats, and WiFi screens" width="900">
-</p>
+https://github.com/user-attachments/assets/5ce6537b-81e2-4256-8892-427e55665cce
 
 ---
 
