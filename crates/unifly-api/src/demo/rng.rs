@@ -55,9 +55,18 @@ impl DemoRng {
         self.unit() < probability
     }
 
-    /// Pick from a non-empty table.
-    pub(crate) fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
-        &items[self.index(items.len())]
+    /// Pick from a slice, or `None` when it is empty.
+    pub(crate) fn pick<'a, T>(&mut self, items: &'a [T]) -> Option<&'a T> {
+        if items.is_empty() {
+            return None;
+        }
+        items.get(self.index(items.len()))
+    }
+
+    /// Pick from a fixed table; an empty table fails to compile.
+    pub(crate) fn choose<T: Copy, const N: usize>(&mut self, items: &[T; N]) -> T {
+        const { assert!(N > 0, "choose needs a non-empty table") };
+        items[self.index(N)]
     }
 
     /// A locally administered, unicast MAC (`x2`, `x6`, `xA`, `xE` first
@@ -194,6 +203,18 @@ mod tests {
             assert!((0.0..1.0).contains(&value));
         }
         assert!((0.0..1.0).contains(&hash_unit(1, 2)));
+    }
+
+    #[test]
+    fn pick_handles_empty_input() {
+        let mut rng = DemoRng::new(5);
+        let empty: [u8; 0] = [];
+        assert_eq!(rng.pick(&empty), None);
+        assert!(
+            rng.pick(&[1, 2, 3])
+                .is_some_and(|value| (1..=3).contains(value))
+        );
+        assert!((10..=12).contains(&rng.choose(&[10, 11, 12])));
     }
 
     #[test]

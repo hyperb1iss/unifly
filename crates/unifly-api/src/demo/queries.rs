@@ -306,11 +306,12 @@ impl Simulation {
             return Ok(Vec::new());
         }
 
-        let online: Vec<String> = self
+        // History is the past, so it draws on the whole AP inventory, not
+        // whichever APs happen to be online right now.
+        let inventory: Vec<String> = self
             .fleet
             .aps()
             .iter()
-            .filter(|ap| ap.state.is_online())
             .filter_map(|ap| ap.name.clone())
             .collect();
         let ssid = client
@@ -320,7 +321,9 @@ impl Simulation {
             .unwrap_or_default();
         let mut rng = DemoRng::new(self.fleet.seed ^ hash_str(mac.as_str()));
         let mut at = self.fleet.anchor - Duration::hours(22);
-        let mut current = rng.pick(&online).clone();
+        let Some(mut current) = rng.pick(&inventory).cloned() else {
+            return Ok(Vec::new());
+        };
         let mut rows = vec![roam_row(
             "CLIENT_CONNECTED_WIRELESS",
             at,
@@ -333,7 +336,7 @@ impl Simulation {
             if at >= self.fleet.anchor {
                 break;
             }
-            let next = rng.pick(&online).clone();
+            let next = rng.pick(&inventory).cloned().unwrap_or_default();
             if rng.chance(0.15) {
                 rows.push(roam_row(
                     "CLIENT_DISCONNECTED_WIRELESS",
@@ -508,11 +511,11 @@ fn roam_row(
     rng: &mut DemoRng,
     ssid: &str,
 ) -> Value {
-    let band = *rng.pick(&["5g", "5g", "6g", "2.4g"]);
+    let band = rng.choose(&["5g", "5g", "6g", "2.4g"]);
     let channel = match band {
-        "6g" => *rng.pick(&[37, 69, 101, 133]),
-        "2.4g" => *rng.pick(&[1, 6, 11]),
-        _ => *rng.pick(&[36, 52, 100, 149]),
+        "6g" => rng.choose(&[37, 69, 101, 133]),
+        "2.4g" => rng.choose(&[1, 6, 11]),
+        _ => rng.choose(&[36, 52, 100, 149]),
     };
     let signal = -i64::try_from(rng.range(44, 74)).unwrap_or(60);
     let label = match key {

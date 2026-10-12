@@ -95,7 +95,9 @@ fn random_event(fleet: &Fleet, rng: &mut DemoRng, at: DateTime<Utc>) -> Event {
         })
         .map(|demo| &demo.client)
         .collect();
-    let client = *rng.pick(&pool);
+    let Some(&client) = rng.pick(&pool) else {
+        return security_event(fleet, rng, at);
+    };
     let label = client
         .name
         .clone()
@@ -104,8 +106,9 @@ fn random_event(fleet: &Fleet, rng: &mut DemoRng, at: DateTime<Utc>) -> Event {
     let online_aps: Vec<usize> = (AP_BASE..fleet.devices.len())
         .filter(|index| *index - AP_BASE != OFFLINE_AP)
         .collect();
-    let ap = *rng.pick(&online_aps);
-    let other_ap = *rng.pick(&online_aps);
+    let (Some(&ap), Some(&other_ap)) = (rng.pick(&online_aps), rng.pick(&online_aps)) else {
+        return security_event(fleet, rng, at);
+    };
 
     let mut event = if roll < 0.28 {
         let ssid = client
@@ -180,14 +183,14 @@ fn random_event(fleet: &Fleet, rng: &mut DemoRng, at: DateTime<Utc>) -> Event {
 
 /// An IPS alert or firewall drop from a documentation-range address.
 pub(crate) fn security_event(fleet: &Fleet, rng: &mut DemoRng, at: DateTime<Utc>) -> Event {
-    let source = *rng.pick(&HOSTILE_IPS);
+    let source = rng.choose(&HOSTILE_IPS);
     if rng.chance(0.55) {
-        let signature = *rng.pick(&IPS_SIGNATURES);
+        let signature = rng.choose(&IPS_SIGNATURES);
         let message = format!("IPS alert: {signature} from {source}");
         let kind = (EventCategory::Firewall, EventSeverity::Warning);
         event(rng, fleet, at, kind, "EVT_IPS_IpsAlert", message)
     } else {
-        let port = *rng.pick(&[22u16, 22, 23, 445, 3389, 5900, 8291]);
+        let port = rng.choose(&[22u16, 22, 23, 445, 3389, 5900, 8291]);
         let rule = if port == 22 {
             "Drop inbound SSH"
         } else {
@@ -283,7 +286,9 @@ fn neighbors(fleet: &Fleet, rng: &mut DemoRng) -> Vec<RogueAp> {
                 1 => "na",
                 _ => "6e",
             };
-            let observer = rng.pick(&observers).clone();
+            let Some(observer) = rng.pick(&observers).cloned() else {
+                continue;
+            };
             let signal = -i32::try_from(rng.range(58, 90)).unwrap_or(80);
             neighbors.push(neighbor(rng, ssid, radio, signal, &observer, false));
         }
@@ -306,19 +311,19 @@ fn neighbor(
 ) -> RogueAp {
     let (channel, freq) = match radio {
         "na" => {
-            let channel = *rng.pick(&[36, 40, 44, 48, 52, 100, 149, 153, 157, 161]);
+            let channel = rng.choose(&[36, 40, 44, 48, 52, 100, 149, 153, 157, 161]);
             (channel, 5_000 + 5 * channel)
         }
         "6e" => {
-            let channel = *rng.pick(&[5, 21, 37, 53, 85, 117]);
+            let channel = rng.choose(&[5, 21, 37, 53, 85, 117]);
             (channel, 5_950 + 5 * channel)
         }
         _ => {
-            let channel = *rng.pick(&[1, 1, 3, 6, 6, 11, 11]);
+            let channel = rng.choose(&[1, 1, 3, 6, 6, 11, 11]);
             (channel, 2_407 + 5 * channel)
         }
     };
-    let security = *rng.pick(&["WPA2", "WPA2", "WPA3", "WPA2/WPA3", "OPEN"]);
+    let security = rng.choose(&["WPA2", "WPA2", "WPA3", "WPA2/WPA3", "OPEN"]);
     let age = i64::try_from(rng.range(8, 280)).unwrap_or(60);
     RogueAp {
         bssid: rng.mac(),

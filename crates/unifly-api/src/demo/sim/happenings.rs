@@ -129,10 +129,9 @@ impl Simulation {
             })
             .map(|(index, _)| index)
             .collect();
-        if candidates.is_empty() {
+        let Some(&index) = self.rng.pick(&candidates) else {
             return;
-        }
-        let index = *self.rng.pick(&candidates);
+        };
         let Some(target) = pick_ap(&self.fleet.devices, &mut self.rng) else {
             return;
         };
@@ -232,10 +231,9 @@ impl Simulation {
             .filter(|(_, client)| client.mobile && !client.client.blocked)
             .map(|(index, _)| index)
             .collect();
-        if candidates.is_empty() {
+        let Some(&index) = self.rng.pick(&candidates) else {
             return;
-        }
-        let index = *self.rng.pick(&candidates);
+        };
         self.disconnect(index, now, delta, "EVT_WU_Disconnected");
     }
 

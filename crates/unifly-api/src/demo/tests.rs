@@ -481,3 +481,27 @@ async fn store_follows_the_simulation() {
     );
     controller.disconnect().await;
 }
+
+#[test]
+fn queries_survive_every_ap_going_dark() {
+    let mut sim = Simulation::new(fleet());
+    for device in &mut sim.fleet.devices {
+        if device.device_type == DeviceType::AccessPoint {
+            device.state = DeviceState::Offline;
+        }
+    }
+    let mac = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| client.client.client_type == ClientType::Wireless)
+        .expect("wireless client")
+        .client
+        .mac
+        .to_string();
+    let roams = sim.client_roams(&mac, Some(20)).expect("roam history");
+    assert_ne!(roams.len(), 0, "history comes from the AP inventory");
+    for tick in 1..=30 {
+        sim.step(anchor() + Duration::seconds(tick));
+    }
+}
