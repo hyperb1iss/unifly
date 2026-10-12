@@ -62,6 +62,12 @@ pub struct Client {
     /// controller didn't report `sw_port`.
     pub switch_port: Option<u32>,
     pub network_id: Option<EntityId>,
+    /// The network's name as the Session API reports it. Session
+    /// `network_id`s are legacy record IDs that never match the Integration
+    /// API's network UUIDs, so this name is how a hybrid or session client
+    /// is tied back to its network.
+    #[serde(default)]
+    pub network_name: Option<String>,
     pub vlan: Option<u16>,
 
     // Wireless-specific

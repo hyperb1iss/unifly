@@ -392,6 +392,7 @@ impl Simulation {
             uplink_device_mac: Some(switch_mac),
             switch_port: Some(port_index),
             network_id: Some(cameras.id.clone()),
+            network_name: Some(cameras.name.clone()),
             vlan: cameras.vlan_id,
             wireless: None,
             guest_auth: None,

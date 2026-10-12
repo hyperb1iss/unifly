@@ -86,6 +86,7 @@ impl From<SessionClientEntry> for Client {
             uplink_device_mac,
             switch_port,
             network_id: c.network_id.map(EntityId::from),
+            network_name: c.network.filter(|name| !name.is_empty()),
             vlan: None,
             wireless,
             guest_auth,
@@ -135,6 +136,7 @@ impl From<integration_types::ClientResponse> for Client {
             uplink_device_mac: None,
             switch_port: None,
             network_id: None,
+            network_name: None,
             vlan: None,
             wireless: None,
             guest_auth: None,
@@ -178,6 +180,27 @@ mod tests {
         let client: Client = entry.into();
         assert_eq!(client.switch_port, Some(9));
         assert_eq!(client.client_type, ClientType::Wired);
+    }
+
+    #[test]
+    fn session_client_carries_its_network_name() {
+        let entry: SessionClientEntry = serde_json::from_value(serde_json::json!({
+            "_id": "abc",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "network": "Render",
+            "network_id": "5f1a2b3c4d5e6f7a8b9c0d1e"
+        }))
+        .expect("deserialize");
+        let client: Client = entry.into();
+        assert_eq!(client.network_name.as_deref(), Some("Render"));
+
+        let unnamed: SessionClientEntry = serde_json::from_value(serde_json::json!({
+            "_id": "abc",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "network": ""
+        }))
+        .expect("deserialize");
+        assert_eq!(Client::from(unnamed).network_name, None);
     }
 
     #[test]
