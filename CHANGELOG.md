@@ -127,8 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retyping, connects with the keyring value, and leaves the entry alone. A
   newly typed credential (in settings or the first-run setup) goes to the
   keyring, as `config init` stores it, with plaintext only as a reported
-  fallback when no keyring is available. Credentials already kept in
-  `config.toml` stay there.
+  fallback when no keyring is usable (none running, locked, or failing). A
+  keyring that refuses the secret stops the save with a message naming the
+  field and leaves `config.toml` unchanged; `config init` and
+  `config set-password` classify keyring errors the same way. Credentials
+  already kept in `config.toml` stay there.
 
 ### Performance
 

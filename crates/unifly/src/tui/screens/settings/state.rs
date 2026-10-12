@@ -272,21 +272,29 @@ impl SettingsScreen {
                     match controller.connect().await {
                         Ok(()) => {
                             controller.disconnect().await;
-                            let saved = save.commit(&crate::config::OsKeyring);
-                            for warning in saved.warnings {
-                                let _ = tx.send(crate::tui::action::Action::Notify(
-                                    crate::tui::action::Notification::info(warning),
-                                ));
-                            }
-                            let mut cfg = crate::config::load_config().unwrap_or_default();
-                            cfg.profiles.insert(profile_name.clone(), saved.profile);
-                            if cfg.default_profile.is_none() {
-                                cfg.default_profile = Some(profile_name.clone());
-                            }
-                            if let Err(error) = crate::config::save_config(&cfg) {
-                                Err(format!("Connected, but failed to save config: {error}"))
-                            } else {
-                                Ok(())
+                            // A keyring that refuses a secret blocks the save;
+                            // the message becomes the test result.
+                            match save.commit(&crate::config::OsKeyring) {
+                                Err(message) => Err(message),
+                                Ok(saved) => {
+                                    for warning in saved.warnings {
+                                        let _ = tx.send(crate::tui::action::Action::Notify(
+                                            crate::tui::action::Notification::info(warning),
+                                        ));
+                                    }
+                                    let mut cfg = crate::config::load_config().unwrap_or_default();
+                                    cfg.profiles.insert(profile_name.clone(), saved.profile);
+                                    if cfg.default_profile.is_none() {
+                                        cfg.default_profile = Some(profile_name.clone());
+                                    }
+                                    if let Err(error) = crate::config::save_config(&cfg) {
+                                        Err(format!(
+                                            "Connected, but failed to save config: {error}"
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                }
                             }
                         }
                         Err(error) => Err(format!("{error}")),

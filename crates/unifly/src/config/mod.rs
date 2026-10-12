@@ -419,7 +419,33 @@ pub trait SecretStore {
     /// The secret stored under `key`, if there is one.
     fn get(&self, key: &str) -> Option<String>;
     /// Store `secret` under `key`, replacing any previous value.
-    fn set(&self, key: &str, secret: &str) -> Result<(), String>;
+    fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError>;
+}
+
+/// Why a secret could not be stored. Only [`Self::Unavailable`] justifies
+/// the documented plaintext fallback; a keyring that is there but refuses
+/// a secret must not be quietly swapped for a plaintext file.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SecretStoreError {
+    /// No usable keyring here: none could be opened, it is locked or
+    /// unreachable, or the platform store failed.
+    #[error("no usable keyring: {0}")]
+    Unavailable(String),
+    /// The keyring is there but refused this secret (an ambiguous entry, a
+    /// value it cannot hold, an invalid name, and the like).
+    #[error("the keyring refused it: {0}")]
+    Rejected(String),
+}
+
+impl From<&keyring::Error> for SecretStoreError {
+    fn from(error: &keyring::Error) -> Self {
+        match error {
+            keyring::Error::NoStorageAccess(_)
+            | keyring::Error::PlatformFailure(_)
+            | keyring::Error::NoDefaultStore => Self::Unavailable(error.to_string()),
+            _ => Self::Rejected(error.to_string()),
+        }
+    }
 }
 
 /// The OS keyring, where `config init` and `config set-password` put
@@ -434,10 +460,10 @@ impl SecretStore for OsKeyring {
             .ok()
     }
 
-    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+    fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError> {
         keyring::Entry::new(KEYRING_SERVICE, key)
             .and_then(|entry| entry.set_password(secret))
-            .map_err(|error| error.to_string())
+            .map_err(|error| SecretStoreError::from(&error))
     }
 }
 
@@ -737,6 +763,45 @@ mod tests {
         let secret = resolve_api_key(&profile, "cloud").expect("config api_key should resolve");
 
         assert_eq!(secret.expose_secret(), "explicit-config-key");
+    }
+
+    /// Only a keyring that cannot be used at all justifies the plaintext
+    /// fallback; one that refuses a secret must stop the save.
+    #[test]
+    fn keyring_errors_split_into_unavailable_and_rejected() {
+        use super::SecretStoreError;
+
+        let platform = || -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::other("locked"))
+        };
+        let unavailable = [
+            keyring::Error::NoStorageAccess(platform()),
+            keyring::Error::PlatformFailure(platform()),
+            keyring::Error::NoDefaultStore,
+        ];
+        for error in &unavailable {
+            assert!(
+                matches!(
+                    SecretStoreError::from(error),
+                    SecretStoreError::Unavailable(_)
+                ),
+                "{error}"
+            );
+        }
+
+        let rejected = [
+            keyring::Error::Ambiguous(Vec::new()),
+            keyring::Error::BadEncoding(Vec::new()),
+            keyring::Error::TooLong("password".into(), 4),
+            keyring::Error::Invalid("service".into(), "empty".into()),
+            keyring::Error::NotSupportedByStore("write".into()),
+        ];
+        for error in &rejected {
+            assert!(
+                matches!(SecretStoreError::from(error), SecretStoreError::Rejected(_)),
+                "{error}"
+            );
+        }
     }
 
     #[test]

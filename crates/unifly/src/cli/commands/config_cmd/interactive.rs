@@ -123,19 +123,24 @@ fn cloud_api_error(error: unifly_api::Error) -> CliError {
     CliError::from(CoreError::from(error))
 }
 
+/// Store a secret through the same keyring path and error classification
+/// the TUI uses. The CLI never falls back on its own: when no keyring is
+/// usable it says so, and plaintext storage stays an explicit choice.
 fn write_keyring_secret(secret: &str, keyring_key: &str, label: &str) -> Result<(), CliError> {
-    let entry =
-        keyring::Entry::new("unifly", keyring_key).map_err(|error| CliError::Validation {
-            field: "keyring".into(),
-            reason: format!("failed to access keyring: {error}"),
-        })?;
-    entry
-        .set_password(secret)
+    use crate::config::{OsKeyring, SecretStore, SecretStoreError};
+
+    OsKeyring
+        .set(keyring_key, secret)
         .map_err(|error| CliError::Validation {
             field: "keyring".into(),
-            reason: format!("failed to store {label} in keyring: {error}"),
-        })?;
-    Ok(())
+            reason: match error {
+                SecretStoreError::Unavailable(_) => format!(
+                    "failed to store {label}, {error}; keep it in config.toml or an \
+                     environment variable instead"
+                ),
+                SecretStoreError::Rejected(_) => format!("failed to store {label}, {error}"),
+            },
+        })
 }
 
 fn prompt_credentials() -> Result<(String, String), CliError> {

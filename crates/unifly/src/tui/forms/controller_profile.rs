@@ -48,7 +48,7 @@ impl AuthMode {
 
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::config::{SecretStore, api_key_keyring_key, password_keyring_key};
+use crate::config::{SecretStore, SecretStoreError, api_key_keyring_key, password_keyring_key};
 
 /// Where a credential the form edits was stored when the profile loaded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -122,26 +122,40 @@ pub(crate) struct SavedProfile {
 }
 
 impl SavePlan {
-    /// Store the pending secrets in `store`, falling back to plaintext in
-    /// the profile for any the store rejects (the documented fallback for
-    /// hosts without a usable keyring), with a warning naming each one.
-    pub(crate) fn commit(self, store: &dyn SecretStore) -> SavedProfile {
+    /// Store the pending secrets in `store`.
+    ///
+    /// When no keyring is usable, a secret falls back to plaintext in the
+    /// profile (the documented fallback for hosts without one), with a
+    /// warning naming the field. A keyring that is there but refuses a
+    /// secret stops the save instead: the error names the field, never the
+    /// secret, and the caller must leave `config.toml` alone.
+    pub(crate) fn commit(self, store: &dyn SecretStore) -> Result<SavedProfile, String> {
         let mut profile = self.profile;
         let mut warnings = Vec::new();
         for pending in self.keyring {
-            if let Err(error) = store.set(&pending.key, pending.secret.expose_secret()) {
-                let label = pending.field.label();
-                warnings.push(format!(
-                    "Keyring unavailable ({error}); saved the {label} to config.toml in plaintext"
-                ));
-                let plaintext = Some(pending.secret.expose_secret().to_owned());
-                match pending.field {
-                    SecretField::ApiKey => profile.api_key = plaintext,
-                    SecretField::Password => profile.password = plaintext,
+            let label = pending.field.label();
+            match store.set(&pending.key, pending.secret.expose_secret()) {
+                Ok(()) => {}
+                Err(SecretStoreError::Unavailable(reason)) => {
+                    warnings.push(format!(
+                        "No usable keyring ({reason}); saved the {label} to config.toml in \
+                         plaintext"
+                    ));
+                    let plaintext = Some(pending.secret.expose_secret().to_owned());
+                    match pending.field {
+                        SecretField::ApiKey => profile.api_key = plaintext,
+                        SecretField::Password => profile.password = plaintext,
+                    }
+                }
+                Err(SecretStoreError::Rejected(reason)) => {
+                    return Err(format!(
+                        "Couldn't store the {label} in the keyring ({reason}); config.toml was \
+                         not changed"
+                    ));
                 }
             }
         }
-        SavedProfile { profile, warnings }
+        Ok(SavedProfile { profile, warnings })
     }
 }
 
@@ -643,11 +657,12 @@ mod tests {
         assert!(!draft.insecure);
     }
 
-    /// In-memory stand-in for the OS keyring.
+    /// In-memory stand-in for the OS keyring. `failure`, when set, is what
+    /// every write returns instead of storing.
     #[derive(Default)]
     struct MemoryStore {
         entries: std::cell::RefCell<std::collections::HashMap<String, String>>,
-        unavailable: bool,
+        failure: Option<crate::config::SecretStoreError>,
     }
 
     impl MemoryStore {
@@ -672,9 +687,9 @@ mod tests {
             self.secret(key)
         }
 
-        fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-            if self.unavailable {
-                return Err("no keyring daemon".into());
+        fn set(&self, key: &str, secret: &str) -> Result<(), crate::config::SecretStoreError> {
+            if let Some(failure) = &self.failure {
+                return Err(failure.clone());
             }
             self.entries
                 .borrow_mut()
@@ -726,7 +741,7 @@ mod tests {
         assert_eq!(connect.api_key, None);
         assert_eq!(connect.password, None);
 
-        let saved = draft.plan_save("home").commit(&store);
+        let saved = draft.plan_save("home").commit(&store).expect("saves");
         assert_eq!(saved.warnings, Vec::<String>::new());
         assert_eq!(saved.profile.api_key, None);
         assert_eq!(saved.profile.password, None);
@@ -753,7 +768,7 @@ mod tests {
 
         assert_eq!(draft.to_profile().password.as_deref(), Some("new-password"));
 
-        let saved = draft.plan_save("home").commit(&store);
+        let saved = draft.plan_save("home").commit(&store).expect("saves");
         assert_eq!(saved.warnings, Vec::<String>::new());
         assert_eq!(saved.profile.password, None);
         assert!(!toml_of(&saved.profile).contains("new-password"));
@@ -772,7 +787,7 @@ mod tests {
         draft.api_key = "fresh-key".into();
         draft.password = "fresh-password".into();
 
-        let saved = draft.plan_save("home").commit(&store);
+        let saved = draft.plan_save("home").commit(&store).expect("saves");
 
         assert_eq!(saved.profile.api_key, None);
         assert_eq!(saved.profile.password, None);
@@ -788,13 +803,15 @@ mod tests {
     #[test]
     fn unavailable_keyring_falls_back_to_plaintext_with_a_warning() {
         let store = MemoryStore {
-            unavailable: true,
+            failure: Some(crate::config::SecretStoreError::Unavailable(
+                "no keyring daemon".into(),
+            )),
             ..MemoryStore::default()
         };
         let mut draft = sample_draft();
         draft.password = "fresh-password".into();
 
-        let saved = draft.plan_save("home").commit(&store);
+        let saved = draft.plan_save("home").commit(&store).expect("falls back");
 
         assert_eq!(saved.profile.password.as_deref(), Some("fresh-password"));
         assert_eq!(saved.warnings.len(), 2, "{:?}", saved.warnings);
@@ -802,6 +819,36 @@ mod tests {
             saved.warnings.iter().all(|w| !w.contains("fresh-password")),
             "a warning must not carry the secret"
         );
+    }
+
+    /// A keyring that is there but refuses the secret must not be swapped
+    /// for plaintext: the save stops, naming the field but not the secret.
+    #[test]
+    fn a_refusing_keyring_blocks_the_save_and_writes_no_plaintext() {
+        let store = MemoryStore {
+            failure: Some(crate::config::SecretStoreError::Rejected(
+                "Entry is matched by 2 credentials".into(),
+            )),
+            ..MemoryStore::default()
+        };
+        let mut draft = sample_draft();
+        draft.api_key.clear();
+        draft.api_key_origin = SecretOrigin::Keyring;
+        draft.password = "fresh-password".into();
+
+        let error = draft
+            .plan_save("home")
+            .commit(&store)
+            .err()
+            .expect("a refused secret blocks the save");
+
+        assert!(error.contains("password"), "{error}");
+        assert!(error.contains("matched by 2 credentials"), "{error}");
+        assert!(
+            !error.contains("fresh-password"),
+            "the secret leaked: {error}"
+        );
+        assert!(store.secret("home/password").is_none());
     }
 
     /// Profiles that keep credentials in config.toml keep them there,
@@ -819,7 +866,7 @@ mod tests {
         assert_eq!(draft.api_key_origin, SecretOrigin::Config);
         assert_eq!(draft.password_origin, SecretOrigin::Config);
 
-        let saved = draft.plan_save("home").commit(&store);
+        let saved = draft.plan_save("home").commit(&store).expect("saves");
         assert_eq!(saved.profile.api_key.as_deref(), Some("config-key"));
         assert_eq!(saved.profile.password.as_deref(), Some("edited-password"));
         assert_eq!(

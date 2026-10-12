@@ -126,26 +126,34 @@ impl OnboardingScreen {
                     match controller.connect().await {
                         Ok(()) => {
                             controller.disconnect().await;
-                            let saved = save.commit(&crate::config::OsKeyring);
-                            for warning in saved.warnings {
-                                let _ = tx.send(crate::tui::action::Action::Notify(
-                                    crate::tui::action::Notification::info(warning),
-                                ));
-                            }
-                            let cfg = crate::config::Config {
-                                default_profile: Some(profile_name),
-                                defaults: crate::config::Defaults::default(),
-                                profiles: {
-                                    let mut profiles = std::collections::HashMap::new();
-                                    profiles.insert("default".to_string(), saved.profile);
-                                    profiles
-                                },
-                                demo: crate::config::DemoConfig::default(),
-                            };
-                            if let Err(error) = crate::config::save_config(&cfg) {
-                                Err(format!("Connected, but failed to save config: {error}"))
-                            } else {
-                                Ok(())
+                            // A keyring that refuses a secret blocks the save;
+                            // the message becomes the test result.
+                            match save.commit(&crate::config::OsKeyring) {
+                                Err(message) => Err(message),
+                                Ok(saved) => {
+                                    for warning in saved.warnings {
+                                        let _ = tx.send(crate::tui::action::Action::Notify(
+                                            crate::tui::action::Notification::info(warning),
+                                        ));
+                                    }
+                                    let cfg = crate::config::Config {
+                                        default_profile: Some(profile_name),
+                                        defaults: crate::config::Defaults::default(),
+                                        profiles: {
+                                            let mut profiles = std::collections::HashMap::new();
+                                            profiles.insert("default".to_string(), saved.profile);
+                                            profiles
+                                        },
+                                        demo: crate::config::DemoConfig::default(),
+                                    };
+                                    if let Err(error) = crate::config::save_config(&cfg) {
+                                        Err(format!(
+                                            "Connected, but failed to save config: {error}"
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                }
                             }
                         }
                         Err(error) => Err(format!("{error}")),
