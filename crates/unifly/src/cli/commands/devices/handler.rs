@@ -381,21 +381,21 @@ async fn handle_ports_export(
 ) -> Result<(), CliError> {
     util::ensure_session_access(controller, "devices ports-export").await?;
     let mac = util::resolve_device_mac(controller, device)?;
-    let output =
-        render_ports_export(controller, &mac, all, with_clients, chrono::Utc::now()).await?;
+    let output = render_ports_export(controller, &mac, all, with_clients, chrono::Utc::now).await?;
     print!("{output}");
     Ok(())
 }
 
-/// The JSONC `ports-export` prints. `now` stamps the `// last-seen`
-/// markers, except on the demo fleet, whose markers carry its fixed
-/// observation time so the same seed exports the same bytes on every run.
+/// The JSONC `ports-export` prints. `now` is read after the ports are
+/// fetched and stamps the `// last-seen` markers, except on the demo fleet,
+/// whose markers carry its fixed observation time so the same seed exports
+/// the same bytes on every run.
 async fn render_ports_export(
     controller: &Controller,
     mac: &MacAddress,
     all: bool,
     with_clients: bool,
-    now: chrono::DateTime<chrono::Utc>,
+    now: impl FnOnce() -> chrono::DateTime<chrono::Utc>,
 ) -> Result<String, CliError> {
     let request = controller.export_device_ports(mac, all).await?;
     let mut json = serde_json::to_string_pretty(&request)?;
@@ -406,7 +406,7 @@ async fn render_ports_export(
     let observed = if controller.is_demo() {
         demo_fleet::observed_at()
     } else {
-        now
+        now()
     };
     let timestamp = observed.format("%Y-%m-%dT%H:%MZ").to_string();
     let clients = controller.clients_snapshot();
@@ -564,7 +564,7 @@ mod tests {
             .find(|device| device.name.as_deref() == Some("sw-core"))
             .map(|device| device.mac.clone())
             .expect("sw-core");
-        let output = render_ports_export(&controller, &core, false, true, now)
+        let output = render_ports_export(&controller, &core, false, true, move || now)
             .await
             .expect("export");
         controller.disconnect().await;
