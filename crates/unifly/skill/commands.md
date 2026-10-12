@@ -285,7 +285,9 @@ events, WANs, devices, and switch ports agree on them; health shows the
 offline AP as a `wlan` warning. Demo stats rows carry the default
 attributes and ignore `--attrs`.
 `--demo-seed N` selects a different fleet; the same seed reproduces the
-same names, MACs, IPs, and IDs. The data is
-fictional, so never present it as the user's network. `unifly tui
+same names, MACs, IPs, and IDs. Timestamps follow the launch time, except
+the `// last-seen` markers of `devices ports-export --with-clients`, which
+carry a fixed 2026-03-18T15:30Z so a seed exports the same bytes on every
+run. The data is fictional, so never present it as the user's network. `unifly tui
 --demo-fleet` runs the dashboard against the same fleet, while plain
 `--demo` sanitizes a real controller's data in the TUI.

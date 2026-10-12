@@ -1404,6 +1404,37 @@ fn test_demo_fleet_devices_ports_with_clients_matches_clients_list() {
     assert_eq!(nas["link_speed_mbps"], 10_000);
 }
 
+/// Compares raw bytes, `// last-seen` markers included: each run starts the
+/// fleet's clock at launch, so a marker stamped from any clock would flip
+/// whenever two runs straddle a minute.
+#[test]
+fn test_demo_fleet_annotated_export_is_byte_stable_across_runs() {
+    let export = || {
+        demo_stdout(&[
+            "--demo-seed",
+            "7",
+            "devices",
+            "ports-export",
+            "sw-core",
+            "--with-clients",
+        ])
+    };
+    let first = export();
+    let markers: Vec<&str> = first
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("// last-seen "))
+        .collect();
+    assert!(!markers.is_empty(), "{first}");
+    assert!(
+        markers
+            .iter()
+            .all(|line| line.starts_with("// last-seen 2026-03-18T15:30Z: ")),
+        "{markers:?}"
+    );
+    assert_eq!(export(), first);
+}
+
 #[test]
 fn test_demo_fleet_ports_export_round_trips_as_jsonc() {
     let annotated = demo_stdout(&["devices", "ports-export", "sw-core", "--with-clients"]);

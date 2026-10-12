@@ -1,10 +1,11 @@
 use unifly_api::{
-    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, PoeMode, PortMode,
-    PortProfileUpdate, PortSpeedSetting,
+    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, MacAddress, PoeMode,
+    PortMode, PortProfileUpdate, PortSpeedSetting,
 };
 
 use crate::cli::args::{DevicesArgs, DevicesCommand, GlobalOpts, PoeArg, PortModeArg, SpeedArg};
 use crate::cli::commands::util;
+use crate::cli::demo_fleet;
 use crate::cli::error::CliError;
 use crate::cli::output;
 
@@ -380,22 +381,38 @@ async fn handle_ports_export(
 ) -> Result<(), CliError> {
     util::ensure_session_access(controller, "devices ports-export").await?;
     let mac = util::resolve_device_mac(controller, device)?;
-
-    let request = controller.export_device_ports(&mac, all).await?;
-    let json = serde_json::to_string_pretty(&request)?;
-    let output = if with_clients {
-        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%MZ").to_string();
-        let clients = controller.clients_snapshot();
-        let devices = controller.devices_snapshot();
-        let markers = build_last_seen_markers(&clients, &devices, &mac, &timestamp);
-        inject_last_seen_markers(&json, &markers)
-    } else {
-        let mut s = json;
-        s.push('\n');
-        s
-    };
+    let output =
+        render_ports_export(controller, &mac, all, with_clients, chrono::Utc::now()).await?;
     print!("{output}");
     Ok(())
+}
+
+/// The JSONC `ports-export` prints. `now` stamps the `// last-seen`
+/// markers, except on the demo fleet, whose markers carry its fixed
+/// observation time so the same seed exports the same bytes on every run.
+async fn render_ports_export(
+    controller: &Controller,
+    mac: &MacAddress,
+    all: bool,
+    with_clients: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<String, CliError> {
+    let request = controller.export_device_ports(mac, all).await?;
+    let mut json = serde_json::to_string_pretty(&request)?;
+    if !with_clients {
+        json.push('\n');
+        return Ok(json);
+    }
+    let observed = if controller.is_demo() {
+        demo_fleet::observed_at()
+    } else {
+        now
+    };
+    let timestamp = observed.format("%Y-%m-%dT%H:%MZ").to_string();
+    let clients = controller.clients_snapshot();
+    let devices = controller.devices_snapshot();
+    let markers = build_last_seen_markers(&clients, &devices, mac, &timestamp);
+    Ok(inject_last_seen_markers(&json, &markers))
 }
 
 async fn handle_port_reset(
@@ -526,5 +543,43 @@ fn map_speed(arg: SpeedArg) -> PortSpeedSetting {
         SpeedArg::Mbps2500 => PortSpeedSetting::Mbps2500,
         SpeedArg::Mbps5000 => PortSpeedSetting::Mbps5000,
         SpeedArg::Mbps10000 => PortSpeedSetting::Mbps10000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Duration, Utc};
+    use unifly_api::{Controller, DemoFleetOptions};
+
+    use super::render_ports_export;
+
+    /// One `ports-export sw-core --with-clients` run on a fresh demo
+    /// controller, with the wall clock reading `now`.
+    async fn annotated_export(now: DateTime<Utc>) -> String {
+        let controller = Controller::demo(DemoFleetOptions::with_seed(7));
+        controller.connect().await.expect("connect");
+        let core = controller
+            .devices_snapshot()
+            .iter()
+            .find(|device| device.name.as_deref() == Some("sw-core"))
+            .map(|device| device.mac.clone())
+            .expect("sw-core");
+        let output = render_ports_export(&controller, &core, false, true, now)
+            .await
+            .expect("export");
+        controller.disconnect().await;
+        output
+    }
+
+    #[tokio::test]
+    async fn demo_markers_ignore_the_clock() {
+        let now = Utc::now();
+        let first = annotated_export(now).await;
+        let later = annotated_export(now + Duration::minutes(61)).await;
+        assert_eq!(first, later, "same seed, same bytes, markers included");
+        assert!(
+            first.contains("// last-seen 2026-03-18T15:30Z: "),
+            "{first}"
+        );
     }
 }
