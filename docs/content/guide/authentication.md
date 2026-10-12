@@ -153,10 +153,12 @@ totp_command = ["op", "item", "get", "UniFi", "--otp"]
 
 The command is an argv array: the program, then its arguments. It runs directly, without a shell, with no stdin and 10 seconds to finish, and its trimmed output is the code. A non-zero exit, a timeout, or empty output counts as no code and is logged without the output.
 
+If the password manager is locked when a re-login runs, the command may raise an unlock prompt (Touch ID or a system password dialog). An attempt that gets no code is retried after 30 seconds, so while the session stays expired, expect a prompt about every 30 seconds until you unlock it.
+
 A one-off code works too, for a single command:
 
 ```bash
-UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password") \
+UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password?attribute=otp") \
   unifly devices list
 
 # Or name the variable in your profile:

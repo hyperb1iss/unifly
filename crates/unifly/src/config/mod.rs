@@ -254,6 +254,9 @@ pub struct Profile {
     /// explicit code (`--totp`, `UNIFI_TOTP`, or `totp_env`) still serves
     /// the first login. Example with 1Password CLI:
     /// `totp_command = ["op", "item", "get", "UniFi", "--otp"]`
+    ///
+    /// A locked password manager may prompt to unlock on every re-login
+    /// attempt, about once per 30 s cooldown while the session is expired.
     pub totp_command: Option<Vec<String>>,
 
     /// Path to custom CA certificate.

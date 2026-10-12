@@ -274,11 +274,15 @@ auth_mode = "hybrid"
 totp_command = ["op", "item", "get", "UniFi", "--otp"]
 ```
 
+If the password manager is locked, each re-login attempt may raise an
+unlock prompt; a failed attempt is retried after 30 s, so expect a prompt
+about every 30 s while the session stays expired.
+
 A one-off code also works for a single command, via `totp_env` in the
 profile or `UNIFI_TOTP` directly:
 
 ```bash
-UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password") \
+UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password?attribute=otp") \
   unifly devices list
 ```
 
