@@ -183,7 +183,8 @@ pub fn acl_rules(items: &[Arc<AclRule>]) -> Vec<Arc<AclRule>> {
 }
 
 /// Events newest first, so `--limit N` keeps the N most recent. Same-instant
-/// events fall back to ID, type, and message.
+/// events fall back to ID, type, message, and then the fields the store keys
+/// an ID-less event by, so distinct records never compare equal.
 pub fn events(items: &[Arc<Event>]) -> Vec<Arc<Event>> {
     sorted(items, |event| {
         (
@@ -191,6 +192,10 @@ pub fn events(items: &[Arc<Event>]) -> Vec<Arc<Event>> {
             present_first(event.id.as_ref().map(ToString::to_string)),
             event.event_type.clone(),
             event.message.clone(),
+            event.raw_key.clone(),
+            event.device_mac.as_ref().map(|mac| mac.as_str().to_owned()),
+            event.client_mac.as_ref().map(|mac| mac.as_str().to_owned()),
+            event.site_id.as_ref().map(ToString::to_string),
         )
     })
 }
