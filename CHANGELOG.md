@@ -63,9 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retried. A session opened with a fixed TOTP code does not renew itself,
   because replaying a spent code would fail every attempt while still
   presenting the correct password; MFA sessions renew only through a
-  `TotpProvider` (see Added). The WebSocket reads its cookie from the
-  session client on every reconnect, and a server-side clean close now
-  waits the initial backoff instead of reconnecting immediately.
+  `TotpProvider` (see Added). A session restored from cache for an MFA
+  account with no TOTP source stops re-logging in after the first re-login
+  meets the MFA challenge, instead of repeating it every 30 s for as long as
+  the process runs. The WebSocket reads its cookie from the session client
+  on every reconnect, and a server-side clean close now waits the initial
+  backoff instead of reconnecting immediately.
 - **A failed fetch during refresh keeps the last known data.** Firewall
   policies, firewall zones, ACL rules, DNS policies, vouchers, NAT policies,
   firewall groups, and events come from optional endpoints. A timeout, 5xx,

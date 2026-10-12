@@ -283,11 +283,14 @@ impl SessionClient {
         }
         let mut slot = self.reauth.lock().await;
         let ReauthSlot {
-            credentials,
+            credentials: retained,
             last_attempt,
         } = &mut *slot;
-        let Some(credentials) = credentials.as_ref() else {
-            warn!("session expired but no credentials were retained for re-login");
+        // Debug only: whatever left the slot empty (a fixed TOTP code, or an
+        // MFA challenge with no provider) already said so once, and this
+        // runs for every request that meets the expired session.
+        let Some(credentials) = retained.as_ref() else {
+            debug!("session expired but no credentials were retained for re-login");
             return false;
         };
         // The 401 came back for a cookie that has since been replaced. It
@@ -360,6 +363,18 @@ impl SessionClient {
                 *last_attempt = None;
                 info!("session re-authenticated");
                 true
+            }
+            // The account wants an MFA code and nothing can supply one, so
+            // every later attempt would end the same way. Stop trying rather
+            // than meet the challenge again every cooldown, indefinitely.
+            Err(Error::TwoFactorRequired) if credentials.totp_provider.is_none() => {
+                warn!(
+                    "session expired and re-login needs an MFA code, but no TOTP \
+                     provider is configured; this session can no longer renew itself"
+                );
+                *retained = None;
+                *last_attempt = Some(std::time::Instant::now());
+                false
             }
             Err(error) => {
                 warn!(
@@ -1303,6 +1318,66 @@ mod tests {
             client.reauth.lock().await.last_attempt.is_some(),
             "a provider with no code arms the cooldown"
         );
+        server.verify().await;
+    }
+
+    /// A re-login that meets an MFA challenge with no TOTP provider can
+    /// never succeed, so the retained credentials are dropped instead of
+    /// meeting the challenge again after every cooldown.
+    #[tokio::test]
+    async fn mfa_challenge_without_a_provider_drops_the_credentials() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        crate::transport::ensure_crypto_provider();
+        let server = MockServer::start().await;
+        let client = SessionClient::with_client(
+            reqwest::Client::new(),
+            Url::parse(&server.uri()).expect("mock server URL is valid"),
+            "default".into(),
+            ControllerPlatform::ClassicController,
+            SessionAuth::Cookie,
+        );
+        client
+            .enable_reauth(ReauthCredentials {
+                username: "admin".into(),
+                password: secrecy::SecretString::from("pw".to_string()),
+                totp_provider: None,
+                cache: None,
+            })
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/s/default/stat/health"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/login"))
+            .respond_with(ResponseTemplate::new(499).set_body_json(serde_json::json!({
+                "errors": ["ubic_2fa_token required"],
+                "token": "UBIC_2FA=challenge"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        client
+            .raw_get("api/s/default/stat/health")
+            .await
+            .expect_err("an unanswerable MFA challenge surfaces the expiry");
+        {
+            let mut slot = client.reauth.lock().await;
+            assert!(slot.credentials.is_none(), "credentials were kept");
+            // Even once the cooldown has passed, nothing is left to retry.
+            slot.last_attempt = None;
+        }
+        client
+            .raw_get("api/s/default/stat/health")
+            .await
+            .expect_err("the session stays expired");
+
         server.verify().await;
     }
 
