@@ -140,28 +140,18 @@ pub(super) fn run(args: &SkillArgs, quiet: bool, output: &mut impl Write) -> Res
     Ok(())
 }
 
+/// What a look at the target allows: write it, or stop with this outcome.
+enum Decision {
+    Write(Outcome),
+    Done(Outcome),
+}
+
 /// Write the discovery skill unless an unrecognized file is in the way.
 /// A symlinked skill directory or file is left alone, even with `force`.
 fn install(path: &Path, force: bool) -> Result<Outcome, CliError> {
-    for component in [path.parent(), Some(path)].into_iter().flatten() {
-        if let Some(target) = symlink_target(component)? {
-            return Ok(Outcome::Linked {
-                link: component.to_path_buf(),
-                target,
-            });
-        }
-    }
-    let outcome = match fs::read(path) {
-        Ok(existing) if existing == DISCOVERY_SKILL.as_bytes() => return Ok(Outcome::Unchanged),
-        Ok(existing) if PUBLISHED_DIGESTS.contains(&digest(&existing)) => Outcome::Updated,
-        Ok(_) if force => Outcome::Replaced,
-        Ok(_) => {
-            return Err(CliError::SkillFileExists {
-                path: path.display().to_string(),
-            });
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Outcome::Installed,
-        Err(error) => return Err(install_failed(path, error)),
+    let outcome = match inspect(path, force)? {
+        Decision::Write(outcome) => outcome,
+        Decision::Done(outcome) => return Ok(outcome),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|error| install_failed(parent, error))?;
@@ -177,13 +167,58 @@ fn install(path: &Path, force: bool) -> Result<Outcome, CliError> {
         .map_err(|error| install_failed(&staged, error))?;
     let written = file.write_all(DISCOVERY_SKILL.as_bytes());
     drop(file);
-    written
-        .and_then(|()| fs::rename(&staged, path))
-        .map_err(|error| {
+    if let Err(error) = written {
+        fs::remove_file(&staged).ok();
+        return Err(install_failed(path, error));
+    }
+    // Look again right before publishing, so a symlink or customized file
+    // that another tool put in place while this run staged its copy is
+    // kept. Without directory handles a path check cannot close the window
+    // entirely, but it shrinks it to the rename itself.
+    match inspect(path, force) {
+        Ok(Decision::Write(_)) => {}
+        Ok(Decision::Done(current)) => {
             fs::remove_file(&staged).ok();
-            install_failed(path, error)
-        })?;
+            return Ok(current);
+        }
+        Err(error) => {
+            fs::remove_file(&staged).ok();
+            return Err(error);
+        }
+    }
+    fs::rename(&staged, path).map_err(|error| {
+        fs::remove_file(&staged).ok();
+        install_failed(path, error)
+    })?;
     Ok(outcome)
+}
+
+/// Decide what to do with the skill at `path` as it stands right now.
+fn inspect(path: &Path, force: bool) -> Result<Decision, CliError> {
+    for component in [path.parent(), Some(path)].into_iter().flatten() {
+        if let Some(target) = symlink_target(component)? {
+            return Ok(Decision::Done(Outcome::Linked {
+                link: component.to_path_buf(),
+                target,
+            }));
+        }
+    }
+    match fs::read(path) {
+        Ok(existing) if existing == DISCOVERY_SKILL.as_bytes() => {
+            Ok(Decision::Done(Outcome::Unchanged))
+        }
+        Ok(existing) if PUBLISHED_DIGESTS.contains(&digest(&existing)) => {
+            Ok(Decision::Write(Outcome::Updated))
+        }
+        Ok(_) if force => Ok(Decision::Write(Outcome::Replaced)),
+        Ok(_) => Err(CliError::SkillFileExists {
+            path: path.display().to_string(),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(Decision::Write(Outcome::Installed))
+        }
+        Err(error) => Err(install_failed(path, error)),
+    }
 }
 
 /// The target of `path` when it is a symlink (dangling or not). A missing
