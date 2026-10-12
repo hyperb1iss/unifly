@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Version = "",
-    [string]$InstallDir = ""
+    [string]$InstallDir = "",
+    [switch]$NoSkill
 )
 
 Set-StrictMode -Version Latest
@@ -73,6 +74,44 @@ function Install-Unifly([string]$ResolvedVersion, [string]$TargetDir) {
     return $destination
 }
 
+# Install the agent skill for the current user. Package managers cannot
+# reach a profile directory, but this script runs as the user. Pass
+# -NoSkill or set UNIFLY_NO_SKILL=1 to skip it. Native stderr must not
+# trip $ErrorActionPreference = "Stop" on Windows PowerShell 5.1.
+function Install-AgentSkill([string]$BinaryPath) {
+    if ($NoSkill -or $env:UNIFLY_NO_SKILL) {
+        return
+    }
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $succeeded = $false
+    $output = @()
+    try {
+        # Releases before `unifly skill --install` cannot do this.
+        $help = (& $BinaryPath skill --help 2>$null) -join "`n"
+        if ($help -notmatch "--install") {
+            return
+        }
+        $output = @(& $BinaryPath skill --install 2>&1)
+        $succeeded = $LASTEXITCODE -eq 0
+    } catch {
+        $succeeded = $false
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    if ($succeeded) {
+        foreach ($line in $output) {
+            if ($line -is [System.Management.Automation.ErrorRecord]) {
+                Write-Ok "$line"
+            }
+        }
+    } else {
+        Write-Warn "Could not install the agent skill; run 'unifly skill --install' to see why."
+    }
+}
+
 Write-Host ""
 Write-Host "  unifly installer" -ForegroundColor Magenta
 Write-Host ""
@@ -84,6 +123,7 @@ $pathUpdated = Ensure-PathContains -PathEntry $resolvedInstallDir
 $installedVersion = & $binaryPath --version
 
 Write-Ok "Installed $installedVersion"
+Install-AgentSkill -BinaryPath $binaryPath
 
 if ($pathUpdated) {
     Write-Warn "Added $resolvedInstallDir to your user PATH."
