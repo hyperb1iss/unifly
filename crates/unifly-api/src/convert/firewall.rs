@@ -389,6 +389,7 @@ impl From<integration_types::AclRuleResponse> for AclRule {
             id: EntityId::Uuid(r.id),
             name: r.name,
             enabled: r.enabled,
+            index: Some(r.index),
             rule_type,
             action,
             source_summary: None,
@@ -546,5 +547,21 @@ mod tests {
         });
         let group = firewall_group_from_session(&raw).expect("should parse");
         assert_eq!(group.group_members, Vec::<String>::new());
+    }
+
+    #[test]
+    fn acl_rule_keeps_its_evaluation_index() {
+        let raw = json!({
+            "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a03",
+            "name": "Block cameras",
+            "type": "IPV4",
+            "action": "BLOCK",
+            "enabled": true,
+            "index": 3,
+            "metadata": {"origin": "USER_DEFINED"}
+        });
+        let response: integration_types::AclRuleResponse =
+            serde_json::from_value(raw).expect("ACL rule should parse");
+        assert_eq!(AclRule::from(response).index, Some(3));
     }
 }

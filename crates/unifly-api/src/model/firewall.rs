@@ -275,6 +275,8 @@ pub struct NatPolicy {
     pub dst_port: Option<String>,
     pub translated_address: Option<String>,
     pub translated_port: Option<String>,
+    /// Session v2 `rule_index`: the rule's position in the NAT rule list.
+    pub rule_index: Option<u64>,
     pub origin: Option<EntityOrigin>,
 
     #[serde(skip)]
@@ -345,6 +347,8 @@ pub struct AclRule {
     pub id: EntityId,
     pub name: String,
     pub enabled: bool,
+    /// Evaluation position; the controller checks lower indexes first.
+    pub index: Option<i32>,
     pub rule_type: AclRuleType,
     pub action: AclAction,
     pub source_summary: Option<String>,
