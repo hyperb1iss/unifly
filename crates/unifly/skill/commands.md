@@ -9,9 +9,10 @@ Load `unifly skill concepts` for authentication and configuration, or
 
 Choose `-o json` for automation. List output is normally an array; get output
 is normally an object. `unifly skill concepts` lists the JSON field names for
-devices, clients, events, alarms, health, WANs, and stats. Compact JSON (`-o json-compact`) serializes the same
-value on one line, including the whole array for lists. Convert list output
-to one object per line with `jq -c '.[]'` when needed. Event watching emits
+devices, clients, events, alarms, health, WANs, and stats. Compact JSON
+(`-o json-compact`) serializes the same value on one line, including the
+whole array for lists. Convert list output to one object per line with
+`jq -c '.[]'` when needed. Event watching emits
 one compact JSON event per line with either JSON format.
 
 Config inspection is an exception to the JSON preference: use `config show
@@ -278,9 +279,11 @@ read-only commands work, in every output format: `system health|info`,
 other command exits 5 with "not available in demo mode" before reading
 config or touching the network. The fleet has problems worth diagnosing:
 an offline AP, an AP with firmware waiting, a dark camera port on the core
-switch, and an unplugged second WAN. Health, alarms, events, and devices
-all agree on them. `--demo-seed N` selects a different fleet;
-the same seed reproduces the same names, MACs, IPs, and IDs. The data is
+switch, and an unplugged second WAN. Alarms, events, WANs, and devices
+agree on them; health shows the offline AP as a `wlan` warning. Demo stats
+rows carry the default attributes and ignore `--attrs`.
+`--demo-seed N` selects a different fleet; the same seed reproduces the
+same names, MACs, IPs, and IDs. The data is
 fictional, so never present it as the user's network. `unifly tui
 --demo-fleet` runs the dashboard against the same fleet, while plain
 `--demo` sanitizes a real controller's data in the TUI.

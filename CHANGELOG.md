@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `wans list` (WAN up on 203.0.113.42, WAN2 without link), and `alarms
   list` all answer from the fleet's standing problems (the offline AP, the
   AP with firmware waiting, the dark camera port, the unplugged WAN2), so
-  they agree with `events list` and `devices get`.
+  they agree with `events list` and `devices get`. `wifi get` and
+  `devices stats` answer too.
   Any other command fails with a "not available in demo mode" error before
   it reads config or touches the network. Library users get the same fleet
   from `Controller::demo` behind the new `demo` feature of `unifly-api`.

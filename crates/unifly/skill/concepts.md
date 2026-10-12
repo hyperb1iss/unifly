@@ -81,11 +81,14 @@ ID. Devices and clients also have MAC addresses. Inspect the accepted
 identifier in command help before composing a pipeline. In particular,
 `clients block` expects a MAC, whereas plain list output emits entity IDs.
 
-Commands that target one device, and every `get`, resolve the identifier
-in tiers: ID first, then MAC (any separator or case), then IP, then the
-display name compared exactly but case-insensitively. The first tier with
-a match decides. Two matches fail with exit 2 and list each candidate's
-ID instead of guessing, so prefer IDs in scripts that must not stop.
+Commands that target one device, client lookups, and the `get` commands
+for networks, WiFi, firewall, NAT, ACL, DNS, traffic lists, and vouchers
+resolve the identifier in tiers: ID first, then MAC (any separator or
+case), then IP, then the display name compared exactly but
+case-insensitively. The first tier with a match decides. Two matches fail
+with exit 2 and list each candidate's ID instead of guessing, so prefer IDs
+in scripts that must not stop. VPN, cloud, and settings commands keep their
+own IDs and keys.
 
 Client lookup with `clients find` searches name, hostname, IP, and MAC.
 The observability commands `clients roams` and `clients wifi` resolve names
