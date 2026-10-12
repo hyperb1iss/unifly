@@ -852,6 +852,15 @@ instructions in `crates/unifly/skill/`, embedded by `cli/skill.rs` so Cargo
 packages and standalone binaries carry the matching guide. The command
 inventory is generated from Clap; do not maintain another command table.
 
+`unifly skill --install` writes the stub into `~/.agents/skills/unifly/`
+(or `--dir`, or `--claude`) from an embedded copy at
+`crates/unifly/skill/discovery-skill.md`, because Cargo cannot package
+files outside the crate. Edit both copies together; a unit test fails when
+they differ. The installer replaces an existing `SKILL.md` without `--force`
+only when its digest is in `PUBLISHED_DIGESTS` (`cli/skill/install.rs`), so
+whenever the stub changes, append its new digest (the failing test prints
+it) and never remove old ones.
+
 When behavior changes, update the relevant core, commands, concepts, or
 workflows topic. Update the payload templates under `skill/examples/` when
 request shapes change, and keep the example registry and deserialization

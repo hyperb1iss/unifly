@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   payload examples, and a command inventory generated from Clap. Corrected
   authentication boundaries, raw API paths, identifiers, and output recipes.
   Older binaries need an update before they can serve the new discovery skill.
+- **`unifly skill --install` puts the discovery skill where agents look.**
+  It writes `~/.agents/skills/unifly/SKILL.md` for the current user, or
+  targets Claude Code's skills directory with `--claude` or any skills
+  directory with `--dir`, without reading configuration or touching a
+  controller. A rerun is a no-op, and a skill from `npx skills add` or an
+  earlier release is upgraded in place; any other `SKILL.md` stays untouched
+  unless `--force` is given. The installed path is printed on stdout.
 
 ### Security
 
