@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use unifly_api::{Device, DeviceState, DeviceType, EntityId};
+use unifly_api::{Device, DeviceState, DeviceType, EntityId, UplinkMedium};
 
 /// Vertical distance from one tree level to the next, in canvas units.
 pub(super) const LEVEL_GAP: f64 = 18.0;
@@ -43,9 +43,9 @@ impl TopoNode {
 /// How a device reaches its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LinkKind {
-    /// Uplink reported by the controller over a cable.
+    /// Wired uplink, or an uplink whose medium the controller did not report.
     Wired,
-    /// Wireless mesh: an AP uplinked to another AP with no switch port.
+    /// Wireless uplink as reported by the controller (mesh).
     Wireless,
     /// No usable uplink was reported; drawn to the gateway as a best guess.
     Inferred,
@@ -205,10 +205,9 @@ fn resolve_parents(devices: &[Arc<Device>]) -> Vec<Option<(usize, LinkKind)>> {
                 })
                 .copied()
                 .filter(|parent| *parent != index)?;
-            let mesh = device.device_type == DeviceType::AccessPoint
-                && devices[parent].device_type == DeviceType::AccessPoint
-                && device.uplink_port_idx.is_none();
-            let kind = if mesh {
+            // Trust the medium the controller reports. When it is unknown,
+            // draw a plain link rather than guessing at mesh.
+            let kind = if device.uplink_medium == Some(UplinkMedium::Wireless) {
                 LinkKind::Wireless
             } else {
                 LinkKind::Wired
@@ -323,9 +322,15 @@ mod tests {
     use std::sync::Arc;
 
     use serde_json::json;
-    use unifly_api::{Device, DeviceType};
+    use unifly_api::{Device, DeviceType, UplinkMedium};
 
     use super::{LinkKind, TopoLayout, layout};
+
+    fn wireless(device: Arc<Device>) -> Arc<Device> {
+        let mut device = Arc::unwrap_or_clone(device);
+        device.uplink_medium = Some(UplinkMedium::Wireless);
+        Arc::new(device)
+    }
 
     fn device(
         name: &str,
@@ -389,13 +394,13 @@ mod tests {
     fn fleet() -> Vec<Arc<Device>> {
         vec![
             device("ap-lost", "00:00:00:00:00:07", "AccessPoint", None, None),
-            device(
+            wireless(device(
                 "ap-mesh",
                 "00:00:00:00:00:06",
                 "AccessPoint",
                 Some("00:00:00:00:00:04"),
                 None,
-            ),
+            )),
             device(
                 "ap-b",
                 "00:00:00:00:00:05",
@@ -493,6 +498,45 @@ mod tests {
         }
         let [x_min, x_max, y_min, y_max] = layout.bounds;
         assert!(x_min < x_max && y_min < y_max);
+    }
+
+    #[test]
+    fn link_kind_follows_the_reported_medium_not_the_device_types() {
+        let devices = vec![
+            device("gw", "00:00:00:00:00:01", "Gateway", None, None),
+            device(
+                "ap-a",
+                "00:00:00:00:00:02",
+                "AccessPoint",
+                Some("00:00:00:00:00:01"),
+                Some(3),
+            ),
+            // AP to AP over a cable whose remote port went unreported.
+            device(
+                "ap-wired",
+                "00:00:00:00:00:03",
+                "AccessPoint",
+                Some("00:00:00:00:00:02"),
+                None,
+            ),
+            // Wireless uplink straight to a radio-bearing gateway.
+            wireless(device(
+                "ap-air",
+                "00:00:00:00:00:04",
+                "AccessPoint",
+                Some("00:00:00:00:00:01"),
+                None,
+            )),
+        ];
+        let layout = layout(&devices);
+        assert_eq!(
+            parent_of(&layout, "ap-wired"),
+            Some(("ap-a".into(), LinkKind::Wired))
+        );
+        assert_eq!(
+            parent_of(&layout, "ap-air"),
+            Some(("gw".into(), LinkKind::Wireless))
+        );
     }
 
     #[test]

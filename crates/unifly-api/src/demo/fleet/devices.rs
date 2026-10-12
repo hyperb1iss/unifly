@@ -13,7 +13,7 @@ use crate::demo::rng::{DemoRng, to_u64};
 use crate::model::common::{Bandwidth, DataSource};
 use crate::model::{
     Device, DeviceState, DeviceStats, DeviceType, EntityId, EntityOrigin, MacAddress, PoeInfo,
-    Port, PortConnector, PortState, Radio,
+    Port, PortConnector, PortState, Radio, UplinkMedium,
 };
 
 /// Where each AP plugs in: `Some((switch device index, switch port))`, or
@@ -59,6 +59,7 @@ pub(super) fn build(fleet: &mut Fleet, rng: &mut DemoRng) {
             child.uplink_device_id = Some(parent_id);
             child.uplink_device_mac = Some(parent_mac);
             child.uplink_port_idx = None;
+            child.uplink_medium = Some(UplinkMedium::Wireless);
             child.ports.clear();
         }
     }
@@ -157,6 +158,7 @@ fn base_device(
         uplink_device_id: None,
         uplink_device_mac: None,
         uplink_port_idx: None,
+        uplink_medium: None,
         has_switching: false,
         has_access_point: false,
         stats: DeviceStats {
@@ -357,6 +359,7 @@ fn link(
     device.uplink_device_id = Some(parent_id);
     device.uplink_device_mac = Some(parent_mac);
     device.uplink_port_idx = Some(parent_port);
+    device.uplink_medium = Some(UplinkMedium::Wired);
     if let Some(port) = device
         .ports
         .iter_mut()

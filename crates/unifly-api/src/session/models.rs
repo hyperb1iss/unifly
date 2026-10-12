@@ -196,6 +196,9 @@ fn lenient_u64_from_value(value: &serde_json::Value) -> Option<u64> {
 /// Uplink summary nested inside `SessionDevice`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionUplink {
+    /// Uplink medium: `"wire"` or `"wireless"`.
+    #[serde(default, rename = "type", deserialize_with = "lenient_string")]
+    pub uplink_type: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
     pub uplink_mac: Option<String>,
     #[serde(default, deserialize_with = "lenient_u32")]

@@ -119,9 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Topology draws the real uplink tree.** The Topology screen used to
   connect every switch to every access point, whatever the cabling. It now
   lays devices out under the device they report as their uplink, gateway at
-  the root, with the parent's port number on each wired link, wireless mesh
-  links dashed, and devices with no reported uplink attached to the gateway
-  by a dim dotted line. The view fits the whole tree at 100% zoom.
+  the root, with the parent's port number on each wired link, uplinks the
+  controller reports as wireless (Session `uplink.type`, now carried as
+  `Device::uplink_medium`) dashed, and devices with no reported uplink
+  attached to the gateway by a dim dotted line. The view fits the whole
+  tree at 100% zoom.
 
 ### Performance
 

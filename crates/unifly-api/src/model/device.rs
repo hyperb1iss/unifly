@@ -198,6 +198,16 @@ pub struct PortProfile {
     pub port_profile_id: Option<String>,
 }
 
+/// How a device reaches its uplink, as the controller reports it
+/// (Session `uplink.type`: `wire` or `wireless`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UplinkMedium {
+    Wired,
+    /// Wireless uplink, such as a mesh AP hanging off another AP.
+    Wireless,
+}
+
 /// Radio on an access point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Radio {
@@ -260,6 +270,9 @@ pub struct Device {
     /// uplink is wired and the upstream switch reported the remote port.
     /// `None` for wireless uplinks and root devices.
     pub uplink_port_idx: Option<u32>,
+    /// Uplink medium when the controller reports it; `None` when unknown.
+    #[serde(default)]
+    pub uplink_medium: Option<UplinkMedium>,
 
     // Features (from Integration API)
     pub has_switching: bool,

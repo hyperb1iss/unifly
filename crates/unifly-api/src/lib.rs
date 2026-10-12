@@ -81,6 +81,6 @@ pub use model::{
     FirewallGroupType, FirewallPolicy, FirewallZone, HealthSummary, IpsecSa, MacAddress,
     MagicSiteToSiteVpnConfig, NatPolicy, NatType, Network, PoeMode, PortMode, PortProfile,
     PortSpeedSetting, PortState, RadiusProfile, RemoteAccessVpnServer, Site, SiteToSiteVpn,
-    StpState, SysInfo, SystemInfo, TrafficMatchingList, VpnClientConnection, VpnClientProfile,
-    VpnServer, VpnSetting, VpnTunnel, WanInterface, WireGuardPeer,
+    StpState, SysInfo, SystemInfo, TrafficMatchingList, UplinkMedium, VpnClientConnection,
+    VpnClientProfile, VpnServer, VpnSetting, VpnTunnel, WanInterface, WireGuardPeer,
 };
