@@ -19,6 +19,7 @@ mod catalog;
 mod commands;
 mod diagnostics;
 pub(crate) mod fleet;
+mod ports;
 mod queries;
 mod rng;
 pub(crate) mod sim;
