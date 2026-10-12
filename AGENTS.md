@@ -15,8 +15,8 @@ For end-user documentation see `README.md`. For contributor workflow see
 unifly is a Rust CLI and TUI for managing Ubiquiti UniFi network
 infrastructure. A single `unifly` binary ships three user-facing surfaces:
 
-- **CLI commands** (`unifly devices list`, etc.): 28 top-level commands
-  (27 without the `tui` feature) covering devices and switch port management
+- **CLI commands** (`unifly devices list`, etc.): 29 top-level commands
+  (28 without the `tui` feature) covering devices and switch port management
   (`ports / ports-export / port-set`), clients, networks, WiFi, firewall
   (policies, zones, and groups), NAT, DNS, ACL, traffic-lists, hotspot,
   events, stats, DPI, VPN (servers, tunnels, site-to-site, remote-access,
@@ -25,8 +25,8 @@ infrastructure. A single `unifly` binary ships three user-facing surfaces:
   (`settings`), cloud fleet queries, and a raw `api` escape hatch.
 - **TUI dashboard** (`unifly tui`) -- 11-screen Ratatui interface for real-time
   monitoring and interactive management.
-- **Agent skill** at `skills/unifly/SKILL.md`: bundled documentation that
-  teaches AI agents to drive the CLI.
+- **Agent skill** at `skills/unifly/SKILL.md`: a discovery stub that loads
+  version-matched guidance through `unifly skill`.
 
 The binary is powered by the `unifly-api` library crate, which is also
 published independently on crates.io for Rust developers building custom
@@ -250,8 +250,8 @@ in `commands/mod.rs::dispatch()` via match on `Command`.
 2. Create `cli/args/<new>.rs` with the clap subcommand definitions
 3. Create `cli/commands/<new>.rs` with `handle(controller, args, global)`
 4. Add the dispatch arm in `cli/commands/mod.rs::dispatch()`
-5. Update `skills/unifly/SKILL.md` command inventory (do not skip this)
-6. Update `skills/unifly/references/commands.md` gotchas section
+5. Verify `unifly skill commands` includes the new command automatically
+6. Update `crates/unifly/skill/commands.md` for behavior help cannot convey
 
 ### Access Gate Gotcha
 
@@ -529,7 +529,7 @@ next release.
 1. `.github/workflows/release.yml` is triggered manually via
    `workflow_dispatch` with a `version` or `bump` input.
 2. The shared workflow bumps the workspace version in `Cargo.toml` and
-   the plugin manifests and skill (its `version-files` list), runs the
+   the plugin manifests (its `version-files` list), runs the
    full build + test + clippy gate, generates release notes with git-iris
    and uploads them as an artifact, commits the bump, tags `vX.Y.Z`,
    pushes the commit and tag, and dispatches `.github/workflows/cicd.yml`
@@ -603,8 +603,9 @@ The `version` field in each must match the workspace version exactly.
 These have drifted before. If the workspace is at `0.8.0`, all three must
 say `0.8.0`.
 
-The release workflow patches all three (plus `skills/unifly/SKILL.md`)
-through its `version-files` input, so a normal release keeps them in sync.
+The release workflow patches all three through its `version-files` input,
+so a normal release keeps them in sync. The discovery skill is versionless;
+ClawHub publication receives the release version explicitly.
 Check them by hand only when bumping the version outside `release.yml`.
 
 ---
@@ -813,8 +814,8 @@ markdown changes do not redeploy the site.
 3. Implement `handle()` in `cli/commands/<cmd>.rs`
 4. Add dispatch arm in `cli/commands/mod.rs::dispatch`
 5. Call `util::access::ensure_integration_access` if Integration-only
-6. Update `skills/unifly/SKILL.md` command inventory (count + table)
-7. Update `skills/unifly/references/commands.md` with gotchas
+6. Verify the generated `unifly skill commands` inventory includes the command
+7. Update `crates/unifly/skill/commands.md` with operational gotchas
 8. Add a happy-path test in `crates/unifly/tests/cli_test.rs`
 
 ### Adding a New API Endpoint
@@ -838,19 +839,20 @@ markdown changes do not redeploy the site.
 
 ### Updating the Agent Skill
 
-The skill at `skills/unifly/SKILL.md` has its own word budget and
-structure (see `skills/unifly/references/` for detailed content). When
-adding or renaming CLI commands, update:
+The installed `skills/unifly/SKILL.md` is a discovery stub. Keep operational
+instructions in `crates/unifly/skill/`, embedded by `cli/skill.rs` so Cargo
+packages and standalone binaries carry the matching guide. The command
+inventory is generated from Clap; do not maintain another command table.
 
-- `skills/unifly/SKILL.md` command inventory table
-- `skills/unifly/references/commands.md` per-command section
-- `skills/unifly/references/concepts.md` dual-API gate matrix if the
-  command affects auth mode requirements
-- `skills/unifly/references/workflows.md` if the change enables a new
-  differentiator pattern worth highlighting
+When behavior changes, update the relevant core, commands, concepts, or
+workflows topic. Update the payload templates under `skill/examples/` when
+request shapes change, and keep the example registry and deserialization
+tests in sync. Runtime bundling prevents version skew; behavioral prose
+still needs source review when auth, output, or mutation semantics change.
 
-Update `skills/unifly/examples/*.json` if the payload shape for
-`--from-file` changes.
+The skill command must remain offline and independent of configuration,
+credentials, and controller access. Run the skill tests in both the default
+and CLI-only builds, and check Cargo packaging includes every guide asset.
 
 ---
 

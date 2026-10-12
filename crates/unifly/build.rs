@@ -17,6 +17,7 @@ fn main() {
 
     // Re-run if the CLI definitions change.
     println!("cargo::rerun-if-changed=src/cli/args.rs");
+    println!("cargo::rerun-if-changed=src/cli/args");
 
     let out_dir: PathBuf = std::env::var_os("OUT_DIR")
         .expect("OUT_DIR not set by Cargo")

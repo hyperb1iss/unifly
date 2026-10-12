@@ -76,6 +76,8 @@ fn init_tracing(verbosity: u8) {
 #[allow(clippy::future_not_send)]
 async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
+        Command::Skill(args) => unifly::cli::skill::handle(&args),
+
         Command::Cloud(args) => {
             init_tracing(cli.global.verbose);
             commands::cloud::handle(args, &cli.global).await
