@@ -165,8 +165,9 @@ device.stats: uptime_secs cpu_utilization_pct memory_utilization_pct
   uplink_bandwidth
 device.stats.uplink_bandwidth: tx_bytes_per_sec rx_bytes_per_sec
 client: id mac ip name hostname client_type connected_at uplink_device_id
-  uplink_device_mac switch_port network_id vlan is_guest blocked tx_bytes
-  rx_bytes bandwidth os_name device_class use_fixedip fixed_ip wireless
+  uplink_device_mac switch_port network_id network_name vlan is_guest
+  blocked tx_bytes rx_bytes bandwidth os_name device_class use_fixedip
+  fixed_ip wireless
 client.bandwidth: tx_bytes_per_sec rx_bytes_per_sec
 client.wireless: ssid bssid channel frequency_ghz signal_dbm noise_dbm
   satisfaction tx_rate_kbps rx_rate_kbps
