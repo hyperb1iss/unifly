@@ -169,7 +169,7 @@ unifly tui --demo                        # Falls back to the demo fleet when no 
 
 The same seed produces the same fleet and the same animation from launch, so a screenshot or a recording can be reshot identically; only wall-clock timestamps differ. When `--demo` is set and no controller can be resolved from flags, environment, or config, the TUI opens the demo fleet instead of onboarding and logs that it did. The sanitizer never runs on the demo fleet, because its data is fictional already: documentation and private address ranges, locally administered MACs, and invented names.
 
-Device actions (restart, locate, upgrade, PoE power cycle) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Power cycling the dark camera port on `sw-core` brings that camera back. Changes that need a real controller, such as editing a network or deleting a policy, are refused with a clear error.
+Device actions (restart, locate, upgrade, PoE power cycle) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Power cycling the dark camera port on `sw-core` brings that camera back. Changes that need a real controller, such as editing a network or deleting a policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
 
 `--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 

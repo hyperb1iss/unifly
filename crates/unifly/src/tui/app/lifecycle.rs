@@ -7,11 +7,23 @@ use super::App;
 use crate::tui::action::{Action, Notification};
 use crate::tui::screen::ScreenId;
 
+/// Shown instead of Settings while the demo fleet is on screen.
+const DEMO_SETTINGS_NOTICE: &str = "Demo fleet: settings are disabled";
+
 impl App {
+    /// Whether this session is showing the synthetic demo fleet. Nothing in
+    /// such a session may read real profiles or connect a real controller.
+    pub(super) fn demo_fleet_active(&self) -> bool {
+        self.controller.as_ref().is_some_and(Controller::is_demo)
+    }
+
     pub(super) fn handle_onboarding_complete(
         &mut self,
         config: &unifly_api::ControllerConfig,
     ) -> Result<()> {
+        if self.demo_fleet_active() {
+            return self.refuse_in_demo_fleet();
+        }
         self.screens.remove(&ScreenId::Setup);
 
         let controller = Controller::new(config.clone());
@@ -28,6 +40,11 @@ impl App {
     pub(super) fn open_settings(&mut self) -> Result<()> {
         if self.active_screen == ScreenId::Settings || self.active_screen == ScreenId::Setup {
             return Ok(());
+        }
+        // The Settings screen loads the real default profile as soon as it
+        // is built, so it never opens over the demo fleet.
+        if self.demo_fleet_active() {
+            return self.refuse_in_demo_fleet();
         }
 
         self.previous_screen = Some(self.active_screen);
@@ -47,6 +64,10 @@ impl App {
     }
 
     pub(super) fn apply_settings(&mut self, config: &unifly_api::ControllerConfig) -> Result<()> {
+        if self.demo_fleet_active() {
+            self.screens.remove(&ScreenId::Settings);
+            return self.refuse_in_demo_fleet();
+        }
         self.reset_data_bridge();
 
         let controller = Controller::new(config.clone());
@@ -60,6 +81,12 @@ impl App {
             "Settings saved, reconnecting\u{2026}",
         )))?;
 
+        Ok(())
+    }
+
+    fn refuse_in_demo_fleet(&self) -> Result<()> {
+        self.action_tx
+            .send(Action::Notify(Notification::info(DEMO_SETTINGS_NOTICE)))?;
         Ok(())
     }
 
@@ -141,5 +168,26 @@ mod tests {
                 .expect("dashboard screen should exist")
                 .focused()
         );
+    }
+
+    #[tokio::test]
+    async fn settings_never_open_over_the_demo_fleet() {
+        let demo = Controller::demo(unifly_api::DemoFleetOptions::default());
+        let mut app = App::new(Some(demo), None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+
+        app.open_settings().expect("open settings");
+        assert_eq!(app.active_screen, ScreenId::Dashboard);
+        assert!(!app.screens.contains_key(&ScreenId::Settings));
+        let notice = app.action_rx.try_recv().expect("a notice is sent");
+        assert!(matches!(notice, Action::Notify(_)));
+
+        // Even a forged apply cannot swap a real controller in.
+        app.apply_settings(&unifly_api::ControllerConfig::default())
+            .expect("apply settings");
+        assert!(app.demo_fleet_active(), "the demo controller must stay");
+        app.handle_onboarding_complete(&unifly_api::ControllerConfig::default())
+            .expect("onboarding complete");
+        assert!(app.demo_fleet_active(), "the demo controller must stay");
     }
 }
