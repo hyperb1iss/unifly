@@ -13,6 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc::UnboundedSender;
 
+use unifly_api::Network;
 use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
 use crate::tui::action::{Action, FirewallSubTab};
@@ -26,6 +27,8 @@ pub struct FirewallScreen {
     zones: Arc<Vec<Arc<FirewallZone>>>,
     acl_rules: Arc<Vec<Arc<AclRule>>>,
     nat_policies: Arc<Vec<Arc<NatPolicy>>>,
+    /// Networks, for the zone table's member names.
+    networks: Arc<Vec<Arc<Network>>>,
     policy_table: TableState,
     zone_table: TableState,
     acl_table: TableState,

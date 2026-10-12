@@ -20,6 +20,7 @@ impl FirewallScreen {
             zones: Arc::new(Vec::new()),
             acl_rules: Arc::new(Vec::new()),
             nat_policies: Arc::new(Vec::new()),
+            networks: Arc::new(Vec::new()),
             policy_table: TableState::default(),
             zone_table: TableState::default(),
             acl_table: TableState::default(),
@@ -113,6 +114,9 @@ impl FirewallScreen {
             Action::NatPoliciesUpdated(policies) => {
                 let ordered = order::nat_policies(policies);
                 replace_rows(&mut self.nat_policies, &mut self.nat_table, ordered);
+            }
+            Action::NetworksUpdated(networks) => {
+                self.networks = Arc::clone(networks);
             }
             Action::FirewallSubTab(tab) => {
                 self.sub_tab = *tab;
