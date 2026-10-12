@@ -58,53 +58,8 @@ impl Controller {
                 identifier: device_mac.to_string(),
             })?;
 
-        let network_lookup = build_network_lookup(&session.list_network_conf().await?);
-
-        let overrides = device
-            .get("port_overrides")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let port_table = device
-            .get("port_table")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
-        // Owned map avoids coupling the lookup's lifetime to the `overrides`
-        // Vec — the fallback branch below consumes `overrides` directly.
-        let override_map: HashMap<u32, Value> = overrides
-            .iter()
-            .filter_map(|o| port_idx(o).map(|idx| (idx, o.clone())))
-            .collect();
-
-        // If the switch reports no port_table, fall back to overrides as the
-        // source of truth (rare for adopted switches but happens mid-provision).
-        let mut profiles: Vec<PortProfile> = if port_table.is_empty() {
-            overrides
-                .iter()
-                .filter_map(|o| {
-                    let idx = port_idx(o)?;
-                    Some(build_profile(idx, None, Some(o), &network_lookup))
-                })
-                .collect()
-        } else {
-            port_table
-                .iter()
-                .filter_map(|row| {
-                    let idx = port_idx(row)?;
-                    Some(build_profile(
-                        idx,
-                        Some(row),
-                        override_map.get(&idx),
-                        &network_lookup,
-                    ))
-                })
-                .collect()
-        };
-
-        profiles.sort_by_key(|p| p.index);
-        Ok(profiles)
+        let networks = session.list_network_conf().await?;
+        Ok(port_profiles(&device, &networks))
     }
 
     /// Resolve a network by name or session `_id` to its session identifier
@@ -367,40 +322,100 @@ impl Controller {
                 identifier: device_mac.to_string(),
             })?;
 
-        let overrides: Vec<Value> = device
-            .get("port_overrides")
+        Ok(export_ports(&device, include_all))
+    }
+}
+
+/// Normalized port profiles from a raw Session device record
+/// (`port_table` plus `port_overrides`) and the site's `networkconf` rows,
+/// sorted by port index.
+pub(crate) fn port_profiles(device: &Value, networks: &[Value]) -> Vec<PortProfile> {
+    let network_lookup = build_network_lookup(networks);
+
+    let overrides = device
+        .get("port_overrides")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let port_table = device
+        .get("port_table")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    // Owned map avoids coupling the lookup's lifetime to the `overrides`
+    // Vec; the fallback branch below consumes `overrides` directly.
+    let override_map: HashMap<u32, Value> = overrides
+        .iter()
+        .filter_map(|o| port_idx(o).map(|idx| (idx, o.clone())))
+        .collect();
+
+    // If the switch reports no port_table, fall back to overrides as the
+    // source of truth (rare for adopted switches but happens mid-provision).
+    let mut profiles: Vec<PortProfile> = if port_table.is_empty() {
+        overrides
+            .iter()
+            .filter_map(|o| {
+                let idx = port_idx(o)?;
+                Some(build_profile(idx, None, Some(o), &network_lookup))
+            })
+            .collect()
+    } else {
+        port_table
+            .iter()
+            .filter_map(|row| {
+                let idx = port_idx(row)?;
+                Some(build_profile(
+                    idx,
+                    Some(row),
+                    override_map.get(&idx),
+                    &network_lookup,
+                ))
+            })
+            .collect()
+    };
+
+    profiles.sort_by_key(|p| p.index);
+    profiles
+}
+
+/// The `port_overrides` of a raw Session device record as an apply request,
+/// sorted by port index. With `include_all`, ports without an override join
+/// as `index` + `name` placeholders.
+pub(crate) fn export_ports(device: &Value, include_all: bool) -> ApplyPortsRequest {
+    let overrides: Vec<Value> = device
+        .get("port_overrides")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut entries: Vec<ApplyPortEntry> = overrides
+        .iter()
+        .filter_map(|raw| port_idx(raw).map(|idx| override_to_entry(idx, raw)))
+        .collect();
+
+    if include_all {
+        let covered: std::collections::HashSet<u32> = entries.iter().map(|e| e.index).collect();
+        let port_table: Vec<Value> = device
+            .get("port_table")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-
-        let mut entries: Vec<ApplyPortEntry> = overrides
-            .iter()
-            .filter_map(|raw| port_idx(raw).map(|idx| override_to_entry(idx, raw)))
-            .collect();
-
-        if include_all {
-            let covered: std::collections::HashSet<u32> = entries.iter().map(|e| e.index).collect();
-            let port_table: Vec<Value> = device
-                .get("port_table")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for row in &port_table {
-                if let Some(idx) = port_idx(row)
-                    && !covered.contains(&idx)
-                {
-                    entries.push(ApplyPortEntry {
-                        index: idx,
-                        name: row.get("name").and_then(Value::as_str).map(str::to_owned),
-                        ..ApplyPortEntry::default()
-                    });
-                }
+        for row in &port_table {
+            if let Some(idx) = port_idx(row)
+                && !covered.contains(&idx)
+            {
+                entries.push(ApplyPortEntry {
+                    index: idx,
+                    name: row.get("name").and_then(Value::as_str).map(str::to_owned),
+                    ..ApplyPortEntry::default()
+                });
             }
         }
-
-        entries.sort_by_key(|e| e.index);
-        Ok(ApplyPortsRequest { ports: entries })
     }
+
+    entries.sort_by_key(|e| e.index);
+    ApplyPortsRequest { ports: entries }
 }
 
 fn override_to_entry(index: u32, raw: &Value) -> ApplyPortEntry {

@@ -22,7 +22,7 @@ mod commands;
 mod demo;
 mod lifecycle;
 mod payloads;
-mod ports;
+pub(crate) mod ports;
 mod query;
 mod refresh;
 mod runtime;
