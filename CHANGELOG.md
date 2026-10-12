@@ -33,7 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   list` all answer from the fleet's standing problems (the offline AP, the
   AP with firmware waiting, the dark camera port, the unplugged WAN2), so
   they agree with `events list` and `devices get`. `wifi get` and
-  `devices stats` answer too.
+  `devices stats` answer too, and so do the switch port views: `devices
+  ports` and `devices ports-export`, with or without `--with-clients`,
+  show each port's VLANs, PoE, and link state from the same fleet (the
+  dark camera port, the two 100 Mbps ports, every AP and switch uplink,
+  WAN2 without link), and the export matches the JSONC `ports-export`
+  writes for a real controller. `devices port-set` stays refused like
+  every other write.
   Any other command fails with a "not available in demo mode" error before
   it reads config or touches the network. Library users get the same fleet
   from `Controller::demo` behind the new `demo` feature of `unifly-api`.
