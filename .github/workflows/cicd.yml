@@ -220,7 +220,12 @@ jobs:
         with:
           pkgname: unifly-bin
           pkgbuild: aur/PKGBUILD
+          assets: aur/unifly-bin.install
           updpkgsums: true
+          # With assets set, the action commits with `git add --all`, which
+          # would also stage the release binaries updpkgsums downloaded into
+          # the repo. The AUR rejects blobs that large.
+          post_process: rm -f -- unifly-bin-*-x86_64 unifly-bin-*-aarch64
           commit_username: Stefanie Jane
           commit_email: stef@hyperbliss.tech
           commit_message: "Update to ${{ github.ref_name }}"
@@ -285,8 +290,22 @@ jobs:
               bin.install Dir["unifly*"].first => "unifly"
             end
 
+            # Homebrew installs for every user, and macOS sandboxes
+            # post_install away from home directories, so each user adds the
+            # agent skill themselves.
+            def caveats
+              <<~EOS
+                unifly ships an agent skill so coding agents can find it.
+                Install it into ~/.agents/skills for your user with:
+                  unifly skill --install
+                Add --claude to install it into Claude Code's skills directory instead.
+              EOS
+            end
+
             test do
               assert_match "unifly #{version}", shell_output("#{bin}/unifly --version")
+              system bin/"unifly", "skill", "--install", "--dir", testpath/"skills"
+              assert_path_exists testpath/"skills/unifly/SKILL.md"
             end
           end
           FORMULA

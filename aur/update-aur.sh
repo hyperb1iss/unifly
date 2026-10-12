@@ -37,6 +37,7 @@ license=('Apache-2.0')
 provides=('unifly')
 conflicts=('unifly')
 depends=('gcc-libs' 'openssl' 'dbus')
+install=unifly-bin.install
 
 source_x86_64=("\${pkgname}-\${pkgver}-x86_64::https://github.com/hyperb1iss/unifly/releases/download/v\${pkgver}/unifly-linux-amd64")
 source_aarch64=("\${pkgname}-\${pkgver}-aarch64::https://github.com/hyperb1iss/unifly/releases/download/v\${pkgver}/unifly-linux-arm64")
@@ -56,6 +57,7 @@ pkgbase = unifly-bin
 	pkgver = ${VERSION_NUM}
 	pkgrel = 1
 	url = https://github.com/hyperb1iss/unifly
+	install = unifly-bin.install
 	arch = x86_64
 	arch = aarch64
 	license = Apache-2.0
@@ -80,9 +82,9 @@ echo "  1. Clone the AUR repo (first time only):"
 echo "     git clone ssh://aur@aur.archlinux.org/unifly-bin.git ~/dev/aur-unifly"
 echo ""
 echo "  2. Copy files and push:"
-echo "     cp PKGBUILD .SRCINFO ~/dev/aur-unifly/"
+echo "     cp PKGBUILD .SRCINFO unifly-bin.install ~/dev/aur-unifly/"
 echo "     cd ~/dev/aur-unifly"
-echo "     git add PKGBUILD .SRCINFO"
+echo "     git add PKGBUILD .SRCINFO unifly-bin.install"
 echo "     git commit -m \"Update to ${VERSION_NUM}\""
 echo "     git push"
 echo ""
