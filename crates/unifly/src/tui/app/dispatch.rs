@@ -107,6 +107,7 @@ impl App {
             | Action::FirewallPoliciesUpdated(_)
             | Action::FirewallZonesUpdated(_)
             | Action::AclRulesUpdated(_)
+            | Action::NatPoliciesUpdated(_)
             | Action::WifiBroadcastsUpdated(_)
             | Action::EventReceived(_)
             | Action::HealthUpdated(_)
