@@ -65,11 +65,16 @@ impl NetworksScreen {
                 return None;
             }
             KeyCode::Enter => {
-                if let Some(edit) = self.edit_state.take() {
+                // Save to the network the form was opened on, never to
+                // whatever row the selection sits on after a refresh.
+                if let Some(edit) = self.edit_state.take()
+                    && self
+                        .networks
+                        .iter()
+                        .any(|network| network.id == edit.network_id)
+                {
                     let request = edit.build_request();
-                    if let Some(network) = self.networks.get(self.selected_index()) {
-                        return Some(Action::NetworkSave(network.id.clone(), Box::new(request)));
-                    }
+                    return Some(Action::NetworkSave(edit.network_id, Box::new(request)));
                 }
                 return None;
             }

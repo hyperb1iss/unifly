@@ -4,7 +4,7 @@ use super::NetworksScreen;
 
 use ratatui::widgets::TableState;
 
-use unifly_api::{Network, UpdateNetworkRequest};
+use unifly_api::{EntityId, Network, UpdateNetworkRequest};
 
 use crate::cli::commands::util::order;
 use crate::tui::action::Action;
@@ -13,6 +13,8 @@ use crate::tui::table::reselect;
 /// Editable fields for a network. Initialized from the selected `Network`.
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct NetworkEditState {
+    /// The network being edited; the save goes to this ID.
+    pub(super) network_id: EntityId,
     name: String,
     vlan_id: String,
     dhcp_enabled: bool,
@@ -30,6 +32,7 @@ impl NetworkEditState {
 
     pub(super) fn from_network(network: &Network) -> Self {
         Self {
+            network_id: network.id.clone(),
             name: network.name.clone(),
             vlan_id: network
                 .vlan_id
@@ -304,6 +307,50 @@ mod tests {
             screen.selected_network().map(|n| n.name.as_str()),
             Some("IoT")
         );
+    }
+
+    #[test]
+    fn edits_save_to_the_network_they_were_opened_on() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let network = |id: u128, name: &str, vlan: u16| -> Arc<Network> {
+            let mut network = test_network();
+            network.id = EntityId::Uuid(Uuid::from_u128(id));
+            network.name = name.to_owned();
+            network.vlan_id = Some(vlan);
+            Arc::new(network)
+        };
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        let mut screen = NetworksScreen::new();
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            network(1, "Guest", 30),
+            network(2, "IoT", 40),
+        ])));
+        screen.select(1);
+        let _ = screen.handle_key_input(key(KeyCode::Char('e')));
+
+        // IoT disappears while its form is open; the row now holds Guest.
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![network(
+            1, "Guest", 30,
+        )])));
+        assert!(screen.handle_key_input(key(KeyCode::Enter)).is_none());
+
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            network(1, "Guest", 30),
+            network(3, "Cameras", 50),
+        ])));
+        screen.select(0);
+        let _ = screen.handle_key_input(key(KeyCode::Char('e')));
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            network(4, "Admin", 5),
+            network(1, "Guest", 30),
+            network(3, "Cameras", 50),
+        ])));
+        assert!(matches!(
+            screen.handle_key_input(key(KeyCode::Enter)),
+            Some(Action::NetworkSave(id, _)) if id == EntityId::Uuid(Uuid::from_u128(3))
+        ));
     }
 
     #[test]
