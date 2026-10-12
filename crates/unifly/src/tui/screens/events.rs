@@ -1,8 +1,9 @@
 //! Events screen — live event stream with pause/filter (spec §2.7).
 
+mod punchcard;
+
 use std::sync::Arc;
 
-use chrono::{Datelike, Timelike};
 use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -18,6 +19,8 @@ use unifly_api::model::EventSeverity;
 use crate::tui::action::Action;
 use crate::tui::component::Component;
 use crate::tui::theme;
+
+use punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
 
 pub struct EventsScreen {
     focused: bool,
@@ -125,13 +128,13 @@ impl Component for EventsScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let show_punchcard = inner.height >= 15 && inner.width >= 48;
+        let show_punchcard = inner.height >= PUNCHCARD_HEIGHT + 7 && inner.width >= 48;
         let layout = if show_punchcard {
             Layout::vertical([
-                Constraint::Length(1), // status line
-                Constraint::Length(8), // punchcard
-                Constraint::Min(1),    // events
-                Constraint::Length(1), // hints
+                Constraint::Length(1),                // status line
+                Constraint::Length(PUNCHCARD_HEIGHT), // punchcard
+                Constraint::Min(1),                   // events
+                Constraint::Length(1),                // hints
             ])
             .split(inner)
         } else {
@@ -146,7 +149,7 @@ impl Component for EventsScreen {
         frame.render_widget(Paragraph::new(self.status_line()), layout[0]);
 
         let (events_area, hints_area) = if show_punchcard {
-            self.render_punchcard(frame, layout[1]);
+            render_punchcard(&self.events, frame, layout[1]);
             (layout[2], layout[3])
         } else {
             (layout[1], layout[2])
@@ -253,71 +256,5 @@ impl EventsScreen {
             Span::styled("search", theme::key_hint()),
         ]);
         frame.render_widget(Paragraph::new(hints), area);
-    }
-
-    fn render_punchcard(&self, frame: &mut Frame, area: Rect) {
-        let buckets = event_punchcard(&self.events);
-        let max_count = buckets
-            .iter()
-            .flatten()
-            .copied()
-            .max()
-            .unwrap_or_default()
-            .max(1);
-        let mut lines = vec![Line::from(vec![
-            Span::styled("  Events by hour  ", theme::table_header()),
-            Span::styled(
-                "00      06      12      18",
-                Style::default().fg(theme::text_muted()),
-            ),
-        ])];
-
-        for (day, row) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-            .iter()
-            .zip(buckets.iter())
-        {
-            let mut spans = vec![Span::styled(
-                format!("  {day} "),
-                Style::default().fg(theme::text_secondary()),
-            )];
-            for count in row {
-                let (symbol, color) = punchcard_cell(*count, max_count);
-                spans.push(Span::styled(symbol, Style::default().fg(color)));
-            }
-            lines.push(Line::from(spans));
-        }
-
-        frame.render_widget(Paragraph::new(lines), area);
-    }
-}
-
-fn event_punchcard(events: &[Arc<Event>]) -> [[usize; 24]; 7] {
-    let mut buckets = [[0usize; 24]; 7];
-    for event in events {
-        let day = usize::try_from(event.timestamp.weekday().num_days_from_monday()).unwrap_or(0);
-        let hour = usize::try_from(event.timestamp.hour()).unwrap_or(0);
-        buckets[day][hour] = buckets[day][hour].saturating_add(1);
-    }
-    buckets
-}
-
-fn punchcard_cell(count: usize, max_count: usize) -> (&'static str, ratatui::style::Color) {
-    if count == 0 {
-        return ("░", theme::text_muted());
-    }
-    let colors = theme::event_density_colors();
-    let max_count = max_count.max(1);
-    let scaled = if max_count <= 1 || count.saturating_mul(3) <= max_count {
-        1
-    } else if count.saturating_mul(3) <= max_count.saturating_mul(2) {
-        2
-    } else {
-        3
-    };
-
-    match scaled {
-        1 => ("▒", colors[0]),
-        2 => ("▓", colors[1]),
-        _ => ("█", colors[2]),
     }
 }
