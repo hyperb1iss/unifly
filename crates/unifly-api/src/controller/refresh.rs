@@ -13,6 +13,7 @@ use super::Controller;
 
 mod integration;
 mod merge;
+mod optional;
 mod poll;
 mod session;
 
@@ -53,18 +54,22 @@ impl Controller {
         let session_client = self.inner.session_client.lock().await.clone();
         let session = session::fetch_optional(session_client).await;
 
-        merge::merge_session_clients(&mut integration.clients, &session.clients, &session.users);
-        merge::merge_session_devices(&mut integration.devices, &session.devices);
+        merge::merge_session_clients(
+            &mut integration.clients,
+            session.clients.as_deref().unwrap_or_default(),
+            session.users.as_deref().unwrap_or_default(),
+        );
+        merge::merge_session_devices(
+            &mut integration.devices,
+            session.devices.as_deref().unwrap_or_default(),
+        );
 
-        if !session.health.is_empty() {
-            let health = Arc::new(session.health);
-            self.inner
-                .store
-                .site_health
-                .send_modify(|current| *current = Arc::clone(&health));
+        if let Some(health) = session.health {
+            let _previous = self.inner.store.site_health.send_replace(Arc::new(health));
         }
 
-        let fresh_events = unseen_events(self.store(), &session.events);
+        let fresh_events =
+            unseen_events(self.store(), session.events.as_deref().unwrap_or_default());
         self.inner
             .store
             .apply_integration_snapshot(RefreshSnapshot {
@@ -99,6 +104,8 @@ impl Controller {
         let session = session::fetch_required(session_client).await?;
         let fresh_events = unseen_events(self.store(), &session.events);
 
+        // Without the Integration API this connection has no source for the
+        // Integration-only collections, so they are authoritatively empty.
         self.inner
             .store
             .apply_integration_snapshot(RefreshSnapshot {
@@ -106,14 +113,14 @@ impl Controller {
                 clients: session.clients,
                 networks: Vec::new(),
                 wifi: Vec::new(),
-                policies: Vec::new(),
-                zones: Vec::new(),
-                acls: Vec::new(),
+                policies: Some(Vec::new()),
+                zones: Some(Vec::new()),
+                acls: Some(Vec::new()),
                 nat: session.nat,
-                dns: Vec::new(),
-                vouchers: Vec::new(),
+                dns: Some(Vec::new()),
+                vouchers: Some(Vec::new()),
                 sites: session.sites,
-                events: session.events,
+                events: Some(session.events),
                 traffic_matching_lists: Vec::new(),
                 firewall_groups: session.firewall_groups,
             });

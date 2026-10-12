@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use url::Url;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use unifly_api::model::DnsPolicyType;
 use unifly_api::{
@@ -235,7 +235,7 @@ async fn mount_api_key_integration_routes(server: &MockServer) {
             dns_policies_page(),
         ),
         (
-            format!("/proxy/network/integration/v1/sites/{API_KEY_SITE_ID}/vouchers"),
+            format!("/proxy/network/integration/v1/sites/{API_KEY_SITE_ID}/hotspot/vouchers"),
             empty_integration_page(200),
         ),
         (
@@ -839,6 +839,290 @@ async fn full_refresh_does_not_rebroadcast_duplicate_legacy_events() {
         "refresh should not rebroadcast already-seen session events"
     );
     assert_eq!(controller.events_snapshot().len(), 1);
+
+    controller.disconnect().await;
+}
+
+fn integration_route(suffix: &str) -> String {
+    format!("/proxy/network/integration/v1/sites/{API_KEY_SITE_ID}/{suffix}")
+}
+
+fn integration_page(item: &serde_json::Value) -> serde_json::Value {
+    json!({
+        "offset": 0,
+        "limit": 200,
+        "count": 1,
+        "totalCount": 1,
+        "data": [item],
+    })
+}
+
+fn nat_rules_body() -> serde_json::Value {
+    json!([{
+        "_id": "nat-1",
+        "type": "DNAT",
+        "description": "web forward",
+        "enabled": true,
+    }])
+}
+
+fn firewall_groups_envelope() -> serde_json::Value {
+    legacy_envelope(&json!([{
+        "_id": "fwg-1",
+        "name": "web-ports",
+        "group_type": "port-group",
+        "group_members": ["80", "443"],
+    }]))
+}
+
+/// What every switchable optional route serves on its next request.
+#[derive(Clone, Copy)]
+enum RoutePhase {
+    Populated,
+    Failing(u16),
+    Empty,
+}
+
+/// An optional endpoint whose response follows a shared [`RoutePhase`].
+///
+/// Flipping one phase beats scoped mock overrides: wiremock re-sorts its
+/// mocks by priority on every request, and a dropped scoped guard then
+/// deactivates whichever mock now sits at its stored index.
+struct SwitchableRoute {
+    phase: Arc<std::sync::Mutex<RoutePhase>>,
+    populated: serde_json::Value,
+    empty: serde_json::Value,
+}
+
+impl Respond for SwitchableRoute {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let phase = *self.phase.lock().unwrap();
+        match phase {
+            RoutePhase::Populated => ResponseTemplate::new(200).set_body_json(&self.populated),
+            RoutePhase::Failing(status) => ResponseTemplate::new(status),
+            RoutePhase::Empty => ResponseTemplate::new(200).set_body_json(&self.empty),
+        }
+    }
+}
+
+/// Mount each `(route, populated body, empty body)` ahead of the default
+/// mocks and return the phase switch they all share.
+async fn mount_switchable_routes(
+    server: &MockServer,
+    routes: Vec<(String, serde_json::Value, serde_json::Value)>,
+) -> Arc<std::sync::Mutex<RoutePhase>> {
+    let phase = Arc::new(std::sync::Mutex::new(RoutePhase::Populated));
+    for (route, populated, empty) in routes {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(SwitchableRoute {
+                phase: Arc::clone(&phase),
+                populated,
+                empty,
+            })
+            .with_priority(1)
+            .mount(server)
+            .await;
+    }
+    phase
+}
+
+fn set_phase(phase: &std::sync::Mutex<RoutePhase>, next: RoutePhase) {
+    *phase.lock().unwrap() = next;
+}
+
+/// Every optional refresh endpoint in API-key mode, with one healthy
+/// populated body and the body a controller returns when it has none.
+fn api_key_optional_routes() -> Vec<(String, serde_json::Value, serde_json::Value)> {
+    vec![
+        (
+            integration_route("firewall/policies"),
+            integration_page(&json!({
+                "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a01",
+                "name": "Allow web",
+                "enabled": true,
+                "action": {"type": "ALLOW"},
+                "metadata": {"origin": "USER_DEFINED"},
+            })),
+            empty_integration_page(200),
+        ),
+        (
+            integration_route("firewall/zones"),
+            integration_page(&json!({
+                "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a02",
+                "name": "Internal",
+                "networkIds": [],
+                "metadata": {"origin": "SYSTEM_DEFINED"},
+            })),
+            empty_integration_page(200),
+        ),
+        (
+            integration_route("acl-rules"),
+            integration_page(&json!({
+                "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a03",
+                "name": "Block cameras",
+                "type": "IPV4",
+                "action": "BLOCK",
+                "enabled": true,
+                "index": 1,
+                "metadata": {"origin": "USER_DEFINED"},
+            })),
+            empty_integration_page(200),
+        ),
+        (
+            integration_route("dns/policies"),
+            dns_policies_page(),
+            empty_integration_page(200),
+        ),
+        (
+            integration_route("hotspot/vouchers"),
+            integration_page(&json!({
+                "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a04",
+                "code": "1234567890",
+                "name": "Guest",
+                "createdAt": "2025-01-01T00:00:00Z",
+                "expired": false,
+                "timeLimitMinutes": 60,
+                "authorizedGuestCount": 0,
+            })),
+            empty_integration_page(200),
+        ),
+        (
+            "/proxy/network/api/s/default/stat/event".to_owned(),
+            api_key_event_envelope(),
+            empty_legacy_envelope(),
+        ),
+        (
+            "/proxy/network/v2/api/site/default/nat".to_owned(),
+            nat_rules_body(),
+            json!([]),
+        ),
+        (
+            "/proxy/network/api/s/default/rest/firewallgroup".to_owned(),
+            firewall_groups_envelope(),
+            empty_legacy_envelope(),
+        ),
+    ]
+}
+
+fn optional_collection_counts(controller: &Controller) -> [(&'static str, usize); 8] {
+    [
+        (
+            "firewall policies",
+            controller.firewall_policies_snapshot().len(),
+        ),
+        ("firewall zones", controller.firewall_zones_snapshot().len()),
+        ("acl rules", controller.acl_rules_snapshot().len()),
+        ("dns policies", controller.dns_policies_snapshot().len()),
+        ("vouchers", controller.vouchers_snapshot().len()),
+        ("events", controller.events_snapshot().len()),
+        ("nat policies", controller.nat_policies_snapshot().len()),
+        (
+            "firewall groups",
+            controller.firewall_groups_snapshot().len(),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn failed_optional_fetches_keep_last_known_collections() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let phase = mount_switchable_routes(&server, api_key_optional_routes()).await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let populated = [
+        ("firewall policies", 1),
+        ("firewall zones", 1),
+        ("acl rules", 1),
+        ("dns policies", 2),
+        ("vouchers", 1),
+        ("events", 1),
+        ("nat policies", 1),
+        ("firewall groups", 1),
+    ];
+    assert_eq!(optional_collection_counts(&controller), populated);
+
+    for status in [500, 404] {
+        set_phase(&phase, RoutePhase::Failing(status));
+        controller.full_refresh().await.unwrap();
+        assert_eq!(
+            optional_collection_counts(&controller),
+            populated,
+            "HTTP {status} from optional endpoints must keep last known data"
+        );
+    }
+
+    set_phase(&phase, RoutePhase::Empty);
+    controller.full_refresh().await.unwrap();
+    assert_eq!(
+        optional_collection_counts(&controller),
+        [
+            ("firewall policies", 0),
+            ("firewall zones", 0),
+            ("acl rules", 0),
+            ("dns policies", 0),
+            ("vouchers", 0),
+            ("events", 0),
+            ("nat policies", 0),
+            ("firewall groups", 0),
+        ],
+        "a successful empty response is authoritative and prunes"
+    );
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn session_only_refresh_keeps_nat_and_groups_when_fetch_fails() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let phase = mount_switchable_routes(
+        &server,
+        vec![
+            (
+                "/v2/api/site/default/nat".to_owned(),
+                nat_rules_body(),
+                json!([]),
+            ),
+            (
+                "/api/s/default/rest/firewallgroup".to_owned(),
+                firewall_groups_envelope(),
+                empty_legacy_envelope(),
+            ),
+        ],
+    )
+    .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    assert_eq!(controller.nat_policies_snapshot().len(), 1);
+    assert_eq!(controller.firewall_groups_snapshot().len(), 1);
+
+    set_phase(&phase, RoutePhase::Failing(500));
+    controller.full_refresh().await.unwrap();
+    assert_eq!(controller.nat_policies_snapshot().len(), 1);
+    assert_eq!(controller.firewall_groups_snapshot().len(), 1);
+
+    set_phase(&phase, RoutePhase::Empty);
+    controller.full_refresh().await.unwrap();
+    assert_eq!(controller.nat_policies_snapshot().len(), 0);
+    assert_eq!(controller.firewall_groups_snapshot().len(), 0);
 
     controller.disconnect().await;
 }
