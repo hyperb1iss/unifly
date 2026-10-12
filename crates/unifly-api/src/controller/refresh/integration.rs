@@ -5,10 +5,12 @@ use tracing::{info, warn};
 
 use crate::IntegrationClient;
 use crate::core_error::CoreError;
+use crate::integration_types::NetworkResponse;
 use crate::model::{
     AclRule, Client, Device, DnsPolicy, EntityId, FirewallPolicy, FirewallZone, Network, Site,
     TrafficMatchingList, Voucher, WifiBroadcast,
 };
+use crate::store::DataStore;
 
 use super::super::REFRESH_DETAIL_CONCURRENCY;
 use super::optional::keep_on_failure;
@@ -32,6 +34,7 @@ pub(super) struct IntegrationRefresh {
 pub(super) async fn fetch(
     integration: Arc<IntegrationClient>,
     site_id: uuid::Uuid,
+    store: &DataStore,
 ) -> Result<IntegrationRefresh, CoreError> {
     let page_limit = 200;
 
@@ -77,15 +80,13 @@ pub(super) async fn fetch(
 
     let devices: Vec<Device> = devices_res?.into_iter().map(Device::from).collect();
     let clients: Vec<Client> = clients_res?.into_iter().map(Client::from).collect();
-    let network_ids: Vec<uuid::Uuid> = networks_res?
-        .into_iter()
-        .map(|network| network.id)
-        .collect();
+    let network_summaries = networks_res?;
     info!(
-        network_count = network_ids.len(),
+        network_count = network_summaries.len(),
         "fetching network details"
     );
-    let networks = fetch_network_details(Arc::clone(&integration), site_id, network_ids).await;
+    let networks =
+        fetch_network_details(Arc::clone(&integration), site_id, network_summaries, store).await;
     let wifi: Vec<WifiBroadcast> = wifi_res?.into_iter().map(WifiBroadcast::from).collect();
     let sites: Vec<Site> = sites_res?.into_iter().map(Site::from).collect();
     let traffic_matching_lists: Vec<TrafficMatchingList> = tml_res?
@@ -125,25 +126,39 @@ pub(super) async fn fetch(
     })
 }
 
+/// Fetch each network's detail record concurrently.
+///
+/// The list endpoint returns summaries without `ipv4Configuration`, so the
+/// detail fetch is what fills in subnet, gateway, and DHCP. A network whose
+/// detail fetch fails stays in the snapshot instead of being dropped (which
+/// would prune it from the store): it keeps its last known stored record,
+/// since a summary would blank those fields for a cycle, and falls back to
+/// the summary only when the store has never seen it.
 async fn fetch_network_details(
     integration: Arc<IntegrationClient>,
     site_id: uuid::Uuid,
-    network_ids: Vec<uuid::Uuid>,
+    summaries: Vec<NetworkResponse>,
+    store: &DataStore,
 ) -> Vec<Network> {
-    stream::iter(network_ids.into_iter().map(|network_id| {
+    stream::iter(summaries.into_iter().map(|summary| {
         let integration = Arc::clone(&integration);
         async move {
-            match integration.get_network(&site_id, &network_id).await {
-                Ok(detail) => Some(Network::from(detail)),
+            match integration.get_network(&site_id, &summary.id).await {
+                Ok(detail) => Network::from(detail),
                 Err(error) => {
-                    warn!(network_id = %network_id, error = %error, "network detail fetch failed");
-                    None
+                    warn!(
+                        network_id = %summary.id,
+                        error = %error,
+                        "network detail fetch failed; keeping last known record"
+                    );
+                    store
+                        .network_by_id(&EntityId::Uuid(summary.id))
+                        .map_or_else(|| Network::from(summary), |cached| (*cached).clone())
                 }
             }
         }
     }))
     .buffer_unordered(REFRESH_DETAIL_CONCURRENCY)
-    .filter_map(async move |network| network)
     .collect::<Vec<_>>()
     .await
 }

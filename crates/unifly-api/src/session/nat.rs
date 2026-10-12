@@ -14,11 +14,20 @@ impl SessionClient {
     /// List all NAT rules via the v2 API.
     ///
     /// `GET /v2/api/site/{site}/nat`
+    ///
+    /// Any 200 body other than a JSON array (UniFi OS can wrap errors in a
+    /// 200) is an error, never an empty rule list: callers treat an empty
+    /// list as "the controller has no NAT rules".
     pub async fn list_nat_rules(&self) -> Result<Vec<Value>, Error> {
         let url = self.site_url_v2("nat");
         debug!("listing NAT rules (v2)");
-        let val = self.get_raw(url).await?;
-        Ok(val.as_array().cloned().unwrap_or_default())
+        match self.get_raw(url).await? {
+            Value::Array(rules) => Ok(rules),
+            other => Err(Error::Deserialization {
+                message: "expected a JSON array of NAT rules".into(),
+                body: other.to_string(),
+            }),
+        }
     }
 
     /// Create a NAT rule via the v2 API.
