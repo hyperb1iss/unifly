@@ -1224,6 +1224,55 @@ fn test_demo_fleet_clients_get_accepts_hostname_ip_and_mac() {
     }
 }
 
+#[test]
+fn test_demo_fleet_answers_the_first_diagnosis_reads() {
+    let health = demo_json(&["system", "health"]);
+    let subsystems: Vec<&str> = health
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["subsystem"].as_str())
+        .collect();
+    assert_eq!(subsystems, ["wan", "www", "wlan", "lan", "vpn"]);
+    assert_eq!(health[0]["wan_ip"], "203.0.113.42");
+
+    let wans = demo_json(&["wans", "list"]);
+    assert_eq!(wans[0]["name"], "WAN");
+    assert_eq!(wans[0]["ip"], "203.0.113.42");
+    assert_eq!(wans[1]["name"], "WAN2");
+    assert!(wans[1]["ip"].is_null(), "WAN2 has no link: {}", wans[1]);
+
+    let alarms = demo_json(&["alarms", "list"]);
+    let messages: Vec<&str> = alarms
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|alarm| alarm["message"].as_str())
+        .collect();
+    for needle in ["ap-dock", "sw-core port 12", "ap-roof", "WAN2"] {
+        assert!(
+            messages.iter().any(|message| message.contains(needle)),
+            "no alarm mentions {needle}: {messages:?}"
+        );
+    }
+
+    let info = demo_json(&["system", "info"]);
+    assert_eq!(info["hostname"], "gw-harbor");
+}
+
+#[test]
+fn test_demo_fleet_answers_wifi_get_and_device_stats_by_name() {
+    let wifi = demo_json(&["wifi", "list", "--all"]);
+    let ssid = wifi[0]["name"].as_str().unwrap().to_lowercase();
+    assert_eq!(
+        demo_json(&["wifi", "get", ssid.as_str()])["id"],
+        wifi[0]["id"]
+    );
+
+    let stats = demo_json(&["devices", "stats", "ap-roof"]);
+    assert!(stats["stats"]["cpu_utilization_pct"].is_number(), "{stats}");
+}
+
 /// The config file holds profiles and possibly plaintext secrets, so the
 /// demo fleet must never read it. A poisoned config sets a theme; if fleet
 /// mode read it, colored table output would change.

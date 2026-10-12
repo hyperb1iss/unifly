@@ -36,6 +36,10 @@ impl Controller {
     }
 
     pub async fn list_wans(&self) -> Result<Vec<WanInterface>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.wans()));
+        }
         let (client, site_id) = integration_site_context(self, "list_wans").await?;
         let raw = client
             .paginate_all(200, |offset, limit| {

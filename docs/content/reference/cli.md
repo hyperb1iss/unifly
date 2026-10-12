@@ -534,18 +534,23 @@ writes through a symlinked skill directory or file.
 
 | Area          | Commands                                                                                         |
 | ------------- | ------------------------------------------------------------------------------------------------ |
-| Devices       | `devices list`, `devices get`                                                                    |
+| Diagnosis     | `system health`, `system info`, `alarms list`, `wans list`                                       |
+| Devices       | `devices list`, `devices get`, `devices stats`                                                   |
 | Clients       | `clients list`, `clients get`, `clients find`, `clients roams`, `clients wifi`                   |
 | Networks      | `networks list`, `networks get`                                                                  |
-| WiFi          | `wifi list`, `wifi neighbors`, `wifi channels`                                                   |
+| WiFi          | `wifi list`, `wifi get`, `wifi neighbors`, `wifi channels`                                       |
 | Firewall      | `firewall policies list/get`, `firewall zones list/get`, `nat policies list/get`, `acl list/get` |
 | Events, stats | `events list`, `stats site`, `stats gateway`, `stats dpi`                                        |
 | Other         | `topology`, `sites list`                                                                         |
 
 Any other command exits with code 5 and a "not available in demo mode" error before it reads config or touches the network. Each run generates the fleet fresh from the seed, so names, MACs, IPs, and IDs match from one run to the next.
 
+The fleet comes with problems to diagnose: an offline access point, one with a firmware update waiting, a camera whose switch port went dark, and an unplugged second WAN. Site health, alarms, the WAN list, events, and device details all tell the same story.
+
 ```bash
 unifly --demo-fleet devices list
+unifly --demo-fleet alarms list
+unifly --demo-fleet devices get ap-roof -o json
 unifly --demo-fleet clients list --all -o json | jq length
 unifly --demo-fleet --demo-seed 7 stats gateway -o json-compact
 ```

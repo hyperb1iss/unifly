@@ -18,6 +18,10 @@ impl Controller {
     }
 
     pub async fn list_alarms(&self) -> Result<Vec<Alarm>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.alarms()));
+        }
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
         let raw = session.list_alarms().await?;
@@ -25,6 +29,10 @@ impl Controller {
     }
 
     pub async fn get_system_info(&self) -> Result<SystemInfo, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.system_info()));
+        }
         {
             let guard = self.inner.integration_client.lock().await;
             if let Some(ic) = guard.as_ref() {
@@ -96,6 +104,10 @@ impl Controller {
     }
 
     pub async fn get_site_health(&self) -> Result<Vec<HealthSummary>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.health()));
+        }
         let guard = self.inner.session_client.lock().await;
         let session = require_session(guard.as_ref())?;
         let raw = session.get_health().await?;

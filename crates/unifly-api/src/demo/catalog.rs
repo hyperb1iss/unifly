@@ -20,6 +20,8 @@ pub(crate) const WAN_RX_BASE: f64 = 21_000_000.0;
 /// Baseline WAN transmit rate, bytes/s (about 50 Mbps).
 pub(crate) const WAN_TX_BASE: f64 = 6_500_000.0;
 
+/// UniFi Network application version the demo console reports.
+pub(crate) const NETWORK_VERSION: &str = "9.4.19";
 pub(crate) const GATEWAY_FIRMWARE: &str = "4.3.6";
 pub(crate) const SWITCH_FIRMWARE: &str = "7.2.123";
 pub(crate) const AP_FIRMWARE: &str = "8.1.113";
