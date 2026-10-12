@@ -95,18 +95,18 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     };
     // Declared after `child`, so it is dropped first, while the command's
     // pid still names the group.
-    let group = GroupReaper(child.id());
+    let mut group = GroupReaper::armed(child.id());
     let mut stdout = child.stdout.take()?;
 
     // Read while waiting, so a command never stalls on a full pipe.
     let mut output = Vec::new();
     let mut chunk = [0_u8; 256];
-    let mut reading = true;
+    let mut pipe = Pipe::Open;
     let status = loop {
         tokio::select! {
             status = child.wait() => break status,
-            read = stdout.read(&mut chunk), if reading => {
-                reading = take_chunk(&read, &chunk, &mut output);
+            read = stdout.read(&mut chunk), if pipe == Pipe::Open => {
+                pipe = take_chunk(&read, &chunk, &mut output);
             }
             () = tokio::time::sleep_until(deadline) => {
                 warn!(%program, ?timeout, "totp_command timed out and was stopped");
@@ -120,15 +120,22 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     // It has exited, so whatever it printed is already in the pipe. Drain
     // that, but only until the pipe closes or a short grace passes:
     // something it started may hold the pipe open indefinitely.
-    if reading {
+    if pipe == Pipe::Open {
         let _ = tokio::time::timeout(OUTPUT_GRACE, async {
-            while take_chunk(&stdout.read(&mut chunk).await, &chunk, &mut output) {}
+            while pipe == Pipe::Open {
+                pipe = take_chunk(&stdout.read(&mut chunk).await, &chunk, &mut output);
+            }
         })
         .await;
     }
     drop(stdout);
-    // The command is done, so nothing it started has a reason to stay:
-    // stop the group whether the output closed, hit its limit, or neither.
+    // End of file means every writer closed the pipe: nothing the command
+    // started still holds it, so a helper that properly detached (a cache
+    // daemon with its output redirected) is left running. Anything still
+    // holding the pipe, a read error, or a failed wait stops the group.
+    if pipe == Pipe::Closed && status.is_ok() {
+        group.disarm();
+    }
     drop(group);
 
     let status = match status {
@@ -154,34 +161,61 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     Some(SecretString::from(code.to_owned()))
 }
 
-/// Append one read's bytes to `output`. Returns whether to keep reading:
-/// not after end of file, an error, or once the output limit is reached.
-fn take_chunk(read: &std::io::Result<usize>, chunk: &[u8], output: &mut Vec<u8>) -> bool {
+/// The state of the command's stdout pipe.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pipe {
+    /// Still open: something may write more.
+    Open,
+    /// End of file: every process holding the write end has closed it.
+    Closed,
+    /// A read failed; whether anything still holds it is unknown.
+    Failed,
+}
+
+/// Record one read: append its bytes to `output` up to the output limit,
+/// discarding the rest. Reading goes on past the limit so that end of file
+/// can still be seen.
+fn take_chunk(read: &std::io::Result<usize>, chunk: &[u8], output: &mut Vec<u8>) -> Pipe {
     match *read {
-        Ok(0) | Err(_) => false,
+        Ok(0) => Pipe::Closed,
+        Err(_) => Pipe::Failed,
         Ok(len) => {
-            output.extend_from_slice(chunk.get(..len).unwrap_or_default());
-            output.len() < MAX_OUTPUT_BYTES
+            let room = MAX_OUTPUT_BYTES.saturating_sub(output.len());
+            output.extend_from_slice(chunk.get(..len.min(room)).unwrap_or_default());
+            Pipe::Open
         }
     }
 }
 
-/// Stops the command's process group when dropped, so every way out of a
-/// run (a code, a failure, a timeout, the output limit, an early return)
-/// leaves nothing behind that the command started and that stayed in its
-/// group. A helper that wants a lasting background process must detach it
-/// into a session of its own.
-struct GroupReaper(Option<u32>);
+/// Stops the command's process group when dropped, unless disarmed. A run
+/// disarms it only after a clean exit whose stdout reached end of file, so
+/// every other way out (a timeout, a failed wait or read, something still
+/// holding the pipe, an early return) leaves nothing behind that the
+/// command started in its group.
+struct GroupReaper {
+    group: Option<u32>,
+    armed: bool,
+}
 
 impl GroupReaper {
+    fn armed(group: Option<u32>) -> Self {
+        Self { group, armed: true }
+    }
+
     fn stop(&self) {
-        kill_group(self.0);
+        kill_group(self.group);
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
 impl Drop for GroupReaper {
     fn drop(&mut self) {
-        self.stop();
+        if self.armed {
+            self.stop();
+        }
     }
 }
 
@@ -341,6 +375,34 @@ mod tests {
 
         let pid = std::fs::read_to_string(&pid_file).expect("descendant pid");
         assert!(wait_for_exit(pid.trim()), "the descendant {pid} still runs");
+    }
+
+    /// A helper that properly detaches a background process (its output
+    /// redirected, so our pipe still reaches end of file) keeps it: that is
+    /// how a password manager's cache daemon survives between renewals.
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_background_process_is_left_running() {
+        use secrecy::ExposeSecret;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("daemon.pid");
+        let script = format!(
+            "sleep 30 >/dev/null 2>&1 & echo $! > '{}'; printf 123456",
+            pid_file.display()
+        );
+
+        let code = run(&argv(&["sh", "-c", &script]), Duration::from_secs(5))
+            .expect("the command prints a code");
+        assert_eq!(code.expose_secret(), "123456");
+
+        let pid = std::fs::read_to_string(&pid_file).expect("daemon pid");
+        let pid = pid.trim();
+        let survived = alive(pid);
+        // Clean up before asserting, so a failure leaves nothing behind.
+        let _ = std::process::Command::new("kill").arg(pid).status();
+        assert!(wait_for_exit(pid), "could not clean up {pid}");
+        assert!(survived, "the detached process {pid} was killed");
     }
 
     /// On timeout the whole process group goes, not just the command.
