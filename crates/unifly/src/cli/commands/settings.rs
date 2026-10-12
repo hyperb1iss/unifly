@@ -141,18 +141,14 @@ fn carry_secrets(current: &serde_json::Value, incoming: &mut serde_json::Value) 
     }
 }
 
-/// Gather every secret field under `value` as (path, key, value).
-fn collect_secrets<'a>(
-    value: &'a serde_json::Value,
-    path: &str,
-    found: &mut Vec<(String, &'a str, &'a serde_json::Value)>,
-) {
+/// Gather the paths of every secret field under `value`.
+fn collect_secrets(value: &serde_json::Value, path: &str, found: &mut Vec<String>) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, field) in map {
                 let child = format!("{path}.{key}");
                 if is_secret_field(key) {
-                    found.push((child, key.as_str(), field));
+                    found.push(child);
                 } else {
                     collect_secrets(field, &child, found);
                 }
@@ -168,7 +164,7 @@ fn collect_secrets<'a>(
 }
 
 /// Collect the paths of secret fields present in `current` that `merged`
-/// no longer has, such as one inside an array element the update replaced.
+/// no longer has.
 fn dropped_secrets(
     current: &serde_json::Value,
     merged: Option<&serde_json::Value>,
@@ -193,20 +189,23 @@ fn dropped_secrets(
                 }
             }
         }
-        // Positions are not identities: entries can move, and a neighbor can
-        // be removed. A credential inside an array counts as kept when the
-        // same field still holds the same value anywhere in the update.
+        // Array entries have no identity to match on, so arrays are all or
+        // nothing. An update whose array carries any credential is taken as
+        // authoritative for it (rotation, reordering, and removal included).
+        // One that carries none, as a stripped export would, must not replace
+        // an array that holds credentials.
         serde_json::Value::Array(_) => {
-            let mut kept = Vec::new();
-            if let Some(merged) = merged {
-                collect_secrets(merged, path, &mut kept);
-            }
             let mut live = Vec::new();
             collect_secrets(current, path, &mut live);
-            for (live_path, key, value) in live {
-                if !kept.iter().any(|(_, k, v)| *k == key && *v == value) {
-                    dropped.push(live_path);
-                }
+            if live.is_empty() {
+                return;
+            }
+            let mut incoming = Vec::new();
+            if let Some(merged) = merged {
+                collect_secrets(merged, path, &mut incoming);
+            }
+            if incoming.is_empty() {
+                dropped.extend(live);
             }
         }
         _ => {}
@@ -214,8 +213,10 @@ fn dropped_secrets(
 }
 
 /// Fill in secrets the update left out, then refuse it if any live
-/// credential would still be erased. A credential is only removed when the
-/// update names it explicitly (for example by setting it to `""`).
+/// credential would still be erased. Object fields are restored by key
+/// path; an array that holds credentials must be sent with its credentials
+/// (see `dropped_secrets`). A credential is only removed when the update
+/// says so explicitly.
 fn guard_secrets(
     current: &serde_json::Value,
     merged: &mut serde_json::Value,
@@ -573,19 +574,35 @@ mod tests {
     }
 
     #[test]
-    fn reordering_array_entries_keeps_their_secrets() {
+    fn array_sent_with_credentials_is_authoritative() {
+        let current = serde_json::json!({
+            "servers": [{ "ip": "A", "x_shared_secret": "old" }, { "ip": "B" }]
+        });
+        let mut reordered = serde_json::json!({
+            "servers": [{ "ip": "B" }, { "ip": "A", "x_shared_secret": "old" }]
+        });
+        guard_secrets(&current, &mut reordered).expect("reordering with credentials is fine");
+
+        let mut rotated = serde_json::json!({
+            "servers": [{ "ip": "A", "x_shared_secret": "new" }, { "ip": "B" }]
+        });
+        guard_secrets(&current, &mut rotated).expect("rotating a credential is explicit");
+        assert_eq!(rotated["servers"][0]["x_shared_secret"], "new");
+    }
+
+    #[test]
+    fn stripped_array_cannot_replace_one_with_credentials() {
         let current = serde_json::json!({
             "servers": [{ "ip": "A", "x_shared_secret": "s3cr3t" }, { "ip": "B" }]
         });
         let mut reordered = serde_json::json!({
-            "servers": [{ "ip": "B" }, { "ip": "A", "x_shared_secret": "s3cr3t" }]
+            "servers": [{ "ip": "B" }, { "ip": "A" }]
         });
-        guard_secrets(&current, &mut reordered).expect("the secret moved, not vanished");
-
-        let mut trimmed = serde_json::json!({
-            "servers": [{ "ip": "A", "x_shared_secret": "s3cr3t" }]
-        });
-        guard_secrets(&current, &mut trimmed).expect("removing a secretless entry is fine");
+        let error = guard_secrets(&current, &mut reordered).expect_err("stripped array refused");
+        assert!(
+            error.to_string().contains("servers[0].x_shared_secret"),
+            "{error}"
+        );
     }
 
     #[test]

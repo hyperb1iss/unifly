@@ -497,11 +497,11 @@ unifly settings export [--with-secrets]
 - `x_`-prefixed fields (credentials, internal secrets) show as `***` in table
   mode (at any depth) and are omitted, at any depth, from JSON/YAML output of
   `list`/`get` and from `export`. Pass `--with-secrets` to include them.
-- `set` carries over credentials an update leaves out (nested objects
-  included) and refuses an update that would still erase one, naming the
-  field. Array entries are matched by content, so reordering is fine.
-  Clear a credential on purpose by setting it explicitly (e.g. `""`) or
-  pass `--allow-secret-removal`.
+- `set` carries over credentials an update leaves out of an object (any
+  depth). Arrays are all or nothing: an array sent with at least one of its
+  credentials is taken as written (rotate, clear, reorder, remove); one sent
+  with none (a stripped export) is refused, naming the fields. Use
+  `export --with-secrets` to edit such arrays, or `--allow-secret-removal`.
 - `set` performs a read-modify-write: fetches the current section, patches
   the specified field, and PUTs the full section back. Values are parsed as
   bool (`true`/`false`), number, or string fallback.
