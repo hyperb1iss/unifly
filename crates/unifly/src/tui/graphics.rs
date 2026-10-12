@@ -233,11 +233,12 @@ pub fn queue_chart(
 ///
 /// The caller writes them before the frame, so every placeholder in it
 /// refers to an image the terminal already holds.
-pub fn take_pending_image_transmits() -> Option<String> {
-    let manager = CHARTS.get()?;
-    let mut cache = manager.cache.lock().ok()?;
-    let transmits = std::mem::take(&mut cache.transmits);
-    (!transmits.is_empty()).then(|| transmits.concat())
+pub fn take_pending_image_transmits() -> Vec<String> {
+    CHARTS
+        .get()
+        .and_then(|manager| manager.cache.lock().ok())
+        .map(|mut cache| std::mem::take(&mut cache.transmits))
+        .unwrap_or_default()
 }
 
 /// Kitty's Unicode image placeholder character.
@@ -685,12 +686,46 @@ mod tests {
 
     #[test]
     fn a_new_image_hands_over_its_transmit_once() {
-        let encoded = kitty_chart(42);
+        // 40x20 RGBA is 3200 bytes, more than one 3072-byte kitty chunk, and
+        // the 4x2-cell image is larger than the 1x1 scratch cell.
+        for (tmux, compress) in [(false, false), (false, true), (true, false), (true, true)] {
+            let image = DynamicImage::new_rgba8(40, 20);
+            let kitty = Kitty::new(image, Size::new(4, 2), 42, tmux, compress)
+                .expect("the test image should encode");
+            let protocol = Protocol::Kitty(kitty);
 
-        let transmit = super::take_transmit(&encoded.protocol).expect("first render transmits");
-        assert!(transmit.starts_with("\x1b_G"));
-        assert!(transmit.contains("i=42"));
-        assert_eq!(super::take_transmit(&encoded.protocol), None);
+            let transmit = super::take_transmit(&protocol).expect("first render transmits");
+            assert!(
+                transmit.contains("_Gq=2,i=42,"),
+                "tmux={tmux} compress={compress}"
+            );
+            assert_eq!(transmit.starts_with("\x1bPtmux;"), tmux);
+            if !compress {
+                assert!(
+                    transmit.contains(",m=1;"),
+                    "uncompressed payload should chunk"
+                );
+            }
+
+            let area = ratatui::layout::Rect::new(0, 0, 4, 2);
+            let mut frame = ratatui::buffer::Buffer::empty(area);
+            ratatui::widgets::Widget::render(
+                ratatui_image::Image::new(&protocol),
+                area,
+                &mut frame,
+            );
+            for cell in frame.content() {
+                assert!(
+                    cell.symbol().starts_with('\u{10EEEE}'),
+                    "{:?}",
+                    cell.symbol()
+                );
+                assert!(
+                    !cell.symbol().contains('\x1b'),
+                    "a later render must not transmit"
+                );
+            }
+        }
     }
 
     #[test]
