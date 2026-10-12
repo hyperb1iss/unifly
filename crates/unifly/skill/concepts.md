@@ -140,61 +140,75 @@ Typed records use snake_case keys. The records below serialize every listed
 key on every record, with `null` when the controller did not report a value,
 so there is no alternate spelling to fall back on. Some nested structures
 omit empty keys instead: firewall policy traffic filters drop an absent
-`ports` and an empty `mac_addresses`. Enum values are PascalCase unless
-noted. For a field not listed here, read one record's keys
-(`jq '.[0] | keys'`) rather than guessing. The controller's wire names, such
-as `uplink`, `radio_table`, `system_stats`, `datetime`, or `msg`, do not
-appear in typed output.
+`ports` and an empty `mac_addresses`. For a field not listed here, read one
+record's keys (`jq '.[0] | keys'`) rather than guessing. The controller's
+wire names, such as `uplink`, `radio_table`, `system_stats`, `datetime`, or
+`msg`, do not appear in typed output.
 
-Devices (`devices list`, `get`, and `stats` share one shape): `id`, `mac`,
-`ip`, `name`, `model`, `serial`, `device_type` (`Gateway`, `Switch`,
-`AccessPoint`, `Other`), `state` (`Online`, `Offline`, `Updating`, ...),
-`firmware_version`, `firmware_updatable`, `adopted_at`, `last_seen`,
-`client_count`, `uplink_device_id`, `uplink_device_mac`, `uplink_port_idx`,
-`uplink_medium` (lowercase `wired` or `wireless`), `ports` (each with
-`index`, `name`, `state`, `speed_mbps`, `max_speed_mbps`, `connector`,
-`poe`), `radios` (each with `frequency_ghz`, `channel`, `channel_width_mhz`,
-`wlan_standard`, `channel_utilization_pct`, `tx_retries_pct`), and `stats`
-(`uptime_secs`, `cpu_utilization_pct`, `memory_utilization_pct`,
-`load_average_1m`, `load_average_5m`, `load_average_15m`, `last_heartbeat`,
-and `uplink_bandwidth` with `tx_bytes_per_sec` and `rx_bytes_per_sec`).
+Each line names a record path and its keys; `[]` means each element of an
+array. A `device` comes from `devices list`, `get`, or `stats` (one shape);
+a `client` from `clients list` or `get`; an `event` from `events list`; an
+`alarm` from `alarms list`; `health[]` from `system health`; a `wan` from
+`wans list`; and `report.site[]` and `report.gateway[]` rows from
+`stats site` and `stats gateway`.
 
-Clients: `id`, `mac`, `ip`, `name` (the alias), `hostname`, `client_type`
-(`Wired`, `Wireless`, `Vpn`, `Teleport`, `Unknown`), `connected_at`,
-`uplink_device_id`, `uplink_device_mac`, `switch_port`, `network_id`,
-`vlan`, `is_guest`, `blocked`, `tx_bytes`, `rx_bytes`, `bandwidth` (bytes
-per second, as on devices), `os_name`, `device_class`, `use_fixedip`,
-`fixed_ip`, and `wireless` (`ssid`, `bssid`, `channel`, `frequency_ghz`,
-`signal_dbm`, `noise_dbm`, `satisfaction`, `tx_rate_kbps`, `rx_rate_kbps`).
+```text
+device: id mac ip name model serial device_type state firmware_version
+  firmware_updatable adopted_at last_seen client_count uplink_device_id
+  uplink_device_mac uplink_port_idx uplink_medium ports radios stats
+device.ports[]: index name state speed_mbps max_speed_mbps connector poe
+device.radios[]: frequency_ghz channel channel_width_mhz wlan_standard
+  channel_utilization_pct tx_retries_pct
+device.stats: uptime_secs cpu_utilization_pct memory_utilization_pct
+  load_average_1m load_average_5m load_average_15m last_heartbeat
+  uplink_bandwidth
+device.stats.uplink_bandwidth: tx_bytes_per_sec rx_bytes_per_sec
+client: id mac ip name hostname client_type connected_at uplink_device_id
+  uplink_device_mac switch_port network_id vlan is_guest blocked tx_bytes
+  rx_bytes bandwidth os_name device_class use_fixedip fixed_ip wireless
+client.bandwidth: tx_bytes_per_sec rx_bytes_per_sec
+client.wireless: ssid bssid channel frequency_ghz signal_dbm noise_dbm
+  satisfaction tx_rate_kbps rx_rate_kbps
+event: id timestamp category severity event_type raw_key message
+  device_mac client_mac site_id
+alarm: id timestamp category severity message archived device_mac site_id
+health[]: subsystem status num_adopted num_sta tx_bytes_r rx_bytes_r
+  latency wan_ip gateways extra
+wan: id name ip gateway dns
+report.site[]: time bytes num_sta wlan-num_sta lan-num_sta
+report.gateway[]: time bytes wan-tx_bytes wan-rx_bytes lan-tx_bytes
+  lan-rx_bytes
+```
+
+Enum values are PascalCase unless noted. A device's `device_type` is
+`Gateway`, `Switch`, `AccessPoint`, or `Other`; its `state` is `Online`,
+`Offline`, `Updating`, and so on; `uplink_medium` is lowercase `wired` or
+`wireless`. A client's `name` is its alias and `client_type` is `Wired`,
+`Wireless`, `Vpn`, `Teleport`, or `Unknown`. Bandwidth fields are bytes per
+second. Event and alarm `category` is `Device`, `Client`, `Network`,
+`System`, `Admin`, `Firewall`, `Vpn`, or `Unknown`; `severity` is `Info`,
+`Warning`, `Error`, or `Critical`; `timestamp` is RFC 3339. An event's
+`event_type` is the controller key, such as `EVT_AP_Lost_Contact`, and
+`raw_key` repeats it.
+
 `wireless` is `null` for wired clients and also whenever the controller
 reported no radio details, as with cloud or Integration-only access, so
 read `client_type` to tell wired from wireless. Telemetry such as
 `bandwidth`, byte counters, and `uplink_device_mac` is likewise `null` when
 only the Integration API answered.
 
-Events: `id`, `timestamp` (RFC 3339), `category` (`Device`, `Client`,
-`Network`, `System`, `Admin`, `Firewall`, `Vpn`, `Unknown`), `severity`
-(`Info`, `Warning`, `Error`, `Critical`), `event_type` (the controller key,
-such as `EVT_AP_Lost_Contact`; `raw_key` repeats it), `message`,
-`device_mac`, `client_mac`, and `site_id`. Alarms carry `id`, `timestamp`,
-`category`, `severity`, `message`, `device_mac`, and `site_id`, plus
-`archived`.
-
 Site health is an array with one record per subsystem (`wan`, `www`,
-`wlan`, `lan`, `vpn`), not one object with CPU and memory fields. Each has
-`subsystem`, `status` (`ok` when healthy), `num_adopted`, `num_sta`,
-`tx_bytes_r`, `rx_bytes_r`, `latency`, `wan_ip`, `gateways`, and `extra`
-with the controller's remaining fields (ISP, speed test, AP counts). WAN
-interfaces carry `id`, `name`, `ip`, `gateway`, and `dns`.
+`wlan`, `lan`, `vpn`), not one object with CPU and memory fields. `status`
+is `ok` when healthy, and `extra` holds the controller's remaining fields
+(ISP, speed test, AP counts).
 
 Stats commands pass report rows through as the controller sends them:
-`time` is epoch milliseconds and values keep hyphenated attribute names.
-Site rows default to `bytes`, `num_sta`, `wlan-num_sta`, and `lan-num_sta`;
-gateway rows to `bytes`, `wan-tx_bytes`, `wan-rx_bytes`, `lan-tx_bytes`,
-and `lan-rx_bytes`; device and client rows to `bytes`, `tx_bytes`, and
-`rx_bytes` (devices add `num_sta`). `--attrs` replaces the list. DPI output
-keeps the shape of whichever endpoint answered (`by_app` or `by_cat` rows,
-or a v2 traffic-flow summary), so inspect it before parsing.
+`time` is epoch milliseconds, values keep hyphenated attribute names, and
+the report lines above show the default attributes. `--attrs` replaces
+them. Device and client report rows carry whichever attributes the request
+names, so read one row before parsing. DPI output keeps the shape of
+whichever endpoint answered (`by_app` or `by_cat` rows, or a v2
+traffic-flow summary), so inspect it before parsing as well.
 
 ## Raw API paths and controller quirks
 
