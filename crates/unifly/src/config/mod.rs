@@ -396,6 +396,49 @@ pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
+// ── Secret storage ──────────────────────────────────────────────────
+
+/// Keyring service name every unifly secret is stored under.
+pub const KEYRING_SERVICE: &str = "unifly";
+
+/// Keyring entry holding a profile's API key.
+pub fn api_key_keyring_key(profile_name: &str) -> String {
+    format!("{profile_name}/api-key")
+}
+
+/// Keyring entry holding a profile's session password.
+pub fn password_keyring_key(profile_name: &str) -> String {
+    format!("{profile_name}/password")
+}
+
+/// Where profile secrets live outside `config.toml`: [`OsKeyring`] in the
+/// app, an in-memory stand-in in tests so they never touch the real one.
+pub trait SecretStore {
+    /// The secret stored under `key`, if there is one.
+    fn get(&self, key: &str) -> Option<String>;
+    /// Store `secret` under `key`, replacing any previous value.
+    fn set(&self, key: &str, secret: &str) -> Result<(), String>;
+}
+
+/// The OS keyring, where `config init` and `config set-password` put
+/// secrets and the credential resolvers below look for them.
+pub struct OsKeyring;
+
+impl SecretStore for OsKeyring {
+    fn get(&self, key: &str) -> Option<String> {
+        keyring::Entry::new(KEYRING_SERVICE, key)
+            .ok()?
+            .get_password()
+            .ok()
+    }
+
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        keyring::Entry::new(KEYRING_SERVICE, key)
+            .and_then(|entry| entry.set_password(secret))
+            .map_err(|error| error.to_string())
+    }
+}
+
 // ── Credential resolution (without CLI flags) ───────────────────────
 
 /// Resolve an API key from the credential chain (no CLI flag step).
@@ -424,7 +467,7 @@ pub fn resolve_api_key(profile: &Profile, profile_name: &str) -> Result<SecretSt
     }
 
     // 3. System keyring
-    if let Ok(entry) = keyring::Entry::new("unifly", &format!("{profile_name}/api-key"))
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &api_key_keyring_key(profile_name))
         && let Ok(secret) = entry.get_password()
     {
         tracing::debug!(profile = profile_name, "resolved api_key from keyring");
@@ -488,7 +531,7 @@ pub fn resolve_session_credentials(
     }
 
     // 3. Keyring
-    if let Ok(entry) = keyring::Entry::new("unifly", &format!("{profile_name}/password"))
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &password_keyring_key(profile_name))
         && let Ok(pw) = entry.get_password()
     {
         tracing::debug!(profile = profile_name, "resolved password from keyring");

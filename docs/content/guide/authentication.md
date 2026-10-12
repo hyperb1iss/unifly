@@ -111,6 +111,8 @@ The `config.toml` file stores non-sensitive settings like controller URLs and si
 
 Secrets resolve in a fixed order: an environment variable named by `api_key_env` (or `UNIFI_PASSWORD` for passwords), then an explicit `api_key = "..."` / `password = "..."` value in `config.toml`, then the keyring. **Explicit config beats the keyring**, so editing a plaintext value in `config.toml` is never silently overridden by a stale keyring entry from an earlier `config init`.
 
+The TUI settings and setup screens follow the same rules. A credential held by the keyring shows as "stored in keyring" and needs no retyping, and saving leaves the entry alone. A newly typed credential goes to the keyring, falling back to plaintext in `config.toml` (with a notice) only when the keyring is unavailable. A credential already kept in plaintext in `config.toml` stays there.
+
 To update a stored password:
 
 ```bash

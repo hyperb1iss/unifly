@@ -106,6 +106,7 @@ impl OnboardingScreen {
 
         let profile = self.build_profile();
         let profile_name = "default".to_string();
+        let save = self.draft.plan_save(&profile_name);
 
         let Some(tx) = self.action_tx.clone() else {
             return;
@@ -125,12 +126,18 @@ impl OnboardingScreen {
                     match controller.connect().await {
                         Ok(()) => {
                             controller.disconnect().await;
+                            let saved = save.commit(&crate::config::OsKeyring);
+                            for warning in saved.warnings {
+                                let _ = tx.send(crate::tui::action::Action::Notify(
+                                    crate::tui::action::Notification::info(warning),
+                                ));
+                            }
                             let cfg = crate::config::Config {
                                 default_profile: Some(profile_name),
                                 defaults: crate::config::Defaults::default(),
                                 profiles: {
                                     let mut profiles = std::collections::HashMap::new();
-                                    profiles.insert("default".to_string(), profile);
+                                    profiles.insert("default".to_string(), saved.profile);
                                     profiles
                                 },
                                 demo: crate::config::DemoConfig::default(),

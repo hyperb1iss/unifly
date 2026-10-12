@@ -115,6 +115,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `[defaults].insecure`. Fields the form does not show are now written back
   as loaded, and `insecure` keeps its stored value unless the toggle
   changes.
+- **The TUI no longer writes keyring credentials to `config.toml`.** A
+  profile whose API key or password lives in the OS keyring loaded into the
+  settings form as an empty field, failed validation until the secret was
+  retyped, and then saved it to `config.toml` in plaintext. The form now
+  shows such a credential as "stored in keyring", accepts it without
+  retyping, connects with the keyring value, and leaves the entry alone. A
+  newly typed credential (in settings or the first-run setup) goes to the
+  keyring, as `config init` stores it, with plaintext only as a reported
+  fallback when no keyring is available. Credentials already kept in
+  `config.toml` stay there.
 
 ### Performance
 

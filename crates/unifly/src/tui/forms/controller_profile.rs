@@ -46,6 +46,24 @@ impl AuthMode {
     }
 }
 
+use secrecy::{ExposeSecret, SecretString};
+
+use crate::config::{SecretStore, api_key_keyring_key, password_keyring_key};
+
+/// Where a credential the form edits was stored when the profile loaded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SecretOrigin {
+    /// Not stored yet: a new profile, or a credential its mode never used.
+    #[default]
+    Unset,
+    /// Plaintext in `config.toml`, loaded into the field. It stays there,
+    /// even when edited, so saving never migrates it behind the user's back.
+    Config,
+    /// The OS keyring. The field stays empty and the stored value is used
+    /// as is; typing a value replaces the keyring entry.
+    Keyring,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ControllerProfileDraft {
     pub(crate) url: String,
@@ -61,6 +79,67 @@ pub(crate) struct ControllerProfileDraft {
     /// What the form does not edit, from the profile it was loaded from.
     /// `None` for a new profile.
     pub(crate) loaded: Option<LoadedProfileFields>,
+    pub(crate) api_key_origin: SecretOrigin,
+    pub(crate) password_origin: SecretOrigin,
+}
+
+/// What saving a draft writes: the profile for `config.toml`, plus the typed
+/// secrets that belong in the keyring instead of in that file.
+pub(crate) struct SavePlan {
+    profile: crate::config::Profile,
+    keyring: Vec<PendingSecret>,
+}
+
+struct PendingSecret {
+    field: SecretField,
+    key: String,
+    secret: SecretString,
+}
+
+#[derive(Clone, Copy)]
+enum SecretField {
+    ApiKey,
+    Password,
+}
+
+impl SecretField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ApiKey => "API key",
+            Self::Password => "password",
+        }
+    }
+}
+
+/// The profile to write after [`SavePlan::commit`], and any notice the user
+/// should see about where a secret ended up.
+pub(crate) struct SavedProfile {
+    pub(crate) profile: crate::config::Profile,
+    pub(crate) warnings: Vec<String>,
+}
+
+impl SavePlan {
+    /// Store the pending secrets in `store`, falling back to plaintext in
+    /// the profile for any the store rejects (the documented fallback for
+    /// hosts without a usable keyring), with a warning naming each one.
+    pub(crate) fn commit(self, store: &dyn SecretStore) -> SavedProfile {
+        let mut profile = self.profile;
+        let mut warnings = Vec::new();
+        for pending in self.keyring {
+            if let Err(error) = store.set(&pending.key, pending.secret.expose_secret()) {
+                let label = pending.field.label();
+                warnings.push(format!(
+                    "Keyring unavailable ({error}); saved the {label} to config.toml in plaintext"
+                ));
+                let plaintext = Some(pending.secret.expose_secret().to_owned());
+                match pending.field {
+                    SecretField::ApiKey => profile.api_key = plaintext,
+                    SecretField::Password => profile.password = plaintext,
+                }
+            }
+        }
+        SavedProfile { profile, warnings }
+    }
 }
 
 /// Profile settings the form has no field for, kept from the loaded
@@ -91,6 +170,8 @@ impl Default for ControllerProfileDraft {
             site: "default".into(),
             insecure: true,
             loaded: None,
+            api_key_origin: SecretOrigin::Unset,
+            password_origin: SecretOrigin::Unset,
         }
     }
 }
@@ -115,9 +196,41 @@ impl ControllerProfileDraft {
                 timeout: profile.timeout,
                 insecure: profile.insecure,
             }),
+            api_key_origin: if profile.api_key.is_some() {
+                SecretOrigin::Config
+            } else {
+                SecretOrigin::Unset
+            },
+            password_origin: if profile.password.is_some() {
+                SecretOrigin::Config
+            } else {
+                SecretOrigin::Unset
+            },
         };
         draft.apply_auth_mode_defaults();
         draft
+    }
+
+    /// Mark credentials that `profile_name` keeps in `store` as present.
+    /// A plaintext value in the profile wins, as it does when credentials
+    /// are resolved, so only a credential absent from the profile can come
+    /// from the keyring.
+    pub(crate) fn with_keyring_origins(
+        mut self,
+        profile_name: &str,
+        store: &dyn SecretStore,
+    ) -> Self {
+        if self.api_key_origin == SecretOrigin::Unset
+            && store.get(&api_key_keyring_key(profile_name)).is_some()
+        {
+            self.api_key_origin = SecretOrigin::Keyring;
+        }
+        if self.password_origin == SecretOrigin::Unset
+            && store.get(&password_keyring_key(profile_name)).is_some()
+        {
+            self.password_origin = SecretOrigin::Keyring;
+        }
+        self
     }
 
     /// The `insecure` value to save: the stored one while the toggle still
@@ -168,7 +281,7 @@ impl ControllerProfileDraft {
                 if self.username.trim().is_empty() {
                     return Err("Username cannot be empty".into());
                 }
-                if self.password.is_empty() {
+                if !self.has_password() {
                     return Err("Password cannot be empty".into());
                 }
             }
@@ -179,7 +292,7 @@ impl ControllerProfileDraft {
                 if self.username.trim().is_empty() {
                     return Err("Username cannot be empty".into());
                 }
-                if self.password.is_empty() {
+                if !self.has_password() {
                     return Err("Password cannot be empty".into());
                 }
             }
@@ -188,8 +301,13 @@ impl ControllerProfileDraft {
         Ok(())
     }
 
+    fn has_password(&self) -> bool {
+        !self.password.is_empty() || self.password_origin == SecretOrigin::Keyring
+    }
+
     fn has_api_key(&self) -> bool {
         !self.api_key.trim().is_empty()
+            || self.api_key_origin == SecretOrigin::Keyring
             || self
                 .api_key_env
                 .as_deref()
@@ -215,6 +333,9 @@ impl ControllerProfileDraft {
         Ok(())
     }
 
+    /// The profile to connect with: typed credentials inline, and those
+    /// left in the keyring absent, so credential resolution reads them from
+    /// there. Use [`Self::plan_save`] for what goes to `config.toml`.
     pub(crate) fn to_profile(&self) -> crate::config::Profile {
         let loaded = self.loaded.clone().unwrap_or_default();
         crate::config::Profile {
@@ -252,7 +373,9 @@ impl ControllerProfileDraft {
                 AuthMode::ApiKey | AuthMode::Cloud => None,
             },
             password: match self.auth_mode {
-                AuthMode::Session | AuthMode::Hybrid => Some(self.password.clone()),
+                AuthMode::Session | AuthMode::Hybrid => {
+                    (!self.password.is_empty()).then(|| self.password.clone())
+                }
                 AuthMode::ApiKey | AuthMode::Cloud => None,
             },
             totp_env: loaded.totp_env,
@@ -262,11 +385,40 @@ impl ControllerProfileDraft {
             timeout: loaded.timeout,
         }
     }
+
+    /// What saving writes for `profile_name`. A typed credential goes to the
+    /// keyring, as `config init` stores it, unless the profile already kept
+    /// it in plaintext, which is left where it was. A credential still in
+    /// the keyring and not retyped is written nowhere: the entry stays as
+    /// it is.
+    pub(crate) fn plan_save(&self, profile_name: &str) -> SavePlan {
+        let mut profile = self.to_profile();
+        let mut keyring = Vec::new();
+        if self.api_key_origin != SecretOrigin::Config
+            && let Some(secret) = profile.api_key.take()
+        {
+            keyring.push(PendingSecret {
+                field: SecretField::ApiKey,
+                key: api_key_keyring_key(profile_name),
+                secret: SecretString::from(secret),
+            });
+        }
+        if self.password_origin != SecretOrigin::Config
+            && let Some(secret) = profile.password.take()
+        {
+            keyring.push(PendingSecret {
+                field: SecretField::Password,
+                key: password_keyring_key(profile_name),
+                secret: SecretString::from(secret),
+            });
+        }
+        SavePlan { profile, keyring }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthMode, ControllerProfileDraft};
+    use super::{AuthMode, ControllerProfileDraft, SecretOrigin};
 
     fn sample_draft() -> ControllerProfileDraft {
         ControllerProfileDraft {
@@ -281,6 +433,8 @@ mod tests {
             site: "default".into(),
             insecure: false,
             loaded: None,
+            api_key_origin: SecretOrigin::Unset,
+            password_origin: SecretOrigin::Unset,
         }
     }
 
@@ -427,6 +581,205 @@ mod tests {
             draft.to_profile().insecure,
             Some(false),
             "a new profile always saves the toggle"
+        );
+    }
+
+    /// In-memory stand-in for the OS keyring.
+    #[derive(Default)]
+    struct MemoryStore {
+        entries: std::cell::RefCell<std::collections::HashMap<String, String>>,
+        unavailable: bool,
+    }
+
+    impl MemoryStore {
+        fn with(entries: &[(&str, &str)]) -> Self {
+            let store = Self::default();
+            for (key, secret) in entries {
+                store
+                    .entries
+                    .borrow_mut()
+                    .insert((*key).to_owned(), (*secret).to_owned());
+            }
+            store
+        }
+
+        fn secret(&self, key: &str) -> Option<String> {
+            self.entries.borrow().get(key).cloned()
+        }
+    }
+
+    impl crate::config::SecretStore for MemoryStore {
+        fn get(&self, key: &str) -> Option<String> {
+            self.secret(key)
+        }
+
+        fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+            if self.unavailable {
+                return Err("no keyring daemon".into());
+            }
+            self.entries
+                .borrow_mut()
+                .insert(key.to_owned(), secret.to_owned());
+            Ok(())
+        }
+    }
+
+    fn hybrid_profile(api_key: Option<&str>, password: Option<&str>) -> crate::config::Profile {
+        crate::config::Profile {
+            controller: "https://192.168.1.1".into(),
+            site: "default".into(),
+            auth_mode: "hybrid".into(),
+            api_key: api_key.map(Into::into),
+            api_key_env: None,
+            host_id: None,
+            host_id_env: None,
+            username: Some("bliss".into()),
+            password: password.map(Into::into),
+            totp_env: None,
+            totp_command: None,
+            ca_cert: None,
+            insecure: Some(true),
+            timeout: None,
+        }
+    }
+
+    fn toml_of(profile: &crate::config::Profile) -> String {
+        toml::to_string(profile).expect("profile serializes")
+    }
+
+    /// Credentials held by the keyring need no retyping, and saving
+    /// writes no plaintext and leaves the keyring entries alone.
+    #[test]
+    fn keyring_backed_profile_saves_without_plaintext() {
+        let store = MemoryStore::with(&[
+            ("home/api-key", "keyring-api-key"),
+            ("home/password", "keyring-password"),
+        ]);
+        let draft = ControllerProfileDraft::from_profile(&hybrid_profile(None, None))
+            .with_keyring_origins("home", &store);
+
+        assert_eq!(draft.api_key_origin, SecretOrigin::Keyring);
+        assert_eq!(draft.password_origin, SecretOrigin::Keyring);
+        assert_eq!(draft.validate_complete(), Ok(()), "no retyping needed");
+
+        // Connecting leaves both to the resolver, which reads the keyring.
+        let connect = draft.to_profile();
+        assert_eq!(connect.api_key, None);
+        assert_eq!(connect.password, None);
+
+        let saved = draft.plan_save("home").commit(&store);
+        assert_eq!(saved.warnings, Vec::<String>::new());
+        assert_eq!(saved.profile.api_key, None);
+        assert_eq!(saved.profile.password, None);
+        let written = toml_of(&saved.profile);
+        assert!(!written.contains("keyring-"), "{written}");
+        assert_eq!(
+            store.secret("home/api-key").as_deref(),
+            Some("keyring-api-key")
+        );
+        assert_eq!(
+            store.secret("home/password").as_deref(),
+            Some("keyring-password")
+        );
+    }
+
+    /// A value typed over a keyring-held credential replaces the keyring
+    /// entry, as `config init` stores it, and is used for the test connect.
+    #[test]
+    fn typed_replacement_goes_to_the_keyring() {
+        let store = MemoryStore::with(&[("home/password", "old-password")]);
+        let mut draft = ControllerProfileDraft::from_profile(&hybrid_profile(Some("k"), None))
+            .with_keyring_origins("home", &store);
+        draft.password = "new-password".into();
+
+        assert_eq!(draft.to_profile().password.as_deref(), Some("new-password"));
+
+        let saved = draft.plan_save("home").commit(&store);
+        assert_eq!(saved.warnings, Vec::<String>::new());
+        assert_eq!(saved.profile.password, None);
+        assert!(!toml_of(&saved.profile).contains("new-password"));
+        assert_eq!(
+            store.secret("home/password").as_deref(),
+            Some("new-password")
+        );
+    }
+
+    /// A brand-new credential (a new profile, or one the old mode did not
+    /// use) also goes to the keyring.
+    #[test]
+    fn new_credentials_go_to_the_keyring() {
+        let store = MemoryStore::default();
+        let mut draft = sample_draft();
+        draft.api_key = "fresh-key".into();
+        draft.password = "fresh-password".into();
+
+        let saved = draft.plan_save("home").commit(&store);
+
+        assert_eq!(saved.profile.api_key, None);
+        assert_eq!(saved.profile.password, None);
+        assert_eq!(store.secret("home/api-key").as_deref(), Some("fresh-key"));
+        assert_eq!(
+            store.secret("home/password").as_deref(),
+            Some("fresh-password")
+        );
+    }
+
+    /// Without a usable keyring, saving falls back to plaintext in the
+    /// profile and says so, rather than losing the credential.
+    #[test]
+    fn unavailable_keyring_falls_back_to_plaintext_with_a_warning() {
+        let store = MemoryStore {
+            unavailable: true,
+            ..MemoryStore::default()
+        };
+        let mut draft = sample_draft();
+        draft.password = "fresh-password".into();
+
+        let saved = draft.plan_save("home").commit(&store);
+
+        assert_eq!(saved.profile.password.as_deref(), Some("fresh-password"));
+        assert_eq!(saved.warnings.len(), 2, "{:?}", saved.warnings);
+        assert!(
+            saved.warnings.iter().all(|w| !w.contains("fresh-password")),
+            "a warning must not carry the secret"
+        );
+    }
+
+    /// Profiles that keep credentials in config.toml keep them there,
+    /// edited or not, and the keyring is never consulted or written.
+    #[test]
+    fn config_stored_credentials_stay_in_config() {
+        let store = MemoryStore::with(&[("home/password", "stale-keyring-password")]);
+        let mut draft = ControllerProfileDraft::from_profile(&hybrid_profile(
+            Some("config-key"),
+            Some("config-password"),
+        ))
+        .with_keyring_origins("home", &store);
+        draft.password = "edited-password".into();
+
+        assert_eq!(draft.api_key_origin, SecretOrigin::Config);
+        assert_eq!(draft.password_origin, SecretOrigin::Config);
+
+        let saved = draft.plan_save("home").commit(&store);
+        assert_eq!(saved.profile.api_key.as_deref(), Some("config-key"));
+        assert_eq!(saved.profile.password.as_deref(), Some("edited-password"));
+        assert_eq!(
+            store.secret("home/password").as_deref(),
+            Some("stale-keyring-password"),
+            "the keyring is left alone"
+        );
+        assert!(store.secret("home/api-key").is_none());
+    }
+
+    #[test]
+    fn a_missing_keyring_entry_still_requires_the_credential() {
+        let draft = ControllerProfileDraft::from_profile(&hybrid_profile(Some("k"), None))
+            .with_keyring_origins("home", &MemoryStore::default());
+
+        assert_eq!(draft.password_origin, SecretOrigin::Unset);
+        assert_eq!(
+            draft.validate_credentials(),
+            Err("Password cannot be empty".into())
         );
     }
 
