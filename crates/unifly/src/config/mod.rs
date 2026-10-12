@@ -416,8 +416,9 @@ pub fn password_keyring_key(profile_name: &str) -> String {
 /// Where profile secrets live outside `config.toml`: [`OsKeyring`] in the
 /// app, an in-memory stand-in in tests so they never touch the real one.
 pub trait SecretStore {
-    /// The secret stored under `key`, if there is one.
-    fn get(&self, key: &str) -> Option<String>;
+    /// The secret stored under `key`: `Ok(None)` when nothing is, an error
+    /// when the store could not say.
+    fn get(&self, key: &str) -> Result<Option<String>, SecretStoreError>;
     /// Store `secret` under `key`, replacing any previous value.
     fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError>;
     /// Remove whatever is stored under `key`; nothing stored is not an error.
@@ -455,11 +456,12 @@ impl From<&keyring::Error> for SecretStoreError {
 pub struct OsKeyring;
 
 impl SecretStore for OsKeyring {
-    fn get(&self, key: &str) -> Option<String> {
-        keyring::Entry::new(KEYRING_SERVICE, key)
-            .ok()?
-            .get_password()
-            .ok()
+    fn get(&self, key: &str) -> Result<Option<String>, SecretStoreError> {
+        match keyring::Entry::new(KEYRING_SERVICE, key).and_then(|entry| entry.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(SecretStoreError::from(&error)),
+        }
     }
 
     fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError> {

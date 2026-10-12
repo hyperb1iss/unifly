@@ -132,7 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fallback when no keyring is usable (none running, locked, or failing). A
   keyring that refuses the secret stops the save with a message naming the
   field, leaves `config.toml` unchanged, and puts back any keyring entry
-  the same save had already written; `config init` and
+  the same save had already written. An existing entry that cannot be read
+  back first is never overwritten; that stops the save the same way.
+  `config init` and
   `config set-password` classify keyring errors the same way. Credentials
   already kept in `config.toml` stay there.
 

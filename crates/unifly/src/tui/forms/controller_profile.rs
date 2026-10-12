@@ -128,17 +128,35 @@ impl SavePlan {
     ///
     /// When no keyring is usable, a secret falls back to plaintext in the
     /// profile (the documented fallback for hosts without one), with a
-    /// warning naming the field. A keyring that is there but refuses a
-    /// secret stops the save instead: entries this save already wrote are
-    /// put back as they were, the error names the field (never the
-    /// secret), and the caller must leave `config.toml` alone.
+    /// warning naming the field, and the keyring is not touched. A keyring
+    /// that is there but refuses a secret, or holds an entry that cannot
+    /// be read back (so a rollback could not restore it), stops the save:
+    /// that entry is left alone, entries this save already wrote are put
+    /// back as they were, the error names the field (never the secret),
+    /// and the caller must leave `config.toml` alone.
     pub(crate) fn commit(self, store: &dyn SecretStore) -> Result<SavedProfile, String> {
         let mut profile = self.profile;
         let mut warnings = Vec::new();
         let mut written = Vec::new();
         for pending in self.keyring {
             let label = pending.field.label();
-            let previous = store.get(&pending.key).map(SecretString::from);
+            let previous = match store.get(&pending.key) {
+                Ok(previous) => previous.map(SecretString::from),
+                Err(SecretStoreError::Unavailable(reason)) => {
+                    fall_back(&mut profile, &mut warnings, &pending, &reason);
+                    continue;
+                }
+                Err(SecretStoreError::Rejected(reason)) => {
+                    return Err(blocked(
+                        format!(
+                            "Couldn't read the {label} already in the keyring ({reason}), so it \
+                             was not replaced; config.toml was not changed"
+                        ),
+                        store,
+                        &written,
+                    ));
+                }
+            };
             match store.set(&pending.key, pending.secret.expose_secret()) {
                 Ok(()) => written.push(WrittenSecret {
                     label,
@@ -146,34 +164,53 @@ impl SavePlan {
                     previous,
                 }),
                 Err(SecretStoreError::Unavailable(reason)) => {
-                    warnings.push(format!(
-                        "No usable keyring ({reason}); saved the {label} to config.toml in \
-                         plaintext"
-                    ));
-                    let plaintext = Some(pending.secret.expose_secret().to_owned());
-                    match pending.field {
-                        SecretField::ApiKey => profile.api_key = plaintext,
-                        SecretField::Password => profile.password = plaintext,
-                    }
+                    fall_back(&mut profile, &mut warnings, &pending, &reason);
                 }
                 Err(SecretStoreError::Rejected(reason)) => {
-                    let mut message = format!(
-                        "Couldn't store the {label} in the keyring ({reason}); config.toml was \
-                         not changed"
-                    );
-                    for (restored, error) in roll_back(store, &written) {
-                        let _ = write!(
-                            message,
-                            ", and the {restored} it had already stored could not be put back \
-                             ({error})"
-                        );
-                    }
-                    return Err(message);
+                    return Err(blocked(
+                        format!(
+                            "Couldn't store the {label} in the keyring ({reason}); config.toml \
+                             was not changed"
+                        ),
+                        store,
+                        &written,
+                    ));
                 }
             }
         }
         Ok(SavedProfile { profile, warnings })
     }
+}
+
+/// The documented fallback for a host without a usable keyring: keep the
+/// secret in the profile, in plaintext, and say so.
+fn fall_back(
+    profile: &mut crate::config::Profile,
+    warnings: &mut Vec<String>,
+    pending: &PendingSecret,
+    reason: &str,
+) {
+    let label = pending.field.label();
+    warnings.push(format!(
+        "No usable keyring ({reason}); saved the {label} to config.toml in plaintext"
+    ));
+    let plaintext = Some(pending.secret.expose_secret().to_owned());
+    match pending.field {
+        SecretField::ApiKey => profile.api_key = plaintext,
+        SecretField::Password => profile.password = plaintext,
+    }
+}
+
+/// Undo a blocked save's keyring writes and finish its error `message`,
+/// naming any entry that could not be put back.
+fn blocked(mut message: String, store: &dyn SecretStore, written: &[WrittenSecret]) -> String {
+    for (restored, error) in roll_back(store, written) {
+        let _ = write!(
+            message,
+            ", and the {restored} it had already stored could not be put back ({error})"
+        );
+    }
+    message
 }
 
 /// A keyring entry a save has replaced, and what it held before.
@@ -283,12 +320,12 @@ impl ControllerProfileDraft {
         store: &dyn SecretStore,
     ) -> Self {
         if self.api_key_origin == SecretOrigin::Unset
-            && store.get(&api_key_keyring_key(profile_name)).is_some()
+            && matches!(store.get(&api_key_keyring_key(profile_name)), Ok(Some(_)))
         {
             self.api_key_origin = SecretOrigin::Keyring;
         }
         if self.password_origin == SecretOrigin::Unset
-            && store.get(&password_keyring_key(profile_name)).is_some()
+            && matches!(store.get(&password_keyring_key(profile_name)), Ok(Some(_)))
         {
             self.password_origin = SecretOrigin::Keyring;
         }
@@ -702,12 +739,14 @@ mod tests {
     }
 
     /// In-memory stand-in for the OS keyring. `failure`, when set, is what
-    /// a write returns instead of storing: for `failing_key` only, when that
-    /// is set, otherwise for every key.
+    /// a write returns instead of storing, and `read_failure` what a read
+    /// returns: for `failing_key` only, when that is set, otherwise for
+    /// every key.
     #[derive(Default)]
     struct MemoryStore {
         entries: std::cell::RefCell<std::collections::HashMap<String, String>>,
         failure: Option<crate::config::SecretStoreError>,
+        read_failure: Option<crate::config::SecretStoreError>,
         failing_key: Option<&'static str>,
     }
 
@@ -729,8 +768,13 @@ mod tests {
     }
 
     impl crate::config::SecretStore for MemoryStore {
-        fn get(&self, key: &str) -> Option<String> {
-            self.secret(key)
+        fn get(&self, key: &str) -> Result<Option<String>, crate::config::SecretStoreError> {
+            if let Some(failure) = &self.read_failure
+                && self.failing_key.is_none_or(|failing| failing == key)
+            {
+                return Err(failure.clone());
+            }
+            Ok(self.secret(key))
         }
 
         fn set(&self, key: &str, secret: &str) -> Result<(), crate::config::SecretStoreError> {
@@ -938,6 +982,66 @@ mod tests {
             assert_eq!(store.secret("home/api-key").as_deref(), previous);
             assert!(store.secret("home/password").is_none());
         }
+    }
+
+    /// An entry whose current value cannot be read could not be restored
+    /// by a rollback, so it is never overwritten: the save stops and the
+    /// entry keeps its value. What the save already wrote is undone too.
+    #[test]
+    fn an_unreadable_entry_blocks_the_save_and_is_left_alone() {
+        let store = MemoryStore {
+            read_failure: Some(crate::config::SecretStoreError::Rejected(
+                "Password data is not valid UTF-8".into(),
+            )),
+            failing_key: Some("home/password"),
+            ..MemoryStore::with(&[("home/password", "existing-password")])
+        };
+        let mut draft = sample_draft();
+        draft.api_key = "new-key".into();
+        draft.password = "new-password".into();
+
+        let error = draft
+            .plan_save("home")
+            .commit(&store)
+            .err()
+            .expect("an unreadable entry blocks the save");
+
+        assert!(error.contains("password"), "{error}");
+        assert!(
+            !error.contains("new-password"),
+            "the secret leaked: {error}"
+        );
+        assert_eq!(
+            store.secret("home/password").as_deref(),
+            Some("existing-password")
+        );
+        assert!(
+            store.secret("home/api-key").is_none(),
+            "the API key was not rolled back"
+        );
+    }
+
+    /// With no usable keyring even for reading, the documented plaintext
+    /// fallback applies and the keyring is not written at all.
+    #[test]
+    fn an_unavailable_keyring_on_read_falls_back_without_touching_it() {
+        let store = MemoryStore {
+            read_failure: Some(crate::config::SecretStoreError::Unavailable(
+                "no keyring daemon".into(),
+            )),
+            ..MemoryStore::with(&[("home/password", "existing-password")])
+        };
+        let mut draft = sample_draft();
+        draft.password = "new-password".into();
+
+        let saved = draft.plan_save("home").commit(&store).expect("falls back");
+
+        assert_eq!(saved.profile.password.as_deref(), Some("new-password"));
+        assert_eq!(saved.warnings.len(), 2, "{:?}", saved.warnings);
+        assert_eq!(
+            store.secret("home/password").as_deref(),
+            Some("existing-password")
+        );
     }
 
     /// Profiles that keep credentials in config.toml keep them there,
