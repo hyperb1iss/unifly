@@ -83,20 +83,25 @@
 
 @media (max-width: $bp-md) {
   .hero {
-    padding: $sp-16 $sp-4 $sp-10;
+    padding: calc(#{$nav-height} + #{$sp-10}) $sp-4 $sp-10;
+  }
+
+  .hero__inner {
+    grid-template-columns: 1fr;
+    gap: $sp-8;
+    max-width: 560px;
   }
 
   .hero__title {
-    font-size: $font-size-2xl;
-  }
-
-  .hero__tagline {
-    font-size: $font-size-md;
+    font-size: 4.5rem;
   }
 
   .hero__actions {
-    flex-direction: column;
-    align-items: center;
+    flex-direction: row;
+
+    .btn {
+      width: auto;
+    }
   }
 
   .btn {
@@ -137,6 +142,12 @@
   // Nav adjustments
   .nav-container {
     padding: 0 $sp-4;
+    gap: $sp-2;
+  }
+
+  .nav-title__logo {
+    width: 108px;
+    height: 34px;
   }
 
   .search-trigger__kbd {
@@ -168,11 +179,11 @@
   }
 
   .hero {
-    padding: $sp-12 $sp-3 $sp-8;
+    padding: calc(#{$nav-height} + #{$sp-8}) $sp-3 $sp-8;
   }
 
   .hero__title {
-    font-size: $font-size-xl;
+    font-size: 4rem;
   }
 
   .doc pre {

@@ -1,13 +1,6 @@
 <h1 align="center">
-  <br>
-  🌐 unifly
-  <br>
+  <img src="docs/static/brand/readme-banner.svg" alt="unifly: Your network. Your terminal. Your UniFi network, at your fingertips. CLI + TUI for humans and agents." width="960">
 </h1>
-
-<p align="center">
-  <strong>Your UniFi Network, at Your Fingertips</strong><br>
-  <sub>✦ CLI + TUI for UniFi Network Controllers ✦</sub>
-</p>
 
 <p align="center">
   <a href="https://www.rust-lang.org">

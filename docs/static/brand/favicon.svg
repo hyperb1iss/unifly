@@ -1,0 +1,19 @@
+<svg viewBox="0 0 192 192" width="192" height="192" xmlns="http://www.w3.org/2000/svg">
+  <title>unifly icon</title>
+    <path fill="#12101a" stroke="none" d="M 40 0 L 152 0 C 174.091 0 192 17.909 192 40 L 192 152 C 192 174.091 174.091 192 152 192 L 40 192 C 17.909 192 0 174.091 0 152 L 0 40 C -0 17.909 17.909 0 40 0 Z"/>
+    <g transform="matrix(0.6 0 0 0.6 0 37)">
+        <g>
+            <path fill="#e135ff" stroke="none" d="M 16 28 Q 14 27 16 30 L 55 70 Q 57 72 60 73 L 147 87 Q 150 88 148 85 L 107 51 Q 105 49 102 49 Z"/>
+            <g transform="matrix(-1 0 0 1 320 0)">
+                <path fill="#e135ff" stroke="none" d="M 16 28 Q 14 27 16 30 L 55 70 Q 57 72 60 73 L 147 87 Q 150 88 148 85 L 107 51 Q 105 49 102 49 Z"/>
+            </g>
+        </g>
+        <g>
+            <path fill="#80ffea" stroke="none" d="M 147 92 Q 150 91 148 94 L 115 123 Q 114 124 112 124 L 67 122 Q 64 122 67 120 L 96 100 Z"/>
+            <g transform="matrix(-1 0 0 1 320 0)">
+                <path fill="#80ffea" stroke="none" d="M 147 92 Q 150 91 148 94 L 115 123 Q 114 124 112 124 L 67 122 Q 64 122 67 120 L 96 100 Z"/>
+            </g>
+        </g>
+        <path fill="#f8f8f2" stroke="none" d="M 153 66 L 160 59 L 167 66 L 165 145 L 160 156 L 155 145 Z"/>
+    </g>
+</svg>
