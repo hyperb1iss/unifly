@@ -93,7 +93,9 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
             return None;
         }
     };
-    let group = child.id();
+    // Declared after `child`, so it is dropped first, while the command's
+    // pid still names the group.
+    let group = GroupReaper(child.id());
     let mut stdout = child.stdout.take()?;
 
     // Read while waiting, so a command never stalls on a full pipe.
@@ -108,7 +110,7 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
             }
             () = tokio::time::sleep_until(deadline) => {
                 warn!(%program, ?timeout, "totp_command timed out and was stopped");
-                kill_group(group);
+                group.stop();
                 let _ = child.kill().await;
                 return None;
             }
@@ -119,17 +121,15 @@ async fn run_async(argv: &[String], timeout: Duration) -> Option<SecretString> {
     // that, but only until the pipe closes or a short grace passes:
     // something it started may hold the pipe open indefinitely.
     if reading {
-        let drained = tokio::time::timeout(OUTPUT_GRACE, async {
+        let _ = tokio::time::timeout(OUTPUT_GRACE, async {
             while take_chunk(&stdout.read(&mut chunk).await, &chunk, &mut output) {}
         })
         .await;
-        if drained.is_err() {
-            // That something outlived the command; stop it with the rest of
-            // the group rather than leave it running.
-            kill_group(group);
-        }
     }
     drop(stdout);
+    // The command is done, so nothing it started has a reason to stay:
+    // stop the group whether the output closed, hit its limit, or neither.
+    drop(group);
 
     let status = match status {
         Ok(status) => status,
@@ -163,6 +163,25 @@ fn take_chunk(read: &std::io::Result<usize>, chunk: &[u8], output: &mut Vec<u8>)
             output.extend_from_slice(chunk.get(..len).unwrap_or_default());
             output.len() < MAX_OUTPUT_BYTES
         }
+    }
+}
+
+/// Stops the command's process group when dropped, so every way out of a
+/// run (a code, a failure, a timeout, the output limit, an early return)
+/// leaves nothing behind that the command started and that stayed in its
+/// group. A helper that wants a lasting background process must detach it
+/// into a session of its own.
+struct GroupReaper(Option<u32>);
+
+impl GroupReaper {
+    fn stop(&self) {
+        kill_group(self.0);
+    }
+}
+
+impl Drop for GroupReaper {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -288,6 +307,32 @@ mod tests {
         let code = run(&argv(&["sh", "-c", &script]), Duration::from_secs(5))
             .expect("the code printed before exiting counts");
         assert_eq!(code.expose_secret(), "123456");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "waited on the held pipe: {:?}",
+            started.elapsed()
+        );
+
+        let pid = std::fs::read_to_string(&pid_file).expect("descendant pid");
+        assert!(wait_for_exit(pid.trim()), "the descendant {pid} still runs");
+    }
+
+    /// Output past the limit stops the read early; that must not skip the
+    /// cleanup. A helper that prints more than the limit, leaves a process
+    /// holding stdout, and exits still leaves no survivor.
+    #[cfg(unix)]
+    #[test]
+    fn output_past_the_limit_does_not_skip_cleanup() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("descendant.pid");
+        let script = format!(
+            "sleep 86400 & echo $! > '{}'; printf '%0{}d' 0",
+            pid_file.display(),
+            super::MAX_OUTPUT_BYTES * 2
+        );
+
+        let started = std::time::Instant::now();
+        let _ = run(&argv(&["sh", "-c", &script]), Duration::from_secs(5));
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "waited on the held pipe: {:?}",
