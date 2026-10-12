@@ -420,6 +420,8 @@ pub trait SecretStore {
     fn get(&self, key: &str) -> Option<String>;
     /// Store `secret` under `key`, replacing any previous value.
     fn set(&self, key: &str, secret: &str) -> Result<(), SecretStoreError>;
+    /// Remove whatever is stored under `key`; nothing stored is not an error.
+    fn delete(&self, key: &str) -> Result<(), SecretStoreError>;
 }
 
 /// Why a secret could not be stored. Only [`Self::Unavailable`] justifies
@@ -464,6 +466,14 @@ impl SecretStore for OsKeyring {
         keyring::Entry::new(KEYRING_SERVICE, key)
             .and_then(|entry| entry.set_password(secret))
             .map_err(|error| SecretStoreError::from(&error))
+    }
+
+    fn delete(&self, key: &str) -> Result<(), SecretStoreError> {
+        match keyring::Entry::new(KEYRING_SERVICE, key).and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(SecretStoreError::from(&error)),
+        }
     }
 }
 

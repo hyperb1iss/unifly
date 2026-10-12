@@ -131,7 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   keyring, as `config init` stores it, with plaintext only as a reported
   fallback when no keyring is usable (none running, locked, or failing). A
   keyring that refuses the secret stops the save with a message naming the
-  field and leaves `config.toml` unchanged; `config init` and
+  field, leaves `config.toml` unchanged, and puts back any keyring entry
+  the same save had already written; `config init` and
   `config set-password` classify keyring errors the same way. Credentials
   already kept in `config.toml` stay there.
 

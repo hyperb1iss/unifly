@@ -46,6 +46,8 @@ impl AuthMode {
     }
 }
 
+use std::fmt::Write as _;
+
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::config::{SecretStore, SecretStoreError, api_key_keyring_key, password_keyring_key};
@@ -127,15 +129,22 @@ impl SavePlan {
     /// When no keyring is usable, a secret falls back to plaintext in the
     /// profile (the documented fallback for hosts without one), with a
     /// warning naming the field. A keyring that is there but refuses a
-    /// secret stops the save instead: the error names the field, never the
-    /// secret, and the caller must leave `config.toml` alone.
+    /// secret stops the save instead: entries this save already wrote are
+    /// put back as they were, the error names the field (never the
+    /// secret), and the caller must leave `config.toml` alone.
     pub(crate) fn commit(self, store: &dyn SecretStore) -> Result<SavedProfile, String> {
         let mut profile = self.profile;
         let mut warnings = Vec::new();
+        let mut written = Vec::new();
         for pending in self.keyring {
             let label = pending.field.label();
+            let previous = store.get(&pending.key).map(SecretString::from);
             match store.set(&pending.key, pending.secret.expose_secret()) {
-                Ok(()) => {}
+                Ok(()) => written.push(WrittenSecret {
+                    label,
+                    key: pending.key,
+                    previous,
+                }),
                 Err(SecretStoreError::Unavailable(reason)) => {
                     warnings.push(format!(
                         "No usable keyring ({reason}); saved the {label} to config.toml in \
@@ -148,15 +157,50 @@ impl SavePlan {
                     }
                 }
                 Err(SecretStoreError::Rejected(reason)) => {
-                    return Err(format!(
+                    let mut message = format!(
                         "Couldn't store the {label} in the keyring ({reason}); config.toml was \
                          not changed"
-                    ));
+                    );
+                    for (restored, error) in roll_back(store, &written) {
+                        let _ = write!(
+                            message,
+                            ", and the {restored} it had already stored could not be put back \
+                             ({error})"
+                        );
+                    }
+                    return Err(message);
                 }
             }
         }
         Ok(SavedProfile { profile, warnings })
     }
+}
+
+/// A keyring entry a save has replaced, and what it held before.
+struct WrittenSecret {
+    label: &'static str,
+    key: String,
+    previous: Option<SecretString>,
+}
+
+/// Put back entries a blocked save already wrote, newest first: restore
+/// the previous value, or delete the entry if there was none. Returns the
+/// label and error for each entry that could not be put back.
+fn roll_back(
+    store: &dyn SecretStore,
+    written: &[WrittenSecret],
+) -> Vec<(&'static str, SecretStoreError)> {
+    written
+        .iter()
+        .rev()
+        .filter_map(|entry| {
+            let restored = match &entry.previous {
+                Some(previous) => store.set(&entry.key, previous.expose_secret()),
+                None => store.delete(&entry.key),
+            };
+            restored.err().map(|error| (entry.label, error))
+        })
+        .collect()
 }
 
 /// Profile settings the form has no field for, kept from the loaded
@@ -658,11 +702,13 @@ mod tests {
     }
 
     /// In-memory stand-in for the OS keyring. `failure`, when set, is what
-    /// every write returns instead of storing.
+    /// a write returns instead of storing: for `failing_key` only, when that
+    /// is set, otherwise for every key.
     #[derive(Default)]
     struct MemoryStore {
         entries: std::cell::RefCell<std::collections::HashMap<String, String>>,
         failure: Option<crate::config::SecretStoreError>,
+        failing_key: Option<&'static str>,
     }
 
     impl MemoryStore {
@@ -688,12 +734,19 @@ mod tests {
         }
 
         fn set(&self, key: &str, secret: &str) -> Result<(), crate::config::SecretStoreError> {
-            if let Some(failure) = &self.failure {
+            if let Some(failure) = &self.failure
+                && self.failing_key.is_none_or(|failing| failing == key)
+            {
                 return Err(failure.clone());
             }
             self.entries
                 .borrow_mut()
                 .insert(key.to_owned(), secret.to_owned());
+            Ok(())
+        }
+
+        fn delete(&self, key: &str) -> Result<(), crate::config::SecretStoreError> {
+            self.entries.borrow_mut().remove(key);
             Ok(())
         }
     }
@@ -849,6 +902,42 @@ mod tests {
             "the secret leaked: {error}"
         );
         assert!(store.secret("home/password").is_none());
+    }
+
+    /// A blocked save leaves the keyring exactly as it was: an entry this
+    /// save already replaced gets its old value back, and one it created
+    /// is removed again.
+    #[test]
+    fn a_refused_secret_rolls_back_what_the_save_already_stored() {
+        for previous in [Some("old-key"), None] {
+            let store = MemoryStore {
+                failure: Some(crate::config::SecretStoreError::Rejected(
+                    "Value of 'password' is longer than the platform limit".into(),
+                )),
+                failing_key: Some("home/password"),
+                ..MemoryStore::default()
+            };
+            if let Some(previous) = previous {
+                store
+                    .entries
+                    .borrow_mut()
+                    .insert("home/api-key".into(), previous.into());
+            }
+            let mut draft = sample_draft();
+            draft.api_key = "new-key".into();
+            draft.password = "new-password".into();
+
+            let error = draft
+                .plan_save("home")
+                .commit(&store)
+                .err()
+                .expect("the refused password blocks the save");
+
+            assert!(error.contains("password"), "{error}");
+            assert!(!error.contains("could not be put back"), "{error}");
+            assert_eq!(store.secret("home/api-key").as_deref(), previous);
+            assert!(store.secret("home/password").is_none());
+        }
     }
 
     /// Profiles that keep credentials in config.toml keep them there,
