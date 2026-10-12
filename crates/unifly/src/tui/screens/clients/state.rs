@@ -15,6 +15,8 @@ impl ClientsScreen {
             focused: false,
             action_tx: None,
             clients: Arc::new(Vec::new()),
+            devices: Arc::new(Vec::new()),
+            networks: Arc::new(Vec::new()),
             table_state: TableState::default(),
             filter: ClientTypeFilter::All,
             search_query: String::new(),
