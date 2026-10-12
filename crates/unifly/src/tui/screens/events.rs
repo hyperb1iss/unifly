@@ -191,13 +191,17 @@ impl EventsScreen {
     }
 
     fn render_event_list(&self, frame: &mut Frame, area: Rect) {
-        let visible_height = usize::from(area.height);
+        let auto_scrolling = !self.paused && !self.events.is_empty();
+        // The header row and the auto-scroll marker share the area with the
+        // events, so the newest event stays on screen above the marker.
+        let chrome = 1 + usize::from(auto_scrolling);
+        let visible_height = usize::from(area.height).saturating_sub(chrome);
         let end = self.events.len().saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(visible_height);
 
         let mut lines = vec![Line::from(vec![
-            Span::styled("  Time      ", theme::table_header()),
-            Span::styled("Category   ", theme::table_header()),
+            Span::styled(format!("  {:<12}", "Time"), theme::table_header()),
+            Span::styled(format!("{:<11}", "Category"), theme::table_header()),
             Span::styled("Message", theme::table_header()),
         ])];
 
@@ -235,8 +239,7 @@ impl EventsScreen {
             )));
         }
 
-        // Auto-scroll indicator
-        if !self.paused && !self.events.is_empty() {
+        if auto_scrolling {
             lines.push(Line::from(Span::styled(
                 "  ↓ auto-scrolling",
                 Style::default().fg(theme::border_unfocused()),
@@ -256,5 +259,79 @@ impl EventsScreen {
             Span::styled("search", theme::key_hint()),
         ]);
         frame.render_widget(Paragraph::new(hints), area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use unifly_api::Event;
+
+    use super::EventsScreen;
+    use crate::tui::action::Action;
+    use crate::tui::component::Component;
+    use crate::tui::table::render_lines;
+
+    fn event(minute: u32) -> Arc<Event> {
+        Arc::new(
+            serde_json::from_value(json!({
+                "id": format!("evt-{minute}"),
+                "timestamp": format!("2026-10-12T09:{minute:02}:00Z"),
+                "category": "Client",
+                "severity": "Info",
+                "event_type": "EVT_WU_Connected",
+                "message": format!("client-{minute:02} connected"),
+                "device_mac": null,
+                "client_mac": null,
+                "site_id": null,
+                "raw_key": null
+            }))
+            .expect("event fixture should deserialize"),
+        )
+    }
+
+    #[test]
+    fn live_list_keeps_the_newest_event_above_the_scroll_marker() {
+        let mut screen = EventsScreen::new();
+        for minute in 0..40 {
+            screen
+                .update(&Action::EventReceived(event(minute)))
+                .expect("update");
+        }
+
+        for (width, height) in [(80, 24), (100, 30), (183, 47)] {
+            let text = render_lines(width, height, |frame, area| screen.render(frame, area));
+            let newest = text
+                .iter()
+                .position(|row| row.contains("client-39 connected"))
+                .unwrap_or_else(|| panic!("newest event missing:\n{}", text.join("\n")));
+            assert!(
+                text[newest + 1].contains("auto-scrolling"),
+                "newest event not last:\n{}",
+                text.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn list_header_lines_up_with_the_rows() {
+        let mut screen = EventsScreen::new();
+        screen
+            .update(&Action::EventReceived(event(5)))
+            .expect("update");
+
+        let text = render_lines(100, 30, |frame, area| screen.render(frame, area));
+        let header = text
+            .iter()
+            .find(|row| row.contains("Category"))
+            .expect("list header");
+        let row = text
+            .iter()
+            .find(|row| row.contains("client-05"))
+            .expect("event row");
+        assert_eq!(header.find("Category"), row.find("Client"));
+        assert_eq!(header.find("Message"), row.find("client-05"));
     }
 }
