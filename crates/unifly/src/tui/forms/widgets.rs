@@ -1,7 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::tui::theme;
@@ -13,6 +13,19 @@ pub(crate) fn render_input_field(
     value: &str,
     active: bool,
     masked: bool,
+) {
+    render_input_field_with_hint(frame, area, label, value, active, masked, None);
+}
+
+/// [`render_input_field`] that shows `hint`, dimmed, while `value` is empty.
+pub(crate) fn render_input_field_with_hint(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    active: bool,
+    masked: bool,
+    hint: Option<&str>,
 ) {
     if area.height < 3 {
         return;
@@ -47,16 +60,16 @@ pub(crate) fn render_input_field(
     let inner = block.inner(block_area);
     frame.render_widget(block, block_area);
 
-    let text = if active {
-        format!("{display}\u{2588}")
-    } else {
-        display
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            text,
+    let cursor = if active { "\u{2588}" } else { "" };
+    let line = match hint {
+        Some(hint) if value.is_empty() => Line::from(vec![
+            Span::styled(cursor, Style::default().fg(theme::accent_secondary())),
+            Span::styled(hint, Style::default().fg(theme::text_muted())),
+        ]),
+        _ => Line::from(Span::styled(
+            format!("{display}{cursor}"),
             Style::default().fg(theme::accent_secondary()),
         )),
-        inner,
-    );
+    };
+    frame.render_widget(Paragraph::new(line), inner);
 }

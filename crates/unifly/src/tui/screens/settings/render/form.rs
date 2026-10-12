@@ -1,6 +1,7 @@
 use super::super::{FormEntry, SettingsField, SettingsScreen};
 
-use crate::tui::forms::widgets::render_input_field;
+use crate::tui::forms::controller_profile::SecretOrigin;
+use crate::tui::forms::widgets::{render_input_field, render_input_field_with_hint};
 use crate::tui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -189,13 +190,14 @@ impl SettingsScreen {
                         false,
                     ),
                     SettingsField::AuthMode => self.render_auth_selector(frame, chunk),
-                    SettingsField::ApiKey => render_input_field(
+                    SettingsField::ApiKey => render_input_field_with_hint(
                         frame,
                         chunk,
                         "  API Key",
                         &self.draft.api_key,
                         self.active_field == SettingsField::ApiKey,
                         true,
+                        keyring_hint(self.draft.api_key_origin),
                     ),
                     SettingsField::HostId => render_input_field(
                         frame,
@@ -213,13 +215,14 @@ impl SettingsScreen {
                         self.active_field == SettingsField::Username,
                         false,
                     ),
-                    SettingsField::Password => render_input_field(
+                    SettingsField::Password => render_input_field_with_hint(
                         frame,
                         chunk,
                         "  Password",
                         &self.draft.password,
                         self.active_field == SettingsField::Password,
                         !self.show_password,
+                        keyring_hint(self.draft.password_origin),
                     ),
                     SettingsField::Site => render_input_field(
                         frame,
@@ -272,4 +275,10 @@ impl SettingsScreen {
             layout[2],
         );
     }
+}
+
+/// Placeholder for a credential the keyring holds: present, but never
+/// loaded into the form.
+fn keyring_hint(origin: SecretOrigin) -> Option<&'static str> {
+    (origin == SecretOrigin::Keyring).then_some("stored in keyring; type to replace")
 }

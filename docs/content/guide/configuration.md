@@ -84,21 +84,22 @@ timeout = 45
 
 ### Profile Settings Reference
 
-| Setting       | Values                                      | Description                                                                                                |
-| ------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `controller`  | URL                                         | Controller address (include port if non-standard)                                                          |
-| `site`        | string                                      | Site name or UUID. Default: `default`                                                                      |
-| `auth_mode`   | `integration`, `session`, `hybrid`, `cloud` | Which APIs to authenticate against. `"legacy"` is accepted as a backwards-compatible alias for `"session"` |
-| `username`    | string                                      | Session/Hybrid login username                                                                              |
-| `password`    | string                                      | Session/Hybrid password in plaintext (prefer the keyring via `config set-password`)                        |
-| `api_key`     | string                                      | Integration API key (prefer `api_key_env`)                                                                 |
-| `api_key_env` | string                                      | Env var name containing the API key                                                                        |
-| `host_id`     | string                                      | Site Manager console ID for cloud mode                                                                     |
-| `host_id_env` | string                                      | Env var name containing the console ID                                                                     |
-| `totp_env`    | string                                      | Env var name for MFA one-time password                                                                     |
-| `insecure`    | bool                                        | Accept self-signed TLS certificates                                                                        |
-| `ca_cert`     | path                                        | Custom CA certificate PEM file                                                                             |
-| `timeout`     | seconds                                     | Request timeout (default: 30)                                                                              |
+| Setting        | Values                                      | Description                                                                                                                                     |
+| -------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `controller`   | URL                                         | Controller address (include port if non-standard)                                                                                               |
+| `site`         | string                                      | Site name or UUID. Default: `default`                                                                                                           |
+| `auth_mode`    | `integration`, `session`, `hybrid`, `cloud` | Which APIs to authenticate against. `"legacy"` is accepted as a backwards-compatible alias for `"session"`                                      |
+| `username`     | string                                      | Session/Hybrid login username                                                                                                                   |
+| `password`     | string                                      | Session/Hybrid password in plaintext (prefer the keyring via `config set-password`)                                                             |
+| `api_key`      | string                                      | Integration API key (prefer `api_key_env`)                                                                                                      |
+| `api_key_env`  | string                                      | Env var name containing the API key                                                                                                             |
+| `host_id`      | string                                      | Site Manager console ID for cloud mode                                                                                                          |
+| `host_id_env`  | string                                      | Env var name containing the console ID                                                                                                          |
+| `totp_env`     | string                                      | Env var name for MFA one-time password                                                                                                          |
+| `totp_command` | array of strings                            | Command that prints the current MFA code, run without a shell for every login that needs one (see [MFA / TOTP](/guide/authentication#mfa-totp)) |
+| `insecure`     | bool                                        | Accept self-signed TLS certificates                                                                                                             |
+| `ca_cert`      | path                                        | Custom CA certificate PEM file                                                                                                                  |
+| `timeout`      | seconds                                     | Request timeout (default: 30)                                                                                                                   |
 
 {% tip() %}
 Use `api_key_env` instead of `api_key` to avoid putting secrets in the config file. The API key is read from the named environment variable at runtime.
@@ -117,7 +118,7 @@ unifly config set timeout 60
 ```
 
 {% tip() %}
-`totp_env` and `password` must be set directly in `config.toml` or via the setup wizard. They are not yet supported by `config set`.
+`password` must be set directly in `config.toml` or via the setup wizard, and `totp_env` and `totp_command` directly in `config.toml`. None of them is supported by `config set` yet.
 {% end %}
 
 ## Environment Variables

@@ -111,6 +111,8 @@ The `config.toml` file stores non-sensitive settings like controller URLs and si
 
 Secrets resolve in a fixed order: an environment variable named by `api_key_env` (or `UNIFI_PASSWORD` for passwords), then an explicit `api_key = "..."` / `password = "..."` value in `config.toml`, then the keyring. **Explicit config beats the keyring**, so editing a plaintext value in `config.toml` is never silently overridden by a stale keyring entry from an earlier `config init`.
 
+The TUI settings and setup screens follow the same rules. A credential held by the keyring shows as "stored in keyring" and needs no retyping, and saving leaves the entry alone. A newly typed credential goes to the keyring, falling back to plaintext in `config.toml` (with a notice) only when no keyring is usable. A keyring that is there but refuses the secret stops the save instead, with a message naming the field: `config.toml` is left unchanged, and any keyring entry the same save had already written is put back as it was. A credential already kept in plaintext in `config.toml` stays there.
+
 To update a stored password:
 
 ```bash
@@ -144,20 +146,32 @@ CLI flags override environment variables, which override config file values.
 
 ## MFA / TOTP
 
-If your controller requires two-factor authentication:
+If your controller requires two-factor authentication, give unifly a command that prints the current code. unifly runs it again every time it has to log in, so a long-running TUI renews its session when the cookie expires (about an hour in):
+
+```toml
+[profiles.home]
+totp_command = ["op", "item", "get", "UniFi", "--otp"]
+```
+
+The command is an argv array: the program, then its arguments. It runs directly, without a shell, with no stdin and 10 seconds to finish, and its trimmed output is the code. A non-zero exit, a timeout, or empty output counts as no code and is logged without the output. On Unix the command runs in its own process group. If it times out, or exits while something it started still holds its output open, everything left in that group is stopped too. A background process whose output is redirected away, as a password manager's cache daemon does, is left running. On Windows only the command itself is stopped, and a helper that leaves a background process holding its output open can leave one idle thread in unifly until that process exits; the login itself is never held up.
+
+If the password manager is locked when a re-login runs, the command may raise an unlock prompt (Touch ID or a system password dialog). An attempt that gets no code is retried after 30 seconds, so while the session stays expired, expect a prompt about every 30 seconds until you unlock it.
+
+A one-off code works too, for a single command:
 
 ```bash
-# One-shot with 1Password CLI
-UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password") \
+UNIFI_TOTP=$(op read "op://Personal/UniFi/one-time password?attribute=otp") \
   unifly devices list
 
-# Or set totp_env in your config.toml profile:
+# Or name the variable in your profile:
 # [profiles.home]
 # totp_env = "UNIFI_TOTP"
 ```
 
+A one-off code (`--totp`, `UNIFI_TOTP`, or `totp_env`) serves a single login. When a profile has both, the one-off code is used for the first login and `totp_command` for every later one. A session with only a one-off code cannot renew itself, so the TUI loses session-backed features (events, health, client details) once its cookie expires.
+
 {% tip() %}
-The `totp_env` setting must be edited directly in `config.toml`. It is not yet supported by `unifly config set`.
+`totp_env` and `totp_command` must be edited directly in `config.toml`. Neither is supported by `unifly config set` yet.
 {% end %}
 
 ## Next Steps

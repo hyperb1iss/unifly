@@ -243,6 +243,7 @@ async fn build_controller_config(
         websocket_enabled: false,
         polling_interval_secs: 30,
         totp_token,
+        totp_provider: None,
         profile_name: None, // ad-hoc flags — no profile, no caching
         no_session_cache: global.no_cache || is_cloud,
     })

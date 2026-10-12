@@ -29,7 +29,7 @@ impl SettingsScreen {
         match self.active_field {
             SettingsField::AuthMode => self.handle_auth_mode_key(key),
             SettingsField::Insecure => self.handle_toggle_key(key, |s| {
-                s.draft.insecure = !s.draft.insecure;
+                s.draft.toggle_insecure();
             }),
             SettingsField::ShowDonate => self.handle_toggle_key(key, |s| {
                 s.toggle_show_donate();
@@ -226,7 +226,7 @@ impl SettingsScreen {
 
                             match field {
                                 SettingsField::Insecure => {
-                                    self.draft.insecure = !self.draft.insecure;
+                                    self.draft.toggle_insecure();
                                 }
                                 SettingsField::ShowDonate => {
                                     self.toggle_show_donate();

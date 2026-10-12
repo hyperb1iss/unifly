@@ -60,7 +60,15 @@ impl SettingsField {
 
 impl SettingsScreen {
     pub fn new() -> Self {
-        let mut screen = Self {
+        let mut screen = Self::blank();
+        screen.load_from_config();
+        screen
+    }
+
+    /// A screen with default values, before anything is read from the
+    /// config file or the keyring.
+    fn blank() -> Self {
+        Self {
             focused: false,
             action_tx: None,
             state: SettingsState::Editing,
@@ -74,9 +82,7 @@ impl SettingsScreen {
             last_area: std::cell::Cell::new(ratatui::layout::Rect::default()),
             theme_selector: std::cell::RefCell::new(None),
             show_donate: true,
-        };
-        screen.load_from_config();
-        screen
+        }
     }
 
     fn load_from_config(&mut self) {
@@ -92,7 +98,9 @@ impl SettingsScreen {
         };
 
         self.profile_name = profile_name.to_string();
-        self.draft = ControllerProfileDraft::from_profile(profile);
+        self.draft = ControllerProfileDraft::from_profile(profile)
+            .with_keyring_origins(profile_name, &crate::config::OsKeyring)
+            .with_inherited_insecure(&cfg.defaults);
         self.auth_mode_index = AuthMode::ALL
             .iter()
             .position(|&mode| mode == self.draft.auth_mode)
@@ -244,6 +252,7 @@ impl SettingsScreen {
 
         let profile = self.build_profile();
         let profile_name = self.profile_name.clone();
+        let save = self.draft.plan_save(&profile_name);
 
         let Some(tx) = self.action_tx.clone() else {
             return;
@@ -263,16 +272,26 @@ impl SettingsScreen {
                     match controller.connect().await {
                         Ok(()) => {
                             controller.disconnect().await;
-                            let mut cfg = crate::config::load_config().unwrap_or_default();
-                            cfg.profiles.insert(profile_name.clone(), profile);
-                            if cfg.default_profile.is_none() {
-                                cfg.default_profile = Some(profile_name.clone());
-                            }
-                            if let Err(error) = crate::config::save_config(&cfg) {
-                                Err(format!("Connected, but failed to save config: {error}"))
-                            } else {
-                                Ok(())
-                            }
+                            // A refused secret or a failed config write undoes
+                            // the keyring changes; the message becomes the
+                            // test result.
+                            let saved = save.commit(&crate::config::OsKeyring, |profile| {
+                                let mut cfg = crate::config::load_config().unwrap_or_default();
+                                cfg.profiles.insert(profile_name.clone(), profile);
+                                if cfg.default_profile.is_none() {
+                                    cfg.default_profile = Some(profile_name.clone());
+                                }
+                                crate::config::save_config(&cfg).map_err(|error| {
+                                    format!("Connected, but failed to save config: {error}")
+                                })
+                            });
+                            saved.map(|notices| {
+                                for notice in notices {
+                                    let _ = tx.send(crate::tui::action::Action::Notify(
+                                        crate::tui::action::Notification::info(notice),
+                                    ));
+                                }
+                            })
                         }
                         Err(error) => Err(format!("{error}")),
                     }
@@ -316,7 +335,7 @@ mod tests {
     use super::{AuthMode, SettingsField, SettingsScreen};
 
     fn test_screen() -> SettingsScreen {
-        let mut screen = SettingsScreen::new();
+        let mut screen = SettingsScreen::blank();
         screen.draft.url = "https://console.example.com".into();
         screen.draft.api_key = "api-key".into();
         screen.draft.host_id = "console-123".into();

@@ -7,6 +7,8 @@
 use secrecy::SecretString;
 use url::Url;
 
+use crate::session::TotpProvider;
+
 /// How to authenticate with a controller.
 ///
 /// Named `AuthCredentials` (not `AuthMethod`) to avoid collision with
@@ -83,8 +85,19 @@ pub struct ControllerConfig {
     pub websocket_enabled: bool,
     /// Polling interval when WebSocket is unavailable (seconds).
     pub polling_interval_secs: u64,
-    /// TOTP token for MFA-enabled controllers.
+    /// TOTP code for MFA-enabled controllers, used by the login at connect.
+    ///
+    /// A code is valid for one 30 s step, so it is never kept for a later
+    /// re-login: without `totp_provider`, a session opened with it does
+    /// not renew itself when the cookie expires.
     pub totp_token: Option<SecretString>,
+    /// Source of current TOTP codes for MFA-enabled controllers.
+    ///
+    /// Consulted only when the controller issues an MFA challenge: at
+    /// connect when `totp_token` is unset (a restored cached session needs
+    /// no code), and on every automatic re-login after the session cookie
+    /// expires, which is what lets an MFA session renew itself.
+    pub totp_provider: Option<TotpProvider>,
     /// Profile name for session caching. `None` disables caching.
     pub profile_name: Option<String>,
     /// Explicitly disable session caching (e.g. `--no-cache`).
@@ -108,6 +121,7 @@ impl Default for ControllerConfig {
             websocket_enabled: true,
             polling_interval_secs: 10,
             totp_token: None,
+            totp_provider: None,
             profile_name: None,
             no_session_cache: false,
         }

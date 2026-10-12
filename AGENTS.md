@@ -296,7 +296,15 @@ env var prefix is **`UNIFI_`**, not `UNIFLY_`. Exception: `UNIFLY_THEME`
 
 Hidden/undocumented flag: `--totp` (with `UNIFI_TOTP` env). Not in `--help`
 but functional. Used for MFA controllers and 1Password CLI integration via
-`totp_env` in config.
+`totp_env` in config. `totp_env` names an env var read once at startup, so
+both give a single-use code that serves only the first login. The
+profile's `totp_command` (argv array, no shell, 10 s timeout, see
+`config/totp_command.rs`) becomes a `TotpProvider` that runs for every
+re-login, which is what lets an MFA session renew when its cookie expires.
+Flag-aware paths (CLI, TUI launch) resolve TOTP through
+`config::resolve::resolve_totp`; `profile_to_controller_config` uses the
+same `config::resolve_totp_provider`. Never wrap a value captured once as
+a provider; the session client refuses to resend a spent code anyway.
 
 `--no-cache` forces a fresh Session login, bypassing the session cookie
 cache stored under the system config dir.
