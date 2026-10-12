@@ -276,6 +276,7 @@ fn base_client(
         uplink_device_mac: None,
         switch_port: None,
         network_id: Some(network.id.clone()),
+        network_name: Some(network.name.clone()),
         vlan: network.vlan_id,
         wireless: None,
         guest_auth: None,

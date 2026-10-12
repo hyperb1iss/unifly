@@ -7,8 +7,8 @@ use crate::model::{Client, Device, MacAddress};
 /// failed this cycle, so a transient error does not blank them.
 ///
 /// The carried fields are exactly the ones `merge` fills from the session:
-/// hostname, traffic counters, wireless info, uplink MAC, and switch port
-/// from the session clients fetch, plus DHCP reservation data from the
+/// hostname, network name, traffic counters, wireless info, uplink MAC, and
+/// switch port from the session clients fetch, plus DHCP reservation data from the
 /// session users fetch. Integration's client conversion never sets them,
 /// and a field the fresh record does set is never overwritten. Link fields
 /// (wireless info, uplink MAC, switch port) are carried only while the
@@ -29,6 +29,7 @@ pub(super) fn session_client_fields(
         };
         if session_clients_failed {
             fill(&mut client.hostname, previous.hostname.as_ref());
+            fill(&mut client.network_name, previous.network_name.as_ref());
             fill(&mut client.tx_bytes, previous.tx_bytes.as_ref());
             fill(&mut client.rx_bytes, previous.rx_bytes.as_ref());
             if previous.client_type == client.client_type {
@@ -126,6 +127,7 @@ mod tests {
                 "mac": CLIENT_MAC,
                 "ip": "10.0.0.50",
                 "hostname": "laptop.lan",
+                "network": "Studio",
                 "is_wired": false,
                 "essid": "home",
                 "ap_mac": "11:22:33:44:55:66",
@@ -136,6 +138,7 @@ mod tests {
         );
         let mut stored = integration_client("WIRELESS");
         stored.hostname = session.hostname;
+        stored.network_name = session.network_name;
         stored.tx_bytes = session.tx_bytes;
         stored.rx_bytes = session.rx_bytes;
         stored.wireless = session.wireless;
@@ -173,6 +176,7 @@ mod tests {
 
         let client = &clients[0];
         assert_eq!(client.hostname.as_deref(), Some("laptop.lan"));
+        assert_eq!(client.network_name.as_deref(), Some("Studio"));
         assert_eq!(client.tx_bytes, Some(1234));
         assert_eq!(client.rx_bytes, Some(5678));
         assert_eq!(

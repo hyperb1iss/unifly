@@ -5,24 +5,28 @@ use std::sync::Arc;
 
 use unifly_api::{Client, ClientType, Device, Network};
 
-/// The client's network by name: its `network_id` first, then a network
-/// with the client's VLAN, then the bare VLAN number. `None` when the
-/// client carries neither.
+/// The client's network by name: its `network_id` first, then the network
+/// name the Session API reported (its network IDs are legacy record IDs
+/// that never match the Integration API's), then a network with the
+/// client's VLAN, then the bare VLAN number. `None` when the client carries
+/// none of these.
 pub(super) fn network_label(client: &Client, networks: &[Arc<Network>]) -> Option<String> {
     let by_id = client
         .network_id
         .as_ref()
-        .and_then(|id| networks.iter().find(|network| &network.id == id));
+        .and_then(|id| networks.iter().find(|network| &network.id == id))
+        .map(|network| network.name.clone());
     let by_vlan = || {
         client.vlan.and_then(|vlan| {
             networks
                 .iter()
                 .find(|network| network.vlan_id == Some(vlan))
+                .map(|network| network.name.clone())
         })
     };
     by_id
+        .or_else(|| client.network_name.clone())
         .or_else(by_vlan)
-        .map(|network| network.name.clone())
         .or_else(|| client.vlan.map(|vlan| format!("VLAN {vlan}")))
 }
 
@@ -224,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn network_resolves_by_id_then_vlan_then_bare_vlan() {
+    fn network_resolves_by_id_then_session_name_then_vlan() {
         let networks = vec![
             network("11111111-1111-4111-8111-111111111111", "Studio", 10),
             network("22222222-2222-4222-8222-222222222222", "IoT", 40),
@@ -239,6 +243,16 @@ mod tests {
         assert_eq!(
             network_label(&by_vlan, &networks).as_deref(),
             Some("Studio")
+        );
+
+        let session = client(&json!({
+            "network_id": "5f1a2b3c4d5e6f7a8b9c0d1e",
+            "network_name": "Render",
+            "vlan": 10,
+        }));
+        assert_eq!(
+            network_label(&session, &networks).as_deref(),
+            Some("Render")
         );
 
         let unknown_vlan = client(&json!({ "vlan": 99 }));

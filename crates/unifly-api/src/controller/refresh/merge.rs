@@ -92,6 +92,12 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
             if client.hostname.is_none() {
                 client.hostname.clone_from(&session_client.hostname);
             }
+            if client.network_name.is_none() {
+                client.network_name = session_client
+                    .network
+                    .clone()
+                    .filter(|name| !name.is_empty());
+            }
             if client.wireless.is_none() {
                 let session_client: Client = Client::from((*session_client).clone());
                 client.wireless = session_client.wireless;
@@ -156,4 +162,39 @@ fn merge_user_reservations(
         merged_users,
         "user DHCP reservation merge"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::integration_types::ClientResponse;
+    use crate::model::Client;
+    use crate::session::models::SessionClientEntry;
+
+    #[test]
+    fn hybrid_clients_take_the_session_network_name() {
+        let mut clients: Vec<Client> = vec![
+            ClientResponse {
+                id: uuid::Uuid::from_u128(1),
+                name: "render-07".into(),
+                client_type: "WIRED".into(),
+                ip_address: Some("10.40.20.17".into()),
+                connected_at: None,
+                mac_address: Some("3e:bf:ec:41:e9:0c".into()),
+                access: serde_json::json!({ "type": "DEFAULT" }),
+            }
+            .into(),
+        ];
+        let session: SessionClientEntry = serde_json::from_value(serde_json::json!({
+            "_id": "abc",
+            "mac": "3e:bf:ec:41:e9:0c",
+            "ip": "10.40.20.17",
+            "network": "Render",
+            "network_id": "5f1a2b3c4d5e6f7a8b9c0d1e"
+        }))
+        .expect("deserialize");
+
+        super::merge_session_clients(&mut clients, &[session], &[]);
+
+        assert_eq!(clients[0].network_name.as_deref(), Some("Render"));
+    }
 }

@@ -282,6 +282,9 @@ impl Sanitizer {
         let mut c = client.clone();
         c.name = self.sanitize_name_opt(&c.name);
         c.hostname = self.sanitize_name_opt(&c.hostname);
+        // Networks are renamed by `sanitize_network`; the same mapping keeps
+        // a client's network name matching its renamed network.
+        c.network_name = self.sanitize_name_opt(&c.network_name);
         c.ip = self.sanitize_ip_opt(&c.ip);
         if let Some(ref mut wi) = c.wireless {
             wi.ssid = wi.ssid.as_ref().map(|s| self.sanitize_ssid(s));
