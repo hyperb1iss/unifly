@@ -880,6 +880,9 @@ fn firewall_groups_envelope() -> serde_json::Value {
 enum RoutePhase {
     Populated,
     Failing(u16),
+    /// HTTP 200 carrying the error object UniFi OS sometimes sends instead
+    /// of a real status code.
+    WrappedError,
     Empty,
 }
 
@@ -900,6 +903,9 @@ impl Respond for SwitchableRoute {
         match phase {
             RoutePhase::Populated => ResponseTemplate::new(200).set_body_json(&self.populated),
             RoutePhase::Failing(status) => ResponseTemplate::new(status),
+            RoutePhase::WrappedError => ResponseTemplate::new(200).set_body_json(json!({
+                "error": {"code": 500, "message": "internal error"},
+            })),
             RoutePhase::Empty => ResponseTemplate::new(200).set_body_json(&self.empty),
         }
     }
@@ -1060,6 +1066,14 @@ async fn failed_optional_fetches_keep_last_known_collections() {
         );
     }
 
+    set_phase(&phase, RoutePhase::WrappedError);
+    controller.full_refresh().await.unwrap();
+    assert_eq!(
+        optional_collection_counts(&controller),
+        populated,
+        "an error object served with HTTP 200 must keep last known data"
+    );
+
     set_phase(&phase, RoutePhase::Empty);
     controller.full_refresh().await.unwrap();
     assert_eq!(
@@ -1076,6 +1090,104 @@ async fn failed_optional_fetches_keep_last_known_collections() {
         ],
         "a successful empty response is authoritative and prunes"
     );
+
+    controller.disconnect().await;
+}
+
+const LAN_NETWORK_ID: &str = "8a1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a01";
+const GUEST_NETWORK_ID: &str = "8a1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a02";
+
+fn network_summary(id: &str, name: &str, vlan_id: u16) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": name,
+        "enabled": true,
+        "management": "GATEWAY",
+        "vlanId": vlan_id,
+        "metadata": {"origin": "USER_DEFINED"},
+    })
+}
+
+fn network_by_name(controller: &Controller, name: &str) -> Arc<unifly_api::model::Network> {
+    controller
+        .networks_snapshot()
+        .iter()
+        .find(|network| network.name == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("network {name} missing from the store"))
+}
+
+#[tokio::test]
+async fn failed_network_detail_fetch_keeps_the_network() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    Mock::given(method("GET"))
+        .and(path(integration_route("networks")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "offset": 0,
+            "limit": 200,
+            "count": 2,
+            "totalCount": 2,
+            "data": [
+                network_summary(LAN_NETWORK_ID, "LAN", 1),
+                network_summary(GUEST_NETWORK_ID, "Guest", 30),
+            ],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let mut lan_detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    lan_detail["ipv4Configuration"] = json!({"hostIpAddress": "10.0.1.1", "prefixLength": 24});
+    let lan_phase = mount_switchable_routes(
+        &server,
+        vec![(
+            integration_route(&format!("networks/{LAN_NETWORK_ID}")),
+            lan_detail,
+            json!({}),
+        )],
+    )
+    .await;
+
+    // The guest network's detail never loads, so the store only ever has
+    // its summary.
+    Mock::given(method("GET"))
+        .and(path(integration_route(&format!(
+            "networks/{GUEST_NETWORK_ID}"
+        ))))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    assert_eq!(controller.networks_snapshot().len(), 2);
+    assert_eq!(
+        network_by_name(&controller, "LAN").subnet.as_deref(),
+        Some("10.0.1.1/24")
+    );
+    let guest = network_by_name(&controller, "Guest");
+    assert_eq!(guest.vlan_id, Some(30));
+    assert_eq!(guest.subnet, None);
+
+    set_phase(&lan_phase, RoutePhase::Failing(500));
+    controller.full_refresh().await.unwrap();
+
+    assert_eq!(controller.networks_snapshot().len(), 2);
+    assert_eq!(
+        network_by_name(&controller, "LAN").subnet.as_deref(),
+        Some("10.0.1.1/24"),
+        "a failed detail fetch keeps the last known detailed record"
+    );
+    assert_eq!(network_by_name(&controller, "Guest").vlan_id, Some(30));
 
     controller.disconnect().await;
 }

@@ -57,6 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   refresh. A failed optional fetch now leaves its collection untouched, and
   only a successful response (empty or not) replaces it. Site health follows
   the same rule, so a successful empty health response now clears it.
+- **Networks and NAT rules survive partial failures during refresh.** A
+  network whose detail fetch failed used to drop out of the refresh and
+  vanish from the store; it now keeps its last known record, or its summary
+  if it was never loaded. A NAT listing that answers HTTP 200 with something
+  other than a rule array (UniFi OS can wrap errors this way) is now an error
+  instead of an empty list, so the refresh keeps the current NAT rules
+  rather than clearing them.
 
 ### Performance
 

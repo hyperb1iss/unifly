@@ -50,7 +50,7 @@ impl Controller {
         integration: Arc<crate::IntegrationClient>,
         site_id: uuid::Uuid,
     ) -> Result<(), CoreError> {
-        let mut integration = integration::fetch(integration, site_id).await?;
+        let mut integration = integration::fetch(integration, site_id, self.store()).await?;
         let session_client = self.inner.session_client.lock().await.clone();
         let session = session::fetch_optional(session_client).await;
 
