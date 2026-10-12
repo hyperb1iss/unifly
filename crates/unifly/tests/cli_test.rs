@@ -1186,6 +1186,44 @@ fn test_demo_fleet_devices_get_miss_points_at_devices_list() {
         .stderr(predicate::str::contains("unifly devices list"));
 }
 
+/// `::76ce:f4ac:26ee` is an IPv6 address whose twelve hex digits spell a
+/// client's MAC. `clients roams` once fetched that client's history from
+/// it; every lookup must treat it as an IP that matches nothing.
+#[test]
+fn test_demo_fleet_ip_shaped_identifiers_never_pass_as_macs() {
+    let as_ipv6 = |mac: &str| {
+        let hex = mac.replace(':', "");
+        format!("::{}:{}:{}", &hex[..4], &hex[4..8], &hex[8..])
+    };
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let wireless = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|client| client["client_type"] == "Wireless")
+        .unwrap();
+    let client_ip = as_ipv6(wireless["mac"].as_str().unwrap());
+    let device_ip = as_ipv6(
+        demo_json(&["devices", "get", "ap-roof"])["mac"]
+            .as_str()
+            .unwrap(),
+    );
+    for args in [
+        vec!["clients", "roams", client_ip.as_str()],
+        vec!["clients", "get", client_ip.as_str()],
+        vec!["clients", "wifi", client_ip.as_str()],
+        vec!["devices", "get", device_ip.as_str()],
+    ] {
+        unifly_cmd()
+            .arg("--demo-fleet")
+            .args(&args)
+            .assert()
+            .failure()
+            .code(4)
+            .stderr(predicate::str::contains("not found"));
+    }
+}
+
 #[test]
 fn test_demo_fleet_get_commands_accept_display_names() {
     for command in [

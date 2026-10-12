@@ -1,6 +1,6 @@
 use unifly_api::{
-    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, MacAddress, PoeMode,
-    PortMode, PortProfileUpdate, PortSpeedSetting,
+    ApplyPortEntry, ApplyPortsRequest, Command as CoreCommand, Controller, PoeMode, PortMode,
+    PortProfileUpdate, PortSpeedSetting,
 };
 
 use crate::cli::args::{DevicesArgs, DevicesCommand, GlobalOpts, PoeArg, PortModeArg, SpeedArg};
@@ -51,16 +51,10 @@ pub(super) async fn handle(
         DevicesCommand::Adopt { mac, ignore_limit } => {
             // A pending device is not in the adopted snapshot yet, so only
             // its MAC can name it.
-            let mac = mac
-                .trim()
-                .parse::<MacAddress>()
-                .map_err(|_| CliError::Validation {
-                    field: "mac".into(),
-                    reason: format!(
-                        "'{mac}' is not a MAC address; adopt takes the MAC of a pending \
-                         device (see `unifly devices pending`)"
-                    ),
-                })?;
+            let mac = util::require_mac(
+                &mac,
+                "adopt takes the MAC of a pending device (see `unifly devices pending`)",
+            )?;
             controller
                 .execute(CoreCommand::AdoptDevice {
                     mac,
