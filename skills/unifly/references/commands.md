@@ -483,10 +483,10 @@ unifly dpi disable
 
 ```bash
 unifly settings list
-unifly settings get <KEY>
+unifly settings get <KEY> [--with-secrets]
 unifly settings set <KEY> <FIELD> <VALUE>
 unifly settings set <KEY> --data '{"field": "value"}'
-unifly settings export
+unifly settings export [--with-secrets]
 ```
 
 **Gotchas:**
@@ -494,14 +494,18 @@ unifly settings export
 - All subcommands use the Session API (`rest/setting` / `set/setting/{key}`).
 - `list` shows a summary table of all ~44 setting sections with key, field
   count, enabled status, and notable values.
-- `get` masks `x_`-prefixed fields (credentials, internal secrets) in table
-  mode. Use `-o json` to see everything.
+- `x_`-prefixed fields (credentials, internal secrets) show as `***` in table
+  mode and are omitted, at any depth, from JSON/YAML output of `list`/`get`
+  and from `export`. Pass `--with-secrets` to include them. Omission (not
+  masking) is deliberate: `set --data` merges, so an edited export never
+  overwrites a credential with a placeholder.
 - `set` performs a read-modify-write: fetches the current section, patches
   the specified field, and PUTs the full section back. Values are parsed as
   bool (`true`/`false`), number, or string fallback.
 - `set --data` merges a JSON object into the section. Mutually exclusive
   with the positional `<FIELD> <VALUE>` form.
-- `export` always outputs full JSON regardless of `--output` flag.
+- `export` always outputs JSON regardless of the `--output` flag, with
+  credential fields omitted unless `--with-secrets` is given.
 - The PUT endpoint replaces the entire section; the handler strips `_id`,
   `site_id`, and `key` metadata before sending.
 

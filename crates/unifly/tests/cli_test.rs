@@ -105,6 +105,17 @@ fn test_help_flag() {
 }
 
 #[test]
+fn test_settings_read_commands_offer_with_secrets() {
+    for subcommand in ["list", "get", "export"] {
+        unifly_cmd()
+            .args(["settings", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--with-secrets"));
+    }
+}
+
+#[test]
 fn test_vpn_help_mentions_status_and_health() {
     unifly_cmd()
         .args(["vpn", "--help"])

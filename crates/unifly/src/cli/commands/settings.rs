@@ -56,7 +56,7 @@ fn build_notable_summary(obj: Option<&serde_json::Map<String, serde_json::Value>
         if matches!(k.as_str(), "_id" | "key" | "site_id" | "enabled") {
             continue;
         }
-        if k.starts_with("x_") || v.is_object() || v.is_array() {
+        if is_secret_field(k) || v.is_object() || v.is_array() {
             continue;
         }
         let display = match v {
@@ -72,6 +72,32 @@ fn build_notable_summary(obj: Option<&serde_json::Map<String, serde_json::Value>
         }
     }
     notable.join(", ")
+}
+
+/// Whether a settings field holds a credential or internal secret. The
+/// controller marks these with an `x_` prefix (`x_password`,
+/// `x_shared_secret`, ...).
+fn is_secret_field(key: &str) -> bool {
+    key.starts_with("x_")
+}
+
+/// Remove every secret field, at any depth, from a settings payload.
+///
+/// Fields are dropped rather than masked: `settings set --data` merges its
+/// JSON into the live section, so a masked placeholder fed back from an
+/// edited export would overwrite the real credential, while an absent key
+/// leaves it untouched. Returns how many fields were removed.
+fn strip_secrets(value: &mut serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            let before = map.len();
+            map.retain(|key, _| !is_secret_field(key));
+            let removed = before - map.len();
+            removed + map.values_mut().map(strip_secrets).sum::<usize>()
+        }
+        serde_json::Value::Array(items) => items.iter_mut().map(strip_secrets).sum(),
+        _ => 0,
+    }
 }
 
 fn section_detail(section: &serde_json::Value, mask_sensitive: bool) -> String {
@@ -91,7 +117,7 @@ fn section_detail(section: &serde_json::Value, mask_sensitive: bool) -> String {
         if matches!(k.as_str(), "_id" | "site_id") {
             continue;
         }
-        let display = if mask_sensitive && k.starts_with("x_") {
+        let display = if mask_sensitive && is_secret_field(k) {
             "***".to_owned()
         } else if v.is_object() || v.is_array() {
             serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
@@ -114,8 +140,15 @@ pub async fn handle(
     let p = output::Painter::new(global);
 
     match args.command {
-        SettingsCommand::List => {
-            let sections = controller.get_all_site_settings().await?;
+        SettingsCommand::List { with_secrets } => {
+            let mut sections = controller.get_all_site_settings().await?;
+            // The table summary never shows secret values; machine formats
+            // serialize whole sections, so they drop secrets unless asked.
+            if !with_secrets && !matches!(global.output, OutputFormat::Table) {
+                for section in &mut sections {
+                    strip_secrets(section);
+                }
+            }
             let out = output::render_list(
                 &global.output,
                 &sections,
@@ -131,9 +164,15 @@ pub async fn handle(
             Ok(())
         }
 
-        SettingsCommand::Get { key } => {
-            let section = controller.get_site_setting(&key).await?;
-            let mask = matches!(global.output, OutputFormat::Table);
+        SettingsCommand::Get { key, with_secrets } => {
+            let mut section = controller.get_site_setting(&key).await?;
+            let table = matches!(global.output, OutputFormat::Table);
+            // The table keeps secret rows visible as `***` so their presence
+            // shows; machine formats drop them (see `strip_secrets`).
+            if !with_secrets && !table {
+                strip_secrets(&mut section);
+            }
+            let mask = table && !with_secrets;
             let out = output::render_single(
                 &global.output,
                 &section,
@@ -151,8 +190,16 @@ pub async fn handle(
 
         SettingsCommand::Set(set_args) => handle_set(controller, set_args, global).await,
 
-        SettingsCommand::Export => {
-            let sections = controller.get_all_site_settings().await?;
+        SettingsCommand::Export { with_secrets } => {
+            let mut sections = controller.get_all_site_settings().await?;
+            if !with_secrets {
+                let removed: usize = sections.iter_mut().map(strip_secrets).sum();
+                if removed > 0 && !global.quiet {
+                    eprintln!(
+                        "Left out {removed} credential field(s) (x_*); pass --with-secrets to include them"
+                    );
+                }
+            }
             let out = output::render_json_pretty(&sections);
             output::print_output(&out, global.quiet);
             Ok(())
@@ -231,6 +278,36 @@ fn parse_value_literal(raw: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_secrets_removes_credential_fields_at_any_depth() {
+        let mut section = serde_json::json!({
+            "key": "radius",
+            "enabled": true,
+            "x_secret": "hunter2",
+            "servers": [{ "ip": "10.0.0.5", "x_shared_secret": "s3cr3t" }],
+            "nested": { "x_password": "pw", "port": 1812 }
+        });
+
+        assert_eq!(strip_secrets(&mut section), 3);
+        assert_eq!(
+            section,
+            serde_json::json!({
+                "key": "radius",
+                "enabled": true,
+                "servers": [{ "ip": "10.0.0.5" }],
+                "nested": { "port": 1812 }
+            })
+        );
+    }
+
+    #[test]
+    fn strip_secrets_leaves_secretless_sections_alone() {
+        let mut section = serde_json::json!({ "key": "dpi", "enabled": false });
+        let original = section.clone();
+        assert_eq!(strip_secrets(&mut section), 0);
+        assert_eq!(section, original);
+    }
 
     #[test]
     fn parse_value_literal_bool() {

@@ -374,10 +374,11 @@ unifly settings list                            # All site setting sections
 unifly settings get dpi                         # One section
 unifly settings set dpi enabled true            # Patch one field
 unifly settings set usg --data '{"mss_clamp": "auto"}'  # Merge a JSON object
-unifly settings export                          # Full JSON dump of every section
+unifly settings export                          # JSON dump of every section, secrets left out
+unifly settings export --with-secrets           # Include x_ credential fields
 ```
 
-Site-level settings live in Session API setting sections. `set` performs a read-modify-write of the whole section, and `get` masks `x_`-prefixed secret fields in table mode (`-o json` shows everything). Session-gated: needs an API key on UniFi OS or session credentials. Details on the [Site Settings page](/guide/settings).
+Site-level settings live in Session API setting sections. `set` performs a read-modify-write of the whole section. `x_`-prefixed secret fields show as `***` in table mode and are left out of JSON/YAML output and `export` unless you pass `--with-secrets`. Session-gated: needs an API key on UniFi OS or session credentials. Details on the [Site Settings page](/guide/settings).
 
 ## Cloud (Site Manager)
 
