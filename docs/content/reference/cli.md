@@ -80,7 +80,7 @@ unifly devices port-set <DEVICE> -F ports.jsonc # Apply a JSONC file
 unifly devices port-set <DEVICE> 5 --reset      # Back to controller defaults
 ```
 
-Port indices are **1-based**, matching the controller's wire format. `port-set -F` accepts a JSONC payload (comments and trailing commas allowed) with splice semantics: ports not listed keep their existing override, and a per-port `"reset": true` removes that port's override entirely. `--with-clients` adds connection annotations, and on `ports-export` it prepends `// last-seen <timestamp>: <mac>` comment lines for git-diff drift detection. See [Switch Ports](/guide/switch-ports) for the full workflow and payload schema.
+Port indices are **1-based**, matching the controller's wire format. `port-set -F` accepts a JSONC payload (comments and trailing commas allowed) with splice semantics: ports not listed keep their existing override, and a per-port `"reset": true` removes that port's override entirely. `--with-clients` adds connection annotations, and on `ports-export` it prepends `// last-seen <timestamp>: <mac>` comment lines for git-diff drift detection. `ports-export` always writes JSONC, whatever `-o` says. See [Switch Ports](/guide/switch-ports) for the full workflow and payload schema.
 
 ## Clients
 
@@ -534,7 +534,7 @@ writes through a symlinked skill directory or file.
 
 ## Demo Fleet
 
-`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) answers a curated set of read-only commands from the synthetic, offline fleet the [TUI demo mode](/reference/tui#demo-mode) uses, so CLI screenshots need no controller, credentials, or config file. Every output format works, and `--demo-seed <N>` picks a different fleet that is just as reproducible.
+`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) answers a curated set of read-only commands from the synthetic, offline fleet the [TUI demo mode](/reference/tui#demo-mode) uses, so CLI screenshots need no controller, credentials, or config file. Every output format works, except that `devices ports-export` always writes JSONC as it does against a real controller, and `--demo-seed <N>` picks a different fleet that is just as reproducible.
 
 | Area          | Commands                                                                                         |
 | ------------- | ------------------------------------------------------------------------------------------------ |
@@ -569,6 +569,8 @@ unifly --demo-fleet --demo-seed 7 stats gateway -o json-compact
 | Compact JSON | `-o json-compact` | Line-oriented processing, pipes |
 | YAML         | `-o yaml`         | Config-style output             |
 | Plain        | `-o plain`        | IDs for `xargs` pipelines       |
+
+Exporters write a fixed format and ignore `-o`: `devices ports-export` writes JSONC for `port-set -F`, and `settings export` writes JSON.
 
 ```bash
 # Pipe plain IDs into another command
