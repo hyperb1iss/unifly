@@ -18,7 +18,7 @@ pub enum TrafficListsCommand {
 
     /// Get a traffic matching list
     Get {
-        /// Traffic list ID (UUID)
+        /// Traffic list ID (UUID) or name
         id: String,
     },
 

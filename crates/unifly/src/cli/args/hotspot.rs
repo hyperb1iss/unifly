@@ -22,7 +22,7 @@ pub enum HotspotCommand {
 
     /// Get voucher details
     Get {
-        /// Voucher ID (UUID)
+        /// Voucher ID (UUID), code, or name
         id: String,
     },
 

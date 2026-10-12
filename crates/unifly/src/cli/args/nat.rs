@@ -31,7 +31,7 @@ pub enum NatPoliciesCommand {
 
     /// Get a specific NAT policy
     Get {
-        /// NAT policy ID (UUID)
+        /// NAT policy ID or name
         id: String,
     },
 

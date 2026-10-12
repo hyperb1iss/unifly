@@ -128,23 +128,11 @@ pub(super) async fn handle(
 
         FirewallPoliciesCommand::Get { id } => {
             let snapshot = controller.firewall_policies_snapshot();
-            let found = snapshot.iter().find(|policy| policy.id.to_string() == id);
-            match found {
-                Some(policy) => {
-                    let out =
-                        output::render_single(&global.output, policy, policy_detail, |policy| {
-                            policy.id.to_string()
-                        });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "firewall policy".into(),
-                        identifier: id,
-                        list_command: "firewall policies list".into(),
-                    });
-                }
-            }
+            let policy = util::lookup::resolve(snapshot.as_slice(), &id)?;
+            let out = output::render_single(&global.output, policy, policy_detail, |policy| {
+                policy.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

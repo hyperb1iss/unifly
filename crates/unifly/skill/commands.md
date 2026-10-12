@@ -20,11 +20,15 @@ JSON for table/plain output. Port export always emits JSONC.
 
 Plain output (`-o plain`) usually emits record IDs. IDs may be Integration
 UUIDs or Session IDs; a command accepting a MAC needs the `mac` field instead.
-Network and WiFi get commands take IDs, not names. Resolve names through list
-output first. Device commands accept a name (case-insensitive), ID, IP, or
-MAC in any spelling (colons, dashes, dots, or none; any case). A name two
-devices share fails with exit 2 and lists the candidates; pass an ID then.
-Client find searches IP, name, hostname, and MAC case-insensitively.
+Get commands accept the record ID or its display name, compared exactly but
+case-insensitively: networks, WiFi, firewall policies, zones, and groups,
+NAT, ACL, traffic lists, DNS (by domain), and hotspot vouchers (by code).
+Device commands and client get, roams, and WiFi experience also take an IP
+or a MAC in any spelling (colons, dashes, dots, or none; any case); clients
+answer to their hostname too. A name two records share fails with exit 2
+and lists the candidates; pass an ID then. Update, delete, and VPN commands
+still take IDs. Client find searches IP, name, hostname, and MAC by
+substring.
 
 Most lists default to 25 entries. Pass `--all` for complete enumeration when
 available. The shared list handler applies filtering, offset, and limit to
@@ -125,10 +129,10 @@ Session HTTP. Reservations include offline clients. Setting a reserved IP
 can infer its network from the subnet; an explicit network overrides that
 choice. Removing a reservation defaults to all networks unless scoped.
 
-Client roams and WiFi experience accept a name, hostname, IP, or MAC and
-resolve against the current client snapshot. A full MAC for roams or an IPv4
-address for WiFi experience bypasses that lookup; other identifiers need a
-matching client in the snapshot.
+Client roams and WiFi experience accept a name, hostname, ID, IP, or MAC and
+resolve against the current client snapshot. A MAC for roams or an IPv4
+address for WiFi experience that the snapshot lacks goes to the controller
+as is; other identifiers need a matching client in the snapshot.
 WiFi experience targets wireless clients and reports signal, rates, nearby
 APs, and uplink information when the controller provides them.
 

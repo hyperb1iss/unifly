@@ -109,23 +109,12 @@ pub(super) async fn handle(
 
         FirewallGroupsCommand::Get { id } => {
             let snapshot = controller.firewall_groups_snapshot();
-            let found = snapshot
-                .iter()
-                .find(|g| g.id.to_string() == id || g.external_id.as_deref() == Some(&id));
-            match found {
-                Some(group) => {
-                    let out = output::render_single(&global.output, group, group_detail, |group| {
-                        group.id.to_string()
-                    });
-                    output::print_output(&out, global.quiet);
-                    Ok(())
-                }
-                None => Err(CliError::NotFound {
-                    resource_type: "firewall group".into(),
-                    identifier: id,
-                    list_command: "firewall groups list".into(),
-                }),
-            }
+            let group = util::lookup::resolve(snapshot.as_slice(), &id)?;
+            let out = output::render_single(&global.output, group, group_detail, |group| {
+                group.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
+            Ok(())
         }
 
         FirewallGroupsCommand::Create {

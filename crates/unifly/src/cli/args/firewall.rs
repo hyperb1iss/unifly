@@ -39,7 +39,7 @@ pub enum FirewallPoliciesCommand {
 
     /// Get a specific firewall policy
     Get {
-        /// Firewall policy ID (UUID)
+        /// Firewall policy ID (UUID) or name
         id: String,
     },
 
@@ -263,7 +263,7 @@ pub enum FirewallZonesCommand {
 
     /// Get a specific firewall zone
     Get {
-        /// Zone ID (UUID)
+        /// Zone ID (UUID) or name
         id: String,
     },
 
@@ -338,7 +338,7 @@ pub enum FirewallGroupsCommand {
 
     /// Get a specific firewall group
     Get {
-        /// Firewall group ID
+        /// Firewall group ID, external ID (UUID), or name
         id: String,
     },
 

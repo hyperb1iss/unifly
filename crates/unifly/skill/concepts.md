@@ -81,11 +81,17 @@ ID. Devices and clients also have MAC addresses. Inspect the accepted
 identifier in command help before composing a pipeline. In particular,
 `clients block` expects a MAC, whereas plain list output emits entity IDs.
 
+Commands that target one device, and every `get`, resolve the identifier
+in tiers: ID first, then MAC (any separator or case), then IP, then the
+display name compared exactly but case-insensitively. The first tier with
+a match decides. Two matches fail with exit 2 and list each candidate's
+ID instead of guessing, so prefer IDs in scripts that must not stop.
+
 Client lookup with `clients find` searches name, hostname, IP, and MAC.
 The observability commands `clients roams` and `clients wifi` resolve names
 and other indirect identifiers against the current client snapshot.
-Passing a full MAC to `clients roams` or an IPv4 address to `clients wifi`
-bypasses snapshot lookup and can query clients absent from the snapshot.
+Passing a MAC to `clients roams` or an IPv4 address to `clients wifi`
+also reaches clients absent from the snapshot.
 
 List commands using common pagination default to 25 rows. Pass `--all`
 when supported to enumerate the available collection. Some commands accept

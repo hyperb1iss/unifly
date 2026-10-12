@@ -37,22 +37,10 @@ pub(super) async fn handle(
 
         AclCommand::Get { id } => {
             let snapshot = controller.acl_rules_snapshot();
-            let found = snapshot.iter().find(|rule| rule.id.to_string() == id);
-            match found {
-                Some(rule) => {
-                    let out = output::render_single(&global.output, rule, detail, |rule| {
-                        rule.id.to_string()
-                    });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "ACL rule".into(),
-                        identifier: id,
-                        list_command: "acl list".into(),
-                    });
-                }
-            }
+            let rule = util::lookup::resolve(snapshot.as_slice(), &id)?;
+            let out =
+                output::render_single(&global.output, rule, detail, |rule| rule.id.to_string());
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

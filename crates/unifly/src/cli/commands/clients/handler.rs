@@ -1,5 +1,4 @@
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 
 use unifly_api::{Client, Command as CoreCommand, Controller, EntityId, MacAddress};
 
@@ -12,34 +11,6 @@ use super::render::{
     Reservation, client_row, detail, reservation_row, roam_row, wifi_experience_detail,
 };
 use super::resolve::{resolve_network, resolve_network_by_name};
-
-fn find_client(controller: &Controller, needle: &str) -> Option<Arc<Client>> {
-    controller
-        .clients_snapshot()
-        .iter()
-        .find(|client| client.id.to_string() == needle || client.mac.to_string() == needle)
-        .cloned()
-}
-
-/// Resolve a flexible client identifier (name, hostname, IP, MAC, or UUID)
-/// to the matching client record from the in-memory snapshot.
-fn resolve_client(controller: &Controller, needle: &str) -> Option<Arc<Client>> {
-    let lower = needle.to_lowercase();
-    // Exact match on structured fields first
-    controller
-        .clients_snapshot()
-        .iter()
-        .find(|c| {
-            c.mac.to_string() == lower
-                || c.ip.is_some_and(|ip| ip.to_string() == needle)
-                || c.id.to_string() == needle
-                || c.name.as_ref().is_some_and(|n| n.to_lowercase() == lower)
-                || c.hostname
-                    .as_ref()
-                    .is_some_and(|h| h.to_lowercase() == lower)
-        })
-        .cloned()
-}
 
 fn matches_find_query(client: &Client, query: &str) -> bool {
     let fields = [
@@ -104,37 +75,26 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Get { client } => {
-            match find_client(controller, &client) {
-                Some(client) => {
-                    let out = output::render_single(&global.output, &client, detail, |client| {
-                        client.id.to_string()
-                    });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "client".into(),
-                        identifier: client,
-                        list_command: "clients list".into(),
-                    });
-                }
-            }
+            let client = util::resolve_client(controller, &client)?;
+            let out = output::render_single(&global.output, &client, detail, |client| {
+                client.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 
         ClientsCommand::Roams { client, limit } => {
-            // Resolve to MAC address — try direct use first, then snapshot lookup
-            let mac = if client.contains(':') && client.len() == 17 {
-                client.to_lowercase()
-            } else {
-                resolve_client(controller, &client)
-                    .map(|c| c.mac.to_string())
-                    .ok_or_else(|| CliError::NotFound {
-                        resource_type: "client".into(),
-                        identifier: client.clone(),
-                        list_command: "clients list".into(),
-                    })?
+            // Roam history outlives the connection, so a MAC the snapshot
+            // lacks is still worth asking the controller about.
+            let snapshot = controller.clients_snapshot();
+            let mac = match util::lookup::lookup(snapshot.as_slice(), &client)? {
+                Some(found) => found.mac.clone(),
+                None => client
+                    .trim()
+                    .parse::<MacAddress>()
+                    .map_err(|_| util::lookup::not_found::<Client>(&client))?,
             };
+            let mac = mac.to_string();
             let events = controller.get_client_roams(&mac, Some(limit)).await?;
             let out = output::render_list(
                 &global.output,
@@ -153,18 +113,21 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Wifi { client } => {
-            // Resolve to IP address — try direct use first, then snapshot lookup
-            let ip = if client.parse::<Ipv4Addr>().is_ok() {
-                client.clone()
-            } else {
-                resolve_client(controller, &client)
-                    .and_then(|c| c.ip.map(|ip| ip.to_string()))
-                    .ok_or_else(|| CliError::NotFound {
-                        resource_type: "client".into(),
-                        identifier: client.clone(),
-                        list_command: "clients list".into(),
-                    })?
+            // WiFi experience is keyed by IP; an IPv4 address the snapshot
+            // lacks goes to the controller as is.
+            let snapshot = controller.clients_snapshot();
+            let ip = match util::lookup::lookup(snapshot.as_slice(), &client)? {
+                Some(found) => found.ip.ok_or_else(|| CliError::Validation {
+                    field: "client".into(),
+                    reason: format!("client '{client}' has no IP address to look up"),
+                })?,
+                None => client
+                    .trim()
+                    .parse::<Ipv4Addr>()
+                    .map(std::net::IpAddr::V4)
+                    .map_err(|_| util::lookup::not_found::<Client>(&client))?,
             };
+            let ip = ip.to_string();
             let data = controller.get_client_wifi_experience(&ip).await?;
             let out = output::render_single(
                 &global.output,
