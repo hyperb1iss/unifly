@@ -216,7 +216,7 @@ mod tests {
             .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .expect("search close should succeed");
         assert!(matches!(action, Some(Action::CloseSearch)));
-        assert!(app.search_query.is_empty());
+        assert_eq!(app.search_query, "");
     }
 
     #[test]

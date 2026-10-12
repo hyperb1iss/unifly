@@ -396,7 +396,7 @@ async fn legacy_only_site_listing_remains_available() {
 
     assert!(controller.has_session_access().await);
     assert!(!controller.has_integration_access().await);
-    assert!(controller.take_warnings().await.is_empty());
+    assert_eq!(controller.take_warnings().await, Vec::<String>::new());
 
     let sites = controller.sites_snapshot();
     assert_eq!(sites.len(), 1);

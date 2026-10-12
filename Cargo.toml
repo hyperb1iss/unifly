@@ -186,7 +186,6 @@ redundant_else = { level = "warn", priority = 36 }
 semicolon_if_nothing_returned = { level = "warn", priority = 36 }
 cloned_instead_of_copied = { level = "warn", priority = 36 }
 flat_map_option = { level = "warn", priority = 36 }
-from_iter_instead_of_collect = { level = "warn", priority = 36 }
 needless_pass_by_value = { level = "warn", priority = 36 }
 trivially_copy_pass_by_ref = { level = "warn", priority = 36 }
 if_not_else = { level = "warn", priority = 36 }

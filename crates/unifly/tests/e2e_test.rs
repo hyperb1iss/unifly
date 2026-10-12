@@ -341,7 +341,7 @@ fn session_profile_output_formats_render_cleanly() {
 
     let plain = ctx.run(&["sites", "list", "--all", "-o", "plain"]);
     assert_success(&plain, "sites list plain output");
-    assert!(!stdout_text(&plain).trim().is_empty());
+    assert_ne!(stdout_text(&plain).trim(), "");
 }
 
 #[test]

@@ -395,7 +395,7 @@ async fn test_get_firewall_policy_ordering_uses_zone_pair_query_params() {
         .unwrap();
 
     assert_eq!(ordering.before_system_defined, vec![policy_id]);
-    assert!(ordering.after_system_defined.is_empty());
+    assert_eq!(ordering.after_system_defined, Vec::<Uuid>::new());
 }
 
 #[tokio::test]
@@ -443,7 +443,7 @@ async fn test_set_firewall_policy_ordering_uses_zone_pair_query_params() {
         .unwrap();
 
     assert_eq!(ordering.before_system_defined, vec![policy_id]);
-    assert!(ordering.after_system_defined.is_empty());
+    assert_eq!(ordering.after_system_defined, Vec::<Uuid>::new());
 }
 
 #[tokio::test]
@@ -470,7 +470,7 @@ async fn test_pagination_empty_page() {
 
     assert_eq!(page.total_count, 0);
     assert_eq!(page.count, 0);
-    assert!(page.data.is_empty());
+    assert_eq!(page.data, Vec::<SiteResponse>::new());
 }
 
 #[tokio::test]

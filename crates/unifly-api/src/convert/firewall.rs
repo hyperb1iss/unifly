@@ -545,6 +545,6 @@ mod tests {
             "group_members": []
         });
         let group = firewall_group_from_session(&raw).expect("should parse");
-        assert!(group.group_members.is_empty());
+        assert_eq!(group.group_members, Vec::<String>::new());
     }
 }
