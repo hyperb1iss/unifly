@@ -44,6 +44,15 @@ impl Tui {
     /// Exit TUI mode: restore terminal to its original state.
     #[allow(clippy::unused_self)]
     pub fn exit(&mut self) {
+        // Kitty keeps images per screen, so free the chart images while the
+        // alternate screen they live on is still active.
+        #[cfg(feature = "tui-graphics")]
+        if let Some(deletes) = crate::tui::graphics::take_all_image_deletes() {
+            let mut out = stdout();
+            let _ = out.write_all(deletes.as_bytes());
+            let _ = out.flush();
+        }
+
         // Best-effort restoration — don't bail on partial failures
         let _ = stdout().execute(cursor::Show);
         let _ = stdout().execute(DisableMouseCapture);
@@ -62,6 +71,19 @@ impl Tui {
         }
 
         let result = self.terminal.draw(render).map(|_| ());
+
+        // Chart images the cache dropped before this frame cannot appear in
+        // it, so the frame has replaced their cells; free them in the same
+        // update so the terminal's image store does not fill up.
+        #[cfg(feature = "tui-graphics")]
+        if result.is_ok()
+            && let Some(deletes) = crate::tui::graphics::take_retired_image_deletes()
+        {
+            self.terminal.backend_mut().write_all(deletes.as_bytes())?;
+            if !sync {
+                self.terminal.backend_mut().flush()?;
+            }
+        }
 
         if sync {
             self.terminal.backend_mut().queue(EndSynchronizedUpdate)?;
