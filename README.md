@@ -66,13 +66,13 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 >
 > unifly speaks fluent silicon _and_ carbon.
 >
-> **Coding agents** get a small [discovery skill](skills/unifly/SKILL.md) that loads version-matched guidance from `unifly skill`. The binary ships command discovery, automation workflows, and payload examples, all available offline. One command to install the skill:
+> **Coding agents** get a small [discovery skill](skills/unifly/SKILL.md) that loads version-matched guidance from `unifly skill`. The binary ships command discovery, automation workflows, and payload examples, all available offline. The [install scripts](#-install) add the skill to `~/.agents/skills` for you; after any other install method, one command does it:
 >
 > ```bash
-> npx skills add hyperb1iss/unifly
+> unifly skill --install           # --claude targets Claude Code's skills directory
 > ```
 >
-> Install or update the binary separately using [Install](#-install). Older binaries without `unifly skill` need an update before they can serve the guide.
+> `npx skills add hyperb1iss/unifly` installs the same skill without the binary, but agents still need the binary to load the guide. Older binaries without `unifly skill` need an update before they can serve it.
 >
 > **Humans** get a gorgeous 11-screen TUI, shell completions, pipe-friendly output, and the quiet satisfaction of never opening the UniFi web UI again. Keep scrolling to [Install](#-install).
 
@@ -118,6 +118,8 @@ irm https://raw.githubusercontent.com/hyperb1iss/unifly/main/install.ps1 | iex
 | **AUR**      | `yay -S unifly-bin`                                                                   |
 | **Cargo**    | `cargo install --git https://github.com/hyperb1iss/unifly.git unifly`                 |
 | **Binary**   | Download from [GitHub Releases](https://github.com/hyperb1iss/unifly/releases/latest) |
+
+The install scripts also add the [agent skill](#-ai-agent-skill) to `~/.agents/skills` for your user (set `UNIFLY_NO_SKILL=1` to skip). Homebrew and AUR install unifly for every user and cannot write into your home directory, so after those, Cargo, or a manual download, run `unifly skill --install` yourself.
 
 ---
 
@@ -473,10 +475,14 @@ Full API docs on [docs.rs/unifly-api](https://docs.rs/unifly-api). Usage guide w
 ### Install Options
 
 ```bash
+unifly skill --install                              # ~/.agents/skills, from the installed binary
+unifly skill --install --claude                     # Claude Code's skills directory
 npx skills add hyperb1iss/unifly                    # Claude Code, Cursor, Copilot, Codex, Gemini, ...
 npx skills add hyperb1iss/unifly -a claude-code     # Target a specific agent
 /plugin marketplace add hyperb1iss/unifly           # As a Claude Code plugin
 ```
+
+`unifly skill --install` works offline, prints the installed path, and is safe to rerun. It upgrades a skill from `npx skills add` or an earlier release in place, and leaves any other `SKILL.md` alone unless you pass `--force`. Use `--dir <path>` for any other skills directory.
 
 ### What's Included
 

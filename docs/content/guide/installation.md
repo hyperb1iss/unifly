@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/unifly/main/install.sh |
 irm https://raw.githubusercontent.com/hyperb1iss/unifly/main/install.ps1 | iex
 ```
 
-The installer detects your platform, downloads the latest release binary, and adds it to your `PATH`.
+The installer detects your platform, downloads the latest release binary, adds it to your `PATH`, and installs the [agent skill](/guide/agents) for your user. Set `UNIFLY_NO_SKILL=1` to skip the skill.
 
 ## Package Managers
 
@@ -73,6 +73,19 @@ unifly completions fish > ~/.config/fish/completions/unifly.fish
 # PowerShell
 unifly completions powershell | Out-String | Invoke-Expression
 ```
+
+## Agent Skill
+
+Coding agents find unifly through a small discovery skill. Package managers
+install unifly for every user and cannot write into your home directory, so
+after Homebrew, AUR, Cargo, or a manual download, add it yourself:
+
+```bash
+unifly skill --install
+```
+
+It lands in `~/.agents/skills/unifly/SKILL.md`. See
+[AI Agent Skill](/guide/agents) for Claude Code and other directories.
 
 ## Verify
 

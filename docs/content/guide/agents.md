@@ -11,7 +11,37 @@ Updating the CLI updates its guide at the same time.
 ## Install
 
 Install the [unifly binary](/guide/installation) on the machine where the agent
-runs, then add the discovery skill:
+runs, then add the discovery skill for your user:
+
+```bash
+unifly skill --install
+```
+
+This writes `~/.agents/skills/unifly/SKILL.md`, the shared user skills
+directory. Claude Code reads its own directory, so target it with `--claude`
+(`$CLAUDE_CONFIG_DIR/skills`, or `~/.claude/skills` by default), or pick any
+skills directory with `--dir`:
+
+```bash
+unifly skill --install --claude
+unifly skill --install --dir ~/work/agent-skills
+```
+
+The command works offline without configuration. It prints the installed path
+on stdout and its status on stderr (`--quiet` keeps only the path). Running
+it again is safe: an identical skill is left alone, and one installed by
+`npx skills add` or an earlier release is upgraded in place. Any other
+`SKILL.md` at that path, such as a locally edited copy, stays untouched and the
+command exits with code 6 unless you pass `--force`.
+
+The quick install scripts run this step for you (set `UNIFLY_NO_SKILL=1` to
+skip it). `install.sh` skips it when run as root, since that home directory may
+belong to someone else. Homebrew and AUR install unifly for every user and cannot write into
+your home directory, so they print a reminder instead. After `cargo install`,
+run it yourself.
+
+The [skills CLI](https://github.com/vercel-labs/skills) installs the same stub
+for many agents at once:
 
 ```bash
 npx skills add hyperb1iss/unifly

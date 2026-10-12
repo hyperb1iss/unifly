@@ -495,6 +495,16 @@ plain Markdown; named examples print the raw file, regardless of `--output`.
 The installable agent skill is a small stub that loads this guide. Binaries
 that predate the command need an update.
 
+```bash
+unifly skill --install                 # ~/.agents/skills/unifly/SKILL.md
+unifly skill --install --claude        # Claude Code's skills directory
+unifly skill --install --dir <DIR>     # DIR/unifly/SKILL.md
+```
+
+`--install` prints the installed path on stdout. It leaves an identical skill
+alone, upgrades one from `npx skills add` or an earlier release, and refuses
+(exit code 6) to replace any other `SKILL.md` without `--force`.
+
 ## Global Flags
 
 ```text
