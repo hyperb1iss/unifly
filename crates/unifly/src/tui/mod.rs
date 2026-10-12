@@ -12,6 +12,7 @@ pub mod render_caps;
 mod render_scheduler;
 pub mod screen;
 pub mod screens;
+pub mod table;
 pub mod terminal;
 #[allow(dead_code)]
 pub mod theme;
