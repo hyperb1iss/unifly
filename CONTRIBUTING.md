@@ -145,6 +145,17 @@ just e2e-down       # stop and remove the container
 
 Connection defaults are overridable via `UNIFLY_E2E_URL`, `UNIFLY_E2E_USERNAME`, `UNIFLY_E2E_PASSWORD`, `UNIFLY_E2E_SITE`, and `UNIFLY_E2E_TIMEOUT_SECS`. CI runs the same lifecycle in `.github/workflows/e2e.yml`.
 
+The suite has two lanes. The session lane authenticates with username and password and runs on every e2e invocation against the simulation controller. The Integration lane (tests named `integration_profile_*`) exercises the modern Integration API (REST, `X-API-KEY`). It lists DNS policies, firewall policies and zones, networks (plus one `networks get`), Wi-Fi broadcasts, ACL rules, and traffic lists, and runs create/delete round trips for a DNS A record and a firewall policy with a destination port range. It runs only when `UNIFLY_E2E_API_KEY` carries a key and skips otherwise (the key reaches the CLI through the profile's `api_key_env`, so it never lands on disk).
+
+The simulation image cannot provision an Integration key by script. The controller ships the full Integration surface (`/integration/v1/`), but key authentication resolves through the UniFi OS account subsystem rather than the Network application's local store, and the bare `jacobalberty/unifi` image has no UniFi OS layer. A session login exposes no key-creation endpoint, and seeding the controller's Mongo `api_key` collection directly does not yield a key the Integration filter accepts. To run the Integration lane, mint a key in a real UniFi OS console (Control Plane, Integrations) and run only that lane, since the session tests assert simulation-mode state and toggle site settings:
+
+```bash
+UNIFLY_E2E_URL=https://<console> UNIFLY_E2E_API_KEY=<key> \
+  cargo test -p unifly --features e2e --test e2e_test -- --test-threads=1 integration_profile
+```
+
+The round trips create and then delete their own records (DNS domains `e2e-*.unifly.test`, firewall policies `e2e-fwp-*`), and each one sweeps leftovers matching its prefix before creating, so an aborted run is reclaimed on the next one.
+
 ### Test Policy
 
 - Unit tests should be pure and deterministic. No real network calls.

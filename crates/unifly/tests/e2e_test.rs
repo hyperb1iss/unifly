@@ -8,11 +8,22 @@ use std::process::Output;
 use assert_cmd::cargo::cargo_bin_cmd;
 use tempfile::TempDir;
 
+/// Env var holding a pre-provisioned Integration API key.
+///
+/// A standalone UniFi Network Application in simulation mode cannot mint
+/// an Integration key over the API (key auth is backed by the UniFi OS
+/// account subsystem, absent on the bare controller image), so the
+/// Integration lane runs only when a maintainer supplies a key for a real
+/// controller. See the e2e section in `CONTRIBUTING.md` for the full
+/// provisioning findings.
+const E2E_API_KEY_ENV: &str = "UNIFLY_E2E_API_KEY";
+
 struct E2eConfig {
     controller_url: String,
     username: String,
     password: String,
     site: String,
+    api_key: Option<String>,
 }
 
 impl E2eConfig {
@@ -23,6 +34,9 @@ impl E2eConfig {
             username: std::env::var("UNIFLY_E2E_USERNAME").unwrap_or_else(|_| "admin".into()),
             password: std::env::var("UNIFLY_E2E_PASSWORD").unwrap_or_else(|_| "admin".into()),
             site: std::env::var("UNIFLY_E2E_SITE").unwrap_or_else(|_| "default".into()),
+            api_key: std::env::var(E2E_API_KEY_ENV)
+                .ok()
+                .filter(|key| !key.trim().is_empty()),
         }
     }
 
@@ -32,6 +46,7 @@ impl E2eConfig {
             username: self.username.clone(),
             password: password.into(),
             site: self.site.clone(),
+            api_key: self.api_key.clone(),
         }
     }
 }
@@ -49,6 +64,17 @@ impl E2eContext {
     fn session_with_password(password: &str) -> Self {
         let config = E2eConfig::from_env().with_password(password);
         Self::with_config(config, "session")
+    }
+
+    /// Build an Integration-auth context, or `None` when no key is set.
+    ///
+    /// Returns `None` (so the caller skips) unless `UNIFLY_E2E_API_KEY`
+    /// carries a key. The key reaches the CLI through the profile's
+    /// `api_key_env`, so it never lands on disk in the temp config.
+    fn integration() -> Option<Self> {
+        let config = E2eConfig::from_env();
+        config.api_key.as_ref()?;
+        Some(Self::with_config(config, "integration"))
     }
 
     fn with_config(config: E2eConfig, auth_mode: &str) -> Self {
@@ -81,6 +107,15 @@ fn write_profile(root: &Path, config: &E2eConfig, auth_mode: &str) {
     let config_dir = root.join("unifly");
     fs::create_dir_all(&config_dir).unwrap();
 
+    // Integration auth pulls the key from an env var rather than config so
+    // the secret never touches disk; session auth reads UNIFI_USERNAME /
+    // UNIFI_PASSWORD from the child env (see `cmd`).
+    let api_key_line = if auth_mode == "integration" {
+        format!("api_key_env = \"{E2E_API_KEY_ENV}\"\n")
+    } else {
+        String::new()
+    };
+
     let body = format!(
         r#"
 default_profile = "default"
@@ -90,7 +125,7 @@ controller = "{controller}"
 site = "{site}"
 auth_mode = "{auth_mode}"
 insecure = true
-"#,
+{api_key_line}"#,
         controller = config.controller_url,
         site = config.site,
         auth_mode = auth_mode,
@@ -1038,4 +1073,288 @@ fn session_profile_integration_commands_surface_unsupported() {
         "expected integration guidance, got:\n{}",
         stderr_text(&output)
     );
+}
+
+// ── Integration API lane ────────────────────────────────────────────
+//
+// These tests exercise the modern Integration API (REST, X-API-KEY)
+// against a real controller. The simulation image used for the session
+// lane cannot provision an Integration key (key auth is backed by the
+// UniFi OS account subsystem, which the bare Network Application does not
+// ship), so each test skips unless `UNIFLY_E2E_API_KEY` is set. When a
+// maintainer points the suite at a real UniFi OS controller with a key,
+// the lane gives live coverage of the wire shapes that wiremock fixtures
+// only assume. See `CONTRIBUTING.md` for the provisioning investigation.
+
+/// A per-test unique suffix, so parallel-unfriendly create names never
+/// collide with each other or with leftovers from an aborted run.
+fn unique_suffix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{nanos}", std::process::id())
+}
+
+/// List an Integration collection as JSON, asserting it renders an array
+/// of objects. Returns the decoded rows for follow-up lookups.
+fn integration_list(ctx: &E2eContext, args: &[&str]) -> Vec<serde_json::Value> {
+    let output = ctx.run(args);
+    let context = args.join(" ");
+    assert_success(&output, &context);
+    let payload = stdout_json(&output);
+    let values = json_array(&payload, &context);
+    assert!(
+        values.iter().all(serde_json::Value::is_object),
+        "expected '{context}' to render an array of JSON objects, got {}",
+        stdout_text(&output)
+    );
+    values.to_vec()
+}
+
+/// Find a record whose string `field` equals `want`.
+fn find_by_field<'a>(
+    rows: &'a [serde_json::Value],
+    field: &str,
+    want: &str,
+) -> Option<&'a serde_json::Value> {
+    rows.iter().find(|row| {
+        row.get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == want)
+    })
+}
+
+/// Delete every record in an Integration collection whose string `field`
+/// satisfies `is_leftover`. Test records carry a fixed prefix plus a
+/// unique suffix, so an exact-name lookup can never find a previous run's
+/// leftover; sweeping by prefix also reclaims a record leaked when a run
+/// aborts between create and registering its cleanup guard.
+fn sweep_leftovers(
+    ctx: &E2eContext,
+    list_args: &[&str],
+    delete_args: &[&str],
+    field: &str,
+    is_leftover: impl Fn(&str) -> bool,
+) {
+    for row in integration_list(ctx, list_args) {
+        let matches = row
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(&is_leftover);
+        if matches {
+            let id = json_str_field(&row, "id").to_string();
+            let mut args = delete_args.to_vec();
+            args.extend([id.as_str(), "-y"]);
+            let _ = ctx.run(&args);
+        }
+    }
+}
+
+#[test]
+fn integration_profile_lists_config_collections() {
+    let Some(ctx) = E2eContext::integration() else {
+        eprintln!("skipping: {E2E_API_KEY_ENV} not set");
+        return;
+    };
+
+    for args in [
+        &["dns", "list", "--all", "-o", "json"][..],
+        &["firewall", "policies", "list", "--all", "-o", "json"][..],
+        &["firewall", "zones", "list", "--all", "-o", "json"][..],
+        &["wifi", "list", "--all", "-o", "json"][..],
+        &["acl", "list", "--all", "-o", "json"][..],
+        &["traffic-lists", "list", "--all", "-o", "json"][..],
+    ] {
+        integration_list(&ctx, args);
+    }
+}
+
+#[test]
+fn integration_profile_reads_network_detail() {
+    let Some(ctx) = E2eContext::integration() else {
+        eprintln!("skipping: {E2E_API_KEY_ENV} not set");
+        return;
+    };
+
+    let networks = integration_list(&ctx, &["networks", "list", "--all", "-o", "json"]);
+    let Some(first) = networks.first() else {
+        eprintln!("skipping network detail: controller exposes no networks");
+        return;
+    };
+    let id = json_str_field(first, "id").to_string();
+
+    // The list endpoint returns summary rows; `get` fetches each network
+    // individually to fill in the ipv4 configuration (see the networks
+    // field-name gotcha in AGENTS.md).
+    let detail = ctx.run(&["networks", "get", &id, "-o", "json"]);
+    assert_success(&detail, "networks get");
+    let payload = stdout_json(&detail);
+    assert_eq!(
+        payload.get("id").and_then(serde_json::Value::as_str),
+        Some(id.as_str()),
+        "expected networks get to echo the requested id, got {payload}"
+    );
+}
+
+#[test]
+fn integration_profile_dns_a_record_round_trip() {
+    let Some(ctx) = E2eContext::integration() else {
+        eprintln!("skipping: {E2E_API_KEY_ENV} not set");
+        return;
+    };
+
+    let domain = format!("e2e-{}.unifly.test", unique_suffix());
+    let value = "192.0.2.10";
+
+    let find_domain = |ctx: &E2eContext| -> Option<serde_json::Value> {
+        let rows = integration_list(ctx, &["dns", "list", "--all", "-o", "json"]);
+        find_by_field(&rows, "domain", &domain).cloned()
+    };
+
+    sweep_leftovers(
+        &ctx,
+        &["dns", "list", "--all", "-o", "json"],
+        &["dns", "delete"],
+        "domain",
+        |d| d.starts_with("e2e-") && d.ends_with(".unifly.test"),
+    );
+
+    let create = ctx.run(&[
+        "dns",
+        "create",
+        "--record-type",
+        "a",
+        "--domain",
+        &domain,
+        "--value",
+        value,
+    ]);
+    assert_success(&create, "dns create");
+
+    let created = find_domain(&ctx)
+        .unwrap_or_else(|| panic!("expected created DNS record for '{domain}' in list"));
+    let id = json_str_field(&created, "id").to_string();
+    let restore = RestoreCommand::new(&ctx, &["dns", "delete", &id, "-y"]);
+
+    let get = ctx.run(&["dns", "get", &id, "-o", "json"]);
+    assert_success(&get, "dns get");
+    let detail = stdout_json(&get);
+    // The round trip succeeding at all proves the `A_RECORD` wire token
+    // was accepted (bug #27 sent the bare `A` form, which the API
+    // rejects); the decoded record type confirms the mapping both ways.
+    assert_eq!(
+        detail
+            .get("policy_type")
+            .and_then(serde_json::Value::as_str),
+        Some("ARecord"),
+        "expected the created record to decode as an A record, got {detail}"
+    );
+    assert_eq!(json_str_field(&detail, "domain"), domain);
+    assert_eq!(json_str_field(&detail, "value"), value);
+
+    let delete = ctx.run(&["dns", "delete", &id, "-y"]);
+    assert_success(&delete, "dns delete");
+    assert!(
+        find_domain(&ctx).is_none(),
+        "expected DNS record '{domain}' to be gone after delete"
+    );
+
+    drop(restore);
+}
+
+#[test]
+fn integration_profile_firewall_policy_port_range_round_trip() {
+    let Some(ctx) = E2eContext::integration() else {
+        eprintln!("skipping: {E2E_API_KEY_ENV} not set");
+        return;
+    };
+
+    let zones = integration_list(&ctx, &["firewall", "zones", "list", "--all", "-o", "json"]);
+    if zones.len() < 2 {
+        eprintln!(
+            "skipping firewall policy round trip: need two zones, got {}",
+            zones.len()
+        );
+        return;
+    }
+    // Internal to External always admits an allow policy on a stock
+    // controller; fall back to the first two zones when those names are
+    // absent (renamed or localized zones).
+    let zone_id = |name: &str, fallback: usize| -> String {
+        let zone = find_by_field(&zones, "name", name).unwrap_or(&zones[fallback]);
+        json_str_field(zone, "id").to_string()
+    };
+    let source_zone = zone_id("Internal", 0);
+    let dest_zone = zone_id("External", 1);
+    assert_ne!(
+        source_zone, dest_zone,
+        "expected two distinct zones for the policy, got {zones:?}"
+    );
+
+    let name = format!("e2e-fwp-{}", unique_suffix());
+    let port_range = "8000-9000";
+
+    let find_policy = |ctx: &E2eContext| -> Option<serde_json::Value> {
+        let rows = integration_list(
+            ctx,
+            &["firewall", "policies", "list", "--all", "-o", "json"],
+        );
+        find_by_field(&rows, "name", &name).cloned()
+    };
+
+    sweep_leftovers(
+        &ctx,
+        &["firewall", "policies", "list", "--all", "-o", "json"],
+        &["firewall", "policies", "delete"],
+        "name",
+        |n| n.starts_with("e2e-fwp-"),
+    );
+
+    let create = ctx.run(&[
+        "firewall",
+        "policies",
+        "create",
+        "--name",
+        &name,
+        "--action",
+        "allow",
+        "--source-zone",
+        &source_zone,
+        "--dest-zone",
+        &dest_zone,
+        "--dst-port",
+        port_range,
+    ]);
+    assert_success(&create, "firewall policies create");
+
+    let created = find_policy(&ctx)
+        .unwrap_or_else(|| panic!("expected created firewall policy '{name}' in list"));
+    let id = json_str_field(&created, "id").to_string();
+    let restore = RestoreCommand::new(&ctx, &["firewall", "policies", "delete", &id, "-y"]);
+
+    let get = ctx.run(&["firewall", "policies", "get", &id, "-o", "json"]);
+    assert_success(&get, "firewall policies get");
+    let detail = stdout_json(&get);
+    // The create path serializes the range as `startPort`/`endPort`, while
+    // the controller returns `start`/`stop` (the read-side fix for #26), so
+    // this round trip is the live check on both halves: the controller has
+    // to accept the write shape, and the decoder has to map the response
+    // back to the same range. Every port-bearing filter variant nests its
+    // ports under `ports`, so the pointer holds whatever filter kind the
+    // controller reports.
+    assert_eq!(
+        detail.pointer("/destination/filter/ports/items"),
+        Some(&serde_json::json!([port_range])),
+        "expected the policy to round-trip its destination port range, got {detail}"
+    );
+
+    let delete = ctx.run(&["firewall", "policies", "delete", &id, "-y"]);
+    assert_success(&delete, "firewall policies delete");
+    assert!(
+        find_policy(&ctx).is_none(),
+        "expected firewall policy '{name}' to be gone after delete"
+    );
+
+    drop(restore);
 }
