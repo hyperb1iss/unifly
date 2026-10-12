@@ -1139,6 +1139,7 @@ fn test_demo_fleet_seed_reproduces_the_fleet() {
 fn test_demo_fleet_refuses_commands_it_cannot_answer() {
     for args in [
         &["devices", "restart", "00:00:00:00:00:01"][..],
+        &["devices", "port-set", "sw-core", "12", "--poe", "off"][..],
         &["networks", "delete", "x"][..],
         &["config", "show"][..],
     ] {
@@ -1309,6 +1310,162 @@ fn test_demo_fleet_answers_wifi_get_and_device_stats_by_name() {
 
     let stats = demo_json(&["devices", "stats", "ap-roof"]);
     assert!(stats["stats"]["cpu_utilization_pct"].is_number(), "{stats}");
+}
+
+fn demo_stdout(args: &[&str]) -> String {
+    let output = unifly_cmd()
+        .arg("--demo-fleet")
+        .args(args)
+        .args(["--color", "never"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", combined_output(&output));
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Parse `ports-export` output the way `port-set --from-file` does, into
+/// the request type that rejects unknown fields.
+fn parse_port_export(jsonc: &str) -> unifly_api::ApplyPortsRequest {
+    let mut json = String::new();
+    std::io::Read::read_to_string(
+        &mut json_comments::StripComments::new(jsonc.as_bytes()),
+        &mut json,
+    )
+    .unwrap();
+    serde_json::from_str(&json).unwrap()
+}
+
+#[test]
+fn test_demo_fleet_devices_ports_shows_the_core_switch() {
+    let table = demo_stdout(&["devices", "ports", "sw-core"]);
+    let row = |name: &str| {
+        table
+            .lines()
+            .find(|line| line.contains(&format!(" {name} ")))
+            .unwrap_or_else(|| panic!("no row for {name}:\n{table}"))
+            .to_owned()
+    };
+    let dark = row("cam-dock");
+    assert!(
+        dark.contains("DOWN") && dark.contains("Cameras (50)"),
+        "{dark}"
+    );
+    assert!(row("printer-ops").contains("IoT (40)"));
+    assert!(row("badge-front").contains("auto (100)"));
+    assert!(row("ap-dock").contains("DOWN"));
+    assert!(row("sw-render").contains("Studio,Render,Guest,IoT"));
+    assert!(row("Uplink").contains("all"));
+}
+
+#[test]
+fn test_demo_fleet_devices_ports_with_clients_matches_clients_list() {
+    let render = demo_json(&["devices", "get", "sw-render"]);
+    let mac = render["mac"].as_str().unwrap();
+    let ports = demo_json(&["devices", "ports", "sw-render", "--with-clients"]);
+    let ports = ports.as_array().unwrap();
+    assert_eq!(ports.len(), 18);
+    let connections = |index: u64| {
+        ports
+            .iter()
+            .find(|port| port["index"] == index)
+            .unwrap_or_else(|| panic!("no port {index}"))["connections"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let wired: Vec<&serde_json::Value> = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|client| client["uplink_device_mac"] == mac)
+        .collect();
+    assert_eq!(wired.len(), 13, "render nodes, dailies, license, NAS");
+    for client in wired {
+        let port = client["switch_port"].as_u64().unwrap();
+        let seen = connections(port);
+        assert_eq!(seen.len(), 1, "port {port}: {seen:?}");
+        assert_eq!(seen[0]["kind"], "client");
+        assert_eq!(seen[0]["mac"], client["mac"]);
+        assert_eq!(seen[0]["name"], client["name"]);
+        let profile = ports.iter().find(|p| p["index"] == port).unwrap();
+        assert_eq!(profile["name"], client["name"]);
+        assert_eq!(profile["native_vlan_id"], client["vlan"]);
+    }
+
+    let ap = connections(13);
+    assert_eq!(
+        (&ap[0]["kind"], &ap[0]["name"]),
+        (&"device".into(), &"ap-render".into())
+    );
+    let nas = ports.iter().find(|port| port["index"] == 17).unwrap();
+    assert_eq!(nas["name"], "nas-vault");
+    assert_eq!(nas["link_speed_mbps"], 10_000);
+}
+
+#[test]
+fn test_demo_fleet_ports_export_round_trips_as_jsonc() {
+    let annotated = demo_stdout(&["devices", "ports-export", "sw-core", "--with-clients"]);
+    let markers: Vec<&str> = annotated
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("// last-seen "))
+        .collect();
+    assert!(
+        markers
+            .iter()
+            .any(|line| line.ends_with("(ws-color-01, client)")),
+        "{annotated}"
+    );
+    assert!(
+        markers
+            .iter()
+            .any(|line| line.ends_with("(sw-render, device)"))
+    );
+    assert!(!markers.iter().any(|line| line.contains("cam-dock")));
+
+    let request = parse_port_export(&annotated);
+    let plain = demo_stdout(&["devices", "ports-export", "sw-core"]);
+    assert!(!plain.contains("//"), "{plain}");
+    assert_eq!(
+        serde_json::to_value(parse_port_export(&plain)).unwrap(),
+        serde_json::to_value(&request).unwrap(),
+        "the markers are the only difference"
+    );
+
+    let profiles = demo_json(&["devices", "ports", "sw-core"]);
+    let profiles = profiles.as_array().unwrap();
+    let configured: Vec<u32> = request.ports.iter().map(|entry| entry.index).collect();
+    assert!(
+        configured.contains(&12),
+        "the dark camera port stays configured"
+    );
+    assert!(!configured.contains(&15) && !configured.contains(&16));
+    for entry in &request.ports {
+        let profile = profiles.iter().find(|p| p["index"] == entry.index).unwrap();
+        assert_eq!(profile["name"].as_str(), entry.name.as_deref());
+        assert_eq!(profile["mode"].as_str(), entry.mode.as_deref());
+        assert_eq!(
+            profile["native_network_id"].as_str(),
+            entry.native_network_id.as_deref()
+        );
+        assert_eq!(profile["poe_mode"].as_str(), entry.poe.as_deref());
+    }
+    let printer = request
+        .ports
+        .iter()
+        .find(|entry| entry.name.as_deref() == Some("printer-ops"))
+        .unwrap();
+    assert_eq!(printer.speed.as_deref(), Some("100"));
+
+    let full = parse_port_export(&demo_stdout(&[
+        "devices",
+        "ports-export",
+        "sw-core",
+        "--all",
+    ]));
+    assert_eq!(full.ports.len(), profiles.len());
 }
 
 /// The `path: keys` lines of the JSON field block in `unifly skill

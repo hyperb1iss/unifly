@@ -20,6 +20,8 @@ pub const SUPPORTED: &[&str] = &[
     "devices list",
     "devices get",
     "devices stats",
+    "devices ports",
+    "devices ports-export",
     "clients list",
     "clients get",
     "clients find",
@@ -136,6 +138,9 @@ mod tests {
         assert!(!supports("system reboot"));
         assert!(supports("completions"));
         assert!(!supports("devices restart"));
+        assert!(supports("devices ports"));
+        assert!(supports("devices ports-export"));
+        assert!(!supports("devices port-set"));
         assert!(!supports("networks create"));
         assert!(!supports("cloud hosts"));
         assert!(!supports("config show"));
