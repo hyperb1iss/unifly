@@ -47,6 +47,8 @@ pub mod config;
 pub mod controller;
 pub mod convert;
 pub mod core_error;
+#[cfg(feature = "demo")]
+pub mod demo;
 pub mod model;
 pub mod store;
 pub mod stream;
@@ -68,6 +70,8 @@ pub use command::{Command, CommandResult};
 pub use config::{AuthCredentials, ControllerConfig, TlsVerification};
 pub use controller::{ApplyPortsSummary, ConnectionState, Controller, PortProfileUpdate};
 pub use core_error::{CoreError, SiteHint};
+#[cfg(feature = "demo")]
+pub use demo::{DEFAULT_DEMO_SEED, DemoFleetOptions};
 pub use store::DataStore;
 pub use stream::EntityStream;
 

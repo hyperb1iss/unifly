@@ -46,6 +46,11 @@ impl Controller {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn connect_with_refresh(&self, initial_refresh: bool) -> Result<(), CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return self.demo_connect(std::sync::Arc::clone(demo)).await;
+        }
+
         let _ = self
             .inner
             .connection_state

@@ -15,6 +15,10 @@ documentation = "https://docs.rs/unifly-api"
 [lints]
 workspace = true
 
+[features]
+# Synthetic, offline demo fleet behind `Controller::demo` (screenshots, recordings).
+demo = []
+
 [dependencies]
 reqwest           = { workspace = true }
 tokio             = { workspace = true, features = ["macros", "rt"] }

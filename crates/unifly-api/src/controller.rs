@@ -18,6 +18,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 mod commands;
+#[cfg(feature = "demo")]
+mod demo;
 mod lifecycle;
 mod payloads;
 mod ports;
@@ -83,6 +85,9 @@ struct ControllerInner {
     task_handles: Mutex<Vec<JoinHandle<()>>>,
     /// Warnings accumulated during connect (e.g. Session auth failure in Hybrid mode).
     warnings: Mutex<Vec<String>>,
+    /// Synthetic fleet backing a [`Controller::demo`] controller.
+    #[cfg(feature = "demo")]
+    demo: std::sync::OnceLock<Arc<crate::demo::DemoRuntime>>,
 }
 
 impl Controller {
@@ -112,6 +117,8 @@ impl Controller {
                 site_id: Mutex::new(None),
                 ws_handle: Mutex::new(None),
                 task_handles: Mutex::new(Vec::new()),
+                #[cfg(feature = "demo")]
+                demo: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -133,6 +140,11 @@ impl Controller {
     /// Sends the command through the internal channel to the command
     /// processor task and awaits the result.
     pub async fn execute(&self, cmd: Command) -> Result<CommandResult, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return self.demo_execute(demo, cmd).await;
+        }
+
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         let command_tx = self.inner.command_tx.lock().await.clone();
