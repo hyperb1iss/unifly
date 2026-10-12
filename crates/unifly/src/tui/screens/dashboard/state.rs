@@ -317,7 +317,7 @@ mod tests {
             DashboardScreen::series_held_to(&series, 2.0),
             series.to_vec()
         );
-        assert!(DashboardScreen::series_held_to(&[], 5.0).is_empty());
+        assert_eq!(DashboardScreen::series_held_to(&[], 5.0), Vec::new());
     }
 
     #[test]

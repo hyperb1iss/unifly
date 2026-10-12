@@ -98,9 +98,9 @@ pub struct SessionClient {
     cookie_jar: Option<Arc<Jar>>,
     /// Self-healing state: see [`ReauthCredentials`].
     reauth: tokio::sync::Mutex<ReauthSlot>,
-    /// Bumped on every successful re-login. A request records it before it
-    /// is sent, so a 401 that describes an already-replaced cookie can be
-    /// told apart from a fresh expiry.
+    /// Bumped on every successful login or cache restore. A request records
+    /// it before it is sent, so a 401 that describes an already-replaced
+    /// cookie can be told apart from a fresh expiry.
     session_generation: std::sync::atomic::AtomicU64,
 }
 
@@ -205,6 +205,14 @@ impl SessionClient {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Record that a new session cookie is in place. Every successful login
+    /// path calls this, so a 401 for the cookie it replaced reads as stale
+    /// whether the new session came from re-auth or from a caller.
+    pub(super) fn note_session_replaced(&self) {
+        self.session_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
     /// Attempt a re-login on behalf of a request sent at `observed`
     /// generation. Serialised through a mutex so concurrent callers that hit
     /// the same expiry share one login; rate-limited after failure.
@@ -272,8 +280,6 @@ impl SessionClient {
                 // the attempt timestamp set would block a genuine second
                 // expiry that lands inside the cooldown window.
                 *last_attempt = None;
-                self.session_generation
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 info!("session re-authenticated");
                 true
             }

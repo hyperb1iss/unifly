@@ -118,20 +118,24 @@ impl DeviceSync {
             (Some(sys), Some(next)) => sys.merge_newer(next),
             (slot, next) => take_newer(slot, next.as_ref()),
         }
-        match (&mut self.uplink, &newer.uplink) {
-            (Some(uplink), Some(next)) => {
-                take_newer(&mut uplink.tx_bytes_r, next.tx_bytes_r.as_ref());
-                take_newer(&mut uplink.rx_bytes_r, next.rx_bytes_r.as_ref());
-            }
-            (slot, next) => take_newer(slot, next.as_ref()),
+        // Byte rates and uptime each have two spellings, and the store
+        // prefers one of them. A newer frame that carries either spelling
+        // replaces both, so an older frame's preferred spelling cannot mask
+        // the newer value.
+        let newer_tx = newer.uplink.as_ref().and_then(|u| u.tx_bytes_r.clone());
+        if newer_tx.is_some() || newer.tx_bytes_r.is_some() {
+            self.uplink.get_or_insert_with(Default::default).tx_bytes_r = newer_tx;
+            self.tx_bytes_r.clone_from(&newer.tx_bytes_r);
         }
-        take_newer(&mut self.tx_bytes_r, newer.tx_bytes_r.as_ref());
-        take_newer(&mut self.rx_bytes_r, newer.rx_bytes_r.as_ref());
-        take_newer(
-            &mut self.underscore_uptime,
-            newer.underscore_uptime.as_ref(),
-        );
-        take_newer(&mut self.uptime, newer.uptime.as_ref());
+        let newer_rx = newer.uplink.as_ref().and_then(|u| u.rx_bytes_r.clone());
+        if newer_rx.is_some() || newer.rx_bytes_r.is_some() {
+            self.uplink.get_or_insert_with(Default::default).rx_bytes_r = newer_rx;
+            self.rx_bytes_r.clone_from(&newer.rx_bytes_r);
+        }
+        if newer.underscore_uptime.is_some() || newer.uptime.is_some() {
+            self.underscore_uptime.clone_from(&newer.underscore_uptime);
+            self.uptime.clone_from(&newer.uptime);
+        }
         take_newer(&mut self.num_sta, newer.num_sta.as_ref());
         match (&mut self.wan1, &newer.wan1) {
             (Some(wan), Some(next)) => take_newer(&mut wan.ipv6, next.ipv6.as_ref()),
@@ -368,6 +372,42 @@ mod tests {
         assert_eq!(sys.mem_used.and_then(|v| v.as_f64()), Some(20.0));
         assert_eq!(sys.mem_total.and_then(|v| v.as_f64()), Some(100.0));
         assert_eq!(merged.num_sta.as_ref().and_then(NumOrStr::as_u64), Some(5));
+    }
+
+    #[test]
+    fn device_sync_merge_lets_a_newer_spelling_replace_an_older_one() {
+        let first = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "uplink": { "tx_bytes-r": 100, "rx_bytes-r": 200 },
+                "_uptime": 10
+            }),
+        );
+        let second = event_from_raw(
+            "device:sync",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "tx_bytes-r": 300,
+                "rx_bytes-r": 400,
+                "uptime": 20
+            }),
+        );
+        let mut merged = *first.device_sync.expect("first frame decodes");
+        merged.merge_newer(&second.device_sync.expect("second frame decodes"));
+
+        let nested = merged.uplink.as_ref().expect("uplink block kept");
+        assert!(nested.tx_bytes_r.is_none() && nested.rx_bytes_r.is_none());
+        assert_eq!(
+            merged.tx_bytes_r.as_ref().and_then(NumOrStr::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            merged.rx_bytes_r.as_ref().and_then(NumOrStr::as_u64),
+            Some(400)
+        );
+        assert!(merged.underscore_uptime.is_none());
+        assert_eq!(merged.uptime.as_ref().and_then(NumOrStr::as_i64), Some(20));
     }
 
     #[test]

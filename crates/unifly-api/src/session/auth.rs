@@ -82,6 +82,7 @@ impl SessionClient {
         }
 
         self.capture_csrf(&resp);
+        self.note_session_replaced();
         debug!("login successful");
         Ok(())
     }
@@ -149,6 +150,7 @@ impl SessionClient {
         }
 
         self.capture_csrf(&resp);
+        self.note_session_replaced();
         debug!("MFA login successful");
         Ok(())
     }
@@ -185,6 +187,7 @@ impl SessionClient {
             }
 
             if self.validate_session().await {
+                self.note_session_replaced();
                 debug!("restored session from cache");
                 return Ok(());
             }

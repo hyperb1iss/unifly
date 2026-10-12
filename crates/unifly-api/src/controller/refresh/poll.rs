@@ -90,20 +90,17 @@ impl Controller {
         .collect()
         .await;
 
-        // Apply onto whatever the store holds now, not the snapshot taken
-        // before the requests went out: a full refresh may have landed in
-        // between, and its names, ports, and removals must win.
+        // Apply onto whatever the store holds now, under the key's lock, not
+        // the snapshot taken before the requests went out: a full refresh may
+        // have landed in between, and its names, ports, and removals must win.
         let batch = store.devices.begin_batch();
         for (mac, stats) in &fetched {
-            let Some(current) = store.device_by_mac(mac) else {
-                continue;
-            };
-            let mut device = Device::clone(&current);
-            device.stats = crate::convert::device_stats_from_integration(stats);
-            crate::convert::enrich_radios_from_stats(&mut device.radios, &stats.interfaces);
-            store
-                .devices
-                .upsert(mac.as_str().to_owned(), device.id.clone(), device);
+            store.devices.update_existing(mac.as_str(), |current| {
+                let mut device = Device::clone(current);
+                device.stats = crate::convert::device_stats_from_integration(stats);
+                crate::convert::enrich_radios_from_stats(&mut device.radios, &stats.interfaces);
+                device
+            });
         }
         drop(batch);
 

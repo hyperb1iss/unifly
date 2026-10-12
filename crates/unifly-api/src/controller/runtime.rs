@@ -21,9 +21,6 @@ pub(super) fn apply_device_sync(store: &DataStore, data: &DeviceSync) {
         return;
     };
     let mac = MacAddress::new(mac_str);
-    let Some(existing) = store.device_by_mac(&mac) else {
-        return;
-    };
 
     let sys = data.sys_stats.as_ref();
     let cpu = sys.and_then(|s| s.cpu.as_ref()).and_then(NumOrStr::as_f64);
@@ -61,50 +58,58 @@ pub(super) fn apply_device_sync(store: &DataStore, data: &DeviceSync) {
             tx_bytes_per_sec: tx,
             rx_bytes_per_sec: rx,
         }),
-        _ => existing.stats.uplink_bandwidth,
+        _ => None,
     };
 
-    let uptime = data
+    let uptime: Option<u64> = data
         .underscore_uptime
         .as_ref()
         .or(data.uptime.as_ref())
         .and_then(NumOrStr::as_i64)
-        .and_then(|value| value.try_into().ok())
-        .or(existing.stats.uptime_secs);
-
-    let mut device = (*existing).clone();
-    device.stats.uplink_bandwidth = bandwidth;
-    if let Some(cpu) = cpu {
-        device.stats.cpu_utilization_pct = Some(cpu);
-    }
-    if let Some(mem_pct) = mem_pct {
-        device.stats.memory_utilization_pct = Some(mem_pct);
-    }
-    if let Some(load) = load_averages[0] {
-        device.stats.load_average_1m = Some(load);
-    }
-    if let Some(load) = load_averages[1] {
-        device.stats.load_average_5m = Some(load);
-    }
-    if let Some(load) = load_averages[2] {
-        device.stats.load_average_15m = Some(load);
-    }
-    device.stats.uptime_secs = uptime;
-
-    if let Some(num_sta) = data.num_sta.as_ref().and_then(NumOrStr::as_u64) {
-        device.client_count = Some(u32::try_from(num_sta).unwrap_or(u32::MAX));
-    }
-
-    if let Some(wan_ipv6) = parse_session_device_wan_ipv6(
+        .and_then(|value| value.try_into().ok());
+    let client_count = data
+        .num_sta
+        .as_ref()
+        .and_then(NumOrStr::as_u64)
+        .map(|num_sta| u32::try_from(num_sta).unwrap_or(u32::MAX));
+    let wan_ipv6 = parse_session_device_wan_ipv6(
         data.wan1.as_ref().and_then(|wan| wan.ipv6.as_ref()),
         data.ipv6.as_ref(),
-    ) {
-        device.wan_ipv6 = Some(wan_ipv6);
-    }
+    );
 
-    let key = mac.as_str().to_owned();
-    let id = device.id.clone();
-    store.devices.upsert(key, id, device);
+    // Merge under the key's lock: a full refresh replacing or removing this
+    // device on another worker must not be undone by a stale copy.
+    store.devices.update_existing(mac.as_str(), |existing| {
+        let mut device = existing.clone();
+        if bandwidth.is_some() {
+            device.stats.uplink_bandwidth = bandwidth;
+        }
+        if let Some(cpu) = cpu {
+            device.stats.cpu_utilization_pct = Some(cpu);
+        }
+        if let Some(mem_pct) = mem_pct {
+            device.stats.memory_utilization_pct = Some(mem_pct);
+        }
+        if let Some(load) = load_averages[0] {
+            device.stats.load_average_1m = Some(load);
+        }
+        if let Some(load) = load_averages[1] {
+            device.stats.load_average_5m = Some(load);
+        }
+        if let Some(load) = load_averages[2] {
+            device.stats.load_average_15m = Some(load);
+        }
+        if uptime.is_some() {
+            device.stats.uptime_secs = uptime;
+        }
+        if client_count.is_some() {
+            device.client_count = client_count;
+        }
+        if wan_ipv6.is_some() {
+            device.wan_ipv6.clone_from(&wan_ipv6);
+        }
+        device
+    });
 }
 
 /// Process commands from the mpsc channel, routing each to the
