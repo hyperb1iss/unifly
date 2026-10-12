@@ -88,7 +88,8 @@ pub struct ParseMacAddressError;
 
 impl MacAddress {
     /// Create a normalized MAC address from any common format.
-    /// Accepts colon-separated, dash-separated, or bare hex.
+    /// Accepts colon-separated, dash-separated, dotted (`aabb.ccdd.eeff`),
+    /// or bare hex, in any case.
     ///
     /// For strict validation, use [`MacAddress::try_new`] or `str::parse`.
     pub fn new(raw: impl AsRef<str>) -> Self {
@@ -108,8 +109,21 @@ impl MacAddress {
 }
 
 fn normalize_mac(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    // Dotted notation is exactly three groups of four hex digits, so an
+    // IPv4 address (four groups) can never pass for a MAC.
+    if raw.contains('.') {
+        let groups: Vec<&str> = raw.split('.').collect();
+        let well_formed = groups.len() == 3
+            && groups
+                .iter()
+                .all(|group| group.len() == 4 && group.chars().all(|ch| ch.is_ascii_hexdigit()));
+        if !well_formed {
+            return None;
+        }
+        return normalize_mac(&groups.concat());
+    }
     let compact = raw
-        .trim()
         .chars()
         .filter(|ch| *ch != ':' && *ch != '-')
         .collect::<String>()
@@ -209,8 +223,17 @@ mod tests {
     }
 
     #[test]
+    fn mac_address_normalizes_dotted_groups() {
+        let mac: MacAddress = "AABB.CCDD.EEFF".parse().unwrap();
+        assert_eq!(mac.as_str(), "aa:bb:cc:dd:ee:ff");
+    }
+
+    #[test]
     fn mac_address_parse_rejects_invalid_input() {
         assert!("not-a-mac".parse::<MacAddress>().is_err());
         assert!("AA:BB:CC:DD:EE".parse::<MacAddress>().is_err());
+        assert!("aabb.ccdd.ee:ff".parse::<MacAddress>().is_err());
+        // Twelve digits once the dots go, but an IP address, not a MAC.
+        assert!("100.100.100.100".parse::<MacAddress>().is_err());
     }
 }
