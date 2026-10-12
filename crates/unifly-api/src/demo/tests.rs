@@ -341,14 +341,22 @@ fn power_cycling_the_dark_camera_port_brings_it_back() {
     let mut sim = Simulation::new(fleet());
     let core = sim.fleet.devices[super::fleet::SWITCH_BASE].id.clone();
     let (camera, port) = super::catalog::OFFLINE_CAMERA;
-    sim.apply_command(
-        Command::PowerCyclePort {
-            device_id: core,
-            port_idx: port,
-        },
-        anchor(),
-    )
-    .expect("power cycle works");
+    let (_, delta) = sim
+        .apply_command(
+            Command::PowerCyclePort {
+                device_id: core,
+                port_idx: port,
+            },
+            anchor(),
+        )
+        .expect("power cycle works");
+    assert!(
+        delta
+            .events
+            .iter()
+            .any(|event| event.message.contains(camera)),
+        "the power-cycle event names the camera on that port"
+    );
     for tick in 1..=10 {
         sim.step(anchor() + Duration::seconds(tick));
     }

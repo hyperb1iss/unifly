@@ -214,18 +214,20 @@ impl Simulation {
                 message: format!("{name} port {port_index} is not supplying PoE"),
             });
         }
-        let label = port
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("port {port_index}"));
+        let port_label = port.name.clone();
         let (camera, camera_port) = catalog::OFFLINE_CAMERA;
-        if index == super::fleet::SWITCH_BASE && port_index == camera_port {
+        let camera_port_hit = index == super::fleet::SWITCH_BASE && port_index == camera_port;
+        if camera_port_hit {
             self.schedule(CAMERA_REVIVE_TICKS, Pending::CameraRevive);
         }
-        let message = if label == camera {
+        // Name what the port powers when we know it: the dark camera on its
+        // port, otherwise the port's own label if it has one.
+        let message = if camera_port_hit {
             format!("Power cycled {name} port {port_index} ({camera})")
-        } else {
+        } else if let Some(label) = port_label {
             format!("Power cycled {name} port {port_index} ({label})")
+        } else {
+            format!("Power cycled {name} port {port_index}")
         };
         self.push_device_event(index, now, "EVT_SW_PoePowerCycle", message, delta);
         Ok(())
