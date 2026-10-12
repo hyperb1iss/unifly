@@ -40,10 +40,12 @@ impl WifiScreen {
             }
             KeyCode::Enter => self.handle_enter(),
             KeyCode::Esc => self.handle_escape(),
-            KeyCode::Char('s') => {
-                self.sort_field = next_sort_field(self.sub_tab, self.sort_field);
-                Some(Action::WifiSortColumn(self.sort_field))
-            }
+            // The sort field changes in the action handler, after it has
+            // captured which rows are selected under the current order.
+            KeyCode::Char('s') => Some(Action::WifiSortColumn(next_sort_field(
+                self.sub_tab,
+                self.sort_field,
+            ))),
             KeyCode::Char('c') if self.sub_tab == crate::tui::action::WifiSubTab::Overview => {
                 Some(Action::WifiToggleChannelMap)
             }
