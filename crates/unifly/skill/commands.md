@@ -106,9 +106,10 @@ Port VLAN flags accept network names or Session IDs; duplicate names fail
 resolution. Trunk mode without tagged VLANs allows all VLANs. Supplying a
 list chooses custom tagging. Use speed `auto` for autonegotiation.
 
-Port export emits JSONC for `port-set --from-file`. Export is sparse by
-default; `--all` includes ports without an override. A file applies only its
-listed ports and preserves other overrides. Each entry needs an `index`.
+Port export always emits JSONC for `port-set --from-file`, regardless of
+the global output format. Export is sparse by default; `--all` includes
+ports without an override. A file applies only its listed ports and
+preserves other overrides. Each entry needs an `index`.
 Use `reset: true` to remove an override and restore controller defaults.
 A single-port `--reset` does the same and conflicts with other setting flags.
 File application and reset prompt unless `--yes` is supplied.
@@ -271,14 +272,16 @@ warnings when Site Manager returns incomplete results.
 
 `--demo-fleet` (or `UNIFI_DEMO_FLEET=true`) answers from a synthetic,
 offline network with no controller, credentials, or config file. Only these
-read-only commands work, in every output format: `system health|info`,
-`alarms list`, `wans list`, `devices list|get|stats|ports|ports-export`,
+read-only commands work: `system health|info`, `alarms list`, `wans list`,
+`devices list|get|stats|ports|ports-export`,
 `clients list|get|find|roams|wifi`, `networks list|get`,
 `wifi list|get|neighbors|channels`, `firewall policies list|get`,
 `firewall zones list|get`, `nat policies list|get`, `acl list|get`,
-`events list`, `stats site|gateway|dpi`, `topology`, and `sites list`. Any
-other command, `devices port-set` included, exits 5 with "not available in
-demo mode" before reading config or touching the network. The fleet has
+`events list`, `stats site|gateway|dpi`, `topology`, and `sites list`.
+Each honors every output format except `devices ports-export`, which always
+writes JSONC, as it does against a real controller. Any other command,
+`devices port-set` included, exits 5 with "not available in demo mode"
+before reading config or touching the network. The fleet has
 problems worth diagnosing: an offline AP, an AP with firmware waiting, a
 dark camera port on the core switch, and an unplugged second WAN. Alarms,
 events, WANs, devices, and switch ports agree on them; health shows the
@@ -288,6 +291,6 @@ attributes and ignore `--attrs`.
 same names, MACs, IPs, and IDs. Timestamps follow the launch time, except
 the `// last-seen` markers of `devices ports-export --with-clients`, which
 carry a fixed 2026-03-18T15:30Z so a seed exports the same bytes on every
-run. The data is fictional, so never present it as the user's network. `unifly tui
---demo-fleet` runs the dashboard against the same fleet, while plain
-`--demo` sanitizes a real controller's data in the TUI.
+run. The data is fictional, so never present it as the user's network.
+`unifly tui --demo-fleet` runs the dashboard against the same fleet, while
+plain `--demo` sanitizes a real controller's data in the TUI.
