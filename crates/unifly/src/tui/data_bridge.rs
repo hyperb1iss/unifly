@@ -152,7 +152,10 @@ pub async fn spawn_data_bridge(
 
     // Push initial events from the DataStore snapshot (the broadcast channel
     // fires during connect(), before we subscribe, so those are lost).
-    let events_snap: Vec<Arc<Event>> = controller.events_snapshot().to_vec();
+    // The store is unordered; screens append in arrival order, so replay
+    // the backlog oldest first.
+    let mut events_snap: Vec<Arc<Event>> = controller.events_snapshot().to_vec();
+    events_snap.sort_by_key(|event| event.timestamp);
     let events_snap = match &sanitizer {
         Some(s) => s.sanitize_events_vec(&events_snap),
         None => events_snap,
