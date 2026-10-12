@@ -692,15 +692,6 @@ impl WifiScreen {
             .map(|((channel, band), _)| (channel, band_from_index(band)))
     }
 
-    pub(super) fn ap_channel_label(&self, ap: &Device) -> String {
-        self.ap_channel_profile(ap)
-            .map_or_else(|| "─".to_string(), |(channel, _)| channel.to_string())
-    }
-
-    pub(super) fn ap_band(&self, ap: &Device) -> Option<WifiBand> {
-        self.ap_channel_profile(ap).map(|(_, band)| band)
-    }
-
     pub(super) fn sync_ap_selection(&mut self) {
         let len = self.ap_devices().len();
         sync_selection(&mut self.ap_table_state, len);
