@@ -13,8 +13,13 @@ use crate::cli::error::CliError;
 /// Command paths that work with `--demo-fleet`. Each reads the controller's
 /// store after connect, or a query the demo fleet answers itself.
 pub const SUPPORTED: &[&str] = &[
+    "system health",
+    "system info",
+    "alarms list",
+    "wans list",
     "devices list",
     "devices get",
+    "devices stats",
     "clients list",
     "clients get",
     "clients find",
@@ -23,6 +28,7 @@ pub const SUPPORTED: &[&str] = &[
     "networks list",
     "networks get",
     "wifi list",
+    "wifi get",
     "wifi neighbors",
     "wifi channels",
     "firewall policies list",
@@ -124,6 +130,10 @@ mod tests {
     fn writes_and_cloud_are_refused() {
         assert!(supports("devices list"));
         assert!(supports("stats gateway"));
+        assert!(supports("system health"));
+        assert!(supports("alarms list"));
+        assert!(!supports("alarms archive"));
+        assert!(!supports("system reboot"));
         assert!(supports("completions"));
         assert!(!supports("devices restart"));
         assert!(!supports("networks create"));

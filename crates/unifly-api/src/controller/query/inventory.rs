@@ -8,6 +8,19 @@ impl Controller {
         &self,
         id: &EntityId,
     ) -> Result<WifiBroadcast, CoreError> {
+        // The demo store already holds every broadcast in full.
+        #[cfg(feature = "demo")]
+        if self.is_demo() {
+            return self
+                .wifi_broadcasts_snapshot()
+                .iter()
+                .find(|broadcast| &broadcast.id == id)
+                .map(|broadcast| WifiBroadcast::clone(broadcast))
+                .ok_or_else(|| CoreError::NotFound {
+                    entity_type: "wifi broadcast".into(),
+                    identifier: id.to_string(),
+                });
+        }
         let (client, site_id) = integration_site_context(self, "get_wifi_broadcast_detail").await?;
         let uuid = require_uuid(id)?;
         let detail = client.get_wifi_broadcast(&site_id, &uuid).await?;

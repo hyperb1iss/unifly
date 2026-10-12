@@ -268,13 +268,17 @@ warnings when Site Manager returns incomplete results.
 
 `--demo-fleet` (or `UNIFI_DEMO_FLEET=true`) answers from a synthetic,
 offline network with no controller, credentials, or config file. Only these
-read-only commands work, in every output format: `devices list|get`,
+read-only commands work, in every output format: `system health|info`,
+`alarms list`, `wans list`, `devices list|get|stats`,
 `clients list|get|find|roams|wifi`, `networks list|get`,
-`wifi list|neighbors|channels`, `firewall policies list|get`,
+`wifi list|get|neighbors|channels`, `firewall policies list|get`,
 `firewall zones list|get`, `nat policies list|get`, `acl list|get`,
 `events list`, `stats site|gateway|dpi`, `topology`, and `sites list`. Any
 other command exits 5 with "not available in demo mode" before reading
-config or touching the network. `--demo-seed N` selects a different fleet;
+config or touching the network. The fleet has problems worth diagnosing:
+an offline AP, an AP with firmware waiting, a dark camera port on the core
+switch, and an unplugged second WAN. Health, alarms, events, and devices
+all agree on them. `--demo-seed N` selects a different fleet;
 the same seed reproduces the same names, MACs, IPs, and IDs. The data is
 fictional, so never present it as the user's network. `unifly tui
 --demo-fleet` runs the dashboard against the same fleet, while plain

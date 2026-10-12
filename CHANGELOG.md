@@ -27,7 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `--demo-fleet` and `--demo-seed` are global flags (`UNIFI_DEMO_FLEET`,
   `UNIFI_DEMO_SEED`), and a curated set of read-only CLI commands answers
   from the same fleet in every output format: devices, clients, networks,
-  WiFi, firewall, NAT, ACL, events, stats, topology, and sites listings.
+  WiFi, firewall, NAT, ACL, events, stats, topology, and sites listings,
+  plus the first reads of a diagnosis. `system health` and `system info`,
+  `wans list` (WAN up on 203.0.113.42, WAN2 without link), and `alarms
+  list` all answer from the fleet's standing problems (the offline AP, the
+  AP with firmware waiting, the dark camera port, the unplugged WAN2), so
+  they agree with `events list` and `devices get`.
   Any other command fails with a "not available in demo mode" error before
   it reads config or touches the network. Library users get the same fleet
   from `Controller::demo` behind the new `demo` feature of `unifly-api`.
