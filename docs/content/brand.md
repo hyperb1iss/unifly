@@ -20,6 +20,7 @@ The logo and mark files have transparent backgrounds.
 | Horizontal logo, dark backgrounds  | [SVG](../brand/logo-dark.svg) · [PNG](../brand/logo-dark.png)                                                         | Headers and presentations            |
 | Horizontal logo, light backgrounds | [SVG](../brand/logo-light.svg) · [PNG](../brand/logo-light.png)                                                       | Light pages and documents            |
 | Stacked logo, dark backgrounds     | [SVG](../brand/logo-stacked.svg)                                                                                      | Covers and tall layouts              |
+| Stacked logo, light backgrounds    | [SVG](../brand/logo-stacked-light.svg)                                                                                | Light pages and documents            |
 | Dragonfly mark                     | [SVG](../brand/dragonfly.svg) · [PNG](../brand/dragonfly.png)                                                         | Standalone symbol                    |
 | Mark for light backgrounds         | [SVG](../brand/dragonfly-light.svg)                                                                                   | Small marks on light surfaces        |
 | Single-color marks                 | [White SVG](../brand/dragonfly-white.svg) · [Black SVG](../brand/dragonfly-black.svg)                                 | Single-color printing                |

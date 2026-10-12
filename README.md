@@ -1,6 +1,14 @@
-<h1 align="center">
-  <img src="docs/static/brand/readme-banner.svg" alt="unifly: Your network. Your terminal. Your UniFi network, at your fingertips. CLI + TUI for humans and agents." width="960">
-</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/static/brand/logo-stacked.svg">
+    <img src="docs/static/brand/logo-stacked-light.svg" alt="unifly" width="360">
+  </picture>
+</p>
+
+<p align="center">
+  Your UniFi network, at your fingertips.<br>
+  <sub>CLI + TUI for humans and agents</sub>
+</p>
 
 <p align="center">
   <a href="https://www.rust-lang.org">
