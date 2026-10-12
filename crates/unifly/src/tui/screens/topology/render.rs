@@ -8,13 +8,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unifly_api::DeviceType;
 
 use super::TopologyScreen;
-use super::layout::{LEVEL_GAP, LinkKind, TopoEdge, TopoNode, layout};
+use super::layout::{LinkKind, MARGIN, TopoEdge, TopoNode, layout};
 use crate::tui::theme;
-
-/// Breathing room around the tree when fitting it to the canvas.
-const MARGIN: f64 = 4.0;
-/// Narrowest view at 100% zoom, so a two-device site is not drawn huge.
-const MIN_SPAN: f64 = 60.0;
 
 impl TopologyScreen {
     #[allow(
@@ -55,24 +50,30 @@ impl TopologyScreen {
             height: 1,
         };
 
-        let tree = layout(&self.devices);
-
-        // Fit the whole tree at 100% zoom, centered; pan and zoom work
-        // relative to that view.
-        let width = f64::from(content_area.width.max(1));
-        let height = f64::from(content_area.height.max(1));
-        let aspect = (height * 2.0) / width;
+        // The layout works in cells (y down), and at 100% zoom one unit is
+        // always one cell, so every label lands whole inside its box (a
+        // canvas maps a span of n - 1 units onto n cells). A tree that fits
+        // is centered; one that does not is anchored at its top-left corner
+        // and panned rather than squeezed until labels collide.
+        let columns = f64::from(content_area.width.max(2));
+        let rows = f64::from(content_area.height.max(2));
+        let tree = layout(&self.devices, columns);
         let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
-        let need_x = (x_hi - x_lo) + MARGIN * 2.0;
-        let need_y = (y_hi - y_lo) + MARGIN * 2.0;
-        let x_span = need_x.max(need_y / aspect).max(MIN_SPAN) / self.zoom;
-        let y_span = x_span * aspect;
-        let x_center = f64::midpoint(x_lo, x_hi) + self.pan_x;
-        let y_center = f64::midpoint(y_lo, y_hi) + self.pan_y;
+        let x_span = (columns - 1.0) / self.zoom;
+        let y_span = (rows - 1.0) / self.zoom;
+        let anchor = |lo: f64, hi: f64, span: f64| {
+            if hi - lo + 2.0 * MARGIN <= span {
+                f64::midpoint(lo, hi) - span / 2.0
+            } else {
+                lo - MARGIN
+            }
+        };
+        let left = (anchor(x_lo, x_hi, x_span) + self.pan_x).floor();
+        let top = (anchor(y_lo, y_hi, y_span) - self.pan_y).floor();
 
         let canvas = Canvas::default()
-            .x_bounds([x_center - x_span / 2.0, x_center + x_span / 2.0])
-            .y_bounds([y_center - y_span / 2.0, y_center + y_span / 2.0])
+            .x_bounds([left, left + x_span])
+            .y_bounds([-(top + y_span), -top])
             .paint(|ctx: &mut Context<'_>| {
                 for edge in &tree.edges {
                     draw_edge(ctx, &tree.nodes, edge);
@@ -116,26 +117,31 @@ fn node_color(node: &TopoNode) -> Color {
     }
 }
 
+/// Layout rows grow down; canvas `y` grows up.
+fn up(y: f64) -> f64 {
+    -y
+}
+
 fn draw_node(ctx: &mut Context<'_>, node: &TopoNode) {
     let color = node_color(node);
     ctx.draw(&Rectangle {
         x: node.x,
-        y: node.y,
+        y: up(node.bottom()),
         width: node.width,
         height: node.height,
         color,
     });
 
-    let short_label: String = node.label.chars().take(10).collect();
+    let (label_x, _) = node.label_span();
     ctx.print(
-        node.x + 1.0,
-        node.top() - 1.5,
-        Span::styled(short_label, Style::default().fg(color)),
+        label_x,
+        up(node.y + 1.0),
+        Span::styled(node.label.clone(), Style::default().fg(color)),
     );
     if !node.ip.is_empty() {
         ctx.print(
-            node.x + 1.0,
-            node.y + 0.5,
+            label_x,
+            up(node.y + 2.0),
             Span::styled(
                 node.ip.clone(),
                 Style::default().fg(theme::text_secondary()),
@@ -151,10 +157,10 @@ fn draw_edge(ctx: &mut Context<'_>, nodes: &[TopoNode], edge: &TopoEdge) {
     let (Some(parent), Some(child)) = (nodes.get(edge.parent), nodes.get(edge.child)) else {
         return;
     };
-    let (px, cx) = (parent.center_x(), child.center_x());
-    let parent_bottom = parent.y;
-    let child_top = child.top();
-    let bus = parent_bottom - (LEVEL_GAP - parent.height) / 2.0;
+    let (stem, cx) = (edge.stem_x, child.center_x());
+    let parent_bottom = up(parent.bottom());
+    let child_top = up(child.y);
+    let bus = up(edge.bus_y);
 
     let (color, dash) = match edge.kind {
         LinkKind::Wired if child.state.is_online() => (node_color(child), None),
@@ -163,7 +169,10 @@ fn draw_edge(ctx: &mut Context<'_>, nodes: &[TopoNode], edge: &TopoEdge) {
         LinkKind::Inferred => (theme::border_unfocused(), Some((0.5, 0.9))),
     };
 
-    let segments = [((px, parent_bottom), (px, bus)), ((px, bus), (cx, bus))];
+    let segments = [
+        ((stem, parent_bottom), (stem, bus)),
+        ((stem, bus), (cx, bus)),
+    ];
     for (from, to) in segments {
         draw_segment(ctx, from, to, color, dash);
     }
@@ -189,10 +198,10 @@ fn draw_edge(ctx: &mut Context<'_>, nodes: &[TopoNode], edge: &TopoEdge) {
         _ => None,
     };
     if let Some(label) = label {
-        // Halfway down the drop, clear of both the bus and the child box.
+        // On the row under the bus, beside the drop.
         ctx.print(
-            cx + 0.8,
-            f64::midpoint(bus, child_top),
+            cx + 1.0,
+            up(edge.bus_y + 1.0),
             Span::styled(label, Style::default().fg(theme::text_muted())),
         );
     }

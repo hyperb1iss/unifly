@@ -4,20 +4,28 @@
 //! (`uplink_device_mac`, falling back to `uplink_device_id`), with the
 //! gateway at the root. A device whose uplink is unknown is attached to the
 //! gateway with an [`LinkKind::Inferred`] edge rather than being guessed into
-//! a switch. Canvas coordinates grow upward, so deeper levels sit at lower
-//! `y` values.
+//! a switch.
+//!
+//! Coordinates are terminal cells: `x` grows right and `y` grows down, one
+//! unit per column or row. Boxes are sized to their labels, and a parent
+//! whose children would not fit the available width wraps them into rows,
+//! so at the fitted zoom every label is drawn whole and none overlap.
+
+mod place;
+#[cfg(test)]
+mod tests;
+
+pub(super) use place::MARGIN;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use unifly_api::{Device, DeviceState, DeviceType, EntityId, UplinkMedium};
 
-/// Vertical distance from one tree level to the next, in canvas units.
-pub(super) const LEVEL_GAP: f64 = 18.0;
-/// Horizontal gap between neighboring subtrees.
-const SIBLING_GAP: f64 = 3.0;
+/// Longest device name drawn in a box.
+const LABEL_MAX: usize = 16;
 
-/// One device box on the canvas. `x`/`y` are the bottom-left corner.
+/// One device box. `x`/`y` are the top-left corner in cells.
 pub(super) struct TopoNode {
     pub label: String,
     pub ip: String,
@@ -35,8 +43,13 @@ impl TopoNode {
         self.x + self.width / 2.0
     }
 
-    pub(super) fn top(&self) -> f64 {
+    pub(super) fn bottom(&self) -> f64 {
         self.y + self.height
+    }
+
+    /// Where the label starts, and how many cells it takes.
+    pub(super) fn label_span(&self) -> (f64, usize) {
+        (self.x + 1.0, self.label.chars().count())
     }
 }
 
@@ -51,13 +64,17 @@ pub(super) enum LinkKind {
     Inferred,
 }
 
-/// A parent-to-child link, as indices into [`TopoLayout::nodes`].
+/// A parent-to-child link, as indices into [`TopoLayout::nodes`]. It leaves
+/// the parent's bottom edge at `stem_x`, runs along `bus_y`, and drops into
+/// the child.
 pub(super) struct TopoEdge {
     pub parent: usize,
     pub child: usize,
     pub kind: LinkKind,
     /// Port on the parent the child is plugged into, when reported.
     pub port: Option<u32>,
+    pub stem_x: f64,
+    pub bus_y: f64,
 }
 
 pub(super) struct TopoLayout {
@@ -65,14 +82,6 @@ pub(super) struct TopoLayout {
     pub edges: Vec<TopoEdge>,
     /// `[x_min, x_max, y_min, y_max]` around every node.
     pub bounds: [f64; 4],
-}
-
-fn node_size(device_type: DeviceType) -> (f64, f64) {
-    match device_type {
-        DeviceType::Gateway => (16.0, 8.0),
-        DeviceType::Switch => (14.0, 7.0),
-        _ => (12.0, 7.0),
-    }
 }
 
 fn type_rank(device_type: DeviceType) -> u8 {
@@ -91,8 +100,9 @@ fn display_name(device: &Device) -> String {
         .unwrap_or_else(|| device.mac.to_string())
 }
 
-/// Lay `devices` out as an uplink tree.
-pub(super) fn layout(devices: &[Arc<Device>]) -> TopoLayout {
+/// Lay `devices` out as an uplink tree that fits `columns` cells wide when
+/// it can.
+pub(super) fn layout(devices: &[Arc<Device>], columns: f64) -> TopoLayout {
     let parents = resolve_parents(devices);
 
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); devices.len()];
@@ -114,42 +124,34 @@ pub(super) fn layout(devices: &[Arc<Device>]) -> TopoLayout {
         list.sort_by(order);
     }
 
-    let mut placer = Placer {
-        devices,
-        children: &children,
-        cursor: 0.0,
-        centers: vec![0.0; devices.len()],
-        depths: vec![0; devices.len()],
-    };
-    for root in &roots {
-        placer.place(*root, 0);
-    }
-
-    let nodes: Vec<TopoNode> = devices
+    let mut nodes: Vec<TopoNode> = devices
         .iter()
-        .enumerate()
-        .map(|(index, device)| {
-            let (width, height) = node_size(device.device_type);
-            let depth = placer.depths[index];
+        .map(|device| {
+            let label: String = display_name(device).chars().take(LABEL_MAX).collect();
+            let ip = device.ip.map(|ip| ip.to_string()).unwrap_or_default();
             TopoNode {
-                label: display_name(device),
-                ip: device.ip.map(|ip| ip.to_string()).unwrap_or_default(),
+                width: place::box_width(&label, &ip),
+                height: place::NODE_HEIGHT,
+                label,
+                ip,
                 device_type: device.device_type,
                 state: device.state,
                 traffic_bytes_per_sec: traffic(device),
-                x: placer.centers[index] - width / 2.0,
-                y: -level_top(depth) - height,
-                width,
-                height,
+                x: 0.0,
+                y: 0.0,
             }
         })
         .collect();
+
+    let mut placer = place::Placer::new(&mut nodes, &children, columns);
+    let routes = placer.place_forest(&roots);
 
     let edges = parents
         .iter()
         .enumerate()
         .filter_map(|(child, parent)| {
             let (parent, kind) = (*parent)?;
+            let (stem_x, bus_y) = routes.get(&child).copied()?;
             Some(TopoEdge {
                 parent,
                 child,
@@ -157,6 +159,8 @@ pub(super) fn layout(devices: &[Arc<Device>]) -> TopoLayout {
                 port: (kind == LinkKind::Wired)
                     .then_some(devices[child].uplink_port_idx)
                     .flatten(),
+                stem_x,
+                bus_y,
             })
         })
         .collect();
@@ -167,12 +171,6 @@ pub(super) fn layout(devices: &[Arc<Device>]) -> TopoLayout {
         edges,
         bounds,
     }
-}
-
-/// Distance from the root row's top edge down to `depth`'s top edge.
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn level_top(depth: usize) -> f64 {
-    depth as f64 * LEVEL_GAP
 }
 
 /// Each device's parent and link kind, with cycles broken and orphans
@@ -249,45 +247,6 @@ fn resolve_parents(devices: &[Arc<Device>]) -> Vec<Option<(usize, LinkKind)>> {
     parents
 }
 
-/// Tidy tree placement: leaves take consecutive slots left to right and
-/// each parent centers over its children.
-struct Placer<'a> {
-    devices: &'a [Arc<Device>],
-    children: &'a [Vec<usize>],
-    cursor: f64,
-    centers: Vec<f64>,
-    depths: Vec<usize>,
-}
-
-impl Placer<'_> {
-    fn place(&mut self, index: usize, depth: usize) -> f64 {
-        let (width, _) = node_size(self.devices[index].device_type);
-        self.depths[index] = depth;
-        let start = self.cursor;
-        let kids = &self.children[index];
-
-        let center = if kids.is_empty() {
-            start + width / 2.0
-        } else {
-            let mut first = None;
-            let mut last = 0.0;
-            for child in kids {
-                let child_center = self.place(*child, depth + 1);
-                first.get_or_insert(child_center);
-                last = child_center;
-            }
-            let span_center = f64::midpoint(first.unwrap_or(last), last);
-            // A parent wider than its subtree must not poke into the
-            // previous sibling's space.
-            span_center.max(start + width / 2.0)
-        };
-
-        self.centers[index] = center;
-        self.cursor = self.cursor.max(center + width / 2.0 + SIBLING_GAP);
-        center
-    }
-}
-
 fn traffic(device: &Device) -> u64 {
     device
         .stats
@@ -302,7 +261,7 @@ fn traffic(device: &Device) -> u64 {
 
 fn bounds(nodes: &[TopoNode]) -> [f64; 4] {
     if nodes.is_empty() {
-        return [0.0, 100.0, -50.0, 0.0];
+        return [0.0, 80.0, 0.0, 20.0];
     }
     nodes.iter().fold(
         [f64::MAX, f64::MIN, f64::MAX, f64::MIN],
@@ -311,281 +270,8 @@ fn bounds(nodes: &[TopoNode]) -> [f64; 4] {
                 x_min.min(node.x),
                 x_max.max(node.x + node.width),
                 y_min.min(node.y),
-                y_max.max(node.top()),
+                y_max.max(node.bottom()),
             ]
         },
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use serde_json::json;
-    use unifly_api::{Device, DeviceType, UplinkMedium};
-
-    use super::{LinkKind, TopoLayout, layout};
-
-    fn wireless(device: Arc<Device>) -> Arc<Device> {
-        let mut device = Arc::unwrap_or_clone(device);
-        device.uplink_medium = Some(UplinkMedium::Wireless);
-        Arc::new(device)
-    }
-
-    fn device(
-        name: &str,
-        mac: &str,
-        device_type: &str,
-        uplink: Option<&str>,
-        port: Option<u32>,
-    ) -> Arc<Device> {
-        Arc::new(
-            serde_json::from_value(json!({
-                "id": format!("id-{name}"),
-                "mac": mac,
-                "ip": "10.0.0.2",
-                "wan_ipv6": null,
-                "name": name,
-                "model": "UniFi",
-                "device_type": device_type,
-                "state": "Online",
-                "firmware_version": null,
-                "firmware_updatable": false,
-                "adopted_at": null,
-                "provisioned_at": null,
-                "last_seen": null,
-                "serial": null,
-                "supported": true,
-                "ports": [],
-                "radios": [],
-                "uplink_device_id": null,
-                "uplink_device_mac": uplink,
-                "uplink_port_idx": port,
-                "has_switching": false,
-                "has_access_point": false,
-                "stats": {},
-                "client_count": null,
-                "origin": null
-            }))
-            .expect("device fixture should deserialize"),
-        )
-    }
-
-    fn index(layout: &TopoLayout, name: &str) -> usize {
-        layout
-            .nodes
-            .iter()
-            .position(|node| node.label == name)
-            .expect("node exists")
-    }
-
-    fn parent_of(layout: &TopoLayout, name: &str) -> Option<(String, LinkKind)> {
-        let child = index(layout, name);
-        layout
-            .edges
-            .iter()
-            .find(|edge| edge.child == child)
-            .map(|edge| (layout.nodes[edge.parent].label.clone(), edge.kind))
-    }
-
-    /// gw ─ core ─┬ edge-sw ─ ap-b
-    ///            ├ ap-a ≈ ap-mesh
-    ///            └ (orphan) ap-lost
-    fn fleet() -> Vec<Arc<Device>> {
-        vec![
-            device("ap-lost", "00:00:00:00:00:07", "AccessPoint", None, None),
-            wireless(device(
-                "ap-mesh",
-                "00:00:00:00:00:06",
-                "AccessPoint",
-                Some("00:00:00:00:00:04"),
-                None,
-            )),
-            device(
-                "ap-b",
-                "00:00:00:00:00:05",
-                "AccessPoint",
-                Some("00:00:00:00:00:03"),
-                Some(4),
-            ),
-            device(
-                "ap-a",
-                "00:00:00:00:00:04",
-                "AccessPoint",
-                Some("00:00:00:00:00:02"),
-                Some(17),
-            ),
-            device(
-                "edge-sw",
-                "00:00:00:00:00:03",
-                "Switch",
-                Some("00:00:00:00:00:02"),
-                Some(9),
-            ),
-            device(
-                "core",
-                "00:00:00:00:00:02",
-                "Switch",
-                Some("00:00:00:00:00:01"),
-                Some(25),
-            ),
-            device("gw", "00:00:00:00:00:01", "Gateway", None, None),
-        ]
-    }
-
-    #[test]
-    fn edges_follow_reported_uplinks_only() {
-        let layout = layout(&fleet());
-        assert_eq!(layout.edges.len(), 6, "one edge per non-root device");
-        assert_eq!(parent_of(&layout, "gw"), None);
-        assert_eq!(
-            parent_of(&layout, "core"),
-            Some(("gw".into(), LinkKind::Wired))
-        );
-        assert_eq!(
-            parent_of(&layout, "edge-sw"),
-            Some(("core".into(), LinkKind::Wired))
-        );
-        assert_eq!(
-            parent_of(&layout, "ap-b"),
-            Some(("edge-sw".into(), LinkKind::Wired))
-        );
-        assert_eq!(
-            parent_of(&layout, "ap-a"),
-            Some(("core".into(), LinkKind::Wired))
-        );
-        let ap_b = index(&layout, "ap-b");
-        let port = layout
-            .edges
-            .iter()
-            .find(|edge| edge.child == ap_b)
-            .and_then(|edge| edge.port);
-        assert_eq!(port, Some(4));
-    }
-
-    #[test]
-    fn mesh_aps_get_wireless_links_and_orphans_hang_off_the_gateway() {
-        let layout = layout(&fleet());
-        assert_eq!(
-            parent_of(&layout, "ap-mesh"),
-            Some(("ap-a".into(), LinkKind::Wireless))
-        );
-        assert_eq!(
-            parent_of(&layout, "ap-lost"),
-            Some(("gw".into(), LinkKind::Inferred))
-        );
-    }
-
-    #[test]
-    fn children_sit_below_parents_without_overlapping() {
-        let layout = layout(&fleet());
-        for edge in &layout.edges {
-            let (parent, child) = (&layout.nodes[edge.parent], &layout.nodes[edge.child]);
-            assert!(
-                child.top() < parent.y,
-                "{} should sit below {}",
-                child.label,
-                parent.label
-            );
-        }
-        for (left_index, left) in layout.nodes.iter().enumerate() {
-            for right in layout.nodes.iter().skip(left_index + 1) {
-                if (left.top() - right.top()).abs() < f64::EPSILON {
-                    let apart = left.x + left.width <= right.x || right.x + right.width <= left.x;
-                    assert!(apart, "{} overlaps {}", left.label, right.label);
-                }
-            }
-        }
-        let [x_min, x_max, y_min, y_max] = layout.bounds;
-        assert!(x_min < x_max && y_min < y_max);
-    }
-
-    #[test]
-    fn link_kind_follows_the_reported_medium_not_the_device_types() {
-        let devices = vec![
-            device("gw", "00:00:00:00:00:01", "Gateway", None, None),
-            device(
-                "ap-a",
-                "00:00:00:00:00:02",
-                "AccessPoint",
-                Some("00:00:00:00:00:01"),
-                Some(3),
-            ),
-            // AP to AP over a cable whose remote port went unreported.
-            device(
-                "ap-wired",
-                "00:00:00:00:00:03",
-                "AccessPoint",
-                Some("00:00:00:00:00:02"),
-                None,
-            ),
-            // Wireless uplink straight to a radio-bearing gateway.
-            wireless(device(
-                "ap-air",
-                "00:00:00:00:00:04",
-                "AccessPoint",
-                Some("00:00:00:00:00:01"),
-                None,
-            )),
-        ];
-        let layout = layout(&devices);
-        assert_eq!(
-            parent_of(&layout, "ap-wired"),
-            Some(("ap-a".into(), LinkKind::Wired))
-        );
-        assert_eq!(
-            parent_of(&layout, "ap-air"),
-            Some(("gw".into(), LinkKind::Wireless))
-        );
-    }
-
-    #[test]
-    fn uplink_cycles_do_not_hang_the_layout() {
-        let devices = vec![
-            device("gw", "00:00:00:00:00:01", "Gateway", None, None),
-            device(
-                "a",
-                "00:00:00:00:00:02",
-                "Switch",
-                Some("00:00:00:00:00:03"),
-                Some(1),
-            ),
-            device(
-                "b",
-                "00:00:00:00:00:03",
-                "Switch",
-                Some("00:00:00:00:00:02"),
-                Some(1),
-            ),
-        ];
-        let layout = layout(&devices);
-        assert_eq!(layout.nodes.len(), 3);
-        assert_eq!(layout.edges.len(), 2, "the loop is cut once and reattached");
-    }
-
-    #[test]
-    fn empty_network_has_sane_bounds() {
-        let layout = layout(&[]);
-        assert_eq!(layout.nodes.len(), 0);
-        assert_eq!(layout.edges.len(), 0);
-        let [x_min, x_max, y_min, y_max] = layout.bounds;
-        assert!(x_min < x_max && y_min < y_max);
-    }
-
-    #[test]
-    fn gateway_without_uplink_data_becomes_a_star() {
-        let devices = vec![
-            device("gw", "00:00:00:00:00:01", "Gateway", None, None),
-            device("sw", "00:00:00:00:00:02", "Switch", None, None),
-            device("ap", "00:00:00:00:00:03", "AccessPoint", None, None),
-        ];
-        let layout = layout(&devices);
-        let kinds: Vec<LinkKind> = layout.edges.iter().map(|edge| edge.kind).collect();
-        assert_eq!(kinds, [LinkKind::Inferred, LinkKind::Inferred]);
-        let gateway = &layout.nodes[index(&layout, "gw")];
-        assert_eq!(gateway.device_type, DeviceType::Gateway);
-        let sw = &layout.nodes[index(&layout, "sw")];
-        let ap = &layout.nodes[index(&layout, "ap")];
-        assert!(sw.top() < gateway.y && (sw.top() - ap.top()).abs() < f64::EPSILON);
-    }
 }

@@ -122,8 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the root, with the parent's port number on each wired link, uplinks the
   controller reports as wireless (Session `uplink.type`, now carried as
   `Device::uplink_medium`) dashed, and devices with no reported uplink
-  attached to the gateway by a dim dotted line. The view fits the whole
-  tree at 100% zoom.
+  attached to the gateway by a dim dotted line. Boxes are sized to their
+  names and wide sibling sets wrap onto extra rows, so at 100% zoom every
+  name is drawn whole even at 80 columns.
 
 ### Performance
 
