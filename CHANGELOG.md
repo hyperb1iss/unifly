@@ -103,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `devices list`.
   `devices adopt` stays MAC-only, since a pending device is not in the
   adopted inventory yet, and now rejects a malformed MAC before sending it.
+  The client actions that take a MAC (`block`, `unblock`, `kick`, `forget`,
+  `set-ip`, `remove-ip`) reject a malformed one the same way, so an IPv6
+  address can no longer be read as a MAC.
   `MacAddress` in `unifly-api` parses the dotted form too.
 - **Get commands accept display names.** `networks get Studio`, `firewall
   policies get "drop inbound ssh"`, and the same for WiFi, firewall zones

@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use unifly_api::{Client, Command as CoreCommand, Controller, EntityId, MacAddress};
+use unifly_api::{Client, Command as CoreCommand, Controller, EntityId};
 
 use crate::cli::args::{ClientsArgs, ClientsCommand, GlobalOpts};
 use crate::cli::commands::util;
@@ -150,7 +150,10 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Block { mac } => {
-            let mac = MacAddress::new(&mac);
+            let mac = util::require_mac(
+                &mac,
+                "client actions take the client's MAC (find it with `unifly clients list`)",
+            )?;
             controller.execute(CoreCommand::BlockClient { mac }).await?;
             if !global.quiet {
                 eprintln!("Client blocked");
@@ -159,7 +162,10 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Unblock { mac } => {
-            let mac = MacAddress::new(&mac);
+            let mac = util::require_mac(
+                &mac,
+                "client actions take the client's MAC (find it with `unifly clients list`)",
+            )?;
             controller
                 .execute(CoreCommand::UnblockClient { mac })
                 .await?;
@@ -170,7 +176,10 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Kick { mac } => {
-            let mac = MacAddress::new(&mac);
+            let mac = util::require_mac(
+                &mac,
+                "client actions take the client's MAC (find it with `unifly clients list`)",
+            )?;
             controller.execute(CoreCommand::KickClient { mac }).await?;
             if !global.quiet {
                 eprintln!("Client disconnected");
@@ -179,7 +188,10 @@ pub(super) async fn handle(
         }
 
         ClientsCommand::Forget { mac } => {
-            let mac_addr = MacAddress::new(&mac);
+            let mac_addr = util::require_mac(
+                &mac,
+                "client actions take the client's MAC (find it with `unifly clients list`)",
+            )?;
             if !util::confirm(
                 &format!("Forget client {mac}? This cannot be undone."),
                 global.yes,
@@ -222,7 +234,10 @@ pub(super) async fn handle(
             })?;
 
             let network_id = resolve_network(controller, network.as_deref(), ip_addr)?;
-            let mac_addr = MacAddress::new(&mac);
+            let mac_addr = util::require_mac(
+                &mac,
+                "client actions take the client's MAC (find it with `unifly clients list`)",
+            )?;
 
             controller
                 .execute(CoreCommand::SetClientFixedIp {
@@ -242,7 +257,10 @@ pub(super) async fn handle(
                 .as_deref()
                 .map(|n| resolve_network_by_name(controller, n))
                 .transpose()?;
-            let mac_addr = MacAddress::new(&mac);
+            let mac_addr = util::require_mac(
+                &mac,
+                "client actions take the client's MAC (find it with `unifly clients list`)",
+            )?;
             controller
                 .execute(CoreCommand::RemoveClientFixedIp {
                     mac: mac_addr,

@@ -136,8 +136,9 @@ them out of logs and source control.
 
 ## JSON field names
 
-Typed records use snake_case keys. The records below serialize every listed
-key on every record, with `null` when the controller did not report a value,
+Typed records use snake_case keys. The typed records below (every path
+except the `report.*` rows) serialize each listed key on every record, with
+`null` when the controller did not report a value,
 so there is no alternate spelling to fall back on. Some nested structures
 omit empty keys instead: firewall policy traffic filters drop an absent
 `ports` and an empty `mac_addresses`. For a field not listed here, read one
@@ -191,9 +192,10 @@ second. Event and alarm `category` is `Device`, `Client`, `Network`,
 `event_type` is the controller key, such as `EVT_AP_Lost_Contact`, and
 `raw_key` repeats it.
 
-`wireless` is `null` for wired clients and also whenever the controller
-reported no radio details, as with cloud or Integration-only access, so
-read `client_type` to tell wired from wireless. Telemetry such as
+`wireless` is `null` for wired clients and may also be `null` when the
+controller reported no radio details, as with cloud or Integration-only
+access. A non-null `wireless` can still hold `null` members, so treat each
+radio field as optional and read `client_type` to tell wired from wireless. Telemetry such as
 `bandwidth`, byte counters, and `uplink_device_mac` is likewise `null` when
 only the Integration API answered.
 
@@ -204,8 +206,9 @@ is `ok` when healthy, and `extra` holds the controller's remaining fields
 
 Stats commands pass report rows through as the controller sends them:
 `time` is epoch milliseconds, values keep hyphenated attribute names, and
-the report lines above show the default attributes. `--attrs` replaces
-them. Device and client report rows carry whichever attributes the request
+the report lines above list the default requested attributes. A row omits
+any attribute the controller did not report rather than holding `null`, so
+check for a key before reading it. `--attrs` replaces the defaults. Device and client report rows carry whichever attributes the request
 names, so read one row before parsing. DPI output keeps the shape of
 whichever endpoint answered (`by_app` or `by_cat` rows, or a v2
 traffic-flow summary), so inspect it before parsing as well.
