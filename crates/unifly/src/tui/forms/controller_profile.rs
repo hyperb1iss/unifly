@@ -116,14 +116,36 @@ impl SecretField {
     }
 }
 
-/// The profile to write after [`SavePlan::commit`], and any notice the user
-/// should see about where a secret ended up.
-pub(crate) struct SavedProfile {
-    pub(crate) profile: crate::config::Profile,
-    pub(crate) warnings: Vec<String>,
+/// What the keyring step of a save produced: the profile to write, notices
+/// about where a secret ended up, and the entries it replaced, kept so a
+/// later failure can put them back.
+struct StoredSecrets {
+    profile: crate::config::Profile,
+    warnings: Vec<String>,
+    written: Vec<WrittenSecret>,
 }
 
 impl SavePlan {
+    /// Save the draft: store the pending secrets in `store`, then hand the
+    /// resulting profile to `save`, which writes `config.toml`.
+    ///
+    /// If either step fails, every keyring entry this save wrote is put
+    /// back as it was, so a failed save leaves the keyring exactly as it
+    /// found it, and the error is returned for the user (it never carries a
+    /// secret). On success, returns the notices to show, such as a secret
+    /// that fell back to plaintext. Both the settings and the setup screen
+    /// save through here.
+    pub(crate) fn commit<S>(self, store: &dyn SecretStore, save: S) -> Result<Vec<String>, String>
+    where
+        S: FnOnce(crate::config::Profile) -> Result<(), String>,
+    {
+        let stored = self.store_secrets(store)?;
+        match save(stored.profile) {
+            Ok(()) => Ok(stored.warnings),
+            Err(message) => Err(blocked(message, store, &stored.written)),
+        }
+    }
+
     /// Store the pending secrets in `store`.
     ///
     /// When no keyring is usable, a secret falls back to plaintext in the
@@ -132,9 +154,9 @@ impl SavePlan {
     /// that is there but refuses a secret, or holds an entry that cannot
     /// be read back (so a rollback could not restore it), stops the save:
     /// that entry is left alone, entries this save already wrote are put
-    /// back as they were, the error names the field (never the secret),
-    /// and the caller must leave `config.toml` alone.
-    pub(crate) fn commit(self, store: &dyn SecretStore) -> Result<SavedProfile, String> {
+    /// back as they were, and the error names the field (never the
+    /// secret).
+    fn store_secrets(self, store: &dyn SecretStore) -> Result<StoredSecrets, String> {
         let mut profile = self.profile;
         let mut warnings = Vec::new();
         let mut written = Vec::new();
@@ -178,7 +200,11 @@ impl SavePlan {
                 }
             }
         }
-        Ok(SavedProfile { profile, warnings })
+        Ok(StoredSecrets {
+            profile,
+            warnings,
+            written,
+        })
     }
 }
 
@@ -838,7 +864,10 @@ mod tests {
         assert_eq!(connect.api_key, None);
         assert_eq!(connect.password, None);
 
-        let saved = draft.plan_save("home").commit(&store).expect("saves");
+        let saved = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("saves");
         assert_eq!(saved.warnings, Vec::<String>::new());
         assert_eq!(saved.profile.api_key, None);
         assert_eq!(saved.profile.password, None);
@@ -865,7 +894,10 @@ mod tests {
 
         assert_eq!(draft.to_profile().password.as_deref(), Some("new-password"));
 
-        let saved = draft.plan_save("home").commit(&store).expect("saves");
+        let saved = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("saves");
         assert_eq!(saved.warnings, Vec::<String>::new());
         assert_eq!(saved.profile.password, None);
         assert!(!toml_of(&saved.profile).contains("new-password"));
@@ -884,7 +916,10 @@ mod tests {
         draft.api_key = "fresh-key".into();
         draft.password = "fresh-password".into();
 
-        let saved = draft.plan_save("home").commit(&store).expect("saves");
+        let saved = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("saves");
 
         assert_eq!(saved.profile.api_key, None);
         assert_eq!(saved.profile.password, None);
@@ -908,7 +943,10 @@ mod tests {
         let mut draft = sample_draft();
         draft.password = "fresh-password".into();
 
-        let saved = draft.plan_save("home").commit(&store).expect("falls back");
+        let saved = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("falls back");
 
         assert_eq!(saved.profile.password.as_deref(), Some("fresh-password"));
         assert_eq!(saved.warnings.len(), 2, "{:?}", saved.warnings);
@@ -935,7 +973,7 @@ mod tests {
 
         let error = draft
             .plan_save("home")
-            .commit(&store)
+            .store_secrets(&store)
             .err()
             .expect("a refused secret blocks the save");
 
@@ -973,7 +1011,7 @@ mod tests {
 
             let error = draft
                 .plan_save("home")
-                .commit(&store)
+                .store_secrets(&store)
                 .err()
                 .expect("the refused password blocks the save");
 
@@ -1002,7 +1040,7 @@ mod tests {
 
         let error = draft
             .plan_save("home")
-            .commit(&store)
+            .store_secrets(&store)
             .err()
             .expect("an unreadable entry blocks the save");
 
@@ -1034,7 +1072,10 @@ mod tests {
         let mut draft = sample_draft();
         draft.password = "new-password".into();
 
-        let saved = draft.plan_save("home").commit(&store).expect("falls back");
+        let saved = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("falls back");
 
         assert_eq!(saved.profile.password.as_deref(), Some("new-password"));
         assert_eq!(saved.warnings.len(), 2, "{:?}", saved.warnings);
@@ -1042,6 +1083,67 @@ mod tests {
             store.secret("home/password").as_deref(),
             Some("existing-password")
         );
+    }
+
+    /// A config.toml write that fails after the keyring step must not leave
+    /// the keyring changed: the settings screen would otherwise pair the old
+    /// profile with a new credential, and setup would leave a credential
+    /// with no profile.
+    #[test]
+    fn a_failed_config_save_rolls_the_keyring_back() {
+        for previous in [Some("old-key"), None] {
+            let store = MemoryStore::default();
+            if let Some(previous) = previous {
+                store
+                    .entries
+                    .borrow_mut()
+                    .insert("home/api-key".into(), previous.into());
+            }
+            let mut draft = sample_draft();
+            draft.api_key = "new-key".into();
+            draft.password = "new-password".into();
+
+            let error = draft
+                .plan_save("home")
+                .commit(&store, |profile| {
+                    assert_eq!(profile.api_key, None, "the key went to the keyring");
+                    assert_eq!(
+                        store.secret("home/api-key").as_deref(),
+                        Some("new-key"),
+                        "the keyring step ran before the config write"
+                    );
+                    Err("Connected, but failed to save config: disk full".into())
+                })
+                .expect_err("the failed config write fails the save");
+
+            assert!(error.contains("disk full"), "{error}");
+            assert!(!error.contains("new-key"), "a secret leaked: {error}");
+            assert!(!error.contains("new-password"), "a secret leaked: {error}");
+            assert_eq!(store.secret("home/api-key").as_deref(), previous);
+            assert!(store.secret("home/password").is_none());
+        }
+    }
+
+    /// When the config write succeeds, the keyring keeps the new entries
+    /// and the plaintext-fallback notices come back to be shown.
+    #[test]
+    fn a_successful_save_keeps_the_keyring_changes() {
+        let store = MemoryStore::default();
+        let mut draft = sample_draft();
+        draft.api_key = "new-key".into();
+
+        let mut written = None;
+        let notices = draft
+            .plan_save("home")
+            .commit(&store, |profile| {
+                written = Some(profile);
+                Ok(())
+            })
+            .expect("saves");
+
+        assert_eq!(notices, Vec::<String>::new());
+        assert_eq!(written.expect("config written").api_key, None);
+        assert_eq!(store.secret("home/api-key").as_deref(), Some("new-key"));
     }
 
     /// Profiles that keep credentials in config.toml keep them there,
@@ -1059,7 +1161,10 @@ mod tests {
         assert_eq!(draft.api_key_origin, SecretOrigin::Config);
         assert_eq!(draft.password_origin, SecretOrigin::Config);
 
-        let saved = draft.plan_save("home").commit(&store).expect("saves");
+        let saved = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("saves");
         assert_eq!(saved.profile.api_key.as_deref(), Some("config-key"));
         assert_eq!(saved.profile.password.as_deref(), Some("edited-password"));
         assert_eq!(

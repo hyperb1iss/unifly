@@ -126,35 +126,31 @@ impl OnboardingScreen {
                     match controller.connect().await {
                         Ok(()) => {
                             controller.disconnect().await;
-                            // A keyring that refuses a secret blocks the save;
-                            // the message becomes the test result.
-                            match save.commit(&crate::config::OsKeyring) {
-                                Err(message) => Err(message),
-                                Ok(saved) => {
-                                    for warning in saved.warnings {
-                                        let _ = tx.send(crate::tui::action::Action::Notify(
-                                            crate::tui::action::Notification::info(warning),
-                                        ));
-                                    }
-                                    let cfg = crate::config::Config {
-                                        default_profile: Some(profile_name),
-                                        defaults: crate::config::Defaults::default(),
-                                        profiles: {
-                                            let mut profiles = std::collections::HashMap::new();
-                                            profiles.insert("default".to_string(), saved.profile);
-                                            profiles
-                                        },
-                                        demo: crate::config::DemoConfig::default(),
-                                    };
-                                    if let Err(error) = crate::config::save_config(&cfg) {
-                                        Err(format!(
-                                            "Connected, but failed to save config: {error}"
-                                        ))
-                                    } else {
-                                        Ok(())
-                                    }
+                            // A refused secret or a failed config write undoes
+                            // the keyring changes; the message becomes the
+                            // test result.
+                            let saved = save.commit(&crate::config::OsKeyring, |profile| {
+                                let cfg = crate::config::Config {
+                                    default_profile: Some(profile_name),
+                                    defaults: crate::config::Defaults::default(),
+                                    profiles: {
+                                        let mut profiles = std::collections::HashMap::new();
+                                        profiles.insert("default".to_string(), profile);
+                                        profiles
+                                    },
+                                    demo: crate::config::DemoConfig::default(),
+                                };
+                                crate::config::save_config(&cfg).map_err(|error| {
+                                    format!("Connected, but failed to save config: {error}")
+                                })
+                            });
+                            saved.map(|notices| {
+                                for notice in notices {
+                                    let _ = tx.send(crate::tui::action::Action::Notify(
+                                        crate::tui::action::Notification::info(notice),
+                                    ));
                                 }
-                            }
+                            })
                         }
                         Err(error) => Err(format!("{error}")),
                     }

@@ -137,7 +137,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   keyring that refuses the secret stops the save with a message naming the
   field, leaves `config.toml` unchanged, and puts back any keyring entry
   the same save had already written. An existing entry that cannot be read
-  back first is never overwritten; that stops the save the same way.
+  back first is never overwritten; that stops the save the same way. If
+  writing `config.toml` fails after the keyring step, those keyring changes
+  are put back too, so a failed save never pairs the old profile with a
+  new credential.
   `config init` and
   `config set-password` classify keyring errors the same way. Credentials
   already kept in `config.toml` stay there.
