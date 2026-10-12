@@ -47,7 +47,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/tui-tour.gif" alt="unifly TUI animated tour — Dashboard, Devices, Clients, Firewall, Topology, and Stats screens" width="900">
+  <img src="docs/images/tui-tour.gif" alt="unifly TUI animated tour of the Dashboard, Devices, Clients, Firewall, Topology, Events, Stats, and WiFi screens" width="900">
 </p>
 
 ---
@@ -75,6 +75,14 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 > `npx skills add hyperb1iss/unifly` installs the same skill without the binary, but agents still need the binary to load the guide. Older binaries without `unifly skill` need an update before they can serve it.
 >
 > **Humans** get a gorgeous 11-screen TUI, shell completions, pipe-friendly output, and the quiet satisfaction of never opening the UniFi web UI again. Keep scrolling to [Install](#-install).
+
+<p align="center">
+  <img src="docs/images/agent-claude-code.png" alt="Claude Code diagnosing the Neon Harbor demo studio network with unifly and answering with a numbered list of five fixes" width="900">
+</p>
+
+<p align="center">
+  <sub>Claude Code loads the unifly skill, works the <code>--demo-fleet</code> studio network with read-only commands and <code>jq</code>, and comes back with a punch list.</sub>
+</p>
 
 ---
 
@@ -116,7 +124,7 @@ irm https://raw.githubusercontent.com/hyperb1iss/unifly/main/install.ps1 | iex
 | ------------ | ------------------------------------------------------------------------------------- |
 | **Homebrew** | `brew install hyperb1iss/tap/unifly`                                                  |
 | **AUR**      | `yay -S unifly-bin`                                                                   |
-| **Cargo**    | `cargo install --git https://github.com/hyperb1iss/unifly.git unifly`                 |
+| **Cargo**    | `cargo install unifly`                                                                |
 | **Binary**   | Download from [GitHub Releases](https://github.com/hyperb1iss/unifly/releases/latest) |
 
 The install scripts also add the [agent skill](#-ai-agent-skill) to `~/.agents/skills` for your user (set `UNIFLY_NO_SKILL=1` to skip). Homebrew and AUR install unifly for every user and cannot write into your home directory, so after those, Cargo, or a manual download, run `unifly skill --install` yourself.
@@ -244,12 +252,18 @@ Flags and environment variables override profile values, profiles override
 the `[defaults]` config section, and `[defaults]` overrides the built-in
 fallbacks (30-second timeout, system TLS verification). One exception:
 `UNIFI_USERNAME` and `UNIFI_PASSWORD` fill in only when the profile does
-not set its own `username`/`password` — a profile's configured session
+not set its own `username`/`password`, so a profile's configured session
 credentials win over the environment.
 
 ---
 
 ## 💻 CLI
+
+Tables for people, JSON and plain IDs for scripts, and names that resolve wherever an ID would go:
+
+<p align="center">
+  <img src="docs/images/cli-pipeline.png" alt="unifly CLI in a terminal: a devices table, clients per SSID from JSON piped through jq, enabled firewall policies, and a recent events table" width="900">
+</p>
 
 ### Commands
 
@@ -333,76 +347,85 @@ unifly completions powershell | Out-String | Invoke-Expression
 unifly tui                   # Launch with default profile
 unifly tui -p office         # Use a specific profile
 unifly tui -k                # Accept self-signed TLS certs
+unifly tui --demo-fleet      # Explore a synthetic studio network, no controller needed
 ```
+
+`--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) runs the CLI and TUI against Neon Harbor Studios, an offline simulated network with 13 devices, about 140 clients, six VLANs, and live traffic, events, and a few problems to find. It never reads your config or keyring, which makes it a safe sandbox for trying the TUI or pointing an agent at unifly.
 
 Cloud profiles can launch the TUI for a single connector-backed console. Fleet
 aggregation, Site Manager host switching, and Session-only live features are
 still outside the TUI surface today.
 
 <p align="center">
-  <img src="docs/images/tui-dashboard.png" alt="unifly TUI — Dashboard screen with WAN traffic chart, gateway info, CPU/MEM gauges, top clients, and recent events" width="900">
+  <img src="docs/images/tui-dashboard.png" alt="unifly TUI Dashboard with a mirrored WAN traffic chart, gateway info, CPU and memory gauges, networks, Wi-Fi APs, top clients, and recent events" width="900">
 </p>
 
 | Screen         | Highlights                                                                                       |
 | -------------- | ------------------------------------------------------------------------------------------------ |
-| **Dashboard**  | btop-style overview: WAN traffic chart, gateway info, CPU/MEM gauges, top clients, recent events |
-| **Devices**    | Model, firmware, uptime, CPU/MEM. 5-tab detail panel. Restart, locate, upgrade                   |
-| **Clients**    | Signal, traffic, VLAN. Filter by type. Block/unblock/kick                                        |
+| **Dashboard**  | btop-style overview: mirrored RX/TX WAN chart, gateway info, CPU/MEM gauges, top clients, events |
+| **Devices**    | Model, firmware with update markers, clients, CPU/MEM. Detail panel with a switch port map       |
+| **Clients**    | Network, uplink AP or switch port, signal, traffic. Filter by type. Block/unblock/kick           |
 | **Networks**   | VLAN topology with inline edit overlay for live config changes                                   |
-| **Firewall**   | Policies, zones, ACL, NAT across four sub-tabs with drag reordering                              |
+| **Firewall**   | Policies grouped by zone pair in evaluation order, plus zones, ACL, and NAT                      |
 | **Topology**   | Zoomable network tree with pan, zoom, fit-to-view                                                |
-| **Events**     | Live WebSocket stream with 10K buffer, pause, severity filtering                                 |
+| **Events**     | Live stream with an events-by-hour heatmap, 10K buffer, pause, and search                        |
 | **Stats**      | WAN bandwidth, client counts, DPI breakdown (1h/24h/7d/30d)                                      |
-| **WiFi**       | Overview, per-client experience (signal, link rates), neighboring APs, and roaming sub-tabs      |
+| **WiFi**       | AP health across 2.4/5/6 GHz, per-client experience, neighboring APs, and roaming history        |
 | **Settings**   | Profile switching, theme selector, display preferences                                           |
 | **Onboarding** | First-run setup wizard                                                                           |
 
 ### ✦ Gallery
 
-**Devices** — model, firmware, uptime, and live CPU/MEM
+Every capture below is the built-in `--demo-fleet` network at 183x47 in Ghostty.
+
+**Devices**: model, firmware with update markers, client counts, and live CPU/MEM, plus the switch port map in the detail panel
 
 <p align="center">
-  <img src="docs/images/tui-devices.png" alt="unifly TUI — Devices screen with status, model, firmware, uptime, and CPU/MEM columns" width="900">
+  <img src="docs/images/tui-devices.png" alt="unifly TUI Devices screen with model, IP, firmware, client count, CPU, memory, traffic, and uptime columns" width="440">
+  <img src="docs/images/tui-devices-ports.png" alt="unifly TUI device detail for sw-core on the Ports tab, showing a colored port map and per-port link speed" width="440">
 </p>
 
-**Clients** — all clients (left) and wireless-only filter (right)
+**Clients and Networks**: every client with its network and uplink, and each VLAN with its gateway, subnet, and IPv6 mode
 
 <p align="center">
-  <img src="docs/images/tui-clients.png" alt="unifly TUI — Clients screen, all clients" width="440">
-  <img src="docs/images/tui-clients-wireless.png" alt="unifly TUI — Clients screen, wireless filter" width="440">
+  <img src="docs/images/tui-clients.png" alt="unifly TUI Clients screen with type, IP, MAC, network, uplink, signal, traffic, and duration columns" width="440">
+  <img src="docs/images/tui-networks.png" alt="unifly TUI Networks screen listing six VLANs with gateway, subnet, DHCP, and IPv6 mode" width="440">
 </p>
 
-**Wi-Fi observability** — per-client experience, signal, AP, TX/RX
+**Wi-Fi observability**: AP health across every band, per-client experience, and the neighbors your APs can hear
 
 <p align="center">
-  <img src="docs/images/tui-wifi-clients.png" alt="unifly TUI — Wi-Fi screen Clients tab with AP, signal, health, and TX/RX" width="900">
+  <img src="docs/images/tui-wifi.png" alt="unifly TUI Wi-Fi overview with AP health, client counts, and channel and width for the 2.4, 5, and 6 GHz radios" width="290">
+  <img src="docs/images/tui-wifi-clients.png" alt="unifly TUI Wi-Fi Clients tab with AP, radio, signal, health, and link rates" width="290">
+  <img src="docs/images/tui-wifi-neighbors.png" alt="unifly TUI Wi-Fi Neighbors tab listing nearby networks with channel, signal, band, and security" width="290">
 </p>
 
-**Firewall** — policies, zones, ACL, and NAT across four sub-tabs
+**Firewall and Topology**: policies grouped by zone pair in the order they apply, and the uplink tree from the gateway out
 
 <p align="center">
-  <img src="docs/images/tui-firewall.png" alt="unifly TUI — Firewall screen showing policies and zones" width="900">
+  <img src="docs/images/tui-firewall.png" alt="unifly TUI Firewall policies grouped by source and destination zone in evaluation order" width="440">
+  <img src="docs/images/tui-topology.png" alt="unifly TUI Topology screen showing the gateway, core switch, edge switches, and APs with uplink ports and a mesh link" width="440">
 </p>
 
-**Topology** — full view (left) and zoomed-in detail (right)
+**Events**: the live stream with an events-by-hour heatmap
 
 <p align="center">
-  <img src="docs/images/tui-topology.png" alt="unifly TUI — Topology screen, fit-to-view" width="440">
-  <img src="docs/images/tui-topology-zoom.png" alt="unifly TUI — Topology screen, zoomed in" width="440">
+  <img src="docs/images/tui-events.png" alt="unifly TUI Events screen with an events-by-hour heatmap above a live event list" width="900">
 </p>
 
-**Stats** — 1 hour, 7 days, and 30 days of WAN bandwidth, clients, and DPI
+**Stats**: WAN bandwidth, client counts, and DPI over 1 hour, 24 hours, 7 days, and 30 days
 
 <p align="center">
-  <img src="docs/images/tui-stats-1h.png" alt="unifly TUI — Stats screen, 1 hour window" width="290">
-  <img src="docs/images/tui-stats-7d.png" alt="unifly TUI — Stats screen, 7 day window" width="290">
-  <img src="docs/images/tui-stats-30d.png" alt="unifly TUI — Stats screen, 30 day window" width="290">
+  <img src="docs/images/tui-stats-1h.png" alt="unifly TUI Stats screen, 1 hour window" width="440">
+  <img src="docs/images/tui-stats-24h.png" alt="unifly TUI Stats screen, 24 hour window" width="440">
+  <img src="docs/images/tui-stats-7d.png" alt="unifly TUI Stats screen, 7 day window" width="440">
+  <img src="docs/images/tui-stats-30d.png" alt="unifly TUI Stats screen, 30 day window" width="440">
 </p>
 
-**Help overlay** — every keybinding at a glance
+**Help overlay**: every keybinding at a glance
 
 <p align="center">
-  <img src="docs/images/tui-help.png" alt="unifly TUI — Help overlay listing all keybindings" width="900">
+  <img src="docs/images/tui-help.png" alt="unifly TUI help overlay listing navigation and global keybindings over the dashboard" width="900">
 </p>
 
 Full keybinding reference and screen details in the [TUI documentation](https://hyperb1iss.github.io/unifly/reference/tui).
@@ -486,11 +509,11 @@ npx skills add hyperb1iss/unifly -a claude-code     # Target a specific agent
 
 ### What's Included
 
-| Component                 | Description                                                               |
-| ------------------------- | ------------------------------------------------------------------------- |
-| **unifly skill**          | Complete CLI reference, command patterns, output formats, automation tips |
-| **Network Manager agent** | Autonomous agent for provisioning, diagnostics, and security audits       |
-| **Reference docs**        | Command reference, UniFi networking concepts, workflow patterns           |
+| Component                 | Description                                                                               |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| **unifly skill**          | Complete CLI reference, command patterns, output formats, automation tips                 |
+| **Network Manager agent** | Autonomous agent for provisioning, diagnostics, and security audits                       |
+| **Runtime guide**         | `unifly skill core\|commands\|concepts\|workflows\|examples`, version-matched and offline |
 
 ---
 
