@@ -1186,6 +1186,44 @@ fn test_demo_fleet_devices_get_miss_points_at_devices_list() {
         .stderr(predicate::str::contains("unifly devices list"));
 }
 
+#[test]
+fn test_demo_fleet_get_commands_accept_display_names() {
+    for command in [
+        &["networks"][..],
+        &["firewall", "policies"][..],
+        &["firewall", "zones"][..],
+        &["nat", "policies"][..],
+        &["acl"][..],
+    ] {
+        let listed = demo_json(&[command, &["list", "--all"]].concat());
+        for record in listed.as_array().unwrap().iter().take(3) {
+            let name = record["name"].as_str().unwrap().to_uppercase();
+            let found = demo_json(&[command, &["get", name.as_str()]].concat());
+            assert_eq!(found["id"], record["id"], "{command:?} get {name}");
+        }
+    }
+}
+
+#[test]
+fn test_demo_fleet_clients_get_accepts_hostname_ip_and_mac() {
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let client = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|client| client["hostname"].is_string() && client["ip"].is_string())
+        .unwrap();
+    let dashed = client["mac"].as_str().unwrap().replace(':', "-");
+    for needle in [
+        client["hostname"].as_str().unwrap(),
+        client["ip"].as_str().unwrap(),
+        dashed.as_str(),
+    ] {
+        let found = demo_json(&["clients", "get", needle]);
+        assert_eq!(found["id"], client["id"], "clients get {needle}");
+    }
+}
+
 /// The config file holds profiles and possibly plaintext secrets, so the
 /// demo fleet must never read it. A poisoned config sets a theme; if fleet
 /// mode read it, colored table output would change.

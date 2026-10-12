@@ -98,21 +98,9 @@ pub async fn handle(
 
         DnsCommand::Get { id } => {
             let snap = controller.dns_policies_snapshot();
-            let found = snap.iter().find(|d| d.id.to_string() == id);
-            match found {
-                Some(d) => {
-                    let out =
-                        output::render_single(&global.output, d, detail, |d| d.id.to_string());
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "DNS policy".into(),
-                        identifier: id,
-                        list_command: "dns list".into(),
-                    });
-                }
-            }
+            let d = util::lookup::resolve(snap.as_slice(), &id)?;
+            let out = output::render_single(&global.output, d, detail, |d| d.id.to_string());
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

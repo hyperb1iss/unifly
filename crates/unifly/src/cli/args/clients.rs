@@ -23,13 +23,13 @@ pub enum ClientsCommand {
 
     /// Get connected client details
     Get {
-        /// Client ID (UUID) or MAC address
+        /// Client name, hostname, ID, IP, or MAC address
         client: String,
     },
 
     /// Show a client's roam timeline (connects, disconnects, AP transitions)
     Roams {
-        /// Client identifier (name, hostname, IP, or MAC address)
+        /// Client name, hostname, ID, IP, or MAC address
         client: String,
 
         /// Maximum number of events to return
@@ -40,7 +40,7 @@ pub enum ClientsCommand {
     /// Show Wi-Fi experience metrics for a wireless client
     #[command(alias = "wifi-experience", alias = "wifiman")]
     Wifi {
-        /// Client identifier (name, hostname, IP, or MAC address)
+        /// Client name, hostname, ID, IP, or MAC address
         client: String,
     },
 

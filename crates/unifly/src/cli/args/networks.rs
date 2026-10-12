@@ -18,7 +18,7 @@ pub enum NetworksCommand {
 
     /// Get network details
     Get {
-        /// Network ID (UUID)
+        /// Network ID (UUID) or name
         id: String,
     },
 

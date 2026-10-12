@@ -85,21 +85,9 @@ pub async fn handle(
 
         TrafficListsCommand::Get { id } => {
             let snap = controller.traffic_matching_lists_snapshot();
-            let found = snap.iter().find(|t| t.id.to_string() == id);
-            match found {
-                Some(t) => {
-                    let out =
-                        output::render_single(&global.output, t, detail, |t| t.id.to_string());
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "traffic matching list".into(),
-                        identifier: id,
-                        list_command: "traffic-lists list".into(),
-                    });
-                }
-            }
+            let t = util::lookup::resolve(snap.as_slice(), &id)?;
+            let out = output::render_single(&global.output, t, detail, |t| t.id.to_string());
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

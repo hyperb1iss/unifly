@@ -97,21 +97,9 @@ pub async fn handle(
 
         HotspotCommand::Get { id } => {
             let snap = controller.vouchers_snapshot();
-            let found = snap.iter().find(|v| v.id.to_string() == id);
-            match found {
-                Some(v) => {
-                    let out =
-                        output::render_single(&global.output, v, detail, |v| v.id.to_string());
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "voucher".into(),
-                        identifier: id,
-                        list_command: "hotspot list".into(),
-                    });
-                }
-            }
+            let v = util::lookup::resolve(snap.as_slice(), &id)?;
+            let out = output::render_single(&global.output, v, detail, |v| v.id.to_string());
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

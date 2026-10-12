@@ -71,22 +71,11 @@ pub(super) async fn handle(
 
         FirewallZonesCommand::Get { id } => {
             let snapshot = controller.firewall_zones_snapshot();
-            let found = snapshot.iter().find(|zone| zone.id.to_string() == id);
-            match found {
-                Some(zone) => {
-                    let out = output::render_single(&global.output, zone, zone_detail, |zone| {
-                        zone.id.to_string()
-                    });
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "firewall zone".into(),
-                        identifier: id,
-                        list_command: "firewall zones list".into(),
-                    });
-                }
-            }
+            let zone = util::lookup::resolve(snapshot.as_slice(), &id)?;
+            let out = output::render_single(&global.output, zone, zone_detail, |zone| {
+                zone.id.to_string()
+            });
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

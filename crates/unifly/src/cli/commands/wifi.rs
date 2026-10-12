@@ -196,27 +196,7 @@ pub async fn handle(
             Ok(())
         }
 
-        WifiCommand::Get { id } => {
-            util::ensure_integration_access(controller, "wifi").await?;
-
-            let entity_id = unifly_api::EntityId::from(id.clone());
-            match controller.get_wifi_broadcast_detail(&entity_id).await {
-                Ok(w) => {
-                    let w = std::sync::Arc::new(w);
-                    let out =
-                        output::render_single(&global.output, &w, detail, |w| w.id.to_string());
-                    output::print_output(&out, global.quiet);
-                }
-                Err(_) => {
-                    return Err(CliError::NotFound {
-                        resource_type: "wifi".into(),
-                        identifier: id,
-                        list_command: "wifi list".into(),
-                    });
-                }
-            }
-            Ok(())
-        }
+        WifiCommand::Get { id } => handle_get(controller, &id, global).await,
 
         WifiCommand::Neighbors { within, limit, all } => {
             let aps = controller.list_rogue_aps(within).await?;
@@ -368,4 +348,28 @@ pub async fn handle(
             Ok(())
         }
     }
+}
+
+async fn handle_get(
+    controller: &Controller,
+    id: &str,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    util::ensure_integration_access(controller, "wifi").await?;
+
+    // Names resolve against the snapshot; an ID it lacks still goes to the
+    // controller, which holds the full broadcast detail.
+    let snapshot = controller.wifi_broadcasts_snapshot();
+    let entity_id = match util::lookup::lookup(snapshot.as_slice(), id)? {
+        Some(broadcast) => broadcast.id.clone(),
+        None => EntityId::from(id.to_owned()),
+    };
+    let broadcast = controller
+        .get_wifi_broadcast_detail(&entity_id)
+        .await
+        .map_err(|_| util::lookup::not_found::<WifiBroadcast>(id))?;
+    let broadcast = Arc::new(broadcast);
+    let out = output::render_single(&global.output, &broadcast, detail, |w| w.id.to_string());
+    output::print_output(&out, global.quiet);
+    Ok(())
 }

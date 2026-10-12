@@ -120,21 +120,9 @@ pub async fn handle(
 
         NetworksCommand::Get { id } => {
             let snap = controller.networks_snapshot();
-            let found = snap.iter().find(|n| n.id.to_string() == id);
-            match found {
-                Some(n) => {
-                    let out =
-                        output::render_single(&global.output, n, detail, |n| n.id.to_string());
-                    output::print_output(&out, global.quiet);
-                }
-                None => {
-                    return Err(CliError::NotFound {
-                        resource_type: "network".into(),
-                        identifier: id,
-                        list_command: "networks list".into(),
-                    });
-                }
-            }
+            let n = util::lookup::resolve(snap.as_slice(), &id)?;
+            let out = output::render_single(&global.output, n, detail, |n| n.id.to_string());
+            output::print_output(&out, global.quiet);
             Ok(())
         }
 

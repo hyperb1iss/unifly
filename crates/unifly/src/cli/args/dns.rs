@@ -18,7 +18,7 @@ pub enum DnsCommand {
 
     /// Get a DNS policy
     Get {
-        /// DNS policy ID (UUID)
+        /// DNS policy ID (UUID) or domain
         id: String,
     },
 

@@ -18,7 +18,7 @@ pub enum AclCommand {
 
     /// Get an ACL rule
     Get {
-        /// ACL rule ID (UUID)
+        /// ACL rule ID (UUID) or name
         id: String,
     },
 

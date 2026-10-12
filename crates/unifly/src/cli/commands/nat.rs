@@ -234,21 +234,9 @@ fn handle_list(
 
 fn handle_get(controller: &Controller, id: &str, global: &GlobalOpts) -> Result<(), CliError> {
     let snapshot = controller.nat_policies_snapshot();
-    let found = snapshot.iter().find(|p| p.id.to_string() == id);
-    match found {
-        Some(policy) => {
-            let out =
-                output::render_single(&global.output, policy, nat_detail, |p| p.id.to_string());
-            output::print_output(&out, global.quiet);
-        }
-        None => {
-            return Err(CliError::NotFound {
-                resource_type: "NAT policy".into(),
-                identifier: id.to_string(),
-                list_command: "nat policies list".into(),
-            });
-        }
-    }
+    let policy = util::lookup::resolve(snapshot.as_slice(), id)?;
+    let out = output::render_single(&global.output, policy, nat_detail, |p| p.id.to_string());
+    output::print_output(&out, global.quiet);
     Ok(())
 }
 

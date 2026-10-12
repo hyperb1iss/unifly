@@ -18,7 +18,7 @@ pub enum WifiCommand {
 
     /// Get WiFi broadcast details
     Get {
-        /// WiFi broadcast ID (UUID)
+        /// WiFi broadcast ID (UUID) or name
         id: String,
     },
 

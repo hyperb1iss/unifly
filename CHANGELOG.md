@@ -95,6 +95,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `devices adopt` stays MAC-only, since a pending device is not in the
   adopted inventory yet, and now rejects a malformed MAC before sending it.
   `MacAddress` in `unifly-api` parses the dotted form too.
+- **Get commands accept display names.** `networks get Studio`, `firewall
+  policies get "drop inbound ssh"`, and the same for WiFi, firewall zones
+  and groups, NAT, ACL, traffic lists, DNS policies (by domain), and
+  hotspot vouchers (by code) now resolve the name case-insensitively
+  instead of demanding the UUID. `clients get` takes a name, hostname, IP,
+  or MAC in any spelling, matching what `clients roams` and `clients wifi`
+  already accepted, and all three now report a name two clients share
+  instead of silently picking the first. Every lookup goes through one
+  shared resolver, so ambiguity and not-found errors read the same
+  everywhere.
 
 ### Security
 
