@@ -297,3 +297,109 @@ fn install_flags_are_rejected_outside_install() {
         0
     );
 }
+
+/// Symlinks mean the skill is managed elsewhere (a checkout, or
+/// `npx skills add` in link mode): report it, print the path, write nothing.
+#[cfg(unix)]
+mod symlinked_skill {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn assert_left_alone(
+        directory: &TempDir,
+        skills_root: &std::path::Path,
+        force: bool,
+        link: &std::path::Path,
+        target: &std::path::Path,
+    ) {
+        let mut command = offline_command(directory);
+        command
+            .args(["skill", "--install", "--dir"])
+            .arg(skills_root);
+        if force {
+            command.arg("--force");
+        }
+        let status = format!(
+            "{} is a symlink to {}; leaving it alone{}\n",
+            link.display(),
+            target.display(),
+            if force {
+                " (--force never follows or replaces a symlink)"
+            } else {
+                ""
+            }
+        );
+        command
+            .assert()
+            .success()
+            .stdout(stdout_line(&installed_path(skills_root)))
+            .stderr(status);
+    }
+
+    #[test]
+    fn a_symlinked_skill_directory_is_left_alone() {
+        let directory = TempDir::new().expect("temporary directory");
+        let checkout = directory.path().join("checkout");
+        std::fs::create_dir_all(&checkout).expect("create checkout");
+        std::fs::write(checkout.join("SKILL.md"), "checkout copy\n").expect("write checkout");
+        let skills_root = directory.path().join("skills");
+        std::fs::create_dir_all(&skills_root).expect("create skills root");
+        let link = skills_root.join("unifly");
+        symlink(&checkout, &link).expect("link skill dir");
+
+        assert_left_alone(&directory, &skills_root, false, &link, &checkout);
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("SKILL.md")).expect("checkout copy"),
+            "checkout copy\n"
+        );
+        assert_eq!(std::fs::read_dir(&checkout).expect("checkout").count(), 1);
+    }
+
+    #[test]
+    fn a_symlinked_published_skill_file_is_left_alone() {
+        let directory = TempDir::new().expect("temporary directory");
+        let elsewhere = directory.path().join("elsewhere.md");
+        let published = DISCOVERY_SKILL.replace('\n', "\r\n");
+        std::fs::write(&elsewhere, &published).expect("write link target");
+        let skills_root = directory.path().join("skills");
+        let link = installed_path(&skills_root);
+        std::fs::create_dir_all(link.parent().expect("skill dir")).expect("create skill dir");
+        symlink(&elsewhere, &link).expect("link skill file");
+
+        assert_left_alone(&directory, &skills_root, false, &link, &elsewhere);
+        assert_eq!(
+            std::fs::read_to_string(&elsewhere).expect("link target"),
+            published,
+            "a recognized version behind a link is still not updated"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn force_neither_follows_nor_replaces_a_symlink() {
+        let directory = TempDir::new().expect("temporary directory");
+        let elsewhere = directory.path().join("elsewhere.md");
+        std::fs::write(&elsewhere, "someone else's skill\n").expect("write link target");
+        let skills_root = directory.path().join("skills");
+        let link = installed_path(&skills_root);
+        std::fs::create_dir_all(link.parent().expect("skill dir")).expect("create skill dir");
+        symlink(&elsewhere, &link).expect("link skill file");
+
+        assert_left_alone(&directory, &skills_root, true, &link, &elsewhere);
+        assert_eq!(
+            std::fs::read_to_string(&elsewhere).expect("link target"),
+            "someone else's skill\n"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+}
