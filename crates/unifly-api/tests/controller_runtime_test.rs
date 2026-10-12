@@ -1192,6 +1192,122 @@ async fn failed_network_detail_fetch_keeps_the_network() {
     controller.disconnect().await;
 }
 
+const SWITCH_MAC: &str = "aa:bb:cc:00:00:01";
+
+#[tokio::test]
+async fn failed_session_merge_fetches_keep_merged_fields() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    Mock::given(method("GET"))
+        .and(path(integration_route("devices")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(integration_page(&json!({
+                "id": "9b2f6c1e-7a3d-4c5b-8e9f-0a1b2c3d4e5f",
+                "macAddress": SWITCH_MAC,
+                "ipAddress": "10.0.0.2",
+                "name": "Core Switch",
+                "model": "USW-24",
+                "state": "ONLINE",
+                "supported": true,
+                "firmwareUpdatable": false,
+                "features": [],
+                "interfaces": {},
+            }))),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    // The Integration client (aa:bb:cc:dd:ee:ff at 10.0.0.50) gets its
+    // hostname and traffic from stat/sta, its reservation from rest/user,
+    // and the switch gets its client count and uplink from stat/device.
+    let phase = mount_switchable_routes(
+        &server,
+        vec![
+            (
+                "/proxy/network/api/s/default/stat/sta".to_owned(),
+                legacy_envelope(&json!([{
+                    "_id": "client-1",
+                    "mac": "aa:bb:cc:dd:ee:ff",
+                    "ip": "10.0.0.50",
+                    "hostname": "test-host",
+                    "is_wired": false,
+                    "tx_bytes": 1234,
+                    "rx_bytes": 5678,
+                }])),
+                empty_legacy_envelope(),
+            ),
+            (
+                "/proxy/network/api/s/default/rest/user".to_owned(),
+                legacy_envelope(&json!([{
+                    "_id": "user-1",
+                    "mac": "aa:bb:cc:dd:ee:ff",
+                    "use_fixedip": true,
+                    "fixed_ip": "10.0.0.60",
+                }])),
+                empty_legacy_envelope(),
+            ),
+            (
+                "/proxy/network/api/s/default/stat/device".to_owned(),
+                legacy_envelope(&json!([{
+                    "_id": "dev-1",
+                    "mac": SWITCH_MAC,
+                    "type": "usw",
+                    "num_sta": 7,
+                    "uplink": {"uplink_mac": "11:22:33:44:55:66", "uplink_remote_port": 4},
+                }])),
+                empty_legacy_envelope(),
+            ),
+        ],
+    )
+    .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let assert_merged = |when: &str| {
+        let client = controller
+            .store()
+            .client_by_mac(&MacAddress::new("aa:bb:cc:dd:ee:ff"))
+            .expect("client present");
+        assert_eq!(client.hostname.as_deref(), Some("test-host"), "{when}");
+        assert_eq!(client.tx_bytes, Some(1234), "{when}");
+        assert_eq!(client.rx_bytes, Some(5678), "{when}");
+        assert!(client.use_fixedip, "{when}");
+        assert_eq!(
+            client.fixed_ip,
+            Some("10.0.0.60".parse().unwrap()),
+            "{when}"
+        );
+
+        let device = controller
+            .store()
+            .device_by_mac(&MacAddress::new(SWITCH_MAC))
+            .expect("switch present");
+        assert_eq!(device.client_count, Some(7), "{when}");
+        assert_eq!(
+            device.uplink_device_mac,
+            Some(MacAddress::new("11:22:33:44:55:66")),
+            "{when}"
+        );
+        assert_eq!(device.uplink_port_idx, Some(4), "{when}");
+    };
+
+    assert_merged("after the initial refresh");
+
+    set_phase(&phase, RoutePhase::Failing(500));
+    controller.full_refresh().await.unwrap();
+    assert_merged("after the session merge fetches failed");
+
+    controller.disconnect().await;
+}
+
 #[tokio::test]
 async fn session_only_refresh_keeps_nat_and_groups_when_fetch_fails() {
     let server = MockServer::start().await;

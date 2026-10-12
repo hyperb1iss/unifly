@@ -11,6 +11,7 @@ use crate::store::{DataStore, RefreshSnapshot, event_storage_key};
 
 use super::Controller;
 
+mod carry;
 mod integration;
 mod merge;
 mod optional;
@@ -63,6 +64,19 @@ impl Controller {
             &mut integration.devices,
             session.devices.as_deref().unwrap_or_default(),
         );
+
+        // A failed session fetch would otherwise store these records without
+        // their session-merged fields for a cycle.
+        let store = self.store();
+        carry::session_client_fields(
+            &mut integration.clients,
+            session.clients.is_none(),
+            session.users.is_none(),
+            |mac| store.client_by_mac(mac),
+        );
+        if session.devices.is_none() {
+            carry::session_device_fields(&mut integration.devices, |mac| store.device_by_mac(mac));
+        }
 
         if let Some(health) = session.health {
             let _previous = self.inner.store.site_health.send_replace(Arc::new(health));
