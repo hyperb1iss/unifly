@@ -92,6 +92,12 @@ pub enum Error {
     UnsupportedOperation(&'static str),
 }
 
+/// First ~200 bytes of a response body for error messages, never panicking
+/// on a multi-byte character boundary.
+pub(crate) fn body_preview(body: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(&body[..body.len().min(200)])
+}
+
 impl Error {
     /// Returns `true` if this error indicates auth has expired
     /// and re-authentication might resolve it.

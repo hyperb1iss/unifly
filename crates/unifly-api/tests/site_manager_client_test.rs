@@ -162,3 +162,24 @@ async fn test_rate_limit_maps_retry_after_header() {
         "expected rate limit error, got {result:?}"
     );
 }
+
+#[tokio::test]
+async fn test_undecodable_body_with_multibyte_char_at_preview_cut() {
+    let (server, client) = setup().await;
+    let body = format!("{}é tail", "x".repeat(199));
+
+    Mock::given(method("GET"))
+        .and(path("/v1/hosts/host-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body.clone()))
+        .mount(&server)
+        .await;
+
+    let err = client.get_host("host-1").await.unwrap_err();
+    match err {
+        Error::Deserialization { message, body: raw } => {
+            assert!(message.contains("body preview"), "message: {message}");
+            assert_eq!(raw, body);
+        }
+        other => panic!("expected Deserialization, got {other:?}"),
+    }
+}

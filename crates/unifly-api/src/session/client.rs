@@ -14,7 +14,7 @@ use tracing::{debug, info, trace, warn};
 use url::Url;
 
 use crate::auth::ControllerPlatform;
-use crate::error::Error;
+use crate::error::{Error, body_preview};
 use crate::session::models::SessionResponse;
 use crate::session::totp::{TotpProvider, is_totp_code};
 use crate::transport::TransportConfig;
@@ -112,12 +112,6 @@ pub struct SessionClient {
     /// The last TOTP code an MFA login sent. It is spent, so a re-login
     /// refuses a provider that hands it back.
     spent_totp: std::sync::Mutex<Option<secrecy::SecretString>>,
-}
-
-/// First ~200 bytes of a response body for error messages, never panicking
-/// on a multi-byte character boundary.
-fn body_preview(body: &[u8]) -> std::borrow::Cow<'_, str> {
-    String::from_utf8_lossy(&body[..body.len().min(200)])
 }
 
 impl SessionClient {

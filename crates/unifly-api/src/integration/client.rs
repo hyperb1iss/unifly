@@ -14,6 +14,7 @@ use url::Url;
 
 use super::types;
 use crate::Error;
+use crate::error::body_preview;
 
 mod clients;
 mod devices;
@@ -273,7 +274,7 @@ impl IntegrationClient {
         if status.is_success() {
             let body = resp.text().await?;
             serde_json::from_str(&body).map_err(|e| {
-                let preview = &body[..body.len().min(200)];
+                let preview = body_preview(body.as_bytes());
                 Error::Deserialization {
                     message: format!("{e} (body preview: {preview:?})"),
                     body,

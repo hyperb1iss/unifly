@@ -858,3 +858,31 @@ async fn test_error_500_server_error() {
         other => panic!("expected Integration 500 error, got: {other:?}"),
     }
 }
+
+/// A body that is not JSON and has a multi-byte character straddling the
+/// 200-byte preview cut.
+fn non_json_body_split_at_preview_cut() -> String {
+    format!("{}é tail", "x".repeat(199))
+}
+
+#[tokio::test]
+async fn test_undecodable_body_with_multibyte_char_at_preview_cut() {
+    let (server, client) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/integration/v1/info"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(non_json_body_split_at_preview_cut()),
+        )
+        .mount(&server)
+        .await;
+
+    let err = client.get_info().await.unwrap_err();
+    match err {
+        Error::Deserialization { message, body } => {
+            assert!(message.contains("body preview"), "message: {message}");
+            assert_eq!(body, non_json_body_split_at_preview_cut());
+        }
+        other => panic!("expected Deserialization, got {other:?}"),
+    }
+}

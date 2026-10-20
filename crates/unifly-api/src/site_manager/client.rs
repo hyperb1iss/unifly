@@ -10,6 +10,7 @@ use super::types::{
     CloudDevice, FleetPage, FleetSite, Host, IspMetric, IspMetricInterval, SdWanConfig, SdWanStatus,
 };
 use crate::Error;
+use crate::error::body_preview;
 
 #[derive(serde::Deserialize)]
 struct FleetEnvelope {
@@ -208,7 +209,7 @@ impl SiteManagerClient {
         if status.is_success() {
             let body = response.text().await?;
             serde_json::from_str(&body).map_err(|error| {
-                let preview = &body[..body.len().min(200)];
+                let preview = body_preview(body.as_bytes());
                 Error::Deserialization {
                     message: format!("{error} (body preview: {preview:?})"),
                     body,
