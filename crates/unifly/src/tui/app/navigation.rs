@@ -64,6 +64,16 @@ impl App {
             return Ok(Some(action));
         }
 
+        let quit = key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c');
+        if !quit
+            && self
+                .screens
+                .get(&self.active_screen)
+                .is_some_and(|screen| screen.captures_input())
+        {
+            return Ok(None);
+        }
+
         if let Some(action) = self.handle_global_key_event(key) {
             return Ok(Some(action));
         }
@@ -333,6 +343,47 @@ mod tests {
             .handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
             .expect("key handling should succeed");
         assert!(matches!(action, Some(Action::SwitchScreen(ScreenId::Wifi))));
+    }
+
+    #[test]
+    fn a_screen_taking_typed_input_keeps_keys_from_global_shortcuts() {
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Networks;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        app.process_action(&Action::NetworksUpdated(std::sync::Arc::new(vec![
+            std::sync::Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": "11111111-1111-1111-1111-111111111111", "name": "Studio",
+                    "vlan_id": 10, "enabled": true, "management": "Gateway",
+                    "purpose": "Corporate", "is_default": false, "subnet": null,
+                    "gateway_ip": null, "isolation_enabled": false,
+                    "internet_access_enabled": true, "mdns_forwarding_enabled": false,
+                    "ipv6_enabled": false, "ipv6_mode": null, "ipv6_prefix": null,
+                    "dhcpv6_enabled": false, "slaac_enabled": false, "ntp_server": null,
+                    "pxe_enabled": false, "tftp_server": null, "firewall_zone_id": null,
+                    "cellular_backup_enabled": false, "origin": null, "dhcp": null
+                }))
+                .expect("network fixture"),
+            ),
+        ])))
+        .expect("networks update");
+        app.handle_key_event(press(KeyCode::Char('e')))
+            .expect("open the edit form");
+
+        for code in [KeyCode::Tab, KeyCode::Char('1'), KeyCode::Char('q')] {
+            let action = app.handle_key_event(press(code)).expect("typed key");
+            assert!(
+                action.is_none(),
+                "{code:?} leaked to a global shortcut: {action:?}"
+            );
+        }
+        assert!(app.running);
+
+        let quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .expect("ctrl+c");
+        assert!(matches!(quit, Some(Action::Quit)));
     }
 
     #[test]

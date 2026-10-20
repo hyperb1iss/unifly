@@ -62,6 +62,10 @@ impl Component for NetworksScreen {
         self.render_screen(frame, area);
     }
 
+    fn captures_input(&self) -> bool {
+        self.edit_state.is_some()
+    }
+
     fn focused(&self) -> bool {
         self.focused
     }
