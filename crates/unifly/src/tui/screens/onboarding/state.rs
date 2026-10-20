@@ -38,6 +38,27 @@ impl OnboardingScreen {
         }
     }
 
+    /// A wizard that repairs `existing`, a saved profile that could not
+    /// connect. It starts from that profile, as Settings does, so saving
+    /// keeps what the wizard does not show (a CA certificate, a timeout, a
+    /// TOTP command, an API key variable) and the secrets already in `store`.
+    pub fn for_existing_profile(
+        profile_name: &str,
+        existing: &crate::config::Profile,
+        defaults: &crate::config::Defaults,
+        store: &dyn crate::config::SecretStore,
+    ) -> Self {
+        let mut screen = Self::for_profile(profile_name);
+        screen.draft = ControllerProfileDraft::from_profile(existing)
+            .with_keyring_origins(profile_name, store)
+            .with_inherited_insecure(defaults);
+        screen.auth_mode_index = AuthMode::ALL
+            .iter()
+            .position(|&mode| mode == screen.draft.auth_mode)
+            .unwrap_or(0);
+        screen
+    }
+
     pub(super) fn advance(&mut self) {
         self.error = None;
         match self.step {
@@ -286,6 +307,75 @@ mod tests {
             self.0.borrow_mut().remove(key);
             Ok(())
         }
+    }
+
+    /// The wizard also opens for a profile that exists but cannot connect
+    /// (an unset `api_key_env`, a locked keyring). Finishing it keeps the
+    /// settings the wizard does not show.
+    #[test]
+    fn setup_for_an_existing_profile_keeps_what_the_wizard_does_not_show() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[profiles.work]\n\
+             controller = \"https://10.0.0.1\"\n\
+             site = \"lab\"\n\
+             api_key_env = \"WORK_KEY\"\n\
+             ca_cert = \"/etc/ssl/work-ca.pem\"\n\
+             timeout = 45\n\
+             totp_command = [\"op\", \"item\", \"get\", \"work\", \"--otp\"]\n",
+        )
+        .expect("write config");
+        let cfg = crate::config::load_config_from(&path).expect("load config");
+        let store = MemoryStore::default();
+
+        let mut screen = OnboardingScreen::for_existing_profile(
+            "work",
+            &cfg.profiles["work"],
+            &cfg.defaults,
+            &store,
+        );
+        screen.draft.url = "https://10.0.0.2".into();
+        let save = screen.draft.plan_save(&screen.profile_name);
+        save_setup(save, &store, &path, &screen.profile_name).expect("save");
+
+        let cfg = crate::config::load_config_from(&path).expect("load saved config");
+        let work = &cfg.profiles["work"];
+        assert_eq!(work.controller, "https://10.0.0.2");
+        assert_eq!(
+            work.ca_cert.as_deref(),
+            Some(std::path::Path::new("/etc/ssl/work-ca.pem"))
+        );
+        assert_eq!(work.timeout, Some(45));
+        assert_eq!(work.api_key_env.as_deref(), Some("WORK_KEY"));
+        assert_eq!(work.site, "lab");
+        assert_eq!(
+            work.totp_command.as_deref(),
+            Some(&["op", "item", "get", "work", "--otp"].map(String::from)[..])
+        );
+    }
+
+    /// The wizard starts on the profile's auth mode, so stepping through it
+    /// keeps that mode instead of resetting it to the first one.
+    #[test]
+    fn setup_for_an_existing_profile_starts_on_its_auth_mode() {
+        let profile: crate::config::Profile = toml::from_str(
+            "controller = \"https://10.0.0.1\"\nauth_mode = \"session\"\nusername = \"admin\"\n",
+        )
+        .expect("profile parses");
+        let mut screen = OnboardingScreen::for_existing_profile(
+            "work",
+            &profile,
+            &crate::config::Defaults::default(),
+            &MemoryStore::default(),
+        );
+        screen.step = WizardStep::AuthMode;
+
+        screen.advance();
+
+        assert_eq!(screen.draft.auth_mode, AuthMode::Session);
+        assert_eq!(screen.draft.username, "admin");
     }
 
     /// `unifly tui -p work` opens the wizard when `work` is missing.

@@ -86,7 +86,7 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 
     let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate)
-        .with_setup_profile(&setup_profile_name(global, cfg));
+        .with_setup_profile(&setup_profile_name(global, cfg), cfg);
     app.run().await?;
 
     Ok(())
