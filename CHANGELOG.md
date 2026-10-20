@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   pauses a live feed), zooms the topology, and walks the theme picker, and
   a drag pans the topology map. Typing still needs a keyboard.
 
+### Changed
+
+- **VPN server and tunnel JSON and YAML drop their duplicated raw keys.**
+  Fields the typed record already carries (`localNetworks`, `peerIp`,
+  `psk`, and the like) no longer appear a second time under their raw
+  names; scripts that read the raw copies should read the typed fields.
+
 ### Fixed
 
 - **The TUI tab bar draws all nine tabs.** Full labels need 120 columns
@@ -171,6 +178,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   was missing `U` (upgrade firmware), and cloud mode was said to block
   restart and locate, which go through the connector; only upgrade and
   provisioning need a direct connection.
+||||||| parent of bf89d71 (docs(changelog): note the CLI correctness fixes)
+- **Demo mode no longer lets CLI commands print real data.** `--demo`,
+  `UNIFI_DEMO`, and `[demo] enabled = true` promise PII sanitizing, but
+  only the TUI sanitizes, so `unifly --demo clients list` printed real
+  names, MACs, and IPs. Controller and cloud commands in demo mode now exit
+  5 before they connect, with a hint that turns off whichever switch is on,
+  naming the config file and key for the file switch. `config`, `skill`,
+  `completions`, and `--demo-fleet` still run.
+- **YAML output stays valid and reads the same in YAML 1.1 parsers.** The
+  colon quoting for YAML 1.1 readers such as PyYAML left apostrophes
+  unescaped, so a name like `Bob's AP:5G` broke the document, and it
+  rewrote lines inside multi-line values. Quoting now works on the values
+  themselves and covers every string, key, and list item a YAML 1.1
+  resolver would retype: booleans such as `off`, nulls, integers like
+  `1_000`, floats, dates like `2024-01-01`, `<<`, and `=`. A PoE mode of
+  `off` no longer reads back as false.
+- **`vpn servers` and `vpn tunnels` no longer print pre-shared keys or
+  panic in YAML.** VPN records repeated their typed fields in a flattened
+  map, so JSON output carried keys such as `id` twice, a tunnel's
+  pre-shared key appeared in clear text, and the YAML writer panicked on
+  the duplicates. The map now holds only fields no typed field covers,
+  and YAML output can no longer panic on data it cannot re-read.
+- **`events watch -o yaml` and `acl reorder -o yaml` emit valid YAML.**
+  Each watched event is its own `---` document, and the reorder IDs come
+  out as a YAML list instead of one ID per line.
+- **`wifi channels` output parses when a controller reports more than one
+  country.** JSON, YAML, and plain output render every country's rows as
+  one document, each row carrying `country` and `country_code`, instead
+  of one document per country back to back.
+- **`topology -o json` and `-o yaml` emit data.** They printed the ASCII
+  tree. They now carry the gateway, each device with the clients uplinked
+  to it, and the clients with no uplink. The table still draws the tree.
+- **A malformed `--filter` is a usage error.** It used to match nothing
+  and exit 0, which read as an empty collection. It now fails argument
+  parsing with exit 2 and the accepted grammar before anything is
+  fetched. An empty expression still applies no filter.
+- **`-q` silences the "Showing N of M results" hint.**
+- **`UNIFI_INSECURE=1` works.** The configuration guide documents `1`, but
+  the flag accepted only `true` and `false`, so every command failed.
+  `--insecure` and `UNIFI_INSECURE` now take `1`/`0`, `yes`/`no`, and
+  `on`/`off` too.
+- **Missing credentials exit 3 with the hint that fixes them.** A profile
+  missing a secret exited 1 with a bare message, and every case offered
+  the same remedies. Each now names the fix for what is missing: the API
+  key, the password, or the username and then the password, with the
+  `unifly config set-password` or `config set` command that stores it,
+  or `--api-key` for ad-hoc runs. An invalid profile value exits 2 like
+  the same mistake made with flags.
+- **`wifi get` reports failures by kind.** A rejected API key, a timeout,
+  or a server error read as "WiFi broadcast not found" with exit 4; only a
+  missing broadcast does now.
+- **Error hints name commands and profiles that exist.** Not-found hints
+  no longer suggest `wifi broadcasts list` or `NAT rules list` or spell
+  "firewall policys". Authentication failures name the profile in use,
+  quoted so names like `my lab` paste as is, instead of a profile called
+  `current`, and point at the key itself when it came from `--api-key`.
+- **Unusable controller URLs are reported as configuration errors.** A URL
+  such as `foo:bar` or `ftp://192.0.2.1` failed as "Configuration file
+  not found" or "API error: builder error" with exit 1; it is now an
+  invalid configuration error with exit 2 that names the problem, and any
+  password in the URL is masked in the message.
 
 ## [0.11.0] - 2026-10-12
 
