@@ -1837,6 +1837,38 @@ fn test_demo_fleet_lists_come_out_in_the_same_order_every_run() {
 }
 
 #[test]
+fn test_demo_fleet_topology_machine_formats_are_structured() {
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let client_count = clients.as_array().map_or(0, Vec::len);
+
+    for format in ["json", "json-compact", "yaml"] {
+        let output = unifly_cmd()
+            .args(["--demo-fleet", "topology", "-o", format])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", combined_output(&output));
+        let topology: serde_json::Value = if format == "yaml" {
+            serde_yaml_ng::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("{format}: invalid YAML ({err})"))
+        } else {
+            serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("{format}: invalid JSON ({err})"))
+        };
+        assert_eq!(topology["gateway"]["name"], "gw-harbor", "{format}");
+        let devices = topology["devices"].as_array().unwrap();
+        assert!(!devices.is_empty(), "{format}");
+
+        // Every client sits exactly once: under its uplink or unlinked.
+        let placed = std::iter::once(&topology["gateway"])
+            .chain(devices)
+            .map(|node| node["clients"].as_array().map_or(0, Vec::len))
+            .sum::<usize>()
+            + topology["unlinked_clients"].as_array().map_or(0, Vec::len);
+        assert_eq!(placed, client_count, "{format}");
+    }
+}
+
+#[test]
 fn test_demo_fleet_topology_reads_the_same_every_run() {
     let run = || {
         let output = unifly_cmd()

@@ -147,7 +147,9 @@ WiFi neighbors uses Session observations from your APs. The time window is
 in seconds, not milliseconds. Results default to 25; use `--all` or an
 explicit limit. WiFi channels reports country-level regulatory availability,
 not the current channel of each AP; its JSON and YAML rows carry `country` and
-`country_code`. Device radios describe individual APs.
+`country_code`. Device radios describe individual APs. Topology draws a tree in
+table and plain output; its JSON and YAML hold `gateway`, `devices` (each with
+its uplinked `clients`), and `unlinked_clients`.
 
 ## Networks, WiFi, firewall, NAT, ACL, and DNS
 

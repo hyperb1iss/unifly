@@ -402,6 +402,7 @@ unifly cloud switch <SITE>                      # Point the cloud profile at a s
 
 ```bash
 unifly topology                                 # Network tree visualization
+unifly topology -o json                         # The same tree as data
 unifly radius profiles                          # List RADIUS profiles
 unifly wans list                                # List WAN interfaces
 unifly sites list                               # List sites
