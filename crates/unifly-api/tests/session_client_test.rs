@@ -1333,3 +1333,17 @@ async fn raw_writes_surface_unifi_os_errors_wrapped_in_200() {
     );
     assert_unifi_os_error(client.raw_get("v2/api/site/default/nat").await);
 }
+
+#[tokio::test]
+async fn raw_get_keeps_a_one_element_array_with_a_code_field() {
+    let (server, client) = setup().await;
+    let rules = json!([{"code": 1, "name": "rule"}]);
+    Mock::given(method("GET"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rules.clone()))
+        .mount(&server)
+        .await;
+
+    let value = client.raw_get("v2/api/site/default/nat").await.unwrap();
+    assert_eq!(value, rules);
+}

@@ -844,6 +844,12 @@ impl SessionClient {
     /// The error in a UniFi OS `{"error":{"code":N,"message":"..."}}` body,
     /// which UniFi OS sometimes returns with HTTP 200.
     fn unifi_os_error(&self, body: &[u8]) -> Option<Error> {
+        // Only an object can be that wrapper. Serde would also read a
+        // one-element array as the struct, mistaking `[{"code": 1}]` (a
+        // raw route's ordinary list) for an error.
+        if body.trim_ascii_start().first() != Some(&b'{') {
+            return None;
+        }
         let err = serde_json::from_slice::<UnifiOsError>(body).ok()?.error?;
         let msg = err.message.unwrap_or_default();
         Some(if err.code == 401 {
