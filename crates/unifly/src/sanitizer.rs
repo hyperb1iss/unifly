@@ -485,6 +485,11 @@ impl Sanitizer {
             .gateways
             .as_ref()
             .map(|gws| gws.iter().map(|g| self.sanitize_wan_ip_str(g)).collect());
+        // `extra` is the whole raw health payload, and the dashboard draws
+        // addresses straight from it: the ISP gateway, the WAN IPv6, and
+        // the DNS servers. They follow the WAN address setting like every
+        // other address; ISP names go only with redact_isp.
+        h.extra = self.sanitize_json_value(&h.extra);
         if self.redact_isp {
             h.extra = self.sanitize_health_extra(&h.extra);
         }
