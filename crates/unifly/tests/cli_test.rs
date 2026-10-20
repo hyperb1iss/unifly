@@ -1869,3 +1869,124 @@ fn test_demo_fleet_firewall_policies_list_in_evaluation_order() {
         "policies must group by zone pair and run by ascending index"
     );
 }
+
+// ── Mock controller ─────────────────────────────────────────────────
+
+const MOCK_SITE_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
+const MOCK_API_KEY: &str = "cli-test-key";
+
+/// A UniFi OS controller that answers an API-key connect with one empty
+/// site. Tests mount the routes they exercise at a higher priority.
+async fn mock_api_key_controller() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let empty_page = serde_json::json!({
+        "offset": 0, "limit": 200, "count": 0, "totalCount": 0, "data": [],
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/auth/login"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "offset": 0, "limit": 50, "count": 1, "totalCount": 1,
+            "data": [{ "id": MOCK_SITE_ID, "internalReference": "default", "name": "Default" }],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/proxy/network/integration/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/proxy/network/api/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "meta": { "rc": "ok" }, "data": [],
+        })))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/proxy/network/v2/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    server
+}
+
+fn mock_cmd(server: &wiremock::MockServer) -> assert_cmd::Command {
+    let mut cmd = unifly_cmd();
+    cmd.args([
+        "-c",
+        &server.uri(),
+        "--api-key",
+        MOCK_API_KEY,
+        "--timeout",
+        "5",
+    ]);
+    cmd
+}
+
+const MOCK_WIFI_ID: &str = "6b0e5f4e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+
+async fn mock_wifi_detail(server: &wiremock::MockServer, response: wiremock::ResponseTemplate) {
+    use wiremock::matchers::{method, path};
+    wiremock::Mock::given(method("GET"))
+        .and(path(format!(
+            "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/wifi/broadcasts/{MOCK_WIFI_ID}"
+        )))
+        .respond_with(response)
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_wifi_get_reports_failures_by_kind() {
+    use wiremock::ResponseTemplate;
+
+    let rejected = mock_api_key_controller().await;
+    mock_wifi_detail(&rejected, ResponseTemplate::new(401)).await;
+    mock_cmd(&rejected)
+        .args(["wifi", "get", MOCK_WIFI_ID])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("Authentication failed"))
+        .stderr(predicate::str::contains("not found").not());
+
+    let broken = mock_api_key_controller().await;
+    mock_wifi_detail(
+        &broken,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({ "message": "boom" })),
+    )
+    .await;
+    mock_cmd(&broken)
+        .args(["wifi", "get", MOCK_WIFI_ID])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("boom"))
+        .stderr(predicate::str::contains("not found").not());
+
+    let missing = mock_api_key_controller().await;
+    mock_wifi_detail(&missing, ResponseTemplate::new(404)).await;
+    for identifier in [MOCK_WIFI_ID, "No Such SSID"] {
+        mock_cmd(&missing)
+            .args(["wifi", "get", identifier])
+            .assert()
+            .failure()
+            .code(4)
+            .stderr(predicate::str::contains(format!(
+                "WiFi broadcast '{identifier}' not found"
+            )));
+    }
+}

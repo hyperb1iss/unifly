@@ -7,7 +7,7 @@ use tabled::Tabled;
 use unifly_api::model::{WifiBroadcast, WifiSecurityMode};
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
-    Command as CoreCommand, Controller, CreateWifiBroadcastRequest, EntityId,
+    Command as CoreCommand, Controller, CoreError, CreateWifiBroadcastRequest, EntityId,
     UpdateWifiBroadcastRequest,
 };
 
@@ -355,17 +355,29 @@ async fn handle_get(
 ) -> Result<(), CliError> {
     util::ensure_integration_access(controller, "wifi").await?;
 
-    // Names resolve against the snapshot; an ID it lacks still goes to the
-    // controller, which holds the full broadcast detail.
+    // Names resolve against the snapshot; a UUID it lacks still goes to the
+    // controller, which holds the full broadcast detail. Anything else is a
+    // name that matched nothing.
     let snapshot = controller.wifi_broadcasts_snapshot();
     let entity_id = match util::lookup::lookup(snapshot.as_slice(), id)? {
         Some(broadcast) => broadcast.id.clone(),
         None => EntityId::from(id.trim().to_owned()),
     };
+    if entity_id.as_uuid().is_none() {
+        return Err(util::lookup::not_found::<WifiBroadcast>(id));
+    }
+    // Only a missing record is "not found"; auth, timeout, and server
+    // failures keep their own message and exit code.
     let broadcast = controller
         .get_wifi_broadcast_detail(&entity_id)
         .await
-        .map_err(|_| util::lookup::not_found::<WifiBroadcast>(id))?;
+        .map_err(|err| match err {
+            CoreError::NotFound { .. }
+            | CoreError::Api {
+                status: Some(404), ..
+            } => util::lookup::not_found::<WifiBroadcast>(id),
+            other => CliError::from(other),
+        })?;
     let broadcast = Arc::new(broadcast);
     let out = output::render_single(&global.output, &broadcast, detail, |w| w.id.to_string());
     output::print_output(&out, global.quiet);
