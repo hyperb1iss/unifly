@@ -8,7 +8,7 @@ use tracing::warn;
 
 use unifly_api::integration_types::FirewallPolicyOrdering;
 use unifly_api::model::FirewallPolicy;
-use unifly_api::{Command, Controller, CoreError, EntityId};
+use unifly_api::{Command, ConnectionState, Controller, CoreError, EntityId};
 
 use super::App;
 use crate::tui::action::{Action, Direction, Notification, NotificationLevel};
@@ -153,6 +153,14 @@ async fn run_move(
         Ok(Step::Fixed) => {
             Notification::info(format!("{name} keeps a fixed place in its zone pair"))
         }
+        // A connection lost mid-move is named as such: a refresh could
+        // not run, and the next connect's refresh shows the real order.
+        Err(MoveFailure::Read(error) | MoveFailure::Write(error)) if !is_connected(&controller) => {
+            warn!(%error, "policy move failed with the connection down");
+            Notification::error(format!(
+                "Could not move {name}: the controller is not connected"
+            ))
+        }
         Err(MoveFailure::Read(error)) => {
             warn!(%error, "policy move failed");
             Notification::error(format!("Could not move {name}: {error}"))
@@ -163,6 +171,15 @@ async fn run_move(
             Notification::error(format!("Could not move {name}: {error}"))
         }
     }
+}
+
+/// Whether the controller has a live connection. Commands fail at once
+/// without one, and the reads a move starts with fail as unsupported.
+fn is_connected(controller: &Controller) -> bool {
+    matches!(
+        *controller.connection_state().borrow(),
+        ConnectionState::Connected
+    )
 }
 
 /// Marks a policy move in flight until dropped, so even a move that
@@ -202,6 +219,12 @@ impl App {
             )));
             return;
         };
+        if !is_connected(&controller) {
+            notify(Notification::error(format!(
+                "Not connected, so {name} stays where it is"
+            )));
+            return;
+        }
         if self.policy_move.swap(true, Ordering::AcqRel) {
             notify(Notification::info("A policy move is still in progress"));
             return;
@@ -565,6 +588,60 @@ mod tests {
 
         let notification = outcome(&mut app).await;
         assert_eq!(notification.level, NotificationLevel::Error);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_move_while_disconnected_is_refused_up_front() {
+        let server = MockServer::start().await;
+        let controller = controller(&server).await;
+        controller.disconnect().await;
+        let mut app = App::new(Some(controller), None, false, true);
+
+        app.process_action(&move_down()).expect("reorder handling");
+
+        let notification = next_notification(&mut app).await;
+        assert_eq!(notification.level, NotificationLevel::Error);
+        assert_eq!(
+            notification.message,
+            "Not connected, so policy-2 stays where it is"
+        );
+        assert!(!app.policy_move.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_connection_lost_mid_move_says_so() {
+        let server = MockServer::start().await;
+        let controller = controller(&server).await;
+        Mock::given(method("GET"))
+            .and(path(ordering_route()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(ordering_body(&[1, 2, 3], &[4]))
+                    .set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(ordering_route()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut app = App::new(Some(controller.clone()), None, false, true);
+
+        app.process_action(&move_down()).expect("reorder handling");
+        // The order is read on a connection that drops before the write.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        controller.disconnect().await;
+
+        let notification = outcome(&mut app).await;
+        assert_eq!(notification.level, NotificationLevel::Error);
+        assert_eq!(
+            notification.message,
+            "Could not move policy-2: the controller is not connected"
+        );
+        assert!(!app.policy_move.load(Ordering::Acquire));
         server.verify().await;
     }
 
