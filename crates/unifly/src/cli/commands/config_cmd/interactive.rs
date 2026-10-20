@@ -17,6 +17,7 @@ use crate::cli::error::CliError;
 use crate::cli::output;
 use crate::config::{Config, Profile};
 
+use super::pending_secrets::{PendingSecrets, keyring_error};
 use super::support::save_config;
 
 enum ApiKeyStorage {
@@ -127,20 +128,11 @@ fn cloud_api_error(error: unifly_api::Error) -> CliError {
 /// the TUI uses. The CLI never falls back on its own: when no keyring is
 /// usable it says so, and plaintext storage stays an explicit choice.
 fn write_keyring_secret(secret: &str, keyring_key: &str, label: &str) -> Result<(), CliError> {
-    use crate::config::{OsKeyring, SecretStore, SecretStoreError};
+    use crate::config::{OsKeyring, SecretStore};
 
     OsKeyring
         .set(keyring_key, secret)
-        .map_err(|error| CliError::Validation {
-            field: "keyring".into(),
-            reason: match error {
-                SecretStoreError::Unavailable(_) => format!(
-                    "failed to store {label}, {error}; keep it in config.toml or an \
-                     environment variable instead"
-                ),
-                SecretStoreError::Rejected(_) => format!("failed to store {label}, {error}"),
-            },
-        })
+        .map_err(|error| keyring_error(label, &error))
 }
 
 fn prompt_credentials() -> Result<(String, String), CliError> {
@@ -161,12 +153,15 @@ fn prompt_credentials() -> Result<(String, String), CliError> {
     Ok((user, pass))
 }
 
+/// Ask where `secret` goes. The keyring choice only holds it in `secrets`,
+/// stored once the wizard's last prompt is answered; the plaintext choice
+/// returns it for the profile.
 fn prompt_keyring_storage(
-    ui: &WizardUi,
+    secrets: &mut PendingSecrets,
     secret: &str,
     keyring_key: &str,
     prompt: &str,
-    label: &str,
+    label: &'static str,
 ) -> Result<Option<String>, CliError> {
     let choices = &[
         "Store in system keyring (recommended)",
@@ -180,8 +175,7 @@ fn prompt_keyring_storage(
         .map_err(prompt_err)?;
 
     if selection == 0 {
-        write_keyring_secret(secret, keyring_key, label)?;
-        ui.success(&format!("{label} stored in system keyring"));
+        secrets.add(keyring_key.to_owned(), label, SecretString::from(secret));
         Ok(None)
     } else {
         Ok(Some(secret.to_owned()))
@@ -480,23 +474,24 @@ fn prompt_profile_name(
     }
 }
 
+/// Where the profile finds its API key: `(api_key, api_key_env)` for the
+/// profile, with a keyring choice held in `secrets` until the wizard ends.
 fn persist_cloud_api_key(
-    ui: &WizardUi,
+    secrets: &mut PendingSecrets,
     profile_name: &str,
     setup: &CloudApiKeySetup,
-) -> Result<(Option<String>, Option<String>), CliError> {
+) -> (Option<String>, Option<String>) {
     match &setup.storage {
-        ApiKeyStorage::Env(env_name) => Ok((None, Some(env_name.clone()))),
+        ApiKeyStorage::Env(env_name) => (None, Some(env_name.clone())),
         ApiKeyStorage::Keyring => {
-            write_keyring_secret(
-                setup.secret.expose_secret(),
-                &format!("{profile_name}/api-key"),
+            secrets.add(
+                crate::config::api_key_keyring_key(profile_name),
                 "API key",
-            )?;
-            ui.success("API key stored in system keyring");
-            Ok((None, None))
+                setup.secret.clone(),
+            );
+            (None, None)
         }
-        ApiKeyStorage::Plaintext => Ok((Some(setup.secret.expose_secret().to_owned()), None)),
+        ApiKeyStorage::Plaintext => (Some(setup.secret.expose_secret().to_owned()), None),
     }
 }
 
@@ -525,9 +520,10 @@ fn add_profile(cfg: &mut Config, name: &str, profile: Profile, make_default: boo
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
-    // Load before any prompt or keyring write, so a config file that cannot
-    // be loaded stops the wizard before it asks for anything.
+    // Load before any prompt, so a config file that cannot be loaded stops
+    // the wizard before it asks for anything.
     let mut cfg = crate::config::load_config()?;
+    let mut secrets = PendingSecrets::default();
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
     ui.banner(
@@ -580,7 +576,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             }
 
             let api_key_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &key,
                 &format!("{profile_name}/api-key"),
                 "Where to store the API key?",
@@ -593,7 +589,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             let (user, pass) = prompt_credentials()?;
 
             let password_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &pass,
                 &format!("{profile_name}/password"),
                 "Where to store the password?",
@@ -621,7 +617,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             }
 
             let api_key_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &key,
                 &format!("{profile_name}/api-key"),
                 "Where to store the API key?",
@@ -631,7 +627,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             let (user, pass) = prompt_credentials()?;
 
             let password_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &pass,
                 &format!("{profile_name}/password"),
                 "Where to store the password?",
@@ -676,9 +672,12 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
     let make_default = confirm_make_default(&cfg, &profile_name)?;
     add_profile(&mut cfg, &profile_name, profile, make_default);
 
-    save_config(&cfg)?;
+    let stored = secrets.commit(&crate::config::OsKeyring, || save_config(&cfg))?;
 
     eprintln!();
+    for label in stored {
+        ui.success(&format!("{label} stored in system keyring"));
+    }
     ui.success("Configuration written");
     ui.meta("Profile", &ui.accent(&profile_name));
     ui.meta("Controller", &ui.accent(&controller_display));
@@ -703,9 +702,10 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
 
 #[allow(clippy::too_many_lines)]
 pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError> {
-    // Load before any prompt or keyring write, so a config file that cannot
-    // be loaded stops the wizard before it asks for anything.
+    // Load before any prompt, so a config file that cannot be loaded stops
+    // the wizard before it asks for anything.
     let mut cfg = crate::config::load_config()?;
+    let mut secrets = PendingSecrets::default();
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
     let controller = global
@@ -753,7 +753,7 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
 
     let suggested_profile = next_available_profile_name(&host.display_name(), &cfg.profiles);
     let profile_name = prompt_profile_name(&ui, &suggested_profile, &cfg.profiles)?;
-    let (api_key, api_key_env) = persist_cloud_api_key(&ui, &profile_name, &api_key_setup)?;
+    let (api_key, api_key_env) = persist_cloud_api_key(&mut secrets, &profile_name, &api_key_setup);
 
     let make_default = confirm_make_default(&cfg, &profile_name)?;
 
@@ -779,9 +779,12 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
         make_default,
     );
 
-    save_config(&cfg)?;
+    let stored = secrets.commit(&crate::config::OsKeyring, || save_config(&cfg))?;
 
     eprintln!();
+    for label in stored {
+        ui.success(&format!("{label} stored in system keyring"));
+    }
     ui.success("Cloud profile written");
     ui.meta("Profile", &ui.accent(&profile_name));
     ui.meta("Console", &ui.accent(&host.display_name()));
