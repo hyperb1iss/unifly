@@ -2059,7 +2059,15 @@ async fn update_network_writes_subnet_and_disables_dhcp() {
 #[tokio::test]
 async fn update_network_enables_dhcp_as_a_server() {
     let body = update_lan_network(
-        json!({"autoScaleEnabled": false, "hostIpAddress": "10.0.30.1", "prefixLength": 24}),
+        json!({
+            "autoScaleEnabled": false,
+            "hostIpAddress": "10.0.30.1",
+            "prefixLength": 24,
+            "dhcpConfiguration": {
+                "mode": "NONE",
+                "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            },
+        }),
         unifly_api::UpdateNetworkRequest {
             dhcp_enabled: Some(true),
             ..Default::default()
@@ -2072,10 +2080,51 @@ async fn update_network_enables_dhcp_as_a_server() {
         body["ipv4Configuration"]["dhcpConfiguration"],
         json!({
             "mode": "SERVER",
+            "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
             "leaseTimeSeconds": 86400,
             "pingConflictDetectionEnabled": false,
         })
     );
+}
+
+#[tokio::test]
+async fn update_network_refuses_to_enable_dhcp_without_a_range() {
+    let err = update_lan_network(
+        json!({"autoScaleEnabled": false, "hostIpAddress": "10.0.30.1", "prefixLength": 24}),
+        unifly_api::UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::ValidationFailed { ref message } if message.contains("range")),
+        "expected a ValidationFailed naming the range, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn update_network_leaves_legacy_dhcp_alone_when_unchanged() {
+    let legacy_ipv4 = json!({
+        "hostIpAddress": "10.0.30.1",
+        "prefixLength": 24,
+        "dhcp": {"server": {"enabled": true, "rangeStart": "10.0.30.100", "rangeStop": "10.0.30.254"}},
+    });
+    let body = update_lan_network(
+        legacy_ipv4.clone(),
+        unifly_api::UpdateNetworkRequest {
+            name: Some("Renamed".into()),
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body["name"], json!("Renamed"));
+    assert_eq!(body["ipv4Configuration"], legacy_ipv4);
 }
 
 #[tokio::test]

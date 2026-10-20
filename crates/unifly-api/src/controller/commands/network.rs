@@ -139,6 +139,9 @@ pub(super) async fn route(
             let (ic, sid) = require_integration(integration, site_id, "UpdateNetwork")?;
             let uuid = require_uuid(&id)?;
             let existing = ic.get_network(&sid, &uuid).await?;
+            let dhcp_serving = crate::model::Network::from(existing.clone())
+                .dhcp
+                .is_some_and(|dhcp| dhcp.enabled);
             let mut extra = existing.extra;
             if let Some(v) = update.isolation_enabled {
                 extra.insert("isolationEnabled".into(), serde_json::Value::Bool(v));
@@ -158,7 +161,7 @@ pub(super) async fn route(
                     extra.remove("ipv6Configuration");
                 }
             }
-            apply_ipv4_update(&mut extra, &update)?;
+            apply_ipv4_update(&mut extra, dhcp_serving, &update)?;
             let body = crate::integration_types::NetworkCreateUpdate {
                 name: update.name.unwrap_or(existing.name),
                 enabled: update.enabled.unwrap_or(existing.enabled),
