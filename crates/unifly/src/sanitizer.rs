@@ -97,10 +97,11 @@ impl Sanitizer {
             r"(?i)\b(?:[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}|[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}|[0-9a-f]{12})\b",
         )
         .expect("valid regex");
-        // An SSID quoted after "SSID" or "connected to", the shapes event
-        // messages name one in.
+        // An SSID quoted after "SSID", "connected to", or "disconnected
+        // from", the shapes event messages name one in.
         let quoted_ssid =
-            Regex::new(r#"(?i)\b(?:ssid|connected to)\s+"([^"\r\n]{1,32})""#).expect("valid regex");
+            Regex::new(r#"(?i)\b(?:ssid|connected to|disconnected from)\s+"([^"\r\n]{1,32})""#)
+                .expect("valid regex");
 
         Self {
             redact_patterns,
@@ -1082,6 +1083,14 @@ mod tests {
             clean.message.contains(r#""channel 36(na)""#),
             "{}",
             clean.message
+        );
+
+        // A disconnect names the SSID it left the same way.
+        let clean = s.sanitize_event(&event(r#"Kai disconnected from "Secret Net""#));
+        let secret = s.sanitize_ssid("Secret Net");
+        assert_eq!(
+            clean.message,
+            format!(r#"Kai disconnected from "{secret}""#)
         );
 
         // A JSON item's text never runs ahead of the SSIDs its fields name.
