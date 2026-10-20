@@ -67,6 +67,6 @@ Real-time dashboard built with `ratatui`:
 
 - **Profile system**: Named profiles for multiple controllers
 - **Keyring integration**: OS-native credential storage via the `keyring` crate
-- **TOML config**: File-based settings in the platform-standard config directory (`~/.config/unifly`, `~/Library/Application Support/unifly`, `%APPDATA%\unifly`)
+- **TOML config**: File-based settings in the platform-standard config directory (`~/.config/unifly` on Linux and macOS, `%APPDATA%\unifly\config` on Windows)
 - **Environment variables**: The global flags also read `UNIFI_*` variables, which override profile values for that run. Keys in the config file have no environment overrides of their own
 - **Setup wizard**: Interactive configuration with `dialoguer`

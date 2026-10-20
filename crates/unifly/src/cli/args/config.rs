@@ -8,13 +8,13 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    /// Create initial config file with guided setup for a local controller
+    /// Add or update a local controller profile with guided setup
     Init,
 
     /// Guided setup for a cloud Site Manager profile
     CloudSetup,
 
-    /// Display current resolved configuration
+    /// Display the saved configuration, with secrets masked
     Show,
 
     /// Set a configuration value

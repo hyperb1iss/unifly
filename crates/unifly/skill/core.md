@@ -23,9 +23,8 @@ Output is plain Markdown (or the raw example), regardless of `--output`.
 Confirm the intended profile and site from the user's request. Select them with
 `-p <profile>` and `-s <site>`. The environment prefix is `UNIFI_`, not `UNIFLY_`;
 `UNIFLY_THEME` is a separate theme setting. Use `config profiles` and `config
-show -o table` for stored settings, but account for CLI and environment overrides yourself.
-The explicit table format matters: JSON/YAML config output exposes stored secrets,
-and `UNIFI_OUTPUT` can change the default format.
+show` for stored settings (every output format masks stored secrets), but
+account for CLI and environment overrides yourself.
 Never print secret environment variables or credential files into the conversation.
 
 | Profile auth mode | Available access                                                |

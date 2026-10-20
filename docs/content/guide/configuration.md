@@ -8,11 +8,13 @@ weight = 3
 
 Configuration lives in your platform-standard config directory:
 
-| OS      | Path                                               |
-| ------- | -------------------------------------------------- |
-| Linux   | `~/.config/unifly/config.toml`                     |
-| macOS   | `~/Library/Application Support/unifly/config.toml` |
-| Windows | `%APPDATA%\unifly\config.toml`                     |
+| OS      | Path                                  |
+| ------- | ------------------------------------- |
+| Linux   | `~/.config/unifly/config.toml`        |
+| macOS   | `~/.config/unifly/config.toml`        |
+| Windows | `%APPDATA%\unifly\config\config.toml` |
+
+On Linux and macOS, `$XDG_CONFIG_HOME/unifly/config.toml` takes over when `XDG_CONFIG_HOME` is set. On macOS, a config left in the old `~/Library/Application Support/unifly/` directory moves to the new location the first time unifly runs.
 
 The easiest way to create your config is the interactive wizard:
 

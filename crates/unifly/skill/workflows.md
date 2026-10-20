@@ -15,9 +15,8 @@ unifly -p home devices list --all -o json
 unifly -p home clients list --all -o json
 ```
 
-The explicit table format masks stored credentials and overrides any
-`UNIFI_OUTPUT` setting. JSON/YAML config output can expose stored secrets.
-The config display shows saved configuration; account for flag and
+Config output masks stored credentials in every format. The config
+display shows saved configuration; account for flag and
 environment overrides separately. With Session HTTP access, inspect
 subsystem health:
 

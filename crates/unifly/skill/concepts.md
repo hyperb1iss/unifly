@@ -37,12 +37,12 @@ and `%APPDATA%\unifly\config\config.toml` on Windows. Use named profiles with
 `-p NAME` or `UNIFI_PROFILE` for multiple controllers. Local setup uses
 `unifly config init`; cloud setup uses `unifly config cloud-setup`.
 
-Inspect saved configuration with `unifly config show -o table`. Table
-output masks stored API keys and passwords; JSON/YAML output can expose
-them. Always specify `-o table` here, even when it is normally the default,
-because `UNIFI_OUTPUT` can select another format. The display does not
-resolve all command-line or environment overrides. Account for those
-overrides when checking the actual controller, site, or credentials.
+Inspect saved configuration with `unifly config show`. Every output format
+masks stored API keys and passwords as `****`, along with the arguments of
+a `totp_command`, so JSON output is as safe to read as the table. The
+display does not resolve all command-line or environment overrides.
+Account for those overrides when checking the actual controller, site, or
+credentials.
 
 Connection values generally resolve as flag/environment, profile,
 `[defaults]`, then built-in fallback. The timeout fallback is 30 seconds.
