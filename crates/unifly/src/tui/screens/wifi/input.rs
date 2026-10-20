@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::WifiScreen;
 use crate::tui::action::{Action, WifiSortField, WifiSubTab};
-use crate::tui::widgets::click::Click;
+use crate::tui::widgets::click::{self, Click};
 
 impl WifiScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -88,17 +88,44 @@ impl WifiScreen {
         }
     }
 
-    /// A click on a sub-tab switches to it, like `Tab`.
+    /// Mouse and touch input: sub-tabs and rows by click, the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
+        if let Some(delta) = click::wheel_delta(mouse) {
+            self.move_selection(delta);
             return None;
-        };
+        }
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Tab(index) => self.click_sub_tab(index),
+            Click::Row(index) => self.click_row(index),
+            _ => None,
+        }
+    }
+
+    /// A sub-tab switches to it, like `Tab`.
+    fn click_sub_tab(&mut self, index: usize) -> Option<Action> {
         let tab = *WifiSubTab::ALL.get(index)?;
         if tab == self.sub_tab {
             return None;
         }
         self.sub_tab = tab;
         Some(Action::WifiSubTab(tab))
+    }
+
+    /// A row selects it, and a second tap acts like `Enter`. An open client
+    /// detail follows a tap on another client.
+    fn click_row(&mut self, index: usize) -> Option<Action> {
+        if self.active_table_state().selected() == Some(index) {
+            return self.handle_enter();
+        }
+        self.active_table_state().select(Some(index));
+        self.update_focus_from_selection();
+        if self.detail_open && self.sub_tab == WifiSubTab::Clients {
+            return self
+                .selected_client_ip()
+                .map(Action::RequestWifiClientDetail);
+        }
+        None
     }
 
     pub(super) fn move_selection(&mut self, delta: isize) {

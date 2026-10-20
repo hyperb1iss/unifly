@@ -102,12 +102,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.ap_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
     pub(super) fn render_client_table(&self, frame: &mut Frame, area: Rect) {
@@ -202,12 +204,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.client_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
     pub(super) fn render_neighbors(&self, frame: &mut Frame, area: Rect) {
@@ -260,12 +264,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.neighbor_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
     pub(super) fn render_roaming(&self, frame: &mut Frame, area: Rect) {
@@ -313,12 +319,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = table_rows.len();
         let table = Table::new(table_rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.roam_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 }
 

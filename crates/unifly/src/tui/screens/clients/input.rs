@@ -3,7 +3,7 @@ use super::ClientsScreen;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, ClientTypeFilter};
-use crate::tui::widgets::click::Click;
+use crate::tui::widgets::click::{self, Click};
 
 impl ClientsScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -43,11 +43,7 @@ impl ClientsScreen {
                 self.cycle_filter();
                 Some(Action::FilterClientType(self.filter))
             }
-            KeyCode::Enter => self.selected_client_id().map(|id| {
-                self.detail_open = true;
-                self.detail_client_id = Some(id.clone());
-                Action::OpenClientDetail(id)
-            }),
+            KeyCode::Enter => self.open_selected_detail(),
             KeyCode::Char('b') => self.selected_client_id().map(Action::RequestBlockClient),
             KeyCode::Char('B') => self.selected_client_id().map(Action::RequestUnblockClient),
             KeyCode::Char('x') => self.selected_client_id().map(Action::RequestKickClient),
@@ -86,21 +82,51 @@ impl ClientsScreen {
         }
     }
 
-    /// A click on a type filter selects it, like `Tab`. The filters stay
-    /// put while a client's detail is open, as they do for keys.
+    /// Mouse and touch input: filters and rows by click, the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        if self.detail_open {
-            return None;
+        if let Some(delta) = click::wheel_delta(mouse) {
+            self.move_selection(delta);
+            return self
+                .detail_open
+                .then(|| self.open_selected_detail())
+                .flatten();
         }
-        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
-            return None;
-        };
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Tab(index) => self.click_filter(index),
+            Click::Row(index) => self.click_row(index),
+            _ => None,
+        }
+    }
+
+    /// A type filter selects it, like `Tab`. An open detail closes, since
+    /// its client may not pass the new filter.
+    fn click_filter(&mut self, index: usize) -> Option<Action> {
         let filter = *ClientTypeFilter::ALL.get(index)?;
         if filter == self.filter {
             return None;
         }
+        self.detail_open = false;
+        self.detail_client_id = None;
         self.set_filter(filter);
         Some(Action::FilterClientType(filter))
+    }
+
+    /// A row selects its client, and a second tap opens it, like `Enter`.
+    /// With a detail open, the detail follows the tapped client.
+    fn click_row(&mut self, index: usize) -> Option<Action> {
+        let again = self.selected_index() == index;
+        self.select(index);
+        (self.detail_open || again)
+            .then(|| self.open_selected_detail())
+            .flatten()
+    }
+
+    fn open_selected_detail(&mut self) -> Option<Action> {
+        let id = self.selected_client_id()?;
+        self.detail_open = true;
+        self.detail_client_id = Some(id.clone());
+        Some(Action::OpenClientDetail(id))
     }
 
     fn handle_detail_key(&mut self, key: KeyEvent) -> Option<Action> {
@@ -157,14 +183,17 @@ mod tests {
     }
 
     #[test]
-    fn filters_ignore_clicks_while_a_detail_is_open() {
+    fn a_filter_click_closes_an_open_detail() {
         let mut screen = ClientsScreen::new();
         let rows = render(&screen);
         screen.detail_open = true;
 
         let action = screen.handle_mouse_input(click_label(&rows, "Wireless", "Wired"));
 
-        assert!(action.is_none());
-        assert_eq!(screen.filter, ClientTypeFilter::All);
+        assert!(matches!(
+            action,
+            Some(Action::FilterClientType(ClientTypeFilter::Wired))
+        ));
+        assert!(!screen.detail_open);
     }
 }

@@ -74,13 +74,16 @@ impl App {
     /// Handle mouse events: the sponsor button and the screen tabs first,
     /// then the active screen.
     pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
-        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-            // A click can change screen state without dispatching an
-            // invalidating action (a stats period, a settings toggle).
+        // Presses, drags, and wheel turns can change screen state without
+        // dispatching an invalidating action (a selection, a settings
+        // toggle). Bare pointer motion changes nothing and stays out.
+        if !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Up(_)) {
             self.needs_redraw = true;
-            if let Some(action) = self.check_donate_click(mouse.column, mouse.row) {
-                return Ok(Some(action));
-            }
+        }
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
+            && let Some(action) = self.check_donate_click(mouse.column, mouse.row)
+        {
+            return Ok(Some(action));
         }
 
         // Overlays hold the input while they are up, as they do for keys.
@@ -289,14 +292,28 @@ mod tests {
     }
 
     #[test]
-    fn a_click_reopens_the_render_gate() {
+    fn clicks_drags_and_wheel_turns_reopen_the_render_gate() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        use crate::tui::widgets::click::mouse;
+
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::ScrollDown,
+        ] {
+            let mut app = dashboard_app();
+            app.needs_redraw = false;
+            app.handle_mouse_event(mouse(kind, 0, 0))
+                .expect("mouse handling");
+            assert!(app.should_draw(), "{kind:?}");
+        }
+
         let mut app = dashboard_app();
         app.needs_redraw = false;
-
-        app.handle_mouse_event(left_click(0, 0))
-            .expect("click handling");
-
-        assert!(app.should_draw());
+        app.handle_mouse_event(mouse(MouseEventKind::Moved, 0, 0))
+            .expect("mouse handling");
+        assert!(!app.should_draw(), "pointer motion");
     }
 
     #[test]

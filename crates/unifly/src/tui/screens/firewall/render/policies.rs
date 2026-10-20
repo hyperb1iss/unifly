@@ -104,12 +104,14 @@ impl FirewallScreen {
             .map(|(index, cells)| policy_row(index == selected_idx, cells, show_zones))
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, area.width))
             .header(header)
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.policy_table;
         frame.render_stateful_widget(table, area, &mut state);
+        self.hits.borrow_mut().push_table_rows(area, &state, len);
     }
 
     pub(super) fn render_zones(&self, frame: &mut Frame, area: Rect) {
@@ -159,12 +161,14 @@ impl FirewallScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, area.width))
             .header(header)
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.zone_table;
         frame.render_stateful_widget(table, area, &mut state);
+        self.hits.borrow_mut().push_table_rows(area, &state, len);
     }
 
     fn zone_names(&self) -> HashMap<&EntityId, &str> {

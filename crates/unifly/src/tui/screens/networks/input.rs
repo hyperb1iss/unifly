@@ -1,9 +1,10 @@
 use super::NetworksScreen;
 use super::state::NetworkEditState;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::Action;
+use crate::tui::widgets::click::{self, Click};
 
 impl NetworksScreen {
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
@@ -56,6 +57,28 @@ impl NetworksScreen {
             }
             _ => None,
         }
+    }
+
+    /// Mouse and touch input: rows by click, the list by wheel. The edit
+    /// form holds the input while it is open.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if self.edit_state.is_some() {
+            return None;
+        }
+        if let Some(delta) = click::wheel_delta(mouse) {
+            self.move_selection(delta);
+            return None;
+        }
+        let Click::Row(index) = self.hits.borrow().clicked(mouse)? else {
+            return None;
+        };
+        // A second tap on the selected row toggles its detail, like `Enter`.
+        if self.selected_index() == index {
+            self.detail_open = !self.detail_open;
+        } else {
+            self.select(index);
+        }
+        None
     }
 
     fn handle_edit_key(&mut self, key: KeyEvent) -> Option<Action> {

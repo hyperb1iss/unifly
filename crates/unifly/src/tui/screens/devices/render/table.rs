@@ -220,12 +220,14 @@ fn render_device_table(
         })
         .collect();
 
+    let len = rows.len();
     let table = Table::new(rows, plan_columns(&columns, area.width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
     let mut state = screen.table_state;
     frame.render_stateful_widget(table, area, &mut state);
+    screen.hits.borrow_mut().push_table_rows(area, &state, len);
 }
 
 fn render_table_row(
@@ -388,6 +390,60 @@ mod tests {
 
         assert!(screen.handle_mouse_input(ports).is_none());
         assert_eq!(screen.detail_tab, DeviceDetailTab::Overview);
+    }
+
+    #[test]
+    fn tapping_rows_selects_then_opens_and_the_detail_follows() {
+        use crossterm::event::MouseEventKind;
+
+        use crate::tui::action::DeviceDetailTab;
+        use crate::tui::widgets::click::{click_label, mouse};
+
+        let draw = |screen: &DevicesScreen| {
+            render_lines(120, 30, |frame, area| screen.render_screen(frame, area))
+        };
+        let selected = |screen: &DevicesScreen| {
+            screen
+                .selected_device()
+                .and_then(|device| device.name.clone())
+        };
+        let shown = |screen: &DevicesScreen| {
+            screen
+                .detail_device()
+                .and_then(|device| device.name.clone())
+        };
+        let mut screen = screen();
+
+        let rows = draw(&screen);
+        let action = screen.handle_mouse_input(click_label(&rows, "ap-roof", "ap-roof"));
+        assert!(action.is_none());
+        assert_eq!(selected(&screen).as_deref(), Some("ap-roof"));
+        assert!(!screen.detail_open);
+
+        let rows = draw(&screen);
+        let action = screen.handle_mouse_input(click_label(&rows, "ap-roof", "ap-roof"));
+        assert!(matches!(action, Some(Action::OpenDeviceDetail(_))));
+        assert_eq!(shown(&screen).as_deref(), Some("ap-roof"));
+
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "Performance", "Ports"));
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "sw-core", "sw-core"));
+        assert_eq!(shown(&screen).as_deref(), Some("sw-core"));
+        assert_eq!(
+            screen.detail_tab,
+            DeviceDetailTab::Ports,
+            "the tab stays put"
+        );
+
+        draw(&screen);
+        screen.handle_mouse_input(mouse(MouseEventKind::ScrollUp, 10, 10));
+        assert_eq!(
+            shown(&screen).as_deref(),
+            Some("ap-roof"),
+            "the wheel moves it too"
+        );
+        assert_eq!(screen.detail_tab, DeviceDetailTab::Ports);
     }
 
     fn render(width: u16) -> String {

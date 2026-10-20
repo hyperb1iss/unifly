@@ -14,6 +14,7 @@ use super::detail::render_detail;
 use super::edit::render_edit_overlay;
 
 pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Rect) {
+    screen.hits.borrow_mut().clear();
     let count = screen.networks.len();
     let title = format!(" Networks ({count}) ");
     let block = Block::default()
@@ -68,12 +69,17 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         .map(|(index, cells)| render_table_row(index == selected_idx, cells))
         .collect();
 
+    let len = rows.len();
     let table = Table::new(rows, plan_columns(&columns, layout[0].width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
     let mut state = screen.table_state;
     frame.render_stateful_widget(table, layout[0], &mut state);
+    screen
+        .hits
+        .borrow_mut()
+        .push_table_rows(layout[0], &state, len);
 
     let hints = Line::from(vec![
         Span::styled("  j/k ", theme::key_hint_key()),

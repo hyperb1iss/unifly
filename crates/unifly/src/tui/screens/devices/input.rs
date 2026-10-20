@@ -3,7 +3,7 @@ use super::DevicesScreen;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, DeviceDetailTab};
-use crate::tui::widgets::click::Click;
+use crate::tui::widgets::click::{self, Click};
 
 impl DevicesScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -89,20 +89,60 @@ impl DevicesScreen {
         }
     }
 
-    /// A click on a detail tab switches to it, like `h`/`l`.
+    /// Mouse and touch input: tabs and rows by click, the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        if !self.detail_open {
-            return None;
+        if let Some(delta) = click::wheel_delta(mouse) {
+            return self.scroll(delta);
         }
-        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
-            return None;
-        };
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Tab(index) => self.click_detail_tab(index),
+            Click::Row(index) => self.click_row(index),
+            _ => None,
+        }
+    }
+
+    /// A detail tab switches to it, like `h`/`l`.
+    fn click_detail_tab(&mut self, index: usize) -> Option<Action> {
         let tab = *DeviceDetailTab::ALL.get(index)?;
         if tab == self.detail_tab {
             return None;
         }
         self.detail_tab = tab;
         Some(Action::DeviceDetailTab(tab))
+    }
+
+    /// A row selects its device, and a second tap opens it, like `Enter`.
+    /// With a detail open, the detail follows the tapped device.
+    fn click_row(&mut self, index: usize) -> Option<Action> {
+        if self.detail_open {
+            self.select(index);
+            return self.retarget_detail();
+        }
+        if self.selected_row_index(&self.filtered_devices()) == Some(index) {
+            return self.open_selected_detail().map(Action::OpenDeviceDetail);
+        }
+        self.select(index);
+        None
+    }
+
+    /// The wheel moves the selection, and an open detail follows it.
+    fn scroll(&mut self, delta: isize) -> Option<Action> {
+        self.move_selection(delta);
+        if self.detail_open {
+            self.retarget_detail()
+        } else {
+            None
+        }
+    }
+
+    /// Point the open detail at the selected device, on the same tab, so
+    /// stepping from switch to switch stays on their ports.
+    fn retarget_detail(&mut self) -> Option<Action> {
+        let tab = self.detail_tab;
+        let opened = self.open_selected_detail();
+        self.detail_tab = tab;
+        opened.map(Action::OpenDeviceDetail)
     }
 }
 

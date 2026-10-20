@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, Direction, FirewallSubTab};
-use crate::tui::widgets::click::Click;
+use crate::tui::widgets::click::{self, Click};
 
 use super::FirewallScreen;
 
@@ -63,11 +63,25 @@ impl FirewallScreen {
         }
     }
 
-    /// A click on a sub-tab switches to it, like `h`/`l`.
+    /// Mouse and touch input: sub-tabs and rows by click, the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
+        if let Some(delta) = click::wheel_delta(mouse) {
+            self.move_selection(delta);
             return None;
-        };
+        }
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Tab(index) => self.click_sub_tab(index),
+            Click::Row(index) => {
+                self.select(index);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// A sub-tab switches to it, like `h`/`l`.
+    fn click_sub_tab(&mut self, index: usize) -> Option<Action> {
         let tab = *FirewallSubTab::ALL.get(index)?;
         if tab == self.sub_tab {
             return None;

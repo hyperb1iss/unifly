@@ -243,11 +243,11 @@ pub fn is_left_press(mouse: MouseEvent) -> bool {
     mouse.kind == MouseEventKind::Down(MouseButton::Left)
 }
 
-/// The arrow key a wheel turn stands in for: down a list, or back up it.
-pub fn wheel_key(mouse: MouseEvent) -> Option<KeyEvent> {
+/// The rows a wheel turn moves through a list: one down, or one back up.
+pub fn wheel_delta(mouse: MouseEvent) -> Option<isize> {
     match mouse.kind {
-        MouseEventKind::ScrollDown => Some(KeyCode::Down.into()),
-        MouseEventKind::ScrollUp => Some(KeyCode::Up.into()),
+        MouseEventKind::ScrollDown => Some(1),
+        MouseEventKind::ScrollUp => Some(-1),
         _ => None,
     }
 }

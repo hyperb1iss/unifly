@@ -205,12 +205,14 @@ fn render_client_table(
         .map(|(index, (client, cells))| render_table_row(index == selected_idx, client, cells))
         .collect();
 
+    let len = rows.len();
     let table = Table::new(rows, plan_columns(&columns, area.width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
     let mut state = screen.table_state;
     frame.render_stateful_widget(table, area, &mut state);
+    screen.hits.borrow_mut().push_table_rows(area, &state, len);
 }
 
 /// Optional columns the Clients table has room for.
@@ -352,6 +354,42 @@ mod tests {
         screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![Arc::new(network)])));
         screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![Arc::new(client)])));
         screen
+    }
+
+    #[test]
+    fn tapping_a_row_selects_it_and_a_second_tap_opens_it() {
+        use crate::tui::widgets::click::click_label;
+
+        let mut screen = screen();
+        let mut second = (*screen.clients[0]).clone();
+        second.id = unifly_api::EntityId::Legacy("client-2".into());
+        second.mac = "82:8b:02:66:7c:86".parse().expect("mac");
+        second.name = Some("edit-bay-render-node".into());
+        let first = Arc::clone(&screen.clients[0]);
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            first,
+            Arc::new(second),
+        ])));
+        let draw = |screen: &ClientsScreen| {
+            render_lines(120, 12, |frame, area| screen.render_screen(frame, area))
+        };
+
+        let rows = draw(&screen);
+        let row = "edit-bay-render-node";
+        assert!(
+            screen
+                .handle_mouse_input(click_label(&rows, row, row))
+                .is_none()
+        );
+        assert_eq!(
+            screen.selected_client_id(),
+            Some(unifly_api::EntityId::Legacy("client-2".into()))
+        );
+
+        let rows = draw(&screen);
+        let action = screen.handle_mouse_input(click_label(&rows, row, row));
+        assert!(matches!(action, Some(Action::OpenClientDetail(_))));
+        assert!(screen.detail_open);
     }
 
     fn render(width: u16) -> String {

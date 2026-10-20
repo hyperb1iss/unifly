@@ -5,7 +5,7 @@ mod punchcard;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -19,6 +19,7 @@ use unifly_api::model::EventSeverity;
 use crate::tui::action::Action;
 use crate::tui::component::Component;
 use crate::tui::theme;
+use crate::tui::widgets::click;
 
 use punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
 
@@ -99,6 +100,25 @@ impl Component for EventsScreen {
             }
             _ => Ok(None),
         }
+    }
+
+    /// The wheel scrolls the feed. Scrolling back through a live feed
+    /// pauses it first, so the rows hold still under the wheel.
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        let Some(delta) = click::wheel_delta(mouse) else {
+            return Ok(None);
+        };
+        let paused = (delta < 0 && !self.paused).then(|| {
+            self.paused = true;
+            Action::ToggleEventPause
+        });
+        let key = if delta < 0 {
+            KeyCode::Up
+        } else {
+            KeyCode::Down
+        };
+        let scrolled = self.handle_key_event(key.into())?;
+        Ok(paused.or(scrolled))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
@@ -290,6 +310,31 @@ mod tests {
             }))
             .expect("event fixture should deserialize"),
         )
+    }
+
+    #[test]
+    fn scrolling_back_through_a_live_feed_pauses_it() {
+        use crossterm::event::MouseEventKind;
+
+        use crate::tui::widgets::click::mouse;
+
+        let mut screen = EventsScreen::new();
+        for index in 0..5 {
+            screen.events.push(event(index));
+        }
+
+        let action = screen
+            .handle_mouse_event(mouse(MouseEventKind::ScrollUp, 5, 5))
+            .expect("wheel handling");
+        assert!(matches!(action, Some(Action::ToggleEventPause)));
+        assert!(screen.paused);
+        assert_eq!(screen.scroll_offset, 1);
+
+        screen
+            .handle_mouse_event(mouse(MouseEventKind::ScrollDown, 5, 5))
+            .expect("wheel handling");
+        assert!(screen.paused, "scrolling forward keeps the pause");
+        assert_eq!(screen.scroll_offset, 0);
     }
 
     #[test]
