@@ -292,12 +292,13 @@ fn render_json<T: serde::Serialize + ?Sized>(data: &T, compact: bool) -> String 
 
 /// YAML output.
 ///
-/// serde_yaml_ng emits YAML 1.2, where a bare `12:34:56` is a string, but
-/// YAML 1.1 readers such as PyYAML read colon-separated digits as a base-60
-/// number. Single-line strings that contain a colon therefore come out
-/// single-quoted. The emitter picks scalar styles itself, so those strings
-/// go in as unique plain placeholders and are swapped for their quoted form
-/// afterwards: the choice is made on values, never by re-parsing lines.
+/// serde_yaml_ng emits YAML 1.2, where a bare `12:34:56` or `off` is a
+/// string, but YAML 1.1 readers such as PyYAML read colon-separated digits
+/// as a base-60 number and words like `off` or `yes` as booleans. Strings
+/// like those therefore come out single-quoted. The emitter picks scalar
+/// styles itself, so they go in as unique plain placeholders and are swapped
+/// for their quoted form afterwards: the choice is made on values, never by
+/// re-parsing lines.
 pub(crate) fn render_yaml<T: serde::Serialize + ?Sized>(data: &T) -> String {
     yaml_with_quoted_colons(data).expect("serialization should not fail")
 }
@@ -349,10 +350,19 @@ fn contains_text(value: &serde_yaml_ng::Value, needle: &str) -> bool {
     }
 }
 
+/// Plain scalars a YAML 1.1 reader resolves to a boolean or null.
+const YAML_1_1_BOOL_AND_NULL_WORDS: &[&str] = &[
+    "y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "true", "True", "TRUE", "false",
+    "False", "FALSE", "on", "On", "ON", "off", "Off", "OFF", "~", "null", "Null", "NULL", "",
+];
+
 /// Whether `text` should be emitted single-quoted. Multi-line strings stay
 /// with the emitter, which writes them as block scalars that no reader
 /// types, and so do strings a single-quoted scalar cannot carry verbatim.
 fn wants_single_quotes(text: &str) -> bool {
+    if YAML_1_1_BOOL_AND_NULL_WORDS.contains(&text) {
+        return true;
+    }
     text.contains(':')
         && text.chars().all(|c| {
             !c.is_control()
@@ -489,6 +499,33 @@ mod tests {
     fn yaml_handles_keys_too_long_to_be_implicit() {
         let key = format!("{}:x", "k".repeat(1021));
         round_trip(&json!({ key: "v:1" }));
+    }
+
+    #[test]
+    fn yaml_quotes_yaml_1_1_boolean_and_null_words() {
+        let yaml = round_trip(&json!({
+            "poe": "off",
+            "modes": ["on", "Yes", "n", "NULL", "~", "auto"],
+            "Off": "kept",
+            "enabled": false,
+            "uplink": null,
+            "label": "",
+        }));
+        for expected in [
+            "poe: 'off'",
+            "- 'on'",
+            "- 'Yes'",
+            "- 'n'",
+            "- 'NULL'",
+            "- '~'",
+            "- auto",
+            "'Off': kept",
+            "enabled: false",
+            "uplink: null",
+            "label: ''",
+        ] {
+            assert!(yaml.contains(expected), "missing {expected:?} in:\n{yaml}");
+        }
     }
 
     #[test]
