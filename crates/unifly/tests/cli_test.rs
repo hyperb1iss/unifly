@@ -2219,3 +2219,65 @@ async fn test_demo_mode_from_the_config_file_is_refused_too() {
         .assert()
         .success();
 }
+
+#[tokio::test]
+async fn test_wifi_channels_renders_every_country_as_one_document() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/api/s/default/stat/current-channel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "meta": { "rc": "ok" },
+            "data": [
+                { "code": "840", "key": "US", "name": "United States",
+                  "channels_ng": [1, 6, 11], "channels_na": [36, 40] },
+                { "code": "124", "key": "CA", "name": "Canada",
+                  "channels_ng": [1, 6, 11] },
+            ],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let json_rows = |format: &str| -> Vec<serde_json::Value> {
+        let output = mock_cmd(&server)
+            .args(["wifi", "channels", "-o", format])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", combined_output(&output));
+        let rows: serde_json::Value = if format == "yaml" {
+            serde_yaml_ng::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("invalid YAML ({err}): {}", combined_output(&output)))
+        } else {
+            serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("invalid JSON ({err}): {}", combined_output(&output)))
+        };
+        rows.as_array().cloned().unwrap_or_default()
+    };
+
+    for format in ["json", "json-compact", "yaml"] {
+        let rows = json_rows(format);
+        let countries: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row["country"].as_str())
+            .collect();
+        assert_eq!(
+            countries,
+            ["United States", "United States", "Canada"],
+            "{format}: {rows:?}"
+        );
+    }
+
+    let plain = mock_cmd(&server)
+        .args(["wifi", "channels", "-o", "plain"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&plain.stdout).lines().count(),
+        3,
+        "{}",
+        combined_output(&plain)
+    );
+}

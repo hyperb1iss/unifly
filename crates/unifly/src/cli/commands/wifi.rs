@@ -11,7 +11,9 @@ use unifly_api::{
     UpdateWifiBroadcastRequest,
 };
 
-use crate::cli::args::{GlobalOpts, WifiArgs, WifiBroadcastType, WifiCommand, WifiSecurity};
+use crate::cli::args::{
+    GlobalOpts, OutputFormat, WifiArgs, WifiBroadcastType, WifiCommand, WifiSecurity,
+};
 use crate::cli::error::CliError;
 use crate::cli::output;
 
@@ -72,7 +74,7 @@ struct NeighborRow {
     observer: String,
 }
 
-#[derive(Tabled, Serialize)]
+#[derive(Tabled, Serialize, Clone)]
 struct ChannelRow {
     #[tabled(rename = "Band")]
     band: String,
@@ -80,6 +82,11 @@ struct ChannelRow {
     channels: String,
     #[tabled(rename = "Count")]
     count: String,
+    /// The table titles each country instead of repeating it per row.
+    #[tabled(skip)]
+    country: Option<String>,
+    #[tabled(skip)]
+    country_code: Option<String>,
 }
 
 fn wifi_row(w: &Arc<WifiBroadcast>, p: &output::Painter) -> WifiRow {
@@ -131,6 +138,8 @@ fn channel_rows(record: &ChannelAvailability, p: &output::Painter) -> Vec<Channe
             && !chs.is_empty()
         {
             rows.push(ChannelRow {
+                country: record.name.clone().or_else(|| record.key.clone()),
+                country_code: record.code.clone(),
                 band: p.name(label),
                 channels: p.muted(
                     &chs.iter()
@@ -216,28 +225,35 @@ pub async fn handle(
 
         WifiCommand::Channels => {
             let records = controller.list_channels().await?;
-            // Print country header, then per-band channel rows.
-            for record in &records {
-                let country = record
-                    .name
-                    .as_deref()
-                    .or(record.key.as_deref())
-                    .unwrap_or("Unknown");
-                let code = record.code.as_deref().unwrap_or("-");
-                if !global.quiet && matches!(global.output, crate::cli::args::OutputFormat::Table) {
-                    eprintln!("Country: {country} ({code})");
+            if matches!(global.output, OutputFormat::Table) {
+                // A titled table per country reads best on a terminal.
+                for record in &records {
+                    let country = record
+                        .name
+                        .as_deref()
+                        .or(record.key.as_deref())
+                        .unwrap_or("Unknown");
+                    let code = record.code.as_deref().unwrap_or("-");
+                    if !global.quiet {
+                        eprintln!("Country: {country} ({code})");
+                    }
+                    let rows = channel_rows(record, &p);
+                    let out =
+                        output::render_list(&global.output, &rows, ChannelRow::clone, |row| {
+                            row.band.clone()
+                        });
+                    output::print_output(&out, global.quiet);
                 }
-                let rows: Vec<ChannelRow> = channel_rows(record, &p);
-                let out = output::render_list(
-                    &global.output,
-                    &rows,
-                    |row| ChannelRow {
-                        band: row.band.clone(),
-                        channels: row.channels.clone(),
-                        count: row.count.clone(),
-                    },
-                    |row| row.band.clone(),
-                );
+            } else {
+                // Machine formats need a single document, so every country's
+                // rows go out together and carry their country.
+                let rows: Vec<ChannelRow> = records
+                    .iter()
+                    .flat_map(|record| channel_rows(record, &p))
+                    .collect();
+                let out = output::render_list(&global.output, &rows, ChannelRow::clone, |row| {
+                    row.band.clone()
+                });
                 output::print_output(&out, global.quiet);
             }
             Ok(())
