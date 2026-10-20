@@ -560,7 +560,14 @@ fn test_api_command_rejects_invalid_method() {
 fn test_devices_pending_list_flags_parse() {
     unifly_cmd()
         .args([
-            "devices", "pending", "--limit", "1", "--offset", "1", "--filter", "pending",
+            "devices",
+            "pending",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+            "--filter",
+            "state.eq('pending')",
         ])
         .assert()
         .failure()
@@ -584,6 +591,44 @@ fn test_devices_list_supports_expression_filter_syntax() {
                 .or(predicate::str::contains("controller"))
                 .or(predicate::str::contains("profile")),
         );
+}
+
+#[test]
+fn test_unparseable_filter_is_a_usage_error() {
+    for filter in [
+        "garbage((",
+        "name.starts_with('x')",
+        "name.eq('a','b')",
+        "name",
+    ] {
+        unifly_cmd()
+            .args([
+                "--demo-fleet",
+                "clients",
+                "list",
+                "-o",
+                "json",
+                "--filter",
+                filter,
+            ])
+            .assert()
+            .failure()
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("--filter"));
+    }
+}
+
+#[test]
+fn test_valid_filter_still_matches_on_the_demo_fleet() {
+    let devices = demo_json(&["devices", "list", "--filter", "name.eq('AP-ROOF')"]);
+    let names: Vec<&str> = devices
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|device| device["name"].as_str())
+        .collect();
+    assert_eq!(names, ["ap-roof"]);
 }
 
 #[test]

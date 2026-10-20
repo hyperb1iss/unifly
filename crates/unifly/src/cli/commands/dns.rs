@@ -82,10 +82,7 @@ pub async fn handle(
     match args.command {
         DnsCommand::List(list) => {
             let all = controller.dns_policies_snapshot();
-            let snap =
-                util::apply_list_args(util::order::dns_policies(&all), &list, |d, filter| {
-                    util::matches_json_filter(d, filter)
-                });
+            let snap = util::apply_list_args(util::order::dns_policies(&all), &list);
             let out = output::render_list(
                 &global.output,
                 &snap,

@@ -69,10 +69,7 @@ pub async fn handle(
     match args.command {
         TrafficListsCommand::List(list) => {
             let all = controller.traffic_matching_lists_snapshot();
-            let snap =
-                util::apply_list_args(util::order::traffic_lists(&all), &list, |t, filter| {
-                    util::matches_json_filter(t, filter)
-                });
+            let snap = util::apply_list_args(util::order::traffic_lists(&all), &list);
             let out = output::render_list(
                 &global.output,
                 &snap,

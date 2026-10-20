@@ -10,7 +10,7 @@ pub mod order;
 mod resolve;
 
 pub use access::{ensure_integration_access, ensure_session_access};
-pub use filter::{apply_list_args, matches_json_filter};
+pub use filter::apply_list_args;
 pub use io::{confirm, read_json_file};
 pub use resolve::{
     require_mac, resolve_client, resolve_client_ip, resolve_client_mac, resolve_device,

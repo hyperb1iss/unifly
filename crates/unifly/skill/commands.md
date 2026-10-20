@@ -59,8 +59,10 @@ state.in('Online','Offline')
 
 Field paths follow the JSON shape and support nested fields. Boolean
 combinations and comparison operators are unsupported in local filters.
-Invalid expressions silently match nothing. Hotspot purge passes its filter
-to the controller and uses the server's filter language instead.
+A malformed expression fails with exit 2 before anything is fetched, but a
+well-formed one naming a missing field matches nothing and exits 0. Hotspot
+purge passes its filter to the controller and uses the server's filter
+language instead.
 
 Create commands generally print the created record on stdout and a
 confirmation on stderr. Sites create and system backup create have no

@@ -95,7 +95,6 @@ pub(super) async fn handle(
                     .into_iter()
                     .filter(|g| type_filter.is_none_or(|t| g.group_type == t)),
                 &list,
-                util::matches_json_filter,
             );
             let out = output::render_list(
                 &global.output,

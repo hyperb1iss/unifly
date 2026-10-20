@@ -70,11 +70,7 @@ pub async fn handle(
 
     match args.command {
         DpiCommand::Apps(list) => {
-            let apps = util::apply_list_args(
-                controller.list_dpi_applications().await?,
-                &list,
-                util::matches_json_filter,
-            );
+            let apps = util::apply_list_args(controller.list_dpi_applications().await?, &list);
             let out = output::render_list(
                 &global.output,
                 &apps,
@@ -114,11 +110,7 @@ pub async fn handle(
         }
 
         DpiCommand::Categories(list) => {
-            let cats = util::apply_list_args(
-                controller.list_dpi_categories().await?,
-                &list,
-                util::matches_json_filter,
-            );
+            let cats = util::apply_list_args(controller.list_dpi_categories().await?, &list);
             let out = output::render_list(
                 &global.output,
                 &cats,

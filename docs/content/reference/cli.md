@@ -462,7 +462,7 @@ unifly clients list --filter "name.contains('ring')"
 unifly networks list --filter "vlan.in('20','30','40')"
 ```
 
-Field paths address the JSON output shape (dot notation for nesting). An unparseable expression matches nothing and exits 0, so a silent empty result usually means a typo in the filter, not an empty collection.
+Field paths address the JSON output shape (dot notation for nesting). An unparseable expression fails with exit code 2 before the command fetches anything. A well-formed expression that names a field the output lacks still matches nothing and exits 0, so a silent empty result usually means a misspelled field, not an empty collection. An empty expression applies no filter.
 
 The full server-side Integration filter DSL (`neq`, `gt`/`lt`, `startswith`, `&&`/`||`) applies only to `hotspot purge --filter`, which passes the expression to the controller.
 

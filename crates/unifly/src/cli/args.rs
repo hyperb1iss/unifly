@@ -29,6 +29,8 @@ mod dns;
 mod dpi;
 #[path = "args/events.rs"]
 mod events;
+#[path = "args/filter.rs"]
+mod filter;
 #[path = "args/firewall.rs"]
 mod firewall;
 #[path = "args/hotspot.rs"]
@@ -70,6 +72,7 @@ pub use devices::*;
 pub use dns::*;
 pub use dpi::*;
 pub use events::*;
+pub use filter::*;
 pub use firewall::*;
 pub use hotspot::*;
 pub use nat::*;

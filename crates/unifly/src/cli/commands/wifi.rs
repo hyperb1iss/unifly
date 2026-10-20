@@ -182,10 +182,7 @@ pub async fn handle(
             util::ensure_integration_access(controller, "wifi").await?;
 
             let all = controller.wifi_broadcasts_snapshot();
-            let snap =
-                util::apply_list_args(util::order::wifi_broadcasts(&all), &list, |w, filter| {
-                    util::matches_json_filter(w, filter)
-                });
+            let snap = util::apply_list_args(util::order::wifi_broadcasts(&all), &list);
             let out = output::render_list(
                 &global.output,
                 &snap,
