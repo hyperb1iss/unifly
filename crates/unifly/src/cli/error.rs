@@ -167,6 +167,15 @@ pub enum CliError {
     )]
     DemoUnavailable { command: String, supported: String },
 
+    #[error("`unifly {command}` cannot sanitize its output for demo mode")]
+    #[diagnostic(code(unifi::demo_not_sanitized))]
+    DemoNotSanitized {
+        command: String,
+        /// Built by `demo_fleet::refuse_demo`, which knows the switch.
+        #[help]
+        help: String,
+    },
+
     #[error("'{feature}' is not yet implemented")]
     #[diagnostic(
         code(unifi::not_implemented),
@@ -303,7 +312,8 @@ impl CliError {
             | Self::Ambiguous { .. } => exit_code::USAGE,
             Self::Unsupported { .. }
             | Self::NotYetImplemented { .. }
-            | Self::DemoUnavailable { .. } => exit_code::PERMISSION,
+            | Self::DemoUnavailable { .. }
+            | Self::DemoNotSanitized { .. } => exit_code::PERMISSION,
             _ => exit_code::GENERAL,
         }
     }

@@ -2095,3 +2095,127 @@ async fn test_auth_failure_help_names_the_profile_in_use() {
     );
     assert!(!stderr.contains("current"), "{stderr}");
 }
+
+#[tokio::test]
+async fn test_demo_flag_never_prints_unsanitized_cli_output() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/clients"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
+            "data": [{
+                "id": "c56a4180-65aa-42ec-a945-5fd21dec0538",
+                "name": "Bob's iPhone",
+                "type": "WIRELESS",
+                "ipAddress": "10.0.0.50",
+                "connectedAt": null,
+                "macAddress": "aa:bb:cc:dd:ee:ff",
+                "access": {},
+            }],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    // Without --demo the client shows up as is.
+    mock_cmd(&server)
+        .args(["clients", "list", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Bob's iPhone"));
+
+    for demo in [["--demo"].as_slice(), [].as_slice()] {
+        let mut cmd = mock_cmd(&server);
+        if demo.is_empty() {
+            cmd.env("UNIFI_DEMO", "1");
+        }
+        cmd.args(demo)
+            .args(["clients", "list", "-o", "json"])
+            .assert()
+            .failure()
+            .code(5)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("demo mode"))
+            .stderr(predicate::str::contains("Bob").not());
+    }
+}
+
+#[test]
+fn test_demo_flag_still_runs_offline_and_synthetic_commands() {
+    unifly_cmd()
+        .args(["--demo", "--demo-fleet", "clients", "list", "-o", "json"])
+        .assert()
+        .success();
+    let tempdir = tempfile::tempdir().unwrap();
+    unifly_cmd_in(tempdir.path())
+        .args(["--demo", "config", "profiles"])
+        .assert()
+        .success();
+    unifly_cmd()
+        .args(["--demo", "completions", "bash"])
+        .assert()
+        .success();
+    unifly_cmd().args(["--demo", "skill"]).assert().success();
+}
+
+#[tokio::test]
+async fn test_demo_mode_from_the_config_file_is_refused_too() {
+    let server = mock_api_key_controller().await;
+    let tempdir = tempfile::tempdir().unwrap();
+    for (key, value) in [
+        ("controller", server.uri()),
+        ("auth_mode", "integration".into()),
+    ] {
+        unifly_cmd_in(tempdir.path())
+            .args(["config", "set", &format!("profiles.lab.{key}"), &value])
+            .assert()
+            .success();
+    }
+    let path = config_file(&tempdir);
+    let cfg = std::fs::read_to_string(&path).unwrap();
+    assert!(cfg.contains("[demo]\nenabled = false\n"), "{cfg}");
+    std::fs::write(
+        &path,
+        cfg.replace("[demo]\nenabled = false\n", "[demo]\nenabled = true\n"),
+    )
+    .unwrap();
+
+    // The refusal names the file and key that turn demo mode off.
+    let output = unifly_cmd_in(tempdir.path())
+        .args(["-p", "lab", "--api-key", MOCK_API_KEY, "clients", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "{}",
+        combined_output(&output)
+    );
+    assert!(output.stdout.is_empty(), "{}", combined_output(&output));
+    // miette wraps help text to the terminal width, even inside a path, so
+    // compare without whitespace.
+    let squeezed = |text: &str| text.split_whitespace().collect::<String>();
+    let stderr = squeezed(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("enabled=false"), "{stderr}");
+    assert!(
+        stderr.contains(&squeezed(&path.display().to_string())),
+        "{stderr}"
+    );
+
+    // Config commands stay usable, so the switch can be inspected and
+    // profiles managed while it is on.
+    for args in [&["config", "show"][..], &["config", "profiles"][..]] {
+        unifly_cmd_in(tempdir.path()).args(args).assert().success();
+    }
+
+    // The synthetic fleet never reads the config, so it still answers.
+    unifly_cmd_in(tempdir.path())
+        .args(["--demo-fleet", "clients", "list"])
+        .assert()
+        .success();
+}

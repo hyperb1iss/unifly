@@ -530,6 +530,8 @@ writes through a symlinked skill directory or file.
     --demo-seed <SEED>   Demo fleet seed (env UNIFI_DEMO_SEED)
 ```
 
+`--demo` sanitizes names, addresses, and SSIDs only in the TUI. Controller and cloud commands cannot sanitize their output, so in demo mode (`--demo`, `UNIFI_DEMO=1`, or `enabled = true` under `[demo]` in the config file) without `--demo-fleet` they exit with code 5 before they connect or read credentials, rather than print real data. The error names the switch that is on; no `config set` key covers the file switch, so set `enabled = false` under `[demo]` in the file to turn it off. Combined with `--demo-fleet`, the synthetic fleet answers as usual, and `config`, `skill`, and `completions` run in demo mode too.
+
 `--insecure` is tri-state: absent defers to the profile and `[defaults]`, `-k` / `--insecure` accepts self-signed certificates, and `--insecure=false` forces verification no matter what the config says. The explicit value requires the equals form (`--insecure false` does not parse). `--timeout` has no baked-in flag default; when the flag and `UNIFI_TIMEOUT` are absent, the profile's `timeout` wins, then `[defaults]`, then the built-in 30 seconds.
 
 ## Demo Fleet

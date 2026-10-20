@@ -5,7 +5,7 @@ use tracing_subscriber::EnvFilter;
 
 use unifly::cli::args::{Cli, Command, ConfigCommand, EventsCommand, GlobalOpts};
 use unifly::cli::commands;
-use unifly::cli::demo_fleet;
+use unifly::cli::demo_fleet::{self, DemoSwitch};
 use unifly::cli::error::CliError;
 use unifly::config::resolve;
 
@@ -81,6 +81,20 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
     // Refuse before anything reads config, the keyring, or the network.
     if cli.global.demo_fleet && !demo_fleet::supports(command_path) {
         return Err(demo_fleet::refuse(command_path));
+    }
+    // Demo mode comes from the flag, UNIFI_DEMO, or `[demo] enabled` in the
+    // config; the config is read only for commands that would refuse it.
+    if !demo_fleet::honors_demo(command_path, cli.global.demo_fleet) {
+        if cli.global.demo {
+            return Err(demo_fleet::refuse_demo(command_path, &DemoSwitch::Flag));
+        }
+        if resolve::load_config_or_default().demo.enabled {
+            let file = unifly::config::config_path();
+            return Err(demo_fleet::refuse_demo(
+                command_path,
+                &DemoSwitch::ConfigFile(file),
+            ));
+        }
     }
 
     let Cli { global, command } = cli;

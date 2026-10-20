@@ -1,8 +1,14 @@
-//! `--demo-fleet` for the CLI.
+//! `--demo-fleet` for the CLI, and the guard that keeps `--demo` to the TUI.
 //!
 //! A curated set of read-only commands answers from the synthetic demo
 //! fleet, so CLI screenshots need no controller. Everything else is refused
 //! up front, before any config file, keyring, or network access.
+//!
+//! Demo mode (`--demo`, `UNIFI_DEMO`, or `[demo] enabled`) sanitizes what
+//! the TUI draws. CLI output serializes whole records, which that sanitizer
+//! does not cover, so controller and cloud commands refuse demo mode rather
+//! than print real data under a setting that promises otherwise. The demo
+//! fleet is synthetic already and needs no sanitizing.
 
 use chrono::{DateTime, Utc};
 use clap::ArgMatches;
@@ -82,6 +88,43 @@ pub fn supports(path: &str) -> bool {
     SUPPORTED.contains(&path) || LOCAL.contains(&top)
 }
 
+/// Where demo mode was switched on.
+pub enum DemoSwitch {
+    /// `--demo` or `UNIFI_DEMO`.
+    Flag,
+    /// `enabled = true` under `[demo]` in the config file at this path.
+    ConfigFile(std::path::PathBuf),
+}
+
+/// Whether `path` may run in demo mode: the TUI sanitizes, the local
+/// commands print no network data, the demo fleet has none to hide, and
+/// `config` stays usable so a config-file switch can be managed from the CLI.
+pub fn honors_demo(path: &str, demo_fleet: bool) -> bool {
+    let top = path.split(' ').next().unwrap_or_default();
+    demo_fleet || top == "config" || LOCAL.contains(&top)
+}
+
+/// The error for a command that cannot sanitize its output for demo mode,
+/// with a hint that turns off whichever switch is on.
+pub fn refuse_demo(path: &str, switch: &DemoSwitch) -> CliError {
+    let help = match switch {
+        DemoSwitch::Flag => "--demo (or UNIFI_DEMO) redacts names, addresses, and SSIDs in the \
+             TUI only: record a real network with `unifly tui --demo`. For CLI recordings use \
+             --demo-fleet, which serves a synthetic network, or drop --demo."
+            .to_owned(),
+        DemoSwitch::ConfigFile(file) => format!(
+            "Demo mode is on because `enabled = true` sits under [demo] in\n  {}\n\
+             It redacts only the TUI. Set `enabled = false` there to run CLI commands \
+             against the controller, or use --demo-fleet for a synthetic network.",
+            file.display()
+        ),
+    };
+    CliError::DemoNotSanitized {
+        command: path.to_owned(),
+        help,
+    }
+}
+
 /// The error for a command the demo fleet cannot answer.
 pub fn refuse(path: &str) -> CliError {
     CliError::DemoUnavailable {
@@ -126,6 +169,18 @@ mod tests {
                     .unwrap_or_else(|| panic!("`{path}` is not a command"));
             }
         }
+    }
+
+    #[test]
+    fn demo_sanitizing_is_limited_to_the_tui() {
+        assert!(honors_demo("tui", false));
+        assert!(honors_demo("skill", false));
+        assert!(honors_demo("completions", false));
+        assert!(honors_demo("clients list", true));
+        assert!(!honors_demo("clients list", false));
+        assert!(honors_demo("config show", false));
+        assert!(honors_demo("config set", false));
+        assert!(!honors_demo("cloud hosts", false));
     }
 
     #[test]

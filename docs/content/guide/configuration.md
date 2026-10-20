@@ -138,7 +138,7 @@ All settings can be overridden via environment variables. Useful for CI/CD, scri
 | `UNIFI_TIMEOUT`    | Request timeout in seconds            |
 | `UNIFI_TOTP`       | One-time password for MFA controllers |
 | `UNIFI_HOST_ID`    | Site Manager console ID (cloud mode)  |
-| `UNIFI_DEMO`       | `1` to sanitize PII in output         |
+| `UNIFI_DEMO`       | `1` to sanitize the TUI (CLI refuses) |
 | `UNIFI_DEMO_FLEET` | `1` to use the synthetic demo fleet   |
 | `UNIFI_DEMO_SEED`  | Seed for the demo fleet               |
 | `NO_COLOR`         | Disable colored output (standard)     |

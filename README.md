@@ -244,7 +244,7 @@ connector's site names or internal references.
 | `UNIFI_INSECURE` | Accept self-signed TLS certs (`false` forces verification) |
 | `UNIFI_TIMEOUT`  | Request timeout (seconds)                                  |
 | `UNIFI_TOTP`     | TOTP code for MFA-enabled controllers                      |
-| `UNIFI_DEMO`     | Sanitize PII for demo recordings                           |
+| `UNIFI_DEMO`     | Sanitize PII in the TUI; controller CLI commands refuse it |
 
 Flags and environment variables override profile values, profiles override
 the `[defaults]` config section, and `[defaults]` overrides the built-in

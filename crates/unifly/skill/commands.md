@@ -296,4 +296,8 @@ the `// last-seen` markers of `devices ports-export --with-clients`, which
 carry a fixed 2026-03-18T15:30Z so a seed exports the same bytes on every
 run. The data is fictional, so never present it as the user's network.
 `unifly tui --demo-fleet` runs the dashboard against the same fleet, while
-plain `--demo` sanitizes a real controller's data in the TUI.
+plain `--demo` sanitizes a real controller's data in the TUI. Controller and
+cloud commands cannot sanitize their output, so in demo mode (`--demo`,
+`UNIFI_DEMO`, or `[demo] enabled = true` in config) without `--demo-fleet`
+they exit 5 before connecting or reading credentials. `config` commands still
+run; turn the file switch off by setting `enabled = false` under `[demo]`.

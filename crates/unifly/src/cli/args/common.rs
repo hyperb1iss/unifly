@@ -64,7 +64,7 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_cache: bool,
 
-    /// Sanitize PII for demo recordings (uses [demo] config section)
+    /// Sanitize PII in the TUI for demo recordings (uses [demo] config section)
     #[arg(
         long,
         env = "UNIFI_DEMO",
