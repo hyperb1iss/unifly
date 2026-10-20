@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Mouse and touch input across the TUI** (#67). Tabs, list rows, key
-  hints, dialogs, and dashboard panels take a click or a tap, so `unifly
-  tui` runs on a touchscreen kiosk without a keyboard. Tabs switch screens and sub-tabs.
+  hints, dialogs, and dashboard panels take a click or a tap, so
+  `unifly tui` runs on a touchscreen kiosk without a keyboard. Tabs
+  switch screens and sub-tabs.
   A tap selects a row and a second tap opens it, and an open device detail
   follows a tap on another device while keeping its tab, so stepping from
   switch to switch stays on their ports. Key hints are buttons that press

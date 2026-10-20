@@ -56,11 +56,12 @@ impl SettingsScreen {
         let mut selector = self.theme_selector.borrow_mut();
         if let Some(ref mut theme_selector) = *selector {
             let overlay = chrome::centered_rect(area, 80, 28);
-            // A tap outside the picker cancels it, as Esc does. A tap inside
-            // applies the theme the wheel has previewed, as Enter does.
+            // A tap outside the picker cancels it, as Esc does. Taps inside
+            // do nothing: the picker keeps its cursor private, so a tapped
+            // row cannot be told apart from the highlighted one.
             let mut hits = self.hits.borrow_mut();
             hits.push(area, Click::Key(KeyCode::Esc.into()));
-            hits.push(overlay, Click::Key(KeyCode::Enter.into()));
+            hits.push(overlay, Click::Absorb);
             frame.render_widget(Clear, overlay);
             frame.render_stateful_widget(opaline::ThemeSelector::new(), overlay, theme_selector);
         }

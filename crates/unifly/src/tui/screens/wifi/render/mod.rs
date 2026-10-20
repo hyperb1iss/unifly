@@ -480,11 +480,16 @@ impl WifiScreen {
                 Hint::button("s", "sort", click::char_key('s')),
                 Hint::button("f", "filter band", click::char_key('f')),
             ],
-            WifiSubTab::Roaming => vec![
-                Hint::info("j/k", "scroll"),
-                Hint::button("r", "refresh", click::char_key('r')),
-                Hint::button("Esc", "clear focus", KeyCode::Esc),
-            ],
+            WifiSubTab::Roaming => {
+                let mut hints = vec![
+                    Hint::info("j/k", "scroll"),
+                    Hint::button("r", "refresh", click::char_key('r')),
+                ];
+                if self.focused_client_id.is_some() {
+                    hints.push(Hint::button("Esc", "clear focus", KeyCode::Esc));
+                }
+                hints
+            }
         };
         click::key_hints_styled(&hints, key_style(), hint_style())
     }

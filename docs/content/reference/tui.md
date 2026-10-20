@@ -81,7 +81,7 @@ Tabs, list rows, key hints, dialogs, and dashboard panels take a click, so the T
 | **Notifications**    | A tap dismisses the toast                                                                                                                                                                                   |
 | **Dashboard panels** | Opens the screen behind the panel: WAN Traffic opens Stats, Gateway and Capacity open Devices, and Networks, WiFi, Top Clients, and Recent Events open their screens                                        |
 
-The wheel moves the selection in lists, and an open device or client detail follows it. On Events it scrolls the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms and a drag pans the map. In Settings it walks the theme picker, and a tap on the picker applies the theme it shows.
+The wheel moves the selection in lists, and an open device or client detail follows it. On Events it scrolls the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms and a drag pans the map. In Settings it walks the theme picker, previewing each theme; a tap outside the picker cancels it.
 
 Typing still needs a keyboard: search, the Networks edit form, the Settings fields, and the onboarding wizard.
 
