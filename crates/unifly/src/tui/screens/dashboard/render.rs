@@ -118,6 +118,48 @@ mod tests {
     use crate::tui::widgets::click::click_label;
 
     #[test]
+    fn the_default_demo_sanitizer_hides_every_address_the_gateway_panel_draws() {
+        use crate::config::DemoConfig;
+        use crate::sanitizer::Sanitizer;
+
+        let health: unifly_api::HealthSummary = serde_json::from_value(serde_json::json!({
+            "subsystem": "wan", "status": "ok", "num_adopted": 1, "num_sta": null,
+            "tx_bytes_r": 0, "rx_bytes_r": 0, "latency": 9.0,
+            "wan_ip": "73.45.67.89", "gateways": ["73.45.67.1"],
+            "extra": {
+                "subsystem": "wan", "wan_ip": "73.45.67.89",
+                "gateways": ["73.45.67.1"], "wan_ip6": "2601:646:8d00::1",
+                "nameservers": ["75.75.75.75", "75.75.76.76"], "isp_name": "Comcast"
+            }
+        }))
+        .expect("health fixture");
+        let draw = |config: &DemoConfig| {
+            let health = Sanitizer::new(config).sanitize_health_vec(std::slice::from_ref(&health));
+            let mut screen = DashboardScreen::new();
+            screen
+                .update(&Action::HealthUpdated(health))
+                .expect("health update");
+            render_lines(140, 40, |frame, area| screen.render(frame, area)).join("\n")
+        };
+
+        let text = draw(&DemoConfig::default());
+        assert!(text.contains(" GW "), "the gateway line is drawn:\n{text}");
+        for real in ["73.45.67", "2601:646", "75.75.7"] {
+            assert!(!text.contains(real), "the panel shows {real}:\n{text}");
+        }
+        assert!(
+            text.contains("Comcast"),
+            "ISP names stay unless redact_isp is on"
+        );
+
+        let text = draw(&DemoConfig {
+            redact_isp: true,
+            ..DemoConfig::default()
+        });
+        assert!(!text.contains("Comcast"), "{text}");
+    }
+
+    #[test]
     fn a_panel_tap_opens_its_screen() {
         let mut screen = DashboardScreen::new();
         let rows = render_lines(140, 40, |frame, area| screen.render(frame, area));

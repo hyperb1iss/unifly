@@ -75,8 +75,9 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         .header(header)
         .row_highlight_style(theme::table_selected());
 
-    let mut state = screen.table_state;
-    frame.render_stateful_widget(table, layout[0], &mut state);
+    let state = screen
+        .table_scroll
+        .render(frame, table, layout[0], &screen.table_state, len);
     screen
         .hits
         .borrow_mut()

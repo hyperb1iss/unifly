@@ -42,6 +42,12 @@ pub trait Component: Send {
         false
     }
 
+    /// The filter this component's search applies, or `None` when search
+    /// filters nothing here. Search only opens where it filters.
+    fn search_query(&self) -> Option<&str> {
+        None
+    }
+
     /// Whether this component currently holds input focus.
     #[allow(dead_code)]
     fn focused(&self) -> bool {

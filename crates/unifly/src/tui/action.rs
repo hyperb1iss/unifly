@@ -383,12 +383,21 @@ pub enum Action {
         ip: String,
         data: Arc<Value>,
     },
+    WifiClientDetailFailed {
+        ip: String,
+        error: String,
+    },
     WifiRoamHistoryLoaded {
         mac: String,
         events: Arc<Vec<Value>>,
     },
+    WifiRoamHistoryFailed {
+        mac: String,
+        error: String,
+    },
 
     // ── Connection Status ─────────────────────────────────────────
+    Connecting,
     Connected,
     Disconnected(String),
     Reconnecting {
@@ -414,10 +423,10 @@ pub enum Action {
 
     // ── Firewall ──────────────────────────────────────────────────
     SelectZonePair(EntityId, EntityId),
-    /// Move the policy with this ID one row within its zone pair. The ID,
-    /// not a row index, so refreshes queued ahead of the action cannot
-    /// redirect the move to another policy.
-    ReorderPolicy(EntityId, Direction),
+    /// Move this policy one step through its zone pair's ordering on the
+    /// controller. It names the policy, not a row index, so refreshes
+    /// queued ahead of the action cannot redirect the move to another one.
+    ReorderPolicy(Arc<FirewallPolicy>, Direction),
     FirewallSubTab(FirewallSubTab),
 
     // ── Network Editing ──────────────────────────────────────────
@@ -466,7 +475,6 @@ pub enum Action {
     DismissNotification,
 
     // ── Stats ─────────────────────────────────────────────────────
-    SetStatsPeriod(StatsPeriod),
     RequestStats(StatsPeriod),
     StatsUpdated(StatsData),
 

@@ -90,7 +90,7 @@ The connector proxies the Integration API only. Session-backed features need a d
 
 - `events list` / `events watch` and the TUI's live event stream
 - `stats` (historical reports) and DPI status/control
-- Device commands (`restart`, `adopt`, `locate`, `upgrade`, `speedtest`, ...)
+- Device firmware upgrades, provisioning, and speedtests (`restart`, `adopt`, and `locate` go through the connector and do work)
 - Switch port configuration, firewall groups, NAT, site settings, and the Session-backed VPN surface
 - Admin management and backups
 

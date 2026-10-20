@@ -1,6 +1,7 @@
 //! The Events screen's "Events by hour" heatmap: a row per weekday, a cell
 //! per hour, and an hour axis whose labels sit over the cells they name.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ const MAX_HOUR_WIDTH: u16 = 8;
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-pub(super) fn render_punchcard(events: &[Arc<Event>], frame: &mut Frame, area: Rect) {
+pub(super) fn render_punchcard(events: &VecDeque<Arc<Event>>, frame: &mut Frame, area: Rect) {
     let buckets = event_punchcard(events);
     let max_count = buckets
         .iter()
@@ -111,7 +112,7 @@ fn hour_axis(width: u16) -> String {
     axis
 }
 
-fn event_punchcard(events: &[Arc<Event>]) -> [[usize; 24]; 7] {
+fn event_punchcard(events: &VecDeque<Arc<Event>>) -> [[usize; 24]; 7] {
     let mut buckets = [[0usize; 24]; 7];
     for event in events {
         let day = usize::try_from(event.timestamp.weekday().num_days_from_monday()).unwrap_or(0);

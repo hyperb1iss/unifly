@@ -5,8 +5,8 @@ use unifly_api::EntityId;
 use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
 use crate::cli::commands::util::order;
-use crate::tui::action::{Action, Direction, FirewallSubTab};
-use crate::tui::table::reselect;
+use crate::tui::action::{Action, FirewallSubTab};
+use crate::tui::table::{TableScroll, reselect};
 
 use super::FirewallScreen;
 
@@ -25,6 +25,10 @@ impl FirewallScreen {
             zone_table: TableState::default(),
             acl_table: TableState::default(),
             nat_table: TableState::default(),
+            policy_scroll: TableScroll::default(),
+            zone_scroll: TableScroll::default(),
+            acl_scroll: TableScroll::default(),
+            nat_scroll: TableScroll::default(),
             hits: std::cell::RefCell::default(),
         }
     }
@@ -120,45 +124,14 @@ impl FirewallScreen {
             Action::FirewallSubTab(tab) => {
                 self.sub_tab = *tab;
             }
-            Action::ReorderPolicy(id, direction) => self.reorder_policy(id, *direction),
             _ => {}
         }
     }
 
-    /// The ID of the policy on the selected row of the Policies table.
-    pub(super) fn selected_policy_id(&self) -> Option<EntityId> {
+    /// The policy on the selected row of the Policies table.
+    pub(super) fn selected_policy(&self) -> Option<&Arc<FirewallPolicy>> {
         let index = self.policy_table.selected().unwrap_or(0);
-        self.policies.get(index).map(|policy| policy.id.clone())
-    }
-
-    /// Move a policy one row within its zone pair. The policy is found by
-    /// ID at the time the action is handled, since refreshes drained before
-    /// it may have moved its row. Policies only ever run against the other
-    /// policies of their own zone pair, so a move across the boundary into
-    /// a neighbouring pair's rows is refused.
-    fn reorder_policy(&mut self, id: &EntityId, direction: Direction) {
-        let Some(index) = self.policies.iter().position(|policy| &policy.id == id) else {
-            return;
-        };
-        let len = self.policies.len();
-        let target = match direction {
-            Direction::Up if index > 0 => index - 1,
-            Direction::Down if index + 1 < len => index + 1,
-            _ => return,
-        };
-
-        let (Some(moving), Some(other)) = (self.policies.get(index), self.policies.get(target))
-        else {
-            return;
-        };
-        let same_pair = moving.source.zone_id == other.source.zone_id
-            && moving.destination.zone_id == other.destination.zone_id;
-        if !same_pair {
-            return;
-        }
-
-        Arc::make_mut(&mut self.policies).swap(index, target);
-        self.select(target);
+        self.policies.get(index)
     }
 }
 
@@ -216,10 +189,6 @@ mod tests {
     use super::*;
 
     use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone};
-
-    fn policy(name: &str) -> Arc<FirewallPolicy> {
-        zoned_policy(name, None, None, 1)
-    }
 
     fn zoned_policy(
         name: &str,
@@ -289,23 +258,6 @@ mod tests {
 
         assert_eq!(screen.zone_table.selected(), Some(1));
         assert_eq!(screen.policy_table.selected(), None);
-    }
-
-    #[test]
-    fn reorder_policy_swaps_items_and_updates_selection() {
-        let mut screen = FirewallScreen::new();
-        screen.policies = Arc::new(vec![policy("one"), policy("two"), policy("three")]);
-        screen.policy_table.select(Some(1));
-
-        screen.apply_action(&Action::ReorderPolicy(policy_id("two"), Direction::Down));
-
-        let names: Vec<_> = screen
-            .policies
-            .iter()
-            .map(|policy| policy.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["one", "three", "two"]);
-        assert_eq!(screen.policy_table.selected(), Some(2));
     }
 
     #[test]
@@ -403,67 +355,32 @@ mod tests {
     }
 
     #[test]
-    fn reorder_stays_inside_the_zone_pair() {
+    fn j_and_k_ask_to_move_the_selected_policy() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        use crate::tui::action::Direction;
+
         let (zones, policies) = zoned_fixture();
         let mut screen = FirewallScreen::new();
         screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
         screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
-        screen.select(1);
+        screen.select(2);
 
-        screen.apply_action(&Action::ReorderPolicy(
-            policy_id("lan-wan first"),
-            Direction::Up,
-        ));
-        assert_eq!(policy_names(&screen)[0], "iot-lan block");
-        assert_eq!(screen.policy_table.selected(), Some(1));
-
-        screen.apply_action(&Action::ReorderPolicy(
-            policy_id("lan-wan first"),
-            Direction::Down,
-        ));
+        for (key, expected) in [('K', Direction::Up), ('J', Direction::Down)] {
+            let action = screen.handle_key_input(KeyEvent::from(KeyCode::Char(key)));
+            assert!(
+                matches!(
+                    action,
+                    Some(Action::ReorderPolicy(ref policy, direction))
+                        if policy.name == "lan-wan second" && direction == expected
+                ),
+                "{key}: {action:?}"
+            );
+        }
         assert_eq!(
-            policy_names(&screen)[1..3],
-            ["lan-wan second", "lan-wan first"]
+            policy_names(&screen)[2],
+            "lan-wan second",
+            "the keys leave the order to the controller"
         );
-        assert_eq!(screen.policy_table.selected(), Some(2));
-    }
-
-    fn policy_id(name: &str) -> EntityId {
-        policy(name).id.clone()
-    }
-
-    #[test]
-    fn reorder_follows_the_policy_through_a_queued_refresh() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let zones = vec![zone("lan"), zone("wan")];
-        let pair = |name: &str, index: i32| zoned_policy(name, Some("lan"), Some("wan"), index);
-        let mut screen = FirewallScreen::new();
-        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
-            pair("first", 10_000),
-            pair("second", 10_001),
-            pair("third", 10_002),
-        ])));
-        screen.select(1);
-
-        let reorder = screen
-            .handle_key_input(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE))
-            .expect("K yields a reorder action");
-
-        // A refresh lands before the reorder is handled and shifts the rows.
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
-            pair("zeroth", 9_000),
-            pair("first", 10_000),
-            pair("second", 10_001),
-            pair("third", 10_002),
-        ])));
-        screen.apply_action(&reorder);
-
-        assert_eq!(
-            policy_names(&screen),
-            vec!["zeroth", "second", "first", "third"]
-        );
-        assert_eq!(screen.policy_table.selected(), Some(1));
     }
 }

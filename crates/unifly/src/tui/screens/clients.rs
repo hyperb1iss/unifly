@@ -19,6 +19,7 @@ use unifly_api::{Client, EntityId};
 
 use crate::tui::action::{Action, ClientTypeFilter};
 use crate::tui::component::Component;
+use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct ClientsScreen {
@@ -28,6 +29,7 @@ pub struct ClientsScreen {
     /// Device and network names for each client's uplink and network labels.
     links: labels::LinkIndex,
     table_state: TableState,
+    table_scroll: TableScroll,
     filter: ClientTypeFilter,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
@@ -71,6 +73,10 @@ impl Component for ClientsScreen {
 
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    fn search_query(&self) -> Option<&str> {
+        Some(&self.search_query)
     }
 
     fn id(&self) -> &'static str {

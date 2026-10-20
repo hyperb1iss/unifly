@@ -51,13 +51,19 @@ impl App {
             Action::ToggleAbout => {
                 self.about_visible = !self.about_visible;
             }
-            Action::OpenSearch => {
-                self.search_active = true;
-                self.search_query.clear();
+            Action::OpenSearch => self.open_search(),
+            Action::SearchSubmit => {
+                // The screen keeps filtering by the query; only the bar
+                // closes, and reopening it picks the query back up.
+                self.search_active = false;
             }
             Action::CloseSearch => {
                 self.search_active = false;
                 self.search_query.clear();
+                self.forward_to_screen(self.active_screen, action)?;
+            }
+            Action::Connecting => {
+                self.connection_status = ConnectionStatus::Connecting;
             }
             Action::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
@@ -65,6 +71,8 @@ impl App {
             }
             Action::Disconnected(reason) => {
                 self.connection_status = ConnectionStatus::Disconnected;
+                // The status bar draws the reason, so it is sanitized too.
+                let reason = &self.shown_text(reason);
                 // Auto-reconnect resends this action after every failed
                 // attempt; only toast when the failure reason is news.
                 if self.connection_error.as_ref() != Some(reason) {
@@ -121,7 +129,9 @@ impl App {
             | Action::WifiNeighborsUpdated(_)
             | Action::WifiChannelsUpdated(_)
             | Action::WifiClientDetailLoaded { .. }
+            | Action::WifiClientDetailFailed { .. }
             | Action::WifiRoamHistoryLoaded { .. }
+            | Action::WifiRoamHistoryFailed { .. }
             | Action::StatsUpdated(_)
             | Action::NetworkEditResult(_) => {
                 self.forward_to_all_screens(action)?;

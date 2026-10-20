@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::{App, ConnectionStatus};
-use crate::tui::action::{Action, ConfirmAction, Notification, NotificationLevel};
+use crate::tui::action::{Action, Notification, NotificationLevel};
 use crate::tui::screen::ScreenId;
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, ClickLine, Hint, HitMap};
@@ -79,7 +79,8 @@ impl App {
         }
 
         if let Some(confirm) = &self.pending_confirm {
-            Self::render_confirm_dialog(frame, area, confirm, &mut self.hits);
+            let prompt = self.shown_text(&confirm.to_string());
+            Self::render_confirm_dialog(frame, area, &prompt, &mut self.hits);
         }
 
         if self.about_visible {
@@ -169,8 +170,8 @@ impl App {
             line.push_gap(Span::raw("  "));
             line.push_hints(
                 &[
-                    Hint::button("Esc", "cancel", KeyCode::Esc),
-                    Hint::button("Enter", "submit", KeyCode::Enter),
+                    Hint::button("Esc", "clear", KeyCode::Esc),
+                    Hint::button("Enter", "done", KeyCode::Enter),
                 ],
                 theme::key_hint_key(),
                 theme::key_hint(),
@@ -205,18 +206,18 @@ impl App {
         // App-wide buttons dispatch their action directly: as keys they
         // would reach the screen first, which may use the same letter.
         let retry = Hint::action("^r", "retry", Action::RetryConnect);
+        let search = self
+            .active_screen_searches()
+            .then(|| Hint::action("/", "search", Action::OpenSearch));
         let global = [
-            Hint::action("?", "help", Action::ToggleHelp),
-            Hint::action("a", "about", Action::ToggleAbout),
-            Hint::action("/", "search", Action::OpenSearch),
-            Hint::action(",", "settings", Action::OpenSettings),
-            Hint::action("q", "quit", Action::Quit),
+            Some(Hint::action("?", "help", Action::ToggleHelp)),
+            Some(Hint::action("a", "about", Action::ToggleAbout)),
+            search,
+            Some(Hint::action(",", "settings", Action::OpenSettings)),
+            Some(Hint::action("q", "quit", Action::Quit)),
         ];
-        let shown: Vec<Hint> = if self.connection_status == ConnectionStatus::Disconnected {
-            std::iter::once(retry).chain(global).collect()
-        } else {
-            global.to_vec()
-        };
+        let retry = (self.connection_status == ConnectionStatus::Disconnected).then_some(retry);
+        let shown: Vec<Hint> = std::iter::once(retry).chain(global).flatten().collect();
         hints.push_hints(&shown, theme::key_hint_key(), theme::key_hint());
         let mut spans = vec![Span::raw(" "), connection_indicator];
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
@@ -358,7 +359,7 @@ impl App {
     fn render_confirm_dialog(
         frame: &mut Frame,
         area: Rect,
-        confirm: &ConfirmAction,
+        prompt: &str,
         hits: &mut HitMap<Click>,
     ) {
         let width = 50u16.min(area.width.saturating_sub(4));
@@ -396,7 +397,7 @@ impl App {
         .intersection(inner);
         let text = vec![
             Line::from(Span::styled(
-                format!("  {confirm}"),
+                format!("  {prompt}"),
                 Style::default().fg(theme::text_secondary()),
             )),
             Line::from(""),
@@ -574,15 +575,9 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from(Span::styled("  ──────────────", theme::key_hint())),
         Line::from(vec![
             Span::styled("  /           ", theme::key_hint_key()),
-            Span::styled("Search            ", theme::key_hint()),
+            Span::styled("Search lists       ", theme::key_hint()),
             Span::styled("?  ", theme::key_hint_key()),
             Span::styled("This help", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  s           ", theme::key_hint_key()),
-            Span::styled("Sort column        ", theme::key_hint()),
-            Span::styled("f  ", theme::key_hint_key()),
-            Span::styled("Filter", theme::key_hint()),
         ]),
         Line::from(vec![
             Span::styled("  ,           ", theme::key_hint_key()),
@@ -600,6 +595,14 @@ fn help_lines() -> Vec<Line<'static>> {
             Span::styled("  Mouse       ", theme::key_hint_key()),
             Span::styled(
                 "Tap tabs, rows, and key hints; wheel scrolls",
+                theme::key_hint(),
+            ),
+        ]),
+        // Keys that work on one screen only live in that screen's hints.
+        Line::from(vec![
+            Span::styled("  Screens     ", theme::key_hint_key()),
+            Span::styled(
+                "Each screen's own keys sit in its hint bar",
                 theme::key_hint(),
             ),
         ]),

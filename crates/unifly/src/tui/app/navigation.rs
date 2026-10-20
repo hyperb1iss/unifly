@@ -2,7 +2,7 @@ use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use super::{App, ConnectionStatus};
-use crate::tui::action::Action;
+use crate::tui::action::{Action, Notification};
 use crate::tui::screen::ScreenId;
 use crate::tui::widgets::click::Click;
 
@@ -111,6 +111,33 @@ impl App {
             return screen.handle_mouse_event(mouse);
         }
         Ok(None)
+    }
+
+    /// Open the search bar on the active screen's filter, so a filter kept
+    /// with `Enter` can be refined or cleared. Where search filters
+    /// nothing, a toast says where it does instead.
+    pub(super) fn open_search(&mut self) {
+        let query = self
+            .screens
+            .get(&self.active_screen)
+            .and_then(|screen| screen.search_query())
+            .map(str::to_owned);
+        match query {
+            Some(query) => {
+                self.search_active = true;
+                self.search_query = query;
+            }
+            None => self.show_notification(Notification::info(
+                "Search filters the Devices, Clients, and WiFi lists",
+            )),
+        }
+    }
+
+    /// Whether search filters anything on the active screen.
+    pub(super) fn active_screen_searches(&self) -> bool {
+        self.screens
+            .get(&self.active_screen)
+            .is_some_and(|screen| screen.search_query().is_some())
     }
 
     /// Whether the active screen is taking typed input, such as a form.
@@ -389,19 +416,12 @@ mod tests {
         let queued = app.action_rx.try_recv().expect("the press dispatches");
         assert!(matches!(queued, Action::ToggleEventPause), "{queued:?}");
 
-        // Global keys work from a screen's hints too: Events leaves `/` to
-        // the App, which opens search.
-        let rows = render(&mut app, 120);
-        let Some(Action::PressKey(slash)) = app
-            .handle_mouse_event(click_label(&rows, "pause/resume", "search"))
-            .expect("click handling")
-        else {
-            panic!("expected a key press");
-        };
-        app.process_action(&Action::PressKey(slash))
+        // A pressed key the screen leaves alone reaches the global keys:
+        // Events leaves `?` to the App, which opens help.
+        app.process_action(&Action::PressKey(crate::tui::widgets::click::char_key('?')))
             .expect("key press handling");
         let queued = app.action_rx.try_recv().expect("the press dispatches");
-        assert!(matches!(queued, Action::OpenSearch), "{queued:?}");
+        assert!(matches!(queued, Action::ToggleHelp), "{queued:?}");
     }
 
     #[test]
@@ -477,7 +497,7 @@ mod tests {
         app.search_query = "ap".into();
         let rows = render(&mut app, 120);
         let action = app
-            .handle_mouse_event(click_label(&rows, "submit", "cancel"))
+            .handle_mouse_event(click_label(&rows, "Enter done", "clear"))
             .expect("click");
         assert!(matches!(action, Some(Action::CloseSearch)), "{action:?}");
     }
@@ -548,6 +568,101 @@ mod tests {
             assert!(action.is_none(), "{label}: {action:?}");
         }
         assert!(app.running);
+    }
+
+    fn device(id: &str, name: &str) -> std::sync::Arc<unifly_api::Device> {
+        std::sync::Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "id": id, "mac": format!("aa:bb:cc:dd:ee:{id}"), "ip": null,
+                "wan_ipv6": null, "name": name, "model": "USW Pro 24",
+                "device_type": "Switch", "state": "Online", "firmware_version": null,
+                "firmware_updatable": false, "adopted_at": null, "provisioned_at": null,
+                "last_seen": null, "serial": null, "supported": true, "ports": [],
+                "radios": [], "uplink_device_id": null, "uplink_device_mac": null,
+                "uplink_port_idx": null, "has_switching": true,
+                "has_access_point": false, "stats": {}, "client_count": null,
+                "origin": null
+            }))
+            .expect("device fixture"),
+        )
+    }
+
+    /// Press a key and process the action it yields, as the event loop does.
+    fn press(app: &mut App, code: KeyCode) {
+        if let Some(action) = app
+            .handle_key_event(KeyEvent::new(code, KeyModifiers::NONE))
+            .expect("key handling")
+        {
+            app.process_action(&action).expect("action handling");
+        }
+    }
+
+    #[test]
+    fn enter_keeps_the_search_filter_and_esc_clears_it() {
+        let mut app = dashboard_app();
+        app.process_action(&Action::DevicesUpdated(std::sync::Arc::new(vec![
+            device("01", "sw-alpha"),
+            device("02", "sw-beta"),
+        ])))
+        .expect("devices update");
+        app.switch_screen(ScreenId::Devices).expect("switch");
+        let shown = |app: &mut App| render(app, 120).join("\n");
+
+        press(&mut app, KeyCode::Char('/'));
+        for c in "alp".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.search_active, "Enter closes the search bar");
+        let rows = shown(&mut app);
+        assert!(
+            rows.contains("sw-alpha") && !rows.contains("sw-beta"),
+            "{rows}"
+        );
+
+        // Reopening search picks up the filter in place, ready to refine.
+        press(&mut app, KeyCode::Char('/'));
+        assert!(app.search_active);
+        assert_eq!(app.search_query, "alp");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.search_active);
+        let rows = shown(&mut app);
+        assert!(
+            rows.contains("sw-alpha") && rows.contains("sw-beta"),
+            "{rows}"
+        );
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.search_query, "", "Esc cleared the filter");
+    }
+
+    #[test]
+    fn search_is_offered_only_where_it_filters() {
+        let mut app = dashboard_app();
+        let status_bar = |app: &mut App| render(app, 120).last().cloned().unwrap_or_default();
+        assert!(!status_bar(&mut app).contains("search"));
+
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!app.search_active, "search opened on the Dashboard");
+        assert!(app.notification.is_some(), "the refusal says why");
+
+        for screen in [ScreenId::Devices, ScreenId::Clients, ScreenId::Wifi] {
+            app.switch_screen(screen).expect("switch");
+            assert!(status_bar(&mut app).contains("search"), "{screen}");
+        }
+    }
+
+    #[test]
+    fn the_help_overlay_lists_only_keys_that_work_everywhere() {
+        let mut app = dashboard_app();
+        app.help_visible = true;
+        let text = render_lines(120, 34, |frame, _| app.render(frame)).join("\n");
+
+        for screen_key in ["Sort column", "Filter"] {
+            assert!(!text.contains(screen_key), "{screen_key}:\n{text}");
+        }
+        assert!(text.contains("Search lists"), "{text}");
+        assert!(text.contains("own keys"), "{text}");
     }
 
     #[test]

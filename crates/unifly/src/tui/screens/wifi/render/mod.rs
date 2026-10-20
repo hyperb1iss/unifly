@@ -204,10 +204,22 @@ impl WifiScreen {
             return;
         };
 
-        let Some(detail) = self.client_detail.as_ref() else {
+        // The detail on hand may belong to the client selected before.
+        let ip = client.ip.map(|ip| ip.to_string());
+        let detail = self
+            .client_detail
+            .as_ref()
+            .filter(|_| ip.is_some() && self.client_detail_ip == ip);
+        let Some(detail) = detail else {
+            let status = if ip.is_none() {
+                " No WiFi detail without an IP address "
+            } else if self.failed_client_detail() == ip.as_ref() {
+                " WiFi detail unavailable, retrying "
+            } else {
+                " Loading WiFi detail... "
+            };
             frame.render_widget(
-                Paragraph::new(" Loading WiFi detail... ")
-                    .style(Style::default().fg(theme::text_muted())),
+                Paragraph::new(status).style(Style::default().fg(theme::text_muted())),
                 inner,
             );
             return;
@@ -405,6 +417,17 @@ impl WifiScreen {
                 Style::default()
                     .fg(theme::accent_secondary())
                     .add_modifier(Modifier::BOLD),
+            ));
+        }
+        // Search filters every table here but the roaming history.
+        if !self.search_query.is_empty() && self.sub_tab != WifiSubTab::Roaming {
+            strip.push_gap(Span::styled(
+                "  Filter: ",
+                Style::default().fg(theme::text_muted()),
+            ));
+            strip.push_gap(Span::styled(
+                format!("\"{}\"", self.search_query),
+                Style::default().fg(theme::warning()),
             ));
         }
         if let Some(client) = self.focused_client_label() {

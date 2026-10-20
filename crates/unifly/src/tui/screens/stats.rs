@@ -27,6 +27,8 @@ pub struct StatsScreen {
     client_counts: Vec<(f64, f64)>,
     client_y_max: f64,
     bandwidth_peak: f64,
+    /// The next snapshot belongs to a newly selected period.
+    fresh_scale: bool,
     dpi_apps: Vec<(String, u64)>,
     dpi_categories: Vec<(String, u64)>,
 }

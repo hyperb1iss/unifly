@@ -30,8 +30,14 @@ impl StatsScreen {
         }
     }
 
+    /// Load `period`. A different period shares neither scale nor peak
+    /// with the one on screen, so its first snapshot sizes the charts from
+    /// scratch instead of easing out of the old range or pulsing as a peak.
     fn set_period(&mut self, period: StatsPeriod) -> Action {
-        self.period = period;
+        if period != self.period {
+            self.period = period;
+            self.fresh_scale = true;
+        }
         Action::RequestStats(period)
     }
 }

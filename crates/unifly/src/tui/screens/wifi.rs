@@ -18,6 +18,7 @@ use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Action, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::component::Component;
+use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct WifiScreen {
@@ -29,6 +30,10 @@ pub struct WifiScreen {
     client_table_state: TableState,
     neighbor_table_state: TableState,
     roam_table_state: TableState,
+    ap_scroll: TableScroll,
+    client_scroll: TableScroll,
+    neighbor_scroll: TableScroll,
+    roam_scroll: TableScroll,
     sub_tab: WifiSubTab,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
@@ -44,9 +49,14 @@ pub struct WifiScreen {
     client_detail_ip: Option<String>,
     client_detail_pending_ip: Option<String>,
     client_detail: Option<Arc<Value>>,
+    /// The client whose detail fetch failed last, and when, so the retry
+    /// waits instead of firing on every tick.
+    client_detail_failure: Option<(String, std::time::Instant)>,
     roam_history_mac: Option<String>,
     roam_history_pending_mac: Option<String>,
     roam_history: Arc<Vec<Value>>,
+    /// The client whose roam history fetch failed last, and when.
+    roam_history_failure: Option<(String, std::time::Instant)>,
     last_neighbors_request_at: Option<std::time::Instant>,
     last_channels_request_at: Option<std::time::Instant>,
 }
@@ -88,6 +98,10 @@ impl Component for WifiScreen {
         if focused {
             self.mark_refresh_due();
         }
+    }
+
+    fn search_query(&self) -> Option<&str> {
+        Some(&self.search_query)
     }
 
     fn id(&self) -> &'static str {

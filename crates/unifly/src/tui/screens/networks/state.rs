@@ -8,7 +8,7 @@ use unifly_api::{EntityId, Network, UpdateNetworkRequest};
 
 use crate::cli::commands::util::order;
 use crate::tui::action::Action;
-use crate::tui::table::reselect;
+use crate::tui::table::{TableScroll, reselect};
 
 /// Editable fields for a network. Initialized from the selected `Network`.
 #[allow(clippy::struct_excessive_bools)]
@@ -153,6 +153,7 @@ impl NetworksScreen {
             focused: false,
             networks: Arc::new(Vec::new()),
             table_state: TableState::default(),
+            table_scroll: TableScroll::default(),
             detail_open: false,
             edit_state: None,
             hits: std::cell::RefCell::default(),

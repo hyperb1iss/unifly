@@ -62,7 +62,7 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 | `Ctrl+d` / `Ctrl+u`       | Page down / up                      |
 | `Enter`                   | Select / expand detail              |
 | `Esc`                     | Close detail / go back              |
-| `/`                       | Search                              |
+| `/`                       | Search (Devices, Clients, WiFi)     |
 | `?`                       | Help overlay                        |
 | `Ctrl+r`                  | Force reconnect (when disconnected) |
 | `q`                       | Quit                                |
@@ -91,13 +91,14 @@ Typing still needs a keyboard: search, the Networks edit form, the Settings fiel
 | -------------------- | --------------- | ----------------------------------------------------------------- |
 | **Devices**          | `R`             | Restart selected device                                           |
 | **Devices**          | `L`             | Locate (flash LED)                                                |
+| **Devices**          | `U`             | Upgrade firmware (asks first)                                     |
 | **Devices** (detail) | `h` / `l`       | Previous / next detail tab                                        |
 | **Clients**          | `Tab`           | Cycle filter (All / Wireless / Wired / VPN / Guest)               |
 | **Clients**          | `b` / `B`       | Block / unblock client                                            |
 | **Clients**          | `x`             | Kick client                                                       |
 | **Networks**         | `e`             | Edit selected network (opens overlay)                             |
 | **Firewall**         | `h` / `l`       | Cycle sub-tabs (Policies / Zones / ACL / NAT)                     |
-| **Firewall**         | `K` / `J`       | Move a policy up / down within its zone pair (local preview only) |
+| **Firewall**         | `K` / `J`       | Move a policy up / down in its zone pair, saved to the controller |
 | **Topology**         | Arrows          | Pan canvas                                                        |
 | **Topology**         | `+` / `-`       | Zoom in / out                                                     |
 | **Topology**         | `f`             | Fit to view                                                       |
@@ -114,6 +115,8 @@ Typing still needs a keyboard: search, the Networks edit form, the Settings fiel
 
 Every list screen orders its rows the way the CLI does: devices by name, clients by display name, networks by name, and firewall policies grouped by source zone, then destination zone, in the order they apply. The cursor stays on the same device, client, or policy when data refreshes or the order changes, so an action key always targets the row you see highlighted.
 
+`/` opens a search bar on the Devices, Clients, and WiFi screens that filters the list as you type. `Enter` closes the bar and keeps the filter, which stays on show above the list; `/` reopens the bar on that filter to refine it, and `Esc` in the bar clears it. The other screens have nothing to filter, so `/` there only says where search works, and their status bar has no search button.
+
 Columns size themselves to their content, and wider terminals reveal more of them:
 
 | Screen               | Extra columns                                                        | From width  |
@@ -124,7 +127,7 @@ Columns size themselves to their content, and wider terminals reveal more of the
 
 Narrower terminals shrink names first and then drop those extra columns, so every table stays readable down to 80x24.
 
-`K` and `J` on the Firewall screen move a policy within its zone pair on screen only; the next refresh shows the controller's order again.
+`K` and `J` on the Firewall screen move the selected policy one step through its zone pair's order on the controller. A toast shows the move as soon as it starts, and further presses wait for it: each step starts from the order the controller has, so one pressed while a move is in flight is ignored with a note. The table shows the new order once the controller has it, and a move the controller refuses raises an error and leaves the table as it was. System-defined policies keep their place, so a policy stepped past them crosses the whole block, and the toast says so.
 
 ## Charts
 
@@ -175,7 +178,7 @@ The TUI works with all authentication modes, but some screens degrade gracefully
 | **Hybrid**        | **Full**  | **Full** | **Full** | **Full** | **Full** | **Full** |
 | Cloud             | Partial   | Partial  | Partial  | No       | No       | No       |
 
-Cloud mode's Devices screen lists device data through the connector but the management actions (`R` restart, `L` locate) are unavailable: the connector has no Session client to issue device commands.
+Cloud mode's Devices screen lists device data through the connector. `R` restart and `L` locate work there, since they go through the Integration API the connector proxies, but `U` upgrade needs a Session client, which the connector does not provide, so it fails with an error.
 
 {% tip() %}
 **API Key mode** works for most TUI screens on UniFi OS. Use **Hybrid mode** only when you need live WebSocket event streaming (the Events screen). Statistics and device data are available via Session HTTP endpoints that API Key mode can reach.
@@ -211,11 +214,11 @@ The same seed reproduces, from launch:
 - **The animation**: WAN traffic, device telemetry, client traffic, roams, arrivals, departures, and events, tick for tick.
 - **History**: the Stats charts for every period, the week of past events, roam history, and Wi-Fi neighbors, all laid out relative to the launch time.
 
-Timestamps follow the wall clock, so the same history appears shifted to whenever you launch, and anything you trigger interactively (a restart, a kick, a power cycle) changes what happens after it. To reshoot a sequence, relaunch with the same seed and repeat the same keystrokes at the same moments.
+Timestamps follow the wall clock, so the same history appears shifted to whenever you launch, and anything you trigger interactively (a restart, a kick, a block) changes what happens after it. To reshoot a sequence, relaunch with the same seed and repeat the same keystrokes at the same moments.
 
 When `--demo` is set and no controller can be resolved from flags, environment, or config, the TUI opens the demo fleet instead of onboarding and logs that it did. The sanitizer never runs on the demo fleet, because its data is fictional already: documentation and private address ranges, locally administered MACs, and invented names.
 
-Device actions (restart, locate, upgrade, PoE power cycle) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Power cycling the dark camera port on `sw-core` brings that camera back. Changes that need a real controller, such as editing a network or deleting a policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
+Device actions (restart, locate, upgrade) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Changes that need a real controller, such as editing a network or moving a firewall policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
 
 `--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 

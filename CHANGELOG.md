@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   A tap selects a row and a second tap opens it, and an open device detail
   follows a tap on another device while keeping its tab, so stepping from
   switch to switch stays on their ports. Key hints are buttons that press
-  their key, including the status bar's help, search, settings, and quit.
+  their key, including the status bar's help, settings, and quit, and its
+  search button on the Devices, Clients, and WiFi screens.
   Confirmations take `y` and `n` taps, overlays close on a tap outside
   them, a tap dismisses a notification, and dashboard panels open their
   screens. The wheel scrolls lists and the event feed (scrolling back
@@ -101,6 +102,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   them forever whenever periodic refresh was on. Connecting again now
   shuts the previous connection down first, and a reconnect that fails
   leaves no session from the old connection behind.
+- **TUI firewall policy moves reach the controller.** `J` and `K` on the
+  Policies tab only swapped rows on screen, so the table showed an
+  evaluation order the controller did not have until the next refresh put
+  the real one back. A move now reads the zone pair's ordering, steps the
+  policy once, and writes it to the controller; a step past the fixed
+  block of system-defined policies crosses all of it, and its toast says
+  so. A toast shows each move as it starts, presses while one is in
+  flight are ignored with a note, and the table follows once the
+  controller has the new order. A refused move raises an error and
+  leaves the table as the controller has it, and a move while the
+  controller is disconnected is refused up front.
+- **`--demo` sanitizes TUI dialogs and toasts.** Confirmations and toasts
+  looked names and MACs up in the unsanitized store, so a recording could
+  show a real device name in "Restart ...?", a real MAC in "Locating ...",
+  or a real client name in "Kicked ...". They now use the same stand-ins
+  as the lists, and every toast, confirmation, and status-bar connection
+  error passes through the sanitizer.
+- **`--demo` no longer turns MACs, clock times, and Rust paths into IPv6
+  stand-ins.** With the default demo config, a MAC, a time such as
+  12:34:56, or a path such as `unifly::tui` in an event, a policy
+  summary, or an error became `2001:db8::cafe`, and real IPv6 addresses
+  came out garbled. Only text that parses as an IPv6 address is replaced
+  now, including one glued to a label (`addr:2001:db8::1`) or followed by
+  a colon or a prefix length, and a value that already carries a
+  stand-in keeps it.
+- **`--demo` hides SSIDs and BSSIDs outside the lists too.** The WiFi
+  client detail showed the real SSID and the neighbors' BSSIDs, event
+  messages kept the SSIDs they quote, even ones no list names, and a
+  client's BSSID was never mapped. All of them now show the same
+  stand-ins as the lists, and with MAC redaction on, MACs written as
+  twelve bare hex digits or dotted quads are redacted as well.
+- **`--demo` hides WAN addresses in the dashboard's Gateway panel.** The
+  ISP gateway, WAN IPv6 address, and DNS servers came straight from the
+  raw health payload, which was only sanitized with ISP redaction on. They
+  now follow the WAN address setting, on by default; ISP names still
+  change only with ISP redaction.
+- **TUI roam history loads under `--demo` with MAC redaction.** It asked
+  the controller for the stand-in MAC, which the controller has never
+  seen, so the Roaming tab never filled.
+- **TUI lists keep their scroll position.** Past the first page, the
+  selected row stayed pinned to the bottom of every list, and moving back
+  up never showed the rows below the cursor.
+- **TUI search keeps its filter on `Enter` and clears it on `Esc`.**
+  `Enter` did nothing, and `Esc` closed the bar but left the list
+  filtered. Reopening search starts from the filter in place. Search opens
+  only on the Devices, Clients, and WiFi screens, where it filters;
+  elsewhere `/` says so instead of opening a bar that filters nothing.
+- **The TUI WiFi client detail and roam history follow the selected
+  client.** Moving the selection showed the previous client's signal,
+  radio, and neighbor data under the new client's name, and a late roam
+  history answer could show the previous client's roams. A failed fetch of
+  either stayed stuck and was never asked for again; both now retry every
+  15 seconds.
+- **A paused TUI Events feed holds still.** Each new event shifted the
+  paused view down a row.
+- **Switching the TUI Stats period sizes its charts afresh** instead of
+  easing out of the old period's scale and pulsing as a new peak.
+- **The TUI status bar says "connecting" on the first connect** rather
+  than "reconnecting", and a connection that drops or fails to come back
+  names its cause instead of reading "connection failed: connection
+  failed".
+- **The TUI help overlay lists only keys that work everywhere.** It showed
+  `s` (sort) and `f` (filter) as global keys, though they act only on the
+  WiFi and Topology screens.
+- **The TUI and cloud references match what the TUI does.** The demo fleet
+  section promised a PoE power cycle that no key triggers, the key table
+  was missing `U` (upgrade firmware), and cloud mode was said to block
+  restart and locate, which go through the connector; only upgrade and
+  provisioning need a direct connection.
 
 ## [0.11.0] - 2026-10-12
 

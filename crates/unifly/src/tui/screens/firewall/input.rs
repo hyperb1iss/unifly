@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, Direction, FirewallSubTab};
@@ -54,11 +56,11 @@ impl FirewallScreen {
                 Some(Action::FirewallSubTab(self.sub_tab))
             }
             KeyCode::Char('K') if self.sub_tab == FirewallSubTab::Policies => self
-                .selected_policy_id()
-                .map(|id| Action::ReorderPolicy(id, Direction::Up)),
+                .selected_policy()
+                .map(|policy| Action::ReorderPolicy(Arc::clone(policy), Direction::Up)),
             KeyCode::Char('J') if self.sub_tab == FirewallSubTab::Policies => self
-                .selected_policy_id()
-                .map(|id| Action::ReorderPolicy(id, Direction::Down)),
+                .selected_policy()
+                .map(|policy| Action::ReorderPolicy(Arc::clone(policy), Direction::Down)),
             _ => None,
         }
     }

@@ -2,6 +2,7 @@
 
 mod commands;
 mod dispatch;
+mod firewall;
 mod lifecycle;
 mod navigation;
 mod render;
@@ -31,7 +32,6 @@ use crate::tui::terminal::Tui;
 use crate::tui::widgets::click::{Click, HitMap};
 
 /// Connection status as seen by the TUI.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConnectionStatus {
     #[default]
@@ -106,6 +106,8 @@ pub struct App {
     last_frame: Instant,
     /// Whether the next render tick should draw a frame.
     needs_redraw: bool,
+    /// Set while a firewall policy move is in flight.
+    policy_move: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl App {
@@ -162,6 +164,7 @@ impl App {
             effects_enabled,
             last_frame: Instant::now(),
             needs_redraw: true,
+            policy_move: Arc::default(),
         }
     }
 
@@ -289,6 +292,29 @@ mod tests {
             .expect("resize should be handled");
 
         assert!(app.should_draw());
+    }
+
+    #[test]
+    fn the_status_bar_tells_a_first_connect_from_a_reconnect() {
+        use crate::tui::screen::ScreenId;
+        use crate::tui::table::render_lines;
+
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        let status_bar = |app: &mut App| {
+            let rows = render_lines(120, 24, |frame, _| app.render(frame));
+            rows.last().cloned().unwrap_or_default()
+        };
+
+        app.process_action(&Action::Connecting)
+            .expect("connecting should be handled");
+        let status = status_bar(&mut app);
+        assert!(status.contains("\u{25D0} connecting"), "{status:?}");
+
+        app.process_action(&Action::Reconnecting { attempt: 2 })
+            .expect("reconnecting should be handled");
+        let status = status_bar(&mut app);
+        assert!(status.contains("reconnecting (attempt 2)"), "{status:?}");
     }
 
     #[test]

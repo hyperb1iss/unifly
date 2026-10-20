@@ -25,6 +25,23 @@ fn connect_backoff(attempt: u32) -> Duration {
     Duration::from_secs((BASE_SECS << exponent).min(MAX_SECS))
 }
 
+/// The action reporting a connection state the controller publishes once
+/// the bridge is connected. A dropped connection and a failed reconnect
+/// both leave it down, so they read as disconnected, which offers a manual
+/// retry, each with its cause. The bridge reports its own connect attempts,
+/// so the controller's `Connecting` adds nothing.
+fn connection_action(state: &ConnectionState) -> Option<Action> {
+    match state {
+        ConnectionState::Connected => Some(Action::Connected),
+        ConnectionState::Disconnected => Some(Action::Disconnected("lost the connection".into())),
+        ConnectionState::Reconnecting { attempt } => {
+            Some(Action::Reconnecting { attempt: *attempt })
+        }
+        ConnectionState::Failed => Some(Action::Disconnected("could not reconnect".into())),
+        ConnectionState::Connecting => None,
+    }
+}
+
 /// Spawn the data bridge connecting [`Controller`] reactive streams to the TUI.
 ///
 /// Connects to the controller (retrying failed attempts with bounded
@@ -48,7 +65,13 @@ pub async fn spawn_data_bridge(
             return;
         }
 
-        let _ = action_tx.send(Action::Reconnecting { attempt });
+        // The first attempt is the connect itself; only later ones retry.
+        let status = if attempt == 1 {
+            Action::Connecting
+        } else {
+            Action::Reconnecting { attempt }
+        };
+        let _ = action_tx.send(status);
 
         let connect_result = tokio::select! {
             biased;
@@ -230,20 +253,8 @@ pub async fn spawn_data_bridge(
             }
             Ok(()) = conn_state.changed() => {
                 let state = conn_state.borrow_and_update().clone();
-                match state {
-                    ConnectionState::Connected => {
-                        let _ = action_tx.send(Action::Connected);
-                    }
-                    ConnectionState::Disconnected => {
-                        let _ = action_tx.send(Action::Disconnected("disconnected".into()));
-                    }
-                    ConnectionState::Reconnecting { attempt } => {
-                        let _ = action_tx.send(Action::Reconnecting { attempt });
-                    }
-                    ConnectionState::Failed => {
-                        let _ = action_tx.send(Action::Disconnected("connection failed".into()));
-                    }
-                    ConnectionState::Connecting => {}
+                if let Some(action) = connection_action(&state) {
+                    let _ = action_tx.send(action);
                 }
             }
         }
@@ -270,6 +281,52 @@ mod tests {
         assert_eq!(connect_backoff(5), Duration::from_secs(30));
         assert_eq!(connect_backoff(6), Duration::from_secs(30));
         assert_eq!(connect_backoff(u32::MAX), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_dropped_or_failed_connection_reads_as_disconnected_with_its_cause() {
+        for (state, cause) in [
+            (ConnectionState::Disconnected, "lost the connection"),
+            (ConnectionState::Failed, "could not reconnect"),
+        ] {
+            let action = connection_action(&state);
+            assert!(
+                matches!(action, Some(Action::Disconnected(ref reason)) if reason == cause),
+                "{state:?}: {action:?}"
+            );
+        }
+        assert!(matches!(
+            connection_action(&ConnectionState::Reconnecting { attempt: 3 }),
+            Some(Action::Reconnecting { attempt: 3 })
+        ));
+        assert!(matches!(
+            connection_action(&ConnectionState::Connected),
+            Some(Action::Connected)
+        ));
+        // The bridge reports its own connect attempts.
+        assert!(connection_action(&ConnectionState::Connecting).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_first_attempt_reports_connecting() {
+        let controller = Controller::demo(unifly_api::DemoFleetOptions::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        let bridge = tokio::spawn(Box::pin(spawn_data_bridge(
+            controller,
+            tx,
+            cancel.clone(),
+            None,
+        )));
+
+        let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the bridge reports its first attempt")
+            .expect("the bridge is still running");
+        assert!(matches!(first, Action::Connecting), "{first:?}");
+
+        cancel.cancel();
+        bridge.await.expect("bridge task");
     }
 
     #[tokio::test]
