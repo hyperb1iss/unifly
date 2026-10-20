@@ -1,8 +1,10 @@
-//! Onboarding wizard - guides first-time setup when no config exists.
+//! Onboarding wizard - guides setup when no usable profile is configured.
 //!
 //! Flow: Welcome -> URL -> AuthMode -> Credentials -> Site -> Testing -> Done.
-//! On completion, saves the config to disk and emits `OnboardingComplete`
-//! with the built `ControllerConfig` so the app can connect immediately.
+//! On completion, saves its profile into the config file as the default,
+//! keeping any other profiles and settings there, and emits
+//! `OnboardingComplete` with the built `ControllerConfig` so the app can
+//! connect immediately.
 
 mod input;
 mod render;
