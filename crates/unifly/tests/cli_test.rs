@@ -620,6 +620,33 @@ fn test_writers_leave_a_config_that_fails_to_load_untouched() {
     }
 }
 
+/// `config show` masks stored secrets in every format, not only the table:
+/// JSON and YAML output get pasted into issues and agent transcripts.
+#[cfg(not(windows))]
+#[test]
+fn test_config_show_masks_secrets_in_every_format() {
+    let home = TempDir::new().unwrap();
+    write_config(&home, TWO_PROFILE_CONFIG);
+
+    for format in ["table", "json", "json-compact", "yaml"] {
+        let output = unifly_cmd_in(home.path())
+            .args(["config", "show", "-o", format])
+            .output()
+            .unwrap();
+        let text = combined_output(&output);
+
+        assert!(output.status.success(), "{format}: {text}");
+        assert!(
+            !text.contains("home-secret-api-key") && !text.contains("work-secret-password"),
+            "{format} output leaked a secret:\n{text}"
+        );
+        assert!(
+            text.contains("****") && text.contains("https://192.168.1.1"),
+            "{format} output should mask secrets and keep the rest:\n{text}"
+        );
+    }
+}
+
 /// The setup wizards load the config before their first prompt, so a file
 /// that cannot be loaded stops them before they ask for (and store) any
 /// secret. `UNIFI_API_KEY` makes cloud-setup's first prompt a menu, which

@@ -1,6 +1,21 @@
 use crate::cli::error::CliError;
 use crate::config::{Config, Profile};
 
+/// Shown in place of a secret stored in config.toml.
+const MASKED: &str = "****";
+
+/// Mask every secret stored in `cfg` so no output format can print one.
+/// Masking keeps the field, so the output still says a secret is set.
+pub(super) fn redact_secrets(cfg: &mut Config) {
+    for profile in cfg.profiles.values_mut() {
+        for secret in [&mut profile.api_key, &mut profile.password] {
+            if secret.is_some() {
+                *secret = Some(MASKED.into());
+            }
+        }
+    }
+}
+
 pub(super) fn format_config_redacted(cfg: &Config) -> String {
     use std::fmt::Write;
 
@@ -26,7 +41,7 @@ pub(super) fn format_config_redacted(cfg: &Config) -> String {
         let _ = writeln!(out, "site = \"{}\"", profile.site);
         let _ = writeln!(out, "auth_mode = \"{}\"", profile.auth_mode);
         if profile.api_key.is_some() {
-            let _ = writeln!(out, "api_key = \"****\"");
+            let _ = writeln!(out, "api_key = \"{MASKED}\"");
         }
         if let Some(ref env) = profile.api_key_env {
             let _ = writeln!(out, "api_key_env = \"{env}\"");
@@ -41,7 +56,7 @@ pub(super) fn format_config_redacted(cfg: &Config) -> String {
             let _ = writeln!(out, "username = \"{username}\"");
         }
         if profile.password.is_some() {
-            let _ = writeln!(out, "password = \"****\"");
+            let _ = writeln!(out, "password = \"{MASKED}\"");
         }
         if let Some(ref ca_cert) = profile.ca_cert {
             let _ = writeln!(out, "ca_cert = \"{}\"", ca_cert.display());
@@ -126,7 +141,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    use super::{format_config_redacted, resolve_set_target};
+    use super::{format_config_redacted, redact_secrets, resolve_set_target};
     use crate::config::{Config, Defaults, Profile};
 
     fn sample_profile() -> Profile {
@@ -169,6 +184,33 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("profiles.<name>.<key>"));
         assert!(message.contains("profiles.home"));
+    }
+
+    #[test]
+    fn redact_secrets_masks_stored_secrets_and_nothing_else() {
+        let mut profiles = HashMap::new();
+        profiles.insert("home".into(), sample_profile());
+        let mut keyring_only = sample_profile();
+        keyring_only.api_key = None;
+        keyring_only.password = None;
+        profiles.insert("work".into(), keyring_only);
+        let mut cfg = Config {
+            default_profile: Some("home".into()),
+            defaults: Defaults::default(),
+            profiles,
+            demo: crate::config::DemoConfig::default(),
+        };
+
+        redact_secrets(&mut cfg);
+
+        let home = &cfg.profiles["home"];
+        assert_eq!(home.api_key.as_deref(), Some("****"));
+        assert_eq!(home.password.as_deref(), Some("****"));
+        assert_eq!(home.username.as_deref(), Some("bliss"));
+        assert_eq!(home.api_key_env.as_deref(), Some("UNIFI_API_KEY"));
+        let work = &cfg.profiles["work"];
+        assert_eq!(work.api_key, None);
+        assert_eq!(work.password, None);
     }
 
     #[test]

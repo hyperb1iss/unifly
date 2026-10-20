@@ -5,7 +5,8 @@ use crate::config::resolve;
 
 use super::interactive::{run_cloud_setup, run_init, store_profile_secrets};
 use super::support::{
-    empty_profile, format_config_redacted, profile_not_found, resolve_set_target, save_config,
+    empty_profile, format_config_redacted, profile_not_found, redact_secrets, resolve_set_target,
+    save_config,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -15,7 +16,8 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         ConfigCommand::CloudSetup => run_cloud_setup(global).await,
 
         ConfigCommand::Show => {
-            let cfg = crate::config::load_config()?;
+            let mut cfg = crate::config::load_config()?;
+            redact_secrets(&mut cfg);
             let out = output::render_single(&global.output, &cfg, format_config_redacted, |_| {
                 "config".into()
             });
