@@ -169,7 +169,11 @@ fn build_controller_direct(
     let url = match url_str.parse() {
         Ok(url) => url,
         Err(error) => {
-            tracing::warn!(%error, url = url_str, "invalid controller URL, ignoring direct flags");
+            tracing::warn!(
+                %error,
+                url = %config::redact_url_userinfo(url_str),
+                "invalid controller URL, ignoring direct flags"
+            );
             return None;
         }
     };

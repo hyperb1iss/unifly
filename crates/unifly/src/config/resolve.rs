@@ -83,7 +83,7 @@ pub fn resolve_profile(
     });
     let url: url::Url = url_str.parse().map_err(|_| CliError::Validation {
         field: "controller".into(),
-        reason: format!("invalid URL: {url_str}"),
+        reason: format!("invalid URL: {}", config::redact_url_userinfo(url_str)),
     })?;
 
     // 2. Auth credentials (CLI flag overrides take priority)
@@ -263,6 +263,21 @@ mod tests {
         profile.insecure = None;
         profile.timeout = None;
         profile
+    }
+
+    /// A controller URL can carry a password (`https://admin:pw@host`).
+    /// When it does not parse, the error names it without that part.
+    #[test]
+    fn an_unparseable_controller_url_is_reported_without_its_password() {
+        let mut profile = direct_profile();
+        profile.controller = "https://admin:hunter2@udm.lan:99999".into();
+
+        let message = resolve_profile(&profile, "default", &base_global(), &Defaults::default())
+            .expect_err("the port is out of range")
+            .to_string();
+
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(message.contains("https://****@udm.lan:99999"), "{message}");
     }
 
     #[test]

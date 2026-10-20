@@ -940,6 +940,19 @@ pub fn resolve_totp_provider(profile: &Profile) -> Result<Option<TotpProvider>, 
     Ok(Some(totp_command::provider(argv.clone())))
 }
 
+/// `url` with its userinfo (`user:password@`) masked as `****@`, for
+/// errors, logs, and displays. It works on the text, so a URL that does not
+/// parse is covered too.
+pub fn redact_url_userinfo(url: &str) -> String {
+    let authority_start = url.find("://").map_or(0, |index| index + 3);
+    let rest = &url[authority_start..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{}****{}", &url[..authority_start], &rest[at..]),
+        None => url.to_owned(),
+    }
+}
+
 /// Build a `ControllerConfig` from a profile — no CLI flag overrides.
 ///
 /// Suitable for the TUI and other non-CLI consumers. Sets TUI-friendly
@@ -962,7 +975,7 @@ pub fn profile_to_controller_config(
         .parse()
         .map_err(|_| ConfigError::Validation {
             field: "controller".into(),
-            reason: format!("invalid URL: {controller_url}"),
+            reason: format!("invalid URL: {}", redact_url_userinfo(controller_url)),
         })?;
 
     let auth = resolve_auth(profile, profile_name)?;
@@ -1384,6 +1397,38 @@ mod tests {
                 matches!(SecretStoreError::from(error), SecretStoreError::Rejected(_)),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn profile_to_controller_config_hides_a_password_in_a_bad_url() {
+        let mut profile = direct_profile();
+        profile.controller = "https://admin:hunter2@udm.lan:99999".into();
+
+        let message = profile_to_controller_config(&profile, "default", &Defaults::default())
+            .expect_err("the port is out of range")
+            .to_string();
+
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(message.contains("https://****@udm.lan:99999"), "{message}");
+    }
+
+    #[test]
+    fn redact_url_userinfo_masks_only_the_userinfo() {
+        use super::redact_url_userinfo;
+
+        for (url, redacted) in [
+            ("ftp://admin:hunter2@host/x", "ftp://****@host/x"),
+            ("https://token@host", "https://****@host"),
+            ("admin:pw@host:8443", "****@host:8443"),
+            ("https://a:b@c@host?q=1", "https://****@host?q=1"),
+            (
+                "https://host/path@not-userinfo",
+                "https://host/path@not-userinfo",
+            ),
+            ("https://192.168.1.1", "https://192.168.1.1"),
+        ] {
+            assert_eq!(redact_url_userinfo(url), redacted, "{url}");
         }
     }
 

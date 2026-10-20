@@ -8,6 +8,7 @@ const MASKED: &str = "****";
 /// Masking keeps the field, so the output still says a secret is set.
 pub(super) fn redact_secrets(cfg: &mut Config) {
     for profile in cfg.profiles.values_mut() {
+        profile.controller = crate::config::redact_url_userinfo(&profile.controller);
         for secret in [&mut profile.api_key, &mut profile.password] {
             if secret.is_some() {
                 *secret = Some(MASKED.into());
@@ -56,7 +57,11 @@ pub(super) fn format_config_redacted(cfg: &Config) -> String {
         let profile = &cfg.profiles[name];
         let _ = writeln!(out);
         let _ = writeln!(out, "[profiles.{name}]");
-        let _ = writeln!(out, "controller = \"{}\"", profile.controller);
+        let _ = writeln!(
+            out,
+            "controller = \"{}\"",
+            crate::config::redact_url_userinfo(&profile.controller)
+        );
         let _ = writeln!(out, "site = \"{}\"", profile.site);
         let _ = writeln!(out, "auth_mode = \"{}\"", profile.auth_mode);
         if profile.api_key.is_some() {
@@ -208,6 +213,7 @@ mod tests {
         let mut profiles = HashMap::new();
         profiles.insert("home".into(), sample_profile());
         let mut keyring_only = sample_profile();
+        keyring_only.controller = "https://admin:hunter2@192.168.1.1".into();
         keyring_only.api_key = None;
         keyring_only.password = None;
         profiles.insert("work".into(), keyring_only);
@@ -230,6 +236,7 @@ mod tests {
         assert_eq!(home.username.as_deref(), Some("bliss"));
         assert_eq!(home.api_key_env.as_deref(), Some("UNIFI_API_KEY"));
         let work = &cfg.profiles["work"];
+        assert_eq!(work.controller, "https://****@192.168.1.1");
         assert_eq!(work.api_key, None);
         assert_eq!(work.password, None);
     }
