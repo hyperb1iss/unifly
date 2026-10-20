@@ -397,30 +397,68 @@ fn write_session_profile(config_home: &std::path::Path, name: &str, controller: 
     }
 }
 
+/// stderr with whitespace collapsed, since miette wraps help text.
+fn squeezed_stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[test]
-fn test_missing_credentials_exit_the_same_through_profiles_and_flags() {
-    const HELP: &str = "Configure credentials with: unifly config init";
-
-    unifly_cmd()
+fn test_missing_credentials_get_the_hint_that_fixes_them() {
+    // Ad-hoc flags without a key: the fix is a key, not a profile secret.
+    let output = unifly_cmd()
         .args(["-c", "https://127.0.0.1:9", "devices", "list"])
-        .assert()
-        .failure()
-        .code(3)
-        .stderr(predicate::str::contains("No credentials configured"))
-        .stderr(predicate::str::contains(HELP));
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = squeezed_stderr(&output);
+    assert!(stderr.contains("--api-key"), "{stderr}");
+    assert!(stderr.contains("UNIFI_API_KEY"), "{stderr}");
+    assert!(!stderr.contains("set-password"), "{stderr}");
 
+    // A session profile without a username needs one, then a password.
     // Session auth without a username fails before any keyring lookup.
-    let tempdir = tempfile::tempdir().unwrap();
-    write_session_profile(tempdir.path(), "lab", "https://127.0.0.1:9");
-    unifly_cmd_in(tempdir.path())
-        .args(["-p", "lab", "devices", "list"])
-        .assert()
-        .failure()
-        .code(3)
-        .stderr(predicate::str::contains(
-            "No credentials configured for profile 'lab'",
-        ))
-        .stderr(predicate::str::contains(HELP));
+    for name in ["lab", "my lab"] {
+        let tempdir = tempfile::tempdir().unwrap();
+        write_session_profile(tempdir.path(), name, "https://127.0.0.1:9");
+        let output = unifly_cmd_in(tempdir.path())
+            .args(["-p", name, "devices", "list"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{}",
+            combined_output(&output)
+        );
+        let stderr = squeezed_stderr(&output);
+        let quoted = if name.contains(' ') {
+            format!("'{name}'")
+        } else {
+            name.to_owned()
+        };
+        assert!(
+            stderr.contains(&format!("No credentials configured for profile '{name}'")),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("unifly -p {quoted} config set username")),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("unifly config set-password {quoted}")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("UNIFI_API_KEY"), "{stderr}");
+        assert!(!stderr.contains("cloud-setup"), "{stderr}");
+    }
 }
 
 #[test]
@@ -2050,6 +2088,7 @@ async fn mock_rejecting_controller() -> wiremock::MockServer {
 async fn test_auth_failure_help_names_the_profile_in_use() {
     let server = mock_rejecting_controller().await;
 
+    // Ad-hoc flags: the rejected key is the flag's, nothing is stored.
     let output = mock_cmd(&server)
         .args(["devices", "list"])
         .output()
@@ -2060,22 +2099,27 @@ async fn test_auth_failure_help_names_the_profile_in_use() {
         "{}",
         combined_output(&output)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = squeezed_stderr(&output);
     assert!(stderr.contains("Authentication failed"), "{stderr}");
+    assert!(stderr.contains("--api-key"), "{stderr}");
     assert!(!stderr.contains("current"), "{stderr}");
+    assert!(!stderr.contains("set-password"), "{stderr}");
 
     let tempdir = tempfile::tempdir().unwrap();
     for (key, value) in [
         ("controller", server.uri()),
         ("auth_mode", "integration".into()),
+        ("api_key", MOCK_API_KEY.into()),
     ] {
         unifly_cmd_in(tempdir.path())
-            .args(["config", "set", &format!("profiles.lab.{key}"), &value])
+            .args(["config", "set", &format!("profiles.my lab.{key}"), &value])
             .assert()
             .success();
     }
+
+    // The profile's own key was rejected: replace the stored secret.
     let output = unifly_cmd_in(tempdir.path())
-        .args(["-p", "lab", "--api-key", MOCK_API_KEY, "devices", "list"])
+        .args(["-p", "my lab", "devices", "list"])
         .output()
         .unwrap();
     assert_eq!(
@@ -2084,16 +2128,28 @@ async fn test_auth_failure_help_names_the_profile_in_use() {
         "{}",
         combined_output(&output)
     );
-    // miette wraps help text to the terminal width.
-    let stderr = String::from_utf8_lossy(&output.stderr)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let stderr = squeezed_stderr(&output);
     assert!(
-        stderr.contains("unifly config set-password lab"),
+        stderr.contains("unifly config set-password 'my lab'"),
         "{stderr}"
     );
     assert!(!stderr.contains("current"), "{stderr}");
+
+    // An explicit --api-key overrides the profile, so the profile's stored
+    // secret is not what failed.
+    let output = unifly_cmd_in(tempdir.path())
+        .args(["-p", "my lab", "--api-key", "other-key", "devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = squeezed_stderr(&output);
+    assert!(stderr.contains("--api-key"), "{stderr}");
+    assert!(!stderr.contains("set-password"), "{stderr}");
 }
 
 #[tokio::test]

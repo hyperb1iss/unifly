@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 use unifly::cli::args::{Cli, Command, ConfigCommand, EventsCommand, GlobalOpts};
 use unifly::cli::commands;
 use unifly::cli::demo_fleet::{self, DemoSwitch};
-use unifly::cli::error::{CliError, redact_userinfo};
+use unifly::cli::error::{CliError, CredentialSource, redact_userinfo};
 use unifly::config::resolve;
 
 use unifly_api::Controller;
@@ -99,7 +99,7 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
 
     let Cli { global, command } = cli;
     let result = run_command(command, &global).await;
-    result.map_err(|err| name_profile(err, &global))
+    result.map_err(|err| explain_credentials(err, &global))
 }
 
 #[allow(clippy::future_not_send)]
@@ -172,17 +172,43 @@ async fn run_command(command: Command, global: &GlobalOpts) -> Result<(), CliErr
     }
 }
 
-/// Point an authentication failure's hint at the profile the command used.
-/// The config is only read on this failure path, and never for the demo
-/// fleet, which keeps its promise not to open the config file.
-fn name_profile(err: CliError, global: &GlobalOpts) -> CliError {
-    if global.demo_fleet || !matches!(err, CliError::AuthFailed { .. }) {
+/// Fit credential hints to the command's actual source of credentials:
+/// an explicit `--api-key`, or the profile it ran with and that profile's
+/// auth mode. The config is only read on these failure paths, and never for
+/// the demo fleet, which keeps its promise not to open the config file.
+fn explain_credentials(err: CliError, global: &GlobalOpts) -> CliError {
+    if global.demo_fleet {
         return err;
     }
-    let cfg = resolve::load_config_or_default();
-    let name = resolve::active_profile_name(global, &cfg);
-    let profile = cfg.profiles.contains_key(&name).then_some(name);
-    err.for_profile(profile.as_deref())
+    match err {
+        CliError::AuthFailed { .. } if global.api_key.is_some() => {
+            err.with_credential_source(CredentialSource::ApiKeyFlag)
+        }
+        CliError::AuthFailed { .. } => {
+            let cfg = resolve::load_config_or_default();
+            let name = resolve::active_profile_name(global, &cfg);
+            if cfg.profiles.contains_key(&name) {
+                err.with_credential_source(CredentialSource::Profile(&name))
+            } else {
+                err
+            }
+        }
+        CliError::NoCredentials {
+            profile: Some(name),
+            ..
+        } => {
+            let cfg = resolve::load_config_or_default();
+            let profile = cfg.profiles.get(&name);
+            let has_username = profile.is_some_and(|p| p.username.is_some())
+                || std::env::var_os("UNIFI_USERNAME").is_some();
+            CliError::profile_missing_credentials(
+                &name,
+                profile.map(|p| p.auth_mode.as_str()),
+                has_username,
+            )
+        }
+        other => other,
+    }
 }
 
 fn command_uses_websocket(command: &Command) -> bool {
@@ -260,9 +286,7 @@ async fn build_controller_config(
             unifly_api::AuthCredentials::ApiKey(api_key)
         }
     } else {
-        return Err(CliError::NoCredentials {
-            profile: profile_name,
-        });
+        return Err(CliError::no_api_key());
     };
 
     let tls = if is_cloud {

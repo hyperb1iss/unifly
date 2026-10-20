@@ -134,9 +134,7 @@ pub(crate) fn resolve_cloud_api_key(
         return Ok(SecretString::from(api_key.clone()));
     }
 
-    let profile = profile.ok_or_else(|| CliError::NoCredentials {
-        profile: profile_name.to_owned(),
-    })?;
+    let profile = profile.ok_or_else(CliError::no_cloud_api_key)?;
 
     config::resolve_api_key(profile, profile_name).map_err(CliError::from)
 }

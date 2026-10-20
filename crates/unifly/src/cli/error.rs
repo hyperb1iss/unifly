@@ -62,16 +62,15 @@ pub enum CliError {
         help: String,
     },
 
-    #[error("No credentials configured for profile '{profile}'")]
-    #[diagnostic(
-        code(unifi::no_credentials),
-        help(
-            "Configure credentials with: unifly config init (local)\n\
-             Or: unifly config cloud-setup (Site Manager)\n\
-             Or set UNIFI_API_KEY environment variable."
-        )
-    )]
-    NoCredentials { profile: String },
+    #[error("{}", no_credentials_title(profile.as_deref()))]
+    #[diagnostic(code(unifi::no_credentials))]
+    NoCredentials {
+        /// The profile missing a secret, or none for ad-hoc flags.
+        profile: Option<String>,
+        /// Built by the constructors below, which know what is missing.
+        #[help]
+        help: String,
+    },
 
     // ── Resources ────────────────────────────────────────────────────
     #[error("{resource_type} '{identifier}' not found")]
@@ -287,7 +286,9 @@ impl From<crate::config::ConfigError> for CliError {
     fn from(err: crate::config::ConfigError) -> Self {
         use crate::config::ConfigError;
         match err {
-            ConfigError::NoCredentials { profile } => Self::NoCredentials { profile },
+            ConfigError::NoCredentials { profile } => {
+                Self::profile_missing_credentials(&profile, None, false)
+            }
             ConfigError::Validation { field, reason } => Self::Validation { field, reason },
             other => Self::ConfigError(other),
         }
@@ -318,14 +319,20 @@ impl CliError {
         }
     }
 
-    /// An authentication failure whose recovery hint names `profile`, the
-    /// profile the command ran with, or none for ad-hoc `--controller` use.
-    pub fn auth_failed(message: String, profile: Option<&str>) -> Self {
-        let stored_secret = match profile {
-            Some(name) => format!(
-                "To replace this profile's stored secret: unifly config set-password {name}"
+    /// An authentication failure whose hint fixes the credentials `source`
+    /// supplied.
+    pub fn auth_failed(message: String, source: CredentialSource<'_>) -> Self {
+        let fix = match source {
+            CredentialSource::ApiKeyFlag => "The key came from --api-key or UNIFI_API_KEY, \
+                which override any profile: check that value."
+                .to_owned(),
+            CredentialSource::Profile(name) => format!(
+                "To replace this profile's stored secret: unifly config set-password {}",
+                shell_quote(name)
             ),
-            None => "To keep credentials in a profile instead: unifly config init".into(),
+            CredentialSource::Unknown => {
+                "To keep credentials in a profile: unifly config init".to_owned()
+            }
         };
         Self::AuthFailed {
             message,
@@ -333,21 +340,119 @@ impl CliError {
                 "Verify your API key or credentials.\n\
                  For local controller API keys: check Settings > Integrations on your controller.\n\
                  For Site Manager cloud profiles: verify the API key can see the console and your UI account has UniFi Network admin access.\n\
-                 {stored_secret}\n\
+                 {fix}\n\
                  To re-run cloud onboarding: unifly config cloud-setup"
             ),
         }
     }
 
-    /// Name `profile` in an authentication failure's hint. Errors convert
-    /// from `CoreError` without knowing which profile was active, so the
-    /// binary applies this once it has the result.
+    /// Point an authentication failure's hint at where its credentials
+    /// came from. Errors convert from `CoreError` without knowing that, so
+    /// the binary applies this once it has the result.
     #[must_use]
-    pub fn for_profile(self, profile: Option<&str>) -> Self {
+    pub fn with_credential_source(self, source: CredentialSource<'_>) -> Self {
         match self {
-            Self::AuthFailed { message, .. } => Self::auth_failed(message, profile),
+            Self::AuthFailed { message, .. } => Self::auth_failed(message, source),
             other => other,
         }
+    }
+
+    /// No API key for an ad-hoc `--controller` run.
+    pub fn no_api_key() -> Self {
+        Self::NoCredentials {
+            profile: None,
+            help: "Pass --api-key or set UNIFI_API_KEY alongside --controller.\n\
+                   To save the controller and its credentials instead: unifly config init \
+                   (local) or unifly config cloud-setup (Site Manager)"
+                .into(),
+        }
+    }
+
+    /// No API key for a Site Manager query and no profile to read one from.
+    pub fn no_cloud_api_key() -> Self {
+        Self::NoCredentials {
+            profile: None,
+            help: "Pass --api-key or set UNIFI_API_KEY with a Site Manager API key.\n\
+                   To save one in a profile instead: unifly config cloud-setup"
+                .into(),
+        }
+    }
+
+    /// Profile `name` lacks a secret it needs. Its `auth_mode`, when known,
+    /// and whether a username is set say which secret, and so which fix.
+    pub fn profile_missing_credentials(
+        name: &str,
+        auth_mode: Option<&str>,
+        has_username: bool,
+    ) -> Self {
+        let quoted = shell_quote(name);
+        let store = format!("unifly config set-password {quoted}");
+        let set_username = format!(
+            "Set the username: unifly -p {quoted} config set username <name> \
+             (or set UNIFI_USERNAME)"
+        );
+        let help = match (auth_mode, has_username) {
+            (Some("integration" | "cloud"), _) => format!(
+                "Store this profile's API key: {store}\n\
+                 Or pass --api-key, set UNIFI_API_KEY, or set the profile's api_key_env \
+                 to a variable that holds the key."
+            ),
+            (Some("session" | "legacy"), false) => {
+                format!("{set_username}\nThen store the password: {store} (or set UNIFI_PASSWORD)")
+            }
+            (Some("session" | "legacy"), true) => {
+                format!("Store this profile's password: {store}\nOr set UNIFI_PASSWORD.")
+            }
+            (Some("hybrid"), false) => format!(
+                "{set_username}\nThen store the API key and password: {store} \
+                 (or set UNIFI_API_KEY and UNIFI_PASSWORD)"
+            ),
+            (Some("hybrid"), true) => format!(
+                "Store this profile's API key and password: {store}\n\
+                 Or set UNIFI_API_KEY and UNIFI_PASSWORD."
+            ),
+            _ => format!(
+                "Store this profile's secret: {store}\n\
+                 Or set UNIFI_API_KEY for an API key, or UNIFI_USERNAME and UNIFI_PASSWORD \
+                 for a login."
+            ),
+        };
+        Self::NoCredentials {
+            profile: Some(name.to_owned()),
+            help,
+        }
+    }
+}
+
+/// Where the credentials behind an authentication failure came from.
+#[derive(Debug, Clone, Copy)]
+pub enum CredentialSource<'a> {
+    /// `--api-key` or `UNIFI_API_KEY`, which override any profile.
+    ApiKeyFlag,
+    /// The named profile's configured or stored secrets.
+    Profile(&'a str),
+    /// Not known where the error was raised.
+    Unknown,
+}
+
+fn no_credentials_title(profile: Option<&str>) -> String {
+    match profile {
+        Some(name) => format!("No credentials configured for profile '{name}'"),
+        None => "No API key given for the controller".into(),
+    }
+}
+
+/// `word` as one shell word: bare when it needs no quoting, otherwise in
+/// single quotes, so a hint like `set-password 'my lab'` pastes as is.
+pub fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '@'));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
     }
 }
 
@@ -390,7 +495,9 @@ impl From<CoreError> for CliError {
                 source: reason.into(),
             },
 
-            CoreError::AuthenticationFailed { message } => CliError::auth_failed(message, None),
+            CoreError::AuthenticationFailed { message } => {
+                CliError::auth_failed(message, CredentialSource::Unknown)
+            }
 
             CoreError::ControllerDisconnected => CliError::ConnectionFailed {
                 url: "(disconnected)".into(),
@@ -528,7 +635,7 @@ mod tests {
         Network, TrafficMatchingList,
     };
 
-    use super::{CliError, LIST_COMMANDS, exit_code};
+    use super::{CliError, CredentialSource, LIST_COMMANDS, exit_code, shell_quote};
     use crate::cli::args::Cli;
     use crate::cli::commands::util::lookup::Lookup;
 
@@ -607,8 +714,12 @@ mod tests {
         assert!(!generic.contains("current"), "{generic}");
         assert!(!generic.contains("set-password"), "{generic}");
 
-        let named = help(&err.for_profile(Some("lab"))).unwrap_or_default();
-        assert!(named.contains("unifly config set-password lab"), "{named}");
+        let named = help(&err.with_credential_source(CredentialSource::Profile("my lab")))
+            .unwrap_or_default();
+        assert!(
+            named.contains("unifly config set-password 'my lab'"),
+            "{named}"
+        );
     }
 
     #[test]
@@ -629,6 +740,57 @@ mod tests {
         ] {
             assert_eq!(super::redact_userinfo(url), redacted, "{url}");
         }
+    }
+
+    #[test]
+    fn missing_credentials_hint_fixes_the_missing_secret() {
+        let hint = |mode: Option<&str>, has_username: bool| {
+            help(&CliError::profile_missing_credentials(
+                "lab",
+                mode,
+                has_username,
+            ))
+            .unwrap_or_default()
+        };
+
+        let api_key = hint(Some("integration"), false);
+        assert!(
+            api_key.contains("API key: unifly config set-password lab"),
+            "{api_key}"
+        );
+
+        let password = hint(Some("session"), true);
+        assert!(
+            password.contains("password: unifly config set-password lab"),
+            "{password}"
+        );
+        assert!(!password.contains("UNIFI_API_KEY"), "{password}");
+        assert!(!password.contains("username"), "{password}");
+
+        let username = hint(Some("session"), false);
+        assert!(
+            username.contains("unifly -p lab config set username"),
+            "{username}"
+        );
+
+        let hybrid = hint(Some("hybrid"), true);
+        assert!(hybrid.contains("API key and password"), "{hybrid}");
+
+        for mode in [Some("integration"), Some("session"), Some("hybrid"), None] {
+            let text = hint(mode, true);
+            assert!(!text.contains("cloud-setup"), "{mode:?}: {text}");
+            assert!(!text.contains("config init"), "{mode:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn shell_quote_keeps_hints_pasteable() {
+        assert_eq!(shell_quote("lab"), "lab");
+        assert_eq!(shell_quote("home-1.lan"), "home-1.lan");
+        assert_eq!(shell_quote("my lab"), "'my lab'");
+        assert_eq!(shell_quote("bob's"), "'bob'\\''s'");
+        assert_eq!(shell_quote("$HOME"), "'$HOME'");
+        assert_eq!(shell_quote(""), "''");
     }
 
     #[test]
