@@ -67,7 +67,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 
 # ── Configuration ──
-figment = { version = "0.10", features = ["toml", "env"] }
+figment = { version = "0.10", features = ["toml"] }
 keyring = "4"
 
 # ── Output formatting (CLI) ──
