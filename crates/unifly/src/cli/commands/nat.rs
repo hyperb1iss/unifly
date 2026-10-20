@@ -219,7 +219,7 @@ fn handle_list(
     painter: &output::Painter,
 ) {
     let all = controller.nat_policies_snapshot();
-    let snapshot = util::apply_list_args(util::order::nat_policies(&all), list);
+    let snapshot = util::apply_list_args(util::order::nat_policies(&all), list, global.quiet);
     let out = output::render_list(
         &global.output,
         &snapshot,

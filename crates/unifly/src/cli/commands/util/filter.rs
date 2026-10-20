@@ -1,10 +1,12 @@
 use crate::cli::args::{FilterOp, ListArgs, ListFilter};
 
 /// Apply a list command's `--filter`, `--offset`, and `--limit`/`--all` to
-/// `items`, printing a hint on stderr when the limit cut the list short.
+/// `items`. Unless `quiet`, a hint on stderr says when the limit cut the
+/// list short.
 pub fn apply_list_args<T: serde::Serialize>(
     items: impl IntoIterator<Item = T>,
     list: &ListArgs,
+    quiet: bool,
 ) -> Vec<T> {
     let offset = usize::try_from(list.offset).unwrap_or(usize::MAX);
     let limit = usize::try_from(list.limit).unwrap_or(usize::MAX);
@@ -22,10 +24,12 @@ pub fn apply_list_args<T: serde::Serialize>(
     if list.all {
         filtered
     } else if filtered.len() > limit {
-        eprintln!(
-            "Showing {limit} of {} results. Use --all (-a) to see everything.",
-            filtered.len()
-        );
+        if !quiet {
+            eprintln!(
+                "Showing {limit} of {} results. Use --all (-a) to see everything.",
+                filtered.len()
+            );
+        }
         filtered.into_iter().take(limit).collect()
     } else {
         filtered
@@ -130,7 +134,7 @@ mod tests {
             filter: None,
         };
         let rows = vec![1, 2, 3, 4];
-        let sliced = apply_list_args(rows, &args);
+        let sliced = apply_list_args(rows, &args, true);
         assert_eq!(sliced, vec![2, 3]);
     }
 
@@ -146,7 +150,7 @@ mod tests {
             serde_json::json!({"name":"alpha"}),
             serde_json::json!({"name":"beta"}),
         ];
-        let filtered = apply_list_args(rows, &args);
+        let filtered = apply_list_args(rows, &args, true);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0]["name"], "beta");
     }

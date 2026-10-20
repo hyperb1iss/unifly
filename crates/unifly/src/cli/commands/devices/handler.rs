@@ -26,7 +26,7 @@ pub(super) async fn handle(
     match args.command {
         DevicesCommand::List(list) => {
             let all = controller.devices_snapshot();
-            let snapshot = util::apply_list_args(util::order::devices(&all), &list);
+            let snapshot = util::apply_list_args(util::order::devices(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,
@@ -124,7 +124,11 @@ pub(super) async fn handle(
         }
 
         DevicesCommand::Pending(list) => {
-            let pending = util::apply_list_args(controller.list_pending_devices().await?, &list);
+            let pending = util::apply_list_args(
+                controller.list_pending_devices().await?,
+                &list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &pending,
@@ -169,7 +173,8 @@ pub(super) async fn handle(
         }
 
         DevicesCommand::Tags(list) => {
-            let tags = util::apply_list_args(controller.list_device_tags().await?, &list);
+            let tags =
+                util::apply_list_args(controller.list_device_tags().await?, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &tags,

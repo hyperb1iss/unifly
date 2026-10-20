@@ -36,9 +36,10 @@ substring.
 Most lists default to 25 entries. Pass `--all` for complete enumeration when
 available. The shared list handler applies filtering, offset, and limit to
 its available collection; `--all` removes the limit but preserves the offset.
-A truncation hint appears only when more matching entries exist than the
-limit. Hotspot, events, and alarms lists default to 100 and lack `--all`;
-client roams defaults to 50. Check each command's help for pagination.
+A truncation hint appears on stderr only when more matching entries exist
+than the limit, and `-q` silences it. Hotspot, events, and alarms lists
+default to 100 and lack `--all`; client roams defaults to 50. Check each
+command's help for pagination.
 
 Lists built from the controller snapshot sort before filtering and paging,
 so every run and every output format agrees and consecutive `--offset`

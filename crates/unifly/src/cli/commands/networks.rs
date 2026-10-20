@@ -105,7 +105,7 @@ pub async fn handle(
     match args.command {
         NetworksCommand::List(list) => {
             let all = controller.networks_snapshot();
-            let snap = util::apply_list_args(util::order::networks(&all), &list);
+            let snap = util::apply_list_args(util::order::networks(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snap,

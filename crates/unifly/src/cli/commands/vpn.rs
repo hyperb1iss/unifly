@@ -132,7 +132,11 @@ async fn handle_servers(
             }
         }
         None => {
-            let servers = util::apply_list_args(controller.list_vpn_servers().await?, &args.list);
+            let servers = util::apply_list_args(
+                controller.list_vpn_servers().await?,
+                &args.list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &servers,
@@ -177,7 +181,11 @@ async fn handle_tunnels(
             }
         }
         None => {
-            let tunnels = util::apply_list_args(controller.list_vpn_tunnels().await?, &args.list);
+            let tunnels = util::apply_list_args(
+                controller.list_vpn_tunnels().await?,
+                &args.list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &tunnels,
@@ -200,7 +208,11 @@ async fn handle_site_to_site(
 
     match args.command {
         SiteToSiteVpnCommand::List(list) => {
-            let vpns = util::apply_list_args(controller.list_site_to_site_vpns().await?, &list);
+            let vpns = util::apply_list_args(
+                controller.list_site_to_site_vpns().await?,
+                &list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &vpns,
@@ -287,8 +299,11 @@ async fn handle_remote_access(
 
     match args.command {
         RemoteAccessVpnCommand::List(list) => {
-            let servers =
-                util::apply_list_args(controller.list_remote_access_vpn_servers().await?, &list);
+            let servers = util::apply_list_args(
+                controller.list_remote_access_vpn_servers().await?,
+                &list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &servers,
@@ -385,7 +400,8 @@ async fn handle_settings(
 
     match args.command {
         VpnSettingsCommand::List(list) => {
-            let settings = util::apply_list_args(controller.list_vpn_settings().await?, &list);
+            let settings =
+                util::apply_list_args(controller.list_vpn_settings().await?, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &settings,
@@ -441,8 +457,11 @@ async fn handle_clients(
 
     match args.command {
         VpnClientsCommand::List(list) => {
-            let clients =
-                util::apply_list_args(controller.list_vpn_client_profiles().await?, &list);
+            let clients = util::apply_list_args(
+                controller.list_vpn_client_profiles().await?,
+                &list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &clients,
@@ -515,8 +534,11 @@ async fn handle_connections(
 
     match args.command {
         VpnConnectionsCommand::List(list) => {
-            let connections =
-                util::apply_list_args(controller.list_vpn_client_connections().await?, &list);
+            let connections = util::apply_list_args(
+                controller.list_vpn_client_connections().await?,
+                &list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &connections,
@@ -566,6 +588,7 @@ async fn handle_peers(
                     .list_wireguard_peers(server_id.as_deref())
                     .await?,
                 &list,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -662,6 +685,7 @@ async fn handle_magic_site_to_site(
             let configs = util::apply_list_args(
                 controller.list_magic_site_to_site_vpn_configs().await?,
                 &list,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,

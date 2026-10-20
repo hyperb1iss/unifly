@@ -113,7 +113,7 @@ pub(super) async fn handle(
                 &controller.firewall_policies_snapshot(),
                 &controller.firewall_zones_snapshot(),
             );
-            let snapshot = util::apply_list_args(all, &list);
+            let snapshot = util::apply_list_args(all, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,

@@ -510,7 +510,7 @@ mod tests {
         shuffled.reverse();
 
         let page = |snapshot: &[Arc<Device>], offset: u32| {
-            let rows = apply_list_args(devices(snapshot), &list_args(offset, 3));
+            let rows = apply_list_args(devices(snapshot), &list_args(offset, 3), true);
             names(&rows, |d| d.name.clone().unwrap_or_default())
         };
 

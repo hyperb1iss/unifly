@@ -49,7 +49,7 @@ pub async fn handle(
     match args.command {
         SitesCommand::List(list) => {
             let all = controller.sites_snapshot();
-            let snap = util::apply_list_args(util::order::sites(&all), &list);
+            let snap = util::apply_list_args(util::order::sites(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snap,

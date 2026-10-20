@@ -37,7 +37,11 @@ pub async fn handle(
 
     match args.command {
         RadiusCommand::Profiles(list) => {
-            let profiles = util::apply_list_args(controller.list_radius_profiles().await?, &list);
+            let profiles = util::apply_list_args(
+                controller.list_radius_profiles().await?,
+                &list,
+                global.quiet,
+            );
             let out = output::render_list(
                 &global.output,
                 &profiles,

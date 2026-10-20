@@ -620,6 +620,21 @@ fn test_unparseable_filter_is_a_usage_error() {
 }
 
 #[test]
+fn test_quiet_silences_the_truncation_hint() {
+    unifly_cmd()
+        .args(["--demo-fleet", "clients", "list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Showing 25 of"));
+    unifly_cmd()
+        .args(["--demo-fleet", "-q", "clients", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn test_valid_filter_still_matches_on_the_demo_fleet() {
     let devices = demo_json(&["devices", "list", "--filter", "name.eq('AP-ROOF')"]);
     let names: Vec<&str> = devices

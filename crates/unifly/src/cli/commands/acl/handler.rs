@@ -21,7 +21,7 @@ pub(super) async fn handle(
     match args.command {
         AclCommand::List(list) => {
             let all = controller.acl_rules_snapshot();
-            let snapshot = util::apply_list_args(util::order::acl_rules(&all), &list);
+            let snapshot = util::apply_list_args(util::order::acl_rules(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,
