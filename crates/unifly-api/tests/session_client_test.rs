@@ -1347,3 +1347,55 @@ async fn raw_get_keeps_a_one_element_array_with_a_code_field() {
     let value = client.raw_get("v2/api/site/default/nat").await.unwrap();
     assert_eq!(value, rules);
 }
+
+#[tokio::test]
+async fn raw_write_captures_a_rotated_csrf_token_for_the_next_write() {
+    let (server, client) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-CSRF-Token", "token-1")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Updated-CSRF-Token", "token-2")
+                .set_body_json(json!({"_id": "rule-1"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v2/api/site/default/nat/rule-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"_id": "rule-1"})))
+        .mount(&server)
+        .await;
+
+    client
+        .login("admin", &secrecy::SecretString::from("pw".to_owned()), None)
+        .await
+        .unwrap();
+    let body = json!({"description": "web"});
+    client.create_nat_rule(&body).await.unwrap();
+    client.update_nat_rule("rule-1", &body).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let csrf_for = |verb: &str| {
+        requests
+            .iter()
+            .find(|request| request.method.as_str() == verb && request.url.path().contains("/nat"))
+            .and_then(|request| request.headers.get("x-csrf-token"))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    assert_eq!(csrf_for("POST").as_deref(), Some("token-1"));
+    assert_eq!(
+        csrf_for("PUT").as_deref(),
+        Some("token-2"),
+        "the write after a rotation must send the rotated token"
+    );
+}

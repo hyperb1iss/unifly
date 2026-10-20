@@ -820,9 +820,11 @@ impl SessionClient {
 
     /// Check a response from a raw (envelope-free) route and return its
     /// body: a 401, a non-2xx status, or a UniFi OS error wrapped in a 200
-    /// is an error here just as it is for enveloped routes.
+    /// is an error here just as it is for enveloped routes, and a rotated
+    /// CSRF token is captured the same way.
     async fn checked_raw_body(&self, resp: reqwest::Response) -> Result<Vec<u8>, Error> {
         let status = resp.status();
+        self.update_csrf_from_response(resp.headers());
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(self.unauthorized_error());
