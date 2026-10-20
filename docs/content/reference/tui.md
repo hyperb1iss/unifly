@@ -178,7 +178,7 @@ The TUI works with all authentication modes, but some screens degrade gracefully
 | **Hybrid**        | **Full**  | **Full** | **Full** | **Full** | **Full** | **Full** |
 | Cloud             | Partial   | Partial  | Partial  | No       | No       | No       |
 
-Cloud mode's Devices screen lists device data through the connector but the management actions (`R` restart, `L` locate) are unavailable: the connector has no Session client to issue device commands.
+Cloud mode's Devices screen lists device data through the connector. `R` restart and `L` locate work there, since they go through the Integration API the connector proxies, but `U` upgrade needs a Session client, which the connector does not provide, so it fails with an error.
 
 {% tip() %}
 **API Key mode** works for most TUI screens on UniFi OS. Use **Hybrid mode** only when you need live WebSocket event streaming (the Events screen). Statistics and device data are available via Session HTTP endpoints that API Key mode can reach.

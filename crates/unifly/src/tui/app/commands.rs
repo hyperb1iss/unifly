@@ -458,6 +458,73 @@ mod tests {
         assert_private(&mut app, "an error toast");
     }
 
+    #[tokio::test]
+    async fn restart_goes_through_the_cloud_connector() {
+        use std::time::Duration;
+
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        use crate::tui::screen::ScreenId;
+
+        const SITE: &str = "550e8400-e29b-41d4-a716-446655440000";
+        const DEVICE: &str = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+        let server = MockServer::start().await;
+        let base = "/v1/connector/consoles/console-1/proxy/network/integration/v1";
+        Mock::given(method("GET"))
+            .and(path(format!("{base}/sites")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 50, "count": 1, "totalCount": 1,
+                "data": [{ "id": SITE, "internalReference": "default", "name": "Default" }],
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "{base}/sites/{SITE}/devices/{DEVICE}/actions"
+            )))
+            .and(body_json(serde_json::json!({ "action": "RESTART" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let controller = unifly_api::Controller::new(unifly_api::ControllerConfig {
+            url: server.uri().parse().expect("mock server URL"),
+            auth: unifly_api::AuthCredentials::Cloud {
+                api_key: "cloud-key".to_owned().into(),
+                host_id: "console-1".into(),
+            },
+            site: "default".into(),
+            timeout: Duration::from_secs(5),
+            refresh_interval_secs: 0,
+            websocket_enabled: false,
+            ..unifly_api::ControllerConfig::default()
+        });
+        controller
+            .connect_lightweight()
+            .await
+            .expect("the connector resolves the site");
+        let mut app = App::new(Some(controller), None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+
+        app.process_action(&Action::RequestRestart(EntityId::from(DEVICE)))
+            .expect("restart request");
+        let confirm = app.action_rx.try_recv().expect("a confirmation is queued");
+        app.process_action(&confirm).expect("show the confirmation");
+        app.process_action(&Action::ConfirmYes).expect("confirm");
+
+        let toast = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
+            .await
+            .expect("the restart reports back")
+            .expect("the action channel stays open");
+        assert!(
+            matches!(toast, Action::Notify(ref n) if n.level == crate::tui::action::NotificationLevel::Success),
+            "{toast:?}"
+        );
+        server.verify().await;
+    }
+
     #[test]
     fn request_port_power_cycle_queues_confirmation() {
         let mut app = App::new(None, None, false, true);
