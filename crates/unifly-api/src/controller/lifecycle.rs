@@ -69,9 +69,21 @@ impl Controller {
     /// tasks. Runs under the lifecycle lock held by the caller.
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn establish_connection(&self, initial_refresh: bool) -> Result<(), CoreError> {
-        // Fresh child token for this connection (supports reconnect).
+        // Fresh child token for this connection (supports reconnect). A
+        // connection still running is retired first: its tasks hold the
+        // old token, and left running they would outlive it, and make the
+        // next disconnect wait on them forever.
         let child = self.inner.cancel.child_token();
-        *self.inner.cancel_child.lock().await = child.clone();
+        let previous = std::mem::replace(&mut *self.inner.cancel_child.lock().await, child.clone());
+        *self.inner.command_tx.lock().await = None;
+        previous.cancel();
+        if let Some(handle) = self.inner.ws_handle.lock().await.take() {
+            handle.shutdown();
+        }
+        let stale: Vec<_> = self.inner.task_handles.lock().await.drain(..).collect();
+        for handle in stale {
+            let _ = handle.await;
+        }
 
         let config = &self.inner.config;
         let transport = build_transport(config);

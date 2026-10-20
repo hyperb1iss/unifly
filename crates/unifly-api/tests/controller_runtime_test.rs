@@ -2410,3 +2410,33 @@ async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
     );
     assert_eq!(dhcp_body["leaseTimeSeconds"], json!(3600));
 }
+
+#[tokio::test]
+async fn connecting_again_retires_the_previous_connection() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_speedtest_route(&server).await;
+    let mut config = base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    );
+    // Long enough that the refresh task only ever waits on its interval.
+    config.refresh_interval_secs = 3600;
+    let controller = Controller::new(config);
+
+    controller.connect().await.unwrap();
+    controller.connect().await.unwrap();
+    controller
+        .execute(unifly_api::Command::SpeedtestDevice)
+        .await
+        .expect("the second connection serves commands");
+
+    timeout(Duration::from_secs(5), controller.disconnect())
+        .await
+        .expect("disconnect must not wait on the first connection's tasks");
+}
