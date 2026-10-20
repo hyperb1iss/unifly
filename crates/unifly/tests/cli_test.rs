@@ -62,6 +62,10 @@ fn unifly_cmd_in(config_home: &std::path::Path) -> assert_cmd::Command {
 }
 
 fn written_config(tempdir: &TempDir) -> String {
+    std::fs::read_to_string(config_file(tempdir)).unwrap()
+}
+
+fn config_file(tempdir: &TempDir) -> std::path::PathBuf {
     let candidates = [
         tempdir.path().join("unifly").join("config.toml"),
         tempdir
@@ -72,12 +76,10 @@ fn written_config(tempdir: &TempDir) -> String {
             .join("config.toml"),
     ];
 
-    let path = candidates
+    candidates
         .into_iter()
         .find(|candidate| candidate.exists())
-        .expect("config file should be written to one of the platform config directories");
-
-    std::fs::read_to_string(path).unwrap()
+        .expect("config file should be written to one of the platform config directories")
 }
 
 /// Concatenate stdout + stderr from a command output for flexible matching.
@@ -383,6 +385,64 @@ fn test_config_set_bare_key_still_targets_active_profile() {
         cfg.contains("controller = \"https://10.0.0.1\""),
         "Expected controller in config:\n{cfg}"
     );
+}
+
+/// Write a session-auth profile named `name` into an isolated config dir.
+fn write_session_profile(config_home: &std::path::Path, name: &str, controller: &str) {
+    for (key, value) in [("controller", controller), ("auth_mode", "session")] {
+        unifly_cmd_in(config_home)
+            .args(["config", "set", &format!("profiles.{name}.{key}"), value])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_missing_credentials_exit_the_same_through_profiles_and_flags() {
+    const HELP: &str = "Configure credentials with: unifly config init";
+
+    unifly_cmd()
+        .args(["-c", "https://127.0.0.1:9", "devices", "list"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("No credentials configured"))
+        .stderr(predicate::str::contains(HELP));
+
+    // Session auth without a username fails before any keyring lookup.
+    let tempdir = tempfile::tempdir().unwrap();
+    write_session_profile(tempdir.path(), "lab", "https://127.0.0.1:9");
+    unifly_cmd_in(tempdir.path())
+        .args(["-p", "lab", "devices", "list"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "No credentials configured for profile 'lab'",
+        ))
+        .stderr(predicate::str::contains(HELP));
+}
+
+#[test]
+fn test_profile_validation_errors_are_usage_errors() {
+    let tempdir = tempfile::tempdir().unwrap();
+    write_session_profile(tempdir.path(), "lab", "https://127.0.0.1:9");
+    let path = config_file(&tempdir);
+    let cfg = std::fs::read_to_string(&path).unwrap();
+    let cfg = cfg.replace(
+        "[profiles.lab]\n",
+        "[profiles.lab]\ntotp_command = [\"\"]\n",
+    );
+    std::fs::write(&path, cfg).unwrap();
+
+    unifly_cmd_in(tempdir.path())
+        .env("UNIFI_USERNAME", "admin")
+        .env("UNIFI_PASSWORD", "test-password")
+        .args(["-p", "lab", "devices", "list"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("Invalid value for totp_command"));
 }
 
 #[test]

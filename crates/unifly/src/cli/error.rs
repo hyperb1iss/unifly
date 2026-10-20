@@ -247,12 +247,27 @@ pub enum CliError {
     // ── Config crate errors ──────────────────────────────────────────
     #[error(transparent)]
     #[diagnostic(code(unifi::config_error))]
-    ConfigError(#[from] crate::config::ConfigError),
+    ConfigError(crate::config::ConfigError),
 }
 
 impl From<figment::Error> for CliError {
     fn from(err: figment::Error) -> Self {
         Self::Config(Box::new(err))
+    }
+}
+
+/// Config resolution reports the same failures the CLI detects itself, so
+/// those map onto the CLI's own variants: a missing credential or invalid
+/// value then exits and explains itself the same way whether it came from
+/// a profile or from flags.
+impl From<crate::config::ConfigError> for CliError {
+    fn from(err: crate::config::ConfigError) -> Self {
+        use crate::config::ConfigError;
+        match err {
+            ConfigError::NoCredentials { profile } => Self::NoCredentials { profile },
+            ConfigError::Validation { field, reason } => Self::Validation { field, reason },
+            other => Self::ConfigError(other),
+        }
     }
 }
 
