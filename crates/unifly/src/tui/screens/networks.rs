@@ -18,6 +18,7 @@ use unifly_api::Network;
 
 use crate::tui::action::Action;
 use crate::tui::component::Component;
+use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
 use self::state::NetworkEditState;
@@ -26,6 +27,7 @@ pub struct NetworksScreen {
     focused: bool,
     networks: Arc<Vec<Arc<Network>>>,
     table_state: TableState,
+    table_scroll: TableScroll,
     detail_open: bool,
     edit_state: Option<NetworkEditState>,
     /// What the last frame drew where, for clicks.

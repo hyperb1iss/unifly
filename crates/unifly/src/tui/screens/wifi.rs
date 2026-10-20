@@ -18,6 +18,7 @@ use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Action, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::component::Component;
+use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct WifiScreen {
@@ -29,6 +30,10 @@ pub struct WifiScreen {
     client_table_state: TableState,
     neighbor_table_state: TableState,
     roam_table_state: TableState,
+    ap_scroll: TableScroll,
+    client_scroll: TableScroll,
+    neighbor_scroll: TableScroll,
+    roam_scroll: TableScroll,
     sub_tab: WifiSubTab,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,

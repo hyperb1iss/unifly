@@ -18,6 +18,7 @@ use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Action, DeviceDetailTab};
 use crate::tui::component::Component;
+use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct DevicesScreen {
@@ -26,6 +27,7 @@ pub struct DevicesScreen {
     devices: Arc<Vec<Arc<Device>>>,
     clients: Arc<Vec<Arc<Client>>>,
     table_state: TableState,
+    table_scroll: TableScroll,
     selected_device_id: Option<EntityId>,
     detail_open: bool,
     detail_device_id: Option<EntityId>,

@@ -228,8 +228,9 @@ fn render_device_table(
         .header(header)
         .row_highlight_style(theme::table_selected());
 
-    let mut state = screen.table_state;
-    frame.render_stateful_widget(table, area, &mut state);
+    let state = screen
+        .table_scroll
+        .render(frame, table, area, &screen.table_state, len);
     screen.hits.borrow_mut().push_table_rows(area, &state, len);
 }
 
@@ -444,6 +445,56 @@ mod tests {
             "the wheel moves it too"
         );
         assert_eq!(screen.detail_tab, DeviceDetailTab::Ports);
+    }
+
+    #[test]
+    fn scrolling_back_up_keeps_the_rows_below_the_cursor_in_view() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        use crate::tui::widgets::click::click_label;
+
+        let mut screen = DevicesScreen::new();
+        screen.apply_action(&Action::DevicesUpdated(Arc::new(
+            (0..40)
+                .map(|index| {
+                    device(
+                        index,
+                        &format!("dev-{index:02}"),
+                        "U7 Pro",
+                        "8.1.113",
+                        false,
+                    )
+                })
+                .collect(),
+        )));
+        let draw = |screen: &DevicesScreen| {
+            render_lines(120, 20, |frame, area| screen.render_screen(frame, area))
+        };
+        let press = |screen: &mut DevicesScreen, code: KeyCode| {
+            screen.handle_key_input(KeyEvent::from(code));
+            draw(screen)
+        };
+
+        let rows = press(&mut screen, KeyCode::Char('G'));
+        assert!(rows.iter().any(|row| row.contains("dev-39")));
+        for _ in 0..9 {
+            press(&mut screen, KeyCode::Char('k'));
+        }
+        let rows = press(&mut screen, KeyCode::Char('k'));
+
+        let text = rows.join("\n");
+        assert!(text.contains("dev-29"), "cursor row scrolled away:\n{text}");
+        assert!(text.contains("dev-39"), "the view jumped back:\n{text}");
+
+        // Taps land on the rows as drawn.
+        screen.handle_mouse_input(click_label(&rows, "dev-35", "dev-35"));
+        assert_eq!(
+            screen
+                .selected_device()
+                .and_then(|device| device.name.clone())
+                .as_deref(),
+            Some("dev-35")
+        );
     }
 
     fn render(width: u16) -> String {

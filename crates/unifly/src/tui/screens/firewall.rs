@@ -19,6 +19,7 @@ use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
 use crate::tui::action::{Action, FirewallSubTab};
 use crate::tui::component::Component;
+use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct FirewallScreen {
@@ -35,6 +36,10 @@ pub struct FirewallScreen {
     zone_table: TableState,
     acl_table: TableState,
     nat_table: TableState,
+    policy_scroll: TableScroll,
+    zone_scroll: TableScroll,
+    acl_scroll: TableScroll,
+    nat_scroll: TableScroll,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
 }

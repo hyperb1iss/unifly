@@ -7,7 +7,7 @@ use unifly_api::{Client, ClientType, EntityId};
 
 use crate::cli::commands::util::order;
 use crate::tui::action::ClientTypeFilter;
-use crate::tui::table::reselect;
+use crate::tui::table::{TableScroll, reselect};
 
 impl ClientsScreen {
     pub fn new() -> Self {
@@ -17,6 +17,7 @@ impl ClientsScreen {
             clients: Arc::new(Vec::new()),
             links: super::labels::LinkIndex::default(),
             table_state: TableState::default(),
+            table_scroll: TableScroll::default(),
             filter: ClientTypeFilter::All,
             hits: std::cell::RefCell::default(),
             search_query: String::new(),

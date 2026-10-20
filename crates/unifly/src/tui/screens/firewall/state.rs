@@ -6,7 +6,7 @@ use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
 use crate::cli::commands::util::order;
 use crate::tui::action::{Action, Direction, FirewallSubTab};
-use crate::tui::table::reselect;
+use crate::tui::table::{TableScroll, reselect};
 
 use super::FirewallScreen;
 
@@ -25,6 +25,10 @@ impl FirewallScreen {
             zone_table: TableState::default(),
             acl_table: TableState::default(),
             nat_table: TableState::default(),
+            policy_scroll: TableScroll::default(),
+            zone_scroll: TableScroll::default(),
+            acl_scroll: TableScroll::default(),
+            nat_scroll: TableScroll::default(),
             hits: std::cell::RefCell::default(),
         }
     }

@@ -11,7 +11,7 @@ use unifly_api::{Client, ClientType, Device, DeviceType, EntityId};
 use super::WifiScreen;
 use crate::cli::commands::util::order;
 use crate::tui::action::{Action, Notification, WifiBand, WifiSortField, WifiSubTab};
-use crate::tui::table::reselect;
+use crate::tui::table::{TableScroll, reselect};
 
 pub(super) const NEIGHBOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub(super) const CHANNEL_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
@@ -54,6 +54,10 @@ impl WifiScreen {
             client_table_state: TableState::default(),
             neighbor_table_state: TableState::default(),
             roam_table_state: TableState::default(),
+            ap_scroll: TableScroll::default(),
+            client_scroll: TableScroll::default(),
+            neighbor_scroll: TableScroll::default(),
+            roam_scroll: TableScroll::default(),
             sub_tab: WifiSubTab::default(),
             hits: std::cell::RefCell::default(),
             sort_field: WifiSortField::default(),

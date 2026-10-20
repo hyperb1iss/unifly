@@ -109,8 +109,9 @@ impl FirewallScreen {
             .header(header)
             .row_highlight_style(theme::table_selected());
 
-        let mut state = self.policy_table;
-        frame.render_stateful_widget(table, area, &mut state);
+        let state = self
+            .policy_scroll
+            .render(frame, table, area, &self.policy_table, len);
         self.hits.borrow_mut().push_table_rows(area, &state, len);
     }
 
@@ -166,8 +167,9 @@ impl FirewallScreen {
             .header(header)
             .row_highlight_style(theme::table_selected());
 
-        let mut state = self.zone_table;
-        frame.render_stateful_widget(table, area, &mut state);
+        let state = self
+            .zone_scroll
+            .render(frame, table, area, &self.zone_table, len);
         self.hits.borrow_mut().push_table_rows(area, &state, len);
     }
 

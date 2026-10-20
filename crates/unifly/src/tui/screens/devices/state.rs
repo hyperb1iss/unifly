@@ -6,6 +6,7 @@ use ratatui::widgets::TableState;
 use unifly_api::{Client, Device, EntityId};
 
 use crate::cli::commands::util::order;
+use crate::tui::table::TableScroll;
 
 impl DevicesScreen {
     pub fn new() -> Self {
@@ -15,6 +16,7 @@ impl DevicesScreen {
             devices: Arc::new(Vec::new()),
             clients: Arc::new(Vec::new()),
             table_state: TableState::default(),
+            table_scroll: TableScroll::default(),
             selected_device_id: None,
             detail_open: false,
             detail_device_id: None,

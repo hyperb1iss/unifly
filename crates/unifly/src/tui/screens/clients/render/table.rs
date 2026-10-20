@@ -207,8 +207,9 @@ fn render_client_table(
         .header(header)
         .row_highlight_style(theme::table_selected());
 
-    let mut state = screen.table_state;
-    frame.render_stateful_widget(table, area, &mut state);
+    let state = screen
+        .table_scroll
+        .render(frame, table, area, &screen.table_state, len);
     screen.hits.borrow_mut().push_table_rows(area, &state, len);
 }
 

@@ -107,8 +107,9 @@ impl WifiScreen {
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
-        let mut state = self.ap_table_state;
-        frame.render_stateful_widget(table, inner, &mut state);
+        let state = self
+            .ap_scroll
+            .render(frame, table, inner, &self.ap_table_state, len);
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
@@ -209,8 +210,9 @@ impl WifiScreen {
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
-        let mut state = self.client_table_state;
-        frame.render_stateful_widget(table, inner, &mut state);
+        let state = self
+            .client_scroll
+            .render(frame, table, inner, &self.client_table_state, len);
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
@@ -269,8 +271,9 @@ impl WifiScreen {
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
-        let mut state = self.neighbor_table_state;
-        frame.render_stateful_widget(table, inner, &mut state);
+        let state =
+            self.neighbor_scroll
+                .render(frame, table, inner, &self.neighbor_table_state, len);
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
@@ -324,8 +327,9 @@ impl WifiScreen {
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
-        let mut state = self.roam_table_state;
-        frame.render_stateful_widget(table, inner, &mut state);
+        let state = self
+            .roam_scroll
+            .render(frame, table, inner, &self.roam_table_state, len);
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 }
