@@ -58,11 +58,31 @@ impl Controller {
             .send_replace(ConnectionState::Connecting);
         let result = self.establish_connection(initial_refresh).await;
         if result.is_err() {
+            // Whatever the failed attempt installed is not a connection.
+            self.retire_clients().await;
             self.inner
                 .connection_state
                 .send_replace(ConnectionState::Failed);
         }
         result
+    }
+
+    /// Drop the installed clients, logging a cookie session out in the
+    /// background so a reconnect does not wait on it.
+    async fn retire_clients(&self) {
+        let session = self.inner.session_client.lock().await.take();
+        *self.inner.integration_client.lock().await = None;
+        *self.inner.site_id.lock().await = None;
+
+        if let Some(session) = session
+            && logs_out_on_close(&self.inner.config)
+        {
+            tokio::spawn(async move {
+                if let Err(error) = session.logout().await {
+                    debug!(error = %error, "logout of retired session failed (non-fatal)");
+                }
+            });
+        }
     }
 
     /// Authenticate, load the initial snapshot, and start the background
@@ -84,6 +104,7 @@ impl Controller {
         for handle in stale {
             let _ = handle.await;
         }
+        self.retire_clients().await;
 
         let config = &self.inner.config;
         let transport = build_transport(config);
@@ -491,15 +512,7 @@ impl Controller {
 
         let session = self.inner.session_client.lock().await.clone();
 
-        // Skip logout when session caching is active — we want the
-        // session cookie to survive for the next CLI invocation.
-        let cache_active = build_session_cache(&self.inner.config).is_some();
-
-        if !cache_active
-            && matches!(
-                self.inner.config.auth,
-                AuthCredentials::Credentials { .. } | AuthCredentials::Hybrid { .. }
-            )
+        if logs_out_on_close(&self.inner.config)
             && let Some(client) = session
             && let Err(error) = client.logout().await
         {
@@ -515,6 +528,17 @@ impl Controller {
             .send_replace(ConnectionState::Disconnected);
         debug!("disconnected");
     }
+}
+
+/// Whether closing a connection should log its cookie session out. Not
+/// with session caching active: the cookie has to survive for the next
+/// CLI invocation.
+fn logs_out_on_close(config: &crate::config::ControllerConfig) -> bool {
+    build_session_cache(config).is_none()
+        && matches!(
+            config.auth,
+            AuthCredentials::Credentials { .. } | AuthCredentials::Hybrid { .. }
+        )
 }
 
 /// Where the connect-time login gets a TOTP code if the controller asks

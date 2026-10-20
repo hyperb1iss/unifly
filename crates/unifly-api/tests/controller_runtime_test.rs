@@ -2512,3 +2512,49 @@ async fn dhcp_off_then_on_restores_the_same_server() {
         "the server comes back with its range, lease, DNS, and domain"
     );
 }
+
+async fn logout_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == "/api/logout")
+        .count()
+}
+
+#[tokio::test]
+async fn failed_reconnect_leaves_no_stale_clients() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+    assert!(controller.has_session_access().await);
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    controller.connect().await.unwrap_err();
+
+    assert_eq!(
+        *controller.connection_state().borrow(),
+        unifly_api::ConnectionState::Failed
+    );
+    assert!(
+        !controller.has_session_access().await,
+        "a failed reconnect must not leave the old session client installed"
+    );
+    assert!(!controller.has_integration_access().await);
+
+    // The retired cookie session is logged out in the background.
+    timeout(Duration::from_secs(2), async {
+        while logout_requests(&server).await == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the retired session is logged out");
+}
