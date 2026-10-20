@@ -8,12 +8,12 @@ pub mod resolve;
 pub mod totp_command;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use figment::{
     Figment,
-    providers::{Env, Format, Serialized, Toml},
+    providers::{Format, Serialized, Toml},
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -36,16 +36,49 @@ pub enum ConfigError {
     #[error("failed to serialize config: {0}")]
     Serialization(#[from] toml::ser::Error),
 
-    #[error("config loading failed: {0}")]
-    Figment(Box<figment::Error>),
+    /// The config file is there but could not be read or parsed.
+    #[error("could not load {}: {reason}", path.display())]
+    Load { path: PathBuf, reason: String },
+
+    /// The config file could not be written.
+    #[error("could not save {}: {reason}", path.display())]
+    Save { path: PathBuf, reason: String },
+
+    /// The config file does not define the profile asked for.
+    #[error(
+        "profile '{name}' is not defined in {}; {}. Create one with: unifly config init \
+         (local) or unifly config cloud-setup (Site Manager)",
+        path.display(),
+        list_defined_profiles(defined)
+    )]
+    ProfileNotDefined {
+        name: String,
+        path: PathBuf,
+        defined: Vec<String>,
+    },
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
 
-impl From<figment::Error> for ConfigError {
-    fn from(err: figment::Error) -> Self {
-        Self::Figment(Box::new(err))
+impl ConfigError {
+    /// `cfg`, loaded from the config file, has no profile called `name`.
+    pub fn profile_not_defined(cfg: &Config, name: &str) -> Self {
+        let mut defined: Vec<_> = cfg.profiles.keys().cloned().collect();
+        defined.sort();
+        Self::ProfileNotDefined {
+            name: name.to_owned(),
+            path: config_path(),
+            defined,
+        }
+    }
+}
+
+fn list_defined_profiles(defined: &[String]) -> String {
+    if defined.is_empty() {
+        "it defines no profiles yet".into()
+    } else {
+        format!("defined profiles: {}", defined.join(", "))
     }
 }
 
@@ -359,43 +392,294 @@ fn migrate_macos_config(new_dir: &std::path::Path) {
 
 // ── Config loading ──────────────────────────────────────────────────
 
-/// Load the full Config from file + environment.
+/// Load the full Config from the config file.
+///
+/// Environment variables are not read here: the `UNIFI_*` variables belong
+/// to the global flags (clap reads them), and reading them again as config
+/// keys made `UNIFI_DEMO` collide with the `[demo]` table.
+///
+/// A file that exists but cannot be loaded is an error, never the defaults;
+/// see [`load_config_from`].
 pub fn load_config() -> Result<Config, ConfigError> {
-    let path = config_path();
-
-    let figment = Figment::new()
-        .merge(Serialized::defaults(Config::default()))
-        .merge(Toml::file(&path))
-        .merge(Env::prefixed("UNIFI_").split("_"));
-
-    let config: Config = figment.extract()?;
-    Ok(config)
+    load_config_from(&config_path())
 }
 
-/// Load config, returning a default if the file doesn't exist.
-pub fn load_config_or_default() -> Config {
-    load_config().unwrap_or_default()
+/// Load the Config stored at `path`.
+///
+/// A missing file is a fresh install and yields the defaults. A file that
+/// is there but cannot be read or parsed is an error, never the defaults:
+/// saving defaults over a file with one typo in it would erase every
+/// profile it holds.
+pub fn load_config_from(path: &Path) -> Result<Config, ConfigError> {
+    let load_error = |reason: String| ConfigError::Load {
+        path: path.to_owned(),
+        reason,
+    };
+
+    if !path
+        .try_exists()
+        .map_err(|error| load_error(error.to_string()))?
+    {
+        return Ok(Config::default());
+    }
+
+    Figment::new()
+        .merge(Serialized::defaults(Config::default()))
+        .merge(Toml::file_exact(path))
+        .extract()
+        .map_err(|error| load_error(describe_figment_error(error)))
+}
+
+/// What went wrong and at which key, without figment's trailing "in <file>
+/// TOML file" (the load error names the file already).
+///
+/// The message never repeats what the file holds unless the key is a plain
+/// setting: these errors get pasted into issues, and the line at fault may
+/// be a password or a TOTP seed. A parse error keeps its line and column but
+/// drops the source excerpt under them, and any other invalid value is
+/// described by its key alone.
+fn describe_figment_error(error: figment::Error) -> String {
+    error
+        .into_iter()
+        .map(|error| match error.path.as_slice() {
+            [] => without_source_excerpt(&error.kind.to_string()),
+            path if value_is_safe_to_show(path) => {
+                format!("{} for key `{}`", error.kind, path.join("."))
+            }
+            _ => hidden_value_problem(&error),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Whether the value at `path` may appear in an error. This is an allowlist
+/// of plain settings: anything else, including a field added later, is
+/// hidden, so a new secret cannot leak by default.
+fn value_is_safe_to_show(path: &[String]) -> bool {
+    const DEFAULTS: [&str; 8] = [
+        "output",
+        "color",
+        "insecure",
+        "timeout",
+        "theme",
+        "show_donate",
+        "effects",
+        "chart_quality",
+    ];
+    const PROFILE: [&str; 11] = [
+        "controller",
+        "site",
+        "auth_mode",
+        "api_key_env",
+        "host_id",
+        "host_id_env",
+        "username",
+        "totp_env",
+        "ca_cert",
+        "insecure",
+        "timeout",
+    ];
+    const DEMO: [&str; 5] = [
+        "enabled",
+        "redact_ssids",
+        "redact_wan_ips",
+        "redact_macs",
+        "redact_isp",
+    ];
+
+    match path {
+        [key] => key == "default_profile",
+        [section, key] if section == "defaults" => DEFAULTS.contains(&key.as_str()),
+        [section, _, key] if section == "profiles" => PROFILE.contains(&key.as_str()),
+        [section, key] if section == "demo" => DEMO.contains(&key.as_str()),
+        _ => false,
+    }
+}
+
+/// Describe `error` by its key and what was expected, leaving out the value.
+fn hidden_value_problem(error: &figment::Error) -> String {
+    use figment::error::Kind;
+
+    let problem = match &error.kind {
+        Kind::InvalidType(_, expected) | Kind::InvalidValue(_, expected) => {
+            format!("invalid value, expected {expected}")
+        }
+        // These name a field or a length, never the value.
+        Kind::MissingField(_)
+        | Kind::DuplicateField(_)
+        | Kind::UnknownField(..)
+        | Kind::InvalidLength(..) => error.kind.to_string(),
+        _ => "invalid value".to_owned(),
+    };
+    format!(
+        "{problem} for key `{}` (the value is not shown)",
+        error.path.join(".")
+    )
+}
+
+/// `message` without the TOML source excerpt (`  |` and `2 | ...` lines)
+/// that parse errors quote, one line per remaining part.
+fn without_source_excerpt(message: &str) -> String {
+    message
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start()
+                    .starts_with('|')
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 // ── Config saving ───────────────────────────────────────────────────
 
 /// Serialize config to TOML and write to the canonical config path.
 pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
-    let path = config_path();
+    save_config_to(&config_path(), cfg)
+}
+
+/// Serialize config to TOML and write it to `path`.
+///
+/// The TOML goes to a new file beside the target, owner-only from the moment
+/// it exists (it may hold plaintext secrets), and is renamed over the
+/// target, so the config is replaced whole or not at all. A symlinked config
+/// stays a link: the save lands in the file it points at.
+pub fn save_config_to(path: &Path, cfg: &Config) -> Result<(), ConfigError> {
+    let toml_str = toml::to_string_pretty(cfg)?;
+    write_atomically(&save_target(path), toml_str.as_bytes()).map_err(|error| ConfigError::Save {
+        path: path.to_owned(),
+        reason: error.to_string(),
+    })
+}
+
+/// Where a save to `path` lands: through a symlink to the file it names, so
+/// a config kept in a dotfiles checkout stays a link.
+fn save_target(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    match std::fs::read_link(path) {
+        Ok(target) => match path.parent() {
+            Some(parent) => parent.join(target),
+            None => target,
+        },
+        Err(_) => path.to_owned(),
+    }
+}
+
+/// Stage `data` in a new file beside `path`, then rename it over `path`.
+/// The staged file is removed when any step fails. A target the rename
+/// cannot replace is written in place instead.
+fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_atomically_with(path, data, |from, to| std::fs::rename(from, to))
+}
+
+/// [`write_atomically`] with the final `rename` step supplied by the caller.
+fn write_atomically_with(
+    path: &Path,
+    data: &[u8],
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let toml_str = toml::to_string_pretty(cfg)?;
-    std::fs::write(&path, toml_str)?;
 
-    // Restrict config file to owner-only access (may contain plaintext credentials)
+    let (staged, mut file) = create_staging_file(path)?;
+    let written = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error);
+    }
+
+    // `rename` replaces an existing file on every platform (Windows uses
+    // MOVEFILE_REPLACE_EXISTING), so the old config is never removed first.
+    let Err(error) = rename(&staged, path) else {
+        return Ok(());
+    };
+    let _ = std::fs::remove_file(&staged);
+    if !rename_cannot_replace(&error) {
+        return Err(error);
+    }
+    tracing::debug!(
+        %error,
+        path = %path.display(),
+        "cannot rename over the config; writing it in place"
+    );
+    write_in_place(path, data)
+}
+
+/// Whether a failed rename means only that the target cannot be replaced
+/// that way: a file bind-mounted on its own, as in a container (EBUSY), or
+/// one on another filesystem than its directory (EXDEV).
+fn rename_cannot_replace(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ResourceBusy | std::io::ErrorKind::CrossesDevices
+    )
+}
+
+/// Write `data` over `path` in place, the save for a target a rename cannot
+/// replace. The file is made owner-only before it is emptied and written,
+/// so a refused chmod leaves the old config whole.
+fn write_in_place(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    file.set_len(0)?;
+    file.write_all(data)?;
+    file.sync_all()
+}
 
-    Ok(())
+/// Create the staging file for a write to `path`.
+///
+/// The name is unique to this process and call, so concurrent saves never
+/// share one, and `create_new` refuses any existing entry (a planted symlink
+/// included) instead of following it. On Unix the file is owner-only from
+/// the moment it exists.
+fn create_staging_file(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let name = path
+        .file_name()
+        .map_or_else(|| "config.toml".into(), |name| name.to_string_lossy());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let staged = path.with_file_name(format!(
+        ".{name}.{}.{}.{nanos}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&staged)?;
+    Ok((staged, file))
 }
 
 // ── Secret storage ──────────────────────────────────────────────────
@@ -647,6 +931,52 @@ pub fn resolve_totp_provider(profile: &Profile) -> Result<Option<TotpProvider>, 
     Ok(Some(totp_command::provider(argv.clone())))
 }
 
+/// `url` with its userinfo (`user:password@`) masked as `****@`, for
+/// errors, logs, and displays. It works on the text, so a URL that does not
+/// parse is covered too, as is one without a scheme (`admin:pw@host`,
+/// `//admin:pw@host`) or with a password holding an unencoded `/`, `?`, or
+/// `#`. An `@` after the host, in a path or query, is left alone.
+pub fn redact_url_userinfo(url: &str) -> String {
+    let start = match url.find("://") {
+        Some(index) => index + 3,
+        None if url.starts_with("//") => 2,
+        None => 0,
+    };
+    let rest = &url[start..];
+    match userinfo_end(rest) {
+        Some(at) => format!("{}****{}", &url[..start], &rest[at..]),
+        None => url.to_owned(),
+    }
+}
+
+/// Where the userinfo of `rest`, a URL after its `scheme://`, ends: the `@`
+/// before the host, when there is userinfo at all.
+fn userinfo_end(rest: &str) -> Option<usize> {
+    const DELIMITERS: [char; 3] = ['/', '?', '#'];
+
+    let authority_end = rest.find(DELIMITERS).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if let Some(at) = authority.rfind('@') {
+        return Some(at);
+    }
+
+    // No `@` before the first delimiter. A password holding one unencoded
+    // runs past it, leaving `user:pass` in front of it, which a host
+    // (`host`, `host:8443`, `[::1]:8443`) never is.
+    if authority.starts_with('[') {
+        return None;
+    }
+    let (_, after_colon) = authority.split_once(':')?;
+    if !after_colon.is_empty() && after_colon.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let first_at = authority_end + rest[authority_end..].find('@')?;
+    let host_end = rest[first_at..]
+        .find(DELIMITERS)
+        .map_or(rest.len(), |offset| first_at + offset);
+    rest[..host_end].rfind('@')
+}
+
 /// Build a `ControllerConfig` from a profile — no CLI flag overrides.
 ///
 /// Suitable for the TUI and other non-CLI consumers. Sets TUI-friendly
@@ -669,7 +999,7 @@ pub fn profile_to_controller_config(
         .parse()
         .map_err(|_| ConfigError::Validation {
             field: "controller".into(),
-            reason: format!("invalid URL: {controller_url}"),
+            reason: format!("invalid URL: {}", redact_url_userinfo(controller_url)),
         })?;
 
     let auth = resolve_auth(profile, profile_name)?;
@@ -712,8 +1042,8 @@ pub fn profile_to_controller_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, profile_to_controller_config,
-        resolve_api_key, resolve_auth,
+        Config, ConfigError, DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, load_config_from,
+        profile_to_controller_config, resolve_api_key, resolve_auth,
     };
     use secrecy::ExposeSecret;
     use std::time::Duration;
@@ -737,6 +1067,284 @@ mod tests {
             ca_cert: None,
             insecure: Some(true),
             timeout: Some(45),
+        }
+    }
+
+    #[test]
+    fn load_config_from_starts_a_missing_file_from_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let config = load_config_from(&dir.path().join("config.toml")).expect("defaults");
+
+        assert!(config.profiles.is_empty());
+        assert_eq!(config.default_profile.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn load_config_from_reports_a_file_it_cannot_parse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[defaults]\ntimeout = \"thirty\"\n").expect("write config");
+
+        let error = load_config_from(&path).expect_err("a typo must not load as defaults");
+
+        assert!(matches!(&error, ConfigError::Load { path: at, .. } if *at == path));
+        let message = error.to_string();
+        assert!(message.contains("`defaults.timeout`"), "{message}");
+        assert!(message.contains("thirty"), "{message}");
+    }
+
+    fn stage_files(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+            })
+            .collect()
+    }
+
+    /// A save that cannot land says where it was going and leaves no
+    /// staged copy behind.
+    #[test]
+    fn save_config_to_names_the_path_it_could_not_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::create_dir(&path).expect("a directory where the file goes");
+
+        let message = super::save_config_to(&path, &Config::default())
+            .expect_err("a directory cannot be replaced by the config")
+            .to_string();
+
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+    }
+
+    /// The new contents are staged in a separate owner-only file and renamed
+    /// over the old one, so a reader or a crash never sees a half-written
+    /// config, and plaintext secrets are never readable by others.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_to_replaces_the_file_in_one_step() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_profile = \"home\"\n").expect("write config");
+        let before = std::fs::metadata(&path).expect("metadata").ino();
+
+        super::save_config_to(&path, &Config::default()).expect("save");
+
+        let after = std::fs::metadata(&path).expect("metadata");
+        assert_ne!(after.ino(), before, "the file was rewritten in place");
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+        assert!(load_config_from(&path).expect("reload").profiles.is_empty());
+    }
+
+    /// A config.toml kept as a symlink (a dotfiles checkout, say) stays a
+    /// link; the save lands in the file it points at.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_to_writes_through_a_symlinked_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("dotfiles").join("unifly.toml");
+        std::fs::create_dir_all(real.parent().expect("parent")).expect("dotfiles dir");
+        std::fs::write(&real, "").expect("write real config");
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let mut cfg = Config::default();
+        cfg.profiles.insert("home".into(), cloud_profile());
+
+        super::save_config_to(&link, &cfg).expect("save");
+
+        assert!(link.symlink_metadata().expect("link").is_symlink());
+        assert!(
+            load_config_from(&real)
+                .expect("reload")
+                .profiles
+                .contains_key("home")
+        );
+    }
+
+    /// A config.toml bind-mounted into a container as a single file cannot
+    /// be replaced by a rename (EBUSY), and one on another filesystem than
+    /// its directory gets EXDEV. Those saves fall back to writing in place,
+    /// as saves did before they were atomic.
+    #[test]
+    fn a_target_rename_cannot_replace_is_written_in_place() {
+        for kind in [
+            std::io::ErrorKind::ResourceBusy,
+            std::io::ErrorKind::CrossesDevices,
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, "old").expect("write config");
+
+            super::write_atomically_with(&path, b"new", |_, _| Err(kind.into()))
+                .expect("the in-place fallback saves");
+
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), "new");
+            assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path)
+                    .expect("metadata")
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+        }
+    }
+
+    /// Any other rename failure still fails the save and leaves the config
+    /// as it was.
+    #[test]
+    fn other_rename_failures_fail_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "old").expect("write config");
+
+        let result = super::write_atomically_with(&path, b"new", |_, _| {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "old");
+        assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_file_is_owner_only_before_any_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (staged, file) =
+            super::create_staging_file(&dir.path().join("config.toml")).expect("staged");
+
+        let mode = file.metadata().expect("metadata").permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "staging file mode {mode:o} is open to others"
+        );
+        drop(file);
+        std::fs::remove_file(staged).expect("cleanup");
+    }
+
+    /// Load errors end up in issues and agent transcripts, so they point at
+    /// the line and key without echoing what the file holds there.
+    #[test]
+    fn load_errors_never_echo_a_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        for (contents, secret, locator) in [
+            (
+                "[profiles.work]\npassword = hunter2secret\n",
+                "hunter2secret",
+                "line 2",
+            ),
+            (
+                "[profiles.work]\npassword = 98765432\n",
+                "98765432",
+                "`profiles.work.password`",
+            ),
+            (
+                "[profiles.work]\napi_key = 1234567890\n",
+                "1234567890",
+                "`profiles.work.api_key`",
+            ),
+            (
+                "[profiles]\nwork = \"SECRETAAA\"\n",
+                "SECRETAAA",
+                "`profiles.work`",
+            ),
+            (
+                "profiles = \"PROFILESECRET\"\n",
+                "PROFILESECRET",
+                "`profiles`",
+            ),
+            (
+                "[profiles.work]\ntotp_command = \"oathtool --totp -b SEEDSECRET1\"\n",
+                "SEEDSECRET1",
+                "`profiles.work.totp_command`",
+            ),
+            (
+                "[profiles.work]\ntotp_command = [\"oathtool\", 424242]\n",
+                "424242",
+                "`profiles.work.totp_command.1`",
+            ),
+            (
+                "[demo]\nredact_names = \"Bliss Secretname\"\n",
+                "Secretname",
+                "`demo.redact_names`",
+            ),
+        ] {
+            std::fs::write(&path, contents).expect("write config");
+
+            let message = load_config_from(&path)
+                .expect_err("a malformed config must not load")
+                .to_string();
+
+            assert!(!message.contains(secret), "{message}");
+            assert!(message.contains(locator), "{message}");
+        }
+    }
+
+    /// Keys whose values are plain settings still show the value at fault,
+    /// which is what makes a typo easy to spot.
+    #[test]
+    fn load_errors_still_show_plain_setting_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        for (contents, value) in [
+            ("[defaults]\ntimeout = \"thirty\"\n", "thirty"),
+            ("[profiles.work]\ninsecure = \"yes\"\n", "yes"),
+            ("default_profile = 42\n", "42"),
+        ] {
+            std::fs::write(&path, contents).expect("write config");
+
+            let message = load_config_from(&path)
+                .expect_err("a malformed config must not load")
+                .to_string();
+
+            assert!(message.contains(value), "{message}");
+        }
+    }
+
+    #[test]
+    fn profile_not_defined_names_the_profiles_that_are() {
+        let mut cfg = Config::default();
+        let empty = ConfigError::profile_not_defined(&cfg, "typo").to_string();
+        assert!(
+            empty.starts_with("profile 'typo' is not defined in "),
+            "{empty}"
+        );
+        assert!(empty.contains("; it defines no profiles yet."), "{empty}");
+
+        cfg.profiles.insert("work".into(), cloud_profile());
+        cfg.profiles.insert("home".into(), cloud_profile());
+        let listed = ConfigError::profile_not_defined(&cfg, "typo").to_string();
+        assert!(
+            listed.contains("; defined profiles: home, work."),
+            "{listed}"
+        );
+
+        for message in [empty, listed] {
+            assert!(
+                message.ends_with(
+                    "Create one with: unifly config init (local) or unifly config \
+                     cloud-setup (Site Manager)"
+                ),
+                "{message}"
+            );
         }
     }
 
@@ -813,6 +1421,71 @@ mod tests {
                 matches!(SecretStoreError::from(error), SecretStoreError::Rejected(_)),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn profile_to_controller_config_hides_a_password_in_a_bad_url() {
+        let mut profile = direct_profile();
+        profile.controller = "https://admin:hunter2@udm.lan:99999".into();
+
+        let message = profile_to_controller_config(&profile, "default", &Defaults::default())
+            .expect_err("the port is out of range")
+            .to_string();
+
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(message.contains("https://****@udm.lan:99999"), "{message}");
+    }
+
+    #[test]
+    fn redact_url_userinfo_masks_only_the_userinfo() {
+        use super::redact_url_userinfo;
+
+        for (url, redacted) in [
+            // Ordinary userinfo, with and without a password.
+            (
+                "https://admin:hunter2@10.0.0.1:8443/x",
+                "https://****@10.0.0.1:8443/x",
+            ),
+            ("ftp://admin:hunter2@host/x", "ftp://****@host/x"),
+            ("http://admin@host", "http://****@host"),
+            ("https://token@host", "https://****@host"),
+            ("https://a:b@c@host?q=1", "https://****@host?q=1"),
+            // Hosts that do not parse are still masked.
+            ("http://a:b@[::1", "http://****@[::1"),
+            ("https://admin:pw@[::1]:8443", "https://****@[::1]:8443"),
+            // Without a scheme.
+            ("admin:pw@host:8443", "****@host:8443"),
+            ("//admin:pw@host", "//****@host"),
+            // A password holding an unencoded `/`, `?`, or `#` (or `@`).
+            ("https://admin:p/ss@host/x", "https://****@host/x"),
+            ("https://admin:p?ss@host", "https://****@host"),
+            (
+                "https://admin:p#ss@host:8443/a@b",
+                "https://****@host:8443/a@b",
+            ),
+            (
+                "https://admin:p/w@x@host/path@y",
+                "https://****@host/path@y",
+            ),
+            ("https://admin:/secret@host", "https://****@host"),
+            // An `@` after the host is not userinfo.
+            (
+                "https://10.0.0.1/path@not-userinfo",
+                "https://10.0.0.1/path@not-userinfo",
+            ),
+            ("https://host:8443/path@x", "https://host:8443/path@x"),
+            ("https://host?q=a@b", "https://host?q=a@b"),
+            ("https://host#frag@x", "https://host#frag@x"),
+            ("https://[::1]:8443/a@b", "https://[::1]:8443/a@b"),
+            ("https://a/b@host", "https://a/b@host"),
+            // Nothing to mask.
+            ("https://192.168.1.1", "https://192.168.1.1"),
+            ("https://unifi.local", "https://unifi.local"),
+            ("not a url", "not a url"),
+            ("", ""),
+        ] {
+            assert_eq!(redact_url_userinfo(url), redacted, "{url}");
         }
     }
 

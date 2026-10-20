@@ -300,8 +300,8 @@ fn test_vpn_servers_get_parses_before_config_check() {
 
 #[test]
 fn test_config_show_no_config() {
-    // `config show` uses load_config_or_default() so it succeeds even
-    // when no config file exists — it just renders the default config.
+    // A missing config file loads as the defaults, so `config show`
+    // succeeds and renders them.
     unifly_cmd().args(["config", "show"]).assert().success();
 }
 
@@ -507,9 +507,10 @@ fn test_config_set_password_accepts_positional_profile() {
         !text.contains("unexpected argument"),
         "Positional profile should parse:\n{text}"
     );
+    // No config file exists here, so that is what the error reports.
     assert!(
-        text.contains("home") || text.contains("profile"),
-        "Expected output to mention the missing profile:\n{text}"
+        text.contains("Configuration file not found"),
+        "Expected the missing config to be reported:\n{text}"
     );
 }
 
@@ -523,6 +524,334 @@ fn test_config_set_password_help_mentions_positional_and_flag_profile() {
             predicate::str::contains("[PROFILE]")
                 .and(predicate::str::contains("--profile <PROFILE>")),
         );
+}
+
+// ── Config file safety ──────────────────────────────────────────────
+//
+// These write a real config.toml under a temp XDG_CONFIG_HOME. Windows
+// resolves the config dir through the known-folder API, which ignores the
+// environment, so they stay off Windows rather than risk the real file.
+
+#[cfg(not(windows))]
+const TWO_PROFILE_CONFIG: &str = r#"default_profile = "home"
+
+[defaults]
+timeout = 45
+theme = "nord"
+
+[profiles.home]
+controller = "https://192.168.1.1"
+api_key = "home-secret-api-key"
+
+[profiles.work]
+controller = "https://10.0.0.1"
+auth_mode = "session"
+username = "admin"
+password = "work-secret-password"
+totp_command = ["oathtool", "--totp", "-b", "TOTPSEEDSECRET"]
+
+[demo]
+redact_names = ["Bliss"]
+"#;
+
+/// Write `contents` as the config file under `home` and return its path.
+#[cfg(not(windows))]
+fn write_config(home: &TempDir, contents: &str) -> std::path::PathBuf {
+    let dir = home.path().join("unifly");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, contents).unwrap();
+    path
+}
+
+/// Clap already reads the `UNIFI_*` variables for global flags. The config
+/// loader must not read them again as config keys: `UNIFI_DEMO` and
+/// `UNIFI_DEMO_SEED` land on the `[demo]` table, fail extraction, and hide
+/// every profile.
+#[cfg(not(windows))]
+#[test]
+fn test_demo_env_vars_do_not_hide_profiles() {
+    let home = TempDir::new().unwrap();
+    write_config(&home, TWO_PROFILE_CONFIG);
+
+    for (var, value) in [("UNIFI_DEMO", "1"), ("UNIFI_DEMO_SEED", "42")] {
+        let output = unifly_cmd_in(home.path())
+            .env(var, value)
+            .args(["config", "profiles"])
+            .output()
+            .unwrap();
+        let text = combined_output(&output);
+        assert!(output.status.success(), "{var}: {text}");
+        assert!(
+            text.contains("home *") && text.contains("work"),
+            "{var}={value} hid the profiles:\n{text}"
+        );
+    }
+}
+
+/// A config with a typo fails to load. Commands that save the config must
+/// stop there instead of saving defaults over it, which erased every
+/// profile in the file.
+#[cfg(not(windows))]
+#[test]
+fn test_writers_leave_a_config_that_fails_to_load_untouched() {
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+
+    for args in [
+        &["config", "set", "profiles.home.site", "lab"][..],
+        &["config", "use", "work"],
+        &["config", "theme", "nord"],
+        &["cloud", "switch", "lab"],
+    ] {
+        let home = TempDir::new().unwrap();
+        let path = write_config(&home, &broken);
+
+        let output = unifly_cmd_in(home.path()).args(args).output().unwrap();
+        let text = combined_output(&output);
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&path.display().to_string()) && text.contains("thirty"),
+            "{args:?} should name the file and the bad value:\n{text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            broken,
+            "{args:?} rewrote the config"
+        );
+    }
+}
+
+/// Commands that connect read the config without saving it, and used to
+/// fall back to the defaults when it failed to load, then report
+/// "Configuration file not found" for a file that is right there.
+#[cfg(not(windows))]
+#[test]
+fn test_connecting_commands_report_a_config_that_fails_to_load() {
+    let home = TempDir::new().unwrap();
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+    let path = write_config(&home, &broken);
+
+    for args in [&["devices", "list"][..], &["cloud", "hosts"]] {
+        let output = unifly_cmd_in(home.path()).args(args).output().unwrap();
+        let text = combined_output(&output);
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&path.display().to_string())
+                && text.contains("thirty")
+                && !text.contains("Configuration file not found"),
+            "{args:?} should report the load error:\n{text}"
+        );
+    }
+}
+
+/// `unifly tui` on a config that fails to load reports it as the CLI does
+/// and exits, instead of opening a setup wizard whose save it would refuse.
+#[cfg(all(feature = "tui", not(windows)))]
+#[test]
+fn test_tui_reports_a_config_that_fails_to_load() {
+    let home = TempDir::new().unwrap();
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+    let path = write_config(&home, &broken);
+
+    let output = unifly_cmd_in(home.path())
+        .arg("tui")
+        .arg("--log-file")
+        .arg(home.path().join("tui.log"))
+        .output()
+        .unwrap();
+    let text = combined_output(&output);
+
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains(&path.display().to_string())
+            && text.contains("thirty")
+            && text.contains("unifi::config_error"),
+        "tui should report the load error as the CLI does:\n{text}"
+    );
+    assert!(!text.contains("home-secret-api-key"), "{text}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+}
+
+/// A profile the config does not define is reported as exactly that, with
+/// the profiles it does define. Without a config file the old message
+/// still holds.
+#[cfg(not(windows))]
+#[test]
+fn test_an_undefined_profile_is_reported_with_the_defined_ones() {
+    let home = TempDir::new().unwrap();
+    let path = write_config(&home, TWO_PROFILE_CONFIG);
+    let gone = TempDir::new().unwrap();
+    write_config(&gone, &TWO_PROFILE_CONFIG.replace("\"home\"", "\"gone\""));
+
+    for (dir, args) in [
+        (&home, &["-p", "typo", "devices", "list"][..]),
+        (&home, &["-p", "typo", "cloud", "hosts"]),
+        (&home, &["-p", "typo", "config", "use", "typo"]),
+        (&gone, &["devices", "list"]),
+    ] {
+        let output = unifly_cmd_in(dir.path()).args(args).output().unwrap();
+        let text = combined_output(&output);
+        let name = if args.contains(&"typo") {
+            "typo"
+        } else {
+            "gone"
+        };
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&format!("profile '{name}' is not defined"))
+                && text.contains("work")
+                && !text.contains("Configuration file not found"),
+            "{args:?} should name the undefined profile and the defined ones:\n{text}"
+        );
+    }
+    assert!(path.exists());
+
+    let empty = TempDir::new().unwrap();
+    unifly_cmd_in(empty.path())
+        .args(["-p", "typo", "devices", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Configuration file not found"));
+}
+
+/// A config that fails to load is invalid input, so it exits 2 like any
+/// other usage error, from config commands and connecting commands alike.
+#[cfg(not(windows))]
+#[test]
+fn test_a_config_that_fails_to_load_exits_2() {
+    let home = TempDir::new().unwrap();
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+    write_config(&home, &broken);
+
+    for args in [&["config", "show"][..], &["devices", "list"]] {
+        let output = unifly_cmd_in(home.path()).args(args).output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            combined_output(&output)
+        );
+    }
+}
+
+/// An undefined profile exits 1, as the old profile-not-found error did,
+/// and says how to create one.
+#[cfg(not(windows))]
+#[test]
+fn test_an_undefined_profile_exits_1_and_says_how_to_create_it() {
+    let home = TempDir::new().unwrap();
+    write_config(&home, TWO_PROFILE_CONFIG);
+
+    let output = unifly_cmd_in(home.path())
+        .args(["-p", "typo", "devices", "list"])
+        .output()
+        .unwrap();
+    let text = combined_output(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("Create one with: unifly config init"),
+        "{text}"
+    );
+}
+
+/// A config that loads but cannot be written back exits 1 and names the
+/// file. The directory is made read-only, which root ignores, so the test
+/// stands down when it runs as root.
+#[cfg(unix)]
+#[test]
+fn test_a_failed_save_exits_1() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = TempDir::new().unwrap();
+    let path = write_config(&home, TWO_PROFILE_CONFIG);
+    let dir = path.parent().unwrap().to_owned();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = dir.join(".probe");
+    if std::fs::write(&probe, "").is_ok() {
+        std::fs::remove_file(probe).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+
+    let output = unifly_cmd_in(home.path())
+        .args(["config", "use", "work"])
+        .output()
+        .unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let text = combined_output(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("could not save") && text.contains(&path.display().to_string()),
+        "{text}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO_PROFILE_CONFIG);
+}
+
+/// `config show` masks stored secrets in every format, not only the table:
+/// JSON and YAML output get pasted into issues and agent transcripts.
+#[cfg(not(windows))]
+#[test]
+fn test_config_show_masks_secrets_in_every_format() {
+    let home = TempDir::new().unwrap();
+    write_config(&home, TWO_PROFILE_CONFIG);
+
+    for format in ["table", "json", "json-compact", "yaml"] {
+        let output = unifly_cmd_in(home.path())
+            .args(["config", "show", "-o", format])
+            .output()
+            .unwrap();
+        let text = combined_output(&output);
+
+        assert!(output.status.success(), "{format}: {text}");
+        assert!(
+            !text.contains("home-secret-api-key")
+                && !text.contains("work-secret-password")
+                && !text.contains("TOTPSEEDSECRET"),
+            "{format} output leaked a secret:\n{text}"
+        );
+        assert!(
+            text.contains("****") && text.contains("https://192.168.1.1"),
+            "{format} output should mask secrets and keep the rest:\n{text}"
+        );
+        assert!(
+            text.contains("oathtool"),
+            "{format} output should still name the TOTP program:\n{text}"
+        );
+    }
+}
+
+/// The setup wizards load the config before their first prompt, so a file
+/// that cannot be loaded stops them before they ask for (and store) any
+/// secret. `UNIFI_API_KEY` makes cloud-setup's first prompt a menu, which
+/// fails at once without a terminal instead of waiting on one.
+#[cfg(not(windows))]
+#[test]
+fn test_setup_wizards_stop_on_a_config_that_fails_to_load() {
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+
+    for args in [&["config", "init"][..], &["config", "cloud-setup"]] {
+        let home = TempDir::new().unwrap();
+        let path = write_config(&home, &broken);
+
+        let output = unifly_cmd_in(home.path())
+            .env("UNIFI_API_KEY", "probe-key")
+            .args(args)
+            .output()
+            .unwrap();
+        let text = combined_output(&output);
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&path.display().to_string()) && !text.contains("prompt failed"),
+            "{args:?} should stop on the config before prompting:\n{text}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
 }
 
 #[test]

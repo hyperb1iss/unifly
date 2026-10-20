@@ -15,9 +15,9 @@ use unifly_api::{
 use crate::cli::args::{ColorMode, GlobalOpts};
 use crate::cli::error::CliError;
 use crate::cli::output;
-use crate::config::{Config, Defaults, Profile};
+use crate::config::{Config, Profile};
 
-use super::support::save_config;
+use super::pending_secrets::{PendingSecrets, keyring_error};
 
 enum ApiKeyStorage {
     Env(String),
@@ -127,20 +127,11 @@ fn cloud_api_error(error: unifly_api::Error) -> CliError {
 /// the TUI uses. The CLI never falls back on its own: when no keyring is
 /// usable it says so, and plaintext storage stays an explicit choice.
 fn write_keyring_secret(secret: &str, keyring_key: &str, label: &str) -> Result<(), CliError> {
-    use crate::config::{OsKeyring, SecretStore, SecretStoreError};
+    use crate::config::{OsKeyring, SecretStore};
 
     OsKeyring
         .set(keyring_key, secret)
-        .map_err(|error| CliError::Validation {
-            field: "keyring".into(),
-            reason: match error {
-                SecretStoreError::Unavailable(_) => format!(
-                    "failed to store {label}, {error}; keep it in config.toml or an \
-                     environment variable instead"
-                ),
-                SecretStoreError::Rejected(_) => format!("failed to store {label}, {error}"),
-            },
-        })
+        .map_err(|error| keyring_error(label, &error))
 }
 
 fn prompt_credentials() -> Result<(String, String), CliError> {
@@ -161,12 +152,15 @@ fn prompt_credentials() -> Result<(String, String), CliError> {
     Ok((user, pass))
 }
 
+/// Ask where `secret` goes. The keyring choice only holds it in `secrets`,
+/// stored once the wizard's last prompt is answered; the plaintext choice
+/// returns it for the profile.
 fn prompt_keyring_storage(
-    ui: &WizardUi,
+    secrets: &mut PendingSecrets,
     secret: &str,
     keyring_key: &str,
     prompt: &str,
-    label: &str,
+    label: &'static str,
 ) -> Result<Option<String>, CliError> {
     let choices = &[
         "Store in system keyring (recommended)",
@@ -180,8 +174,7 @@ fn prompt_keyring_storage(
         .map_err(prompt_err)?;
 
     if selection == 0 {
-        write_keyring_secret(secret, keyring_key, label)?;
-        ui.success(&format!("{label} stored in system keyring"));
+        secrets.add(keyring_key.to_owned(), label, SecretString::from(secret));
         Ok(None)
     } else {
         Ok(Some(secret.to_owned()))
@@ -480,28 +473,78 @@ fn prompt_profile_name(
     }
 }
 
+/// Where the profile finds its API key: `(api_key, api_key_env)` for the
+/// profile, with a keyring choice held in `secrets` until the wizard ends.
 fn persist_cloud_api_key(
-    ui: &WizardUi,
+    secrets: &mut PendingSecrets,
     profile_name: &str,
     setup: &CloudApiKeySetup,
-) -> Result<(Option<String>, Option<String>), CliError> {
+) -> (Option<String>, Option<String>) {
     match &setup.storage {
-        ApiKeyStorage::Env(env_name) => Ok((None, Some(env_name.clone()))),
+        ApiKeyStorage::Env(env_name) => (None, Some(env_name.clone())),
         ApiKeyStorage::Keyring => {
-            write_keyring_secret(
-                setup.secret.expose_secret(),
-                &format!("{profile_name}/api-key"),
+            secrets.add(
+                crate::config::api_key_keyring_key(profile_name),
                 "API key",
-            )?;
-            ui.success("API key stored in system keyring");
-            Ok((None, None))
+                setup.secret.clone(),
+            );
+            (None, None)
         }
-        ApiKeyStorage::Plaintext => Ok((Some(setup.secret.expose_secret().to_owned()), None)),
+        ApiKeyStorage::Plaintext => (Some(setup.secret.expose_secret().to_owned()), None),
     }
+}
+
+/// Ask whether the profile just set up becomes the default, unless it
+/// already is.
+fn confirm_make_default(cfg: &Config, profile_name: &str) -> Result<bool, CliError> {
+    if cfg.default_profile.as_deref() == Some(profile_name) {
+        return Ok(true);
+    }
+    Confirm::new()
+        .with_prompt("Make this your default profile?")
+        .default(cfg.profiles.is_empty() || cfg.default_profile.is_none())
+        .interact()
+        .map_err(prompt_err)
+}
+
+/// Put `profile` into `cfg` under `name`, replacing only a profile of that
+/// name, and make it the default when `make_default` is set. Every other
+/// profile and setting stays as it was.
+fn add_profile(cfg: &mut Config, name: &str, profile: Profile, make_default: bool) {
+    cfg.profiles.insert(name.to_owned(), profile);
+    if make_default {
+        cfg.default_profile = Some(name.to_owned());
+    }
+}
+
+/// Save what a setup wizard collected: `profile` under `profile_name` in
+/// the config at `path`, then the held `secrets`, undone if the save fails.
+/// Returns the labels of the secrets stored in the keyring.
+///
+/// The config is loaded again here rather than reused from when the wizard
+/// started: it can wait at a prompt for minutes, and a change made from
+/// another terminal meanwhile must not be lost.
+fn finish_wizard(
+    path: &std::path::Path,
+    store: &dyn crate::config::SecretStore,
+    profile_name: &str,
+    profile: Profile,
+    make_default: bool,
+    secrets: PendingSecrets,
+) -> Result<Vec<&'static str>, CliError> {
+    let mut cfg = crate::config::load_config_from(path)?;
+    add_profile(&mut cfg, profile_name, profile, make_default);
+    secrets.commit(store, || {
+        crate::config::save_config_to(path, &cfg).map_err(CliError::from)
+    })
 }
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
+    // Load before any prompt, so a config file that cannot be loaded stops
+    // the wizard before it asks for anything.
+    let cfg = crate::config::load_config()?;
+    let mut secrets = PendingSecrets::default();
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
     ui.banner(
@@ -514,11 +557,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
     );
     eprintln!();
 
-    let profile_name: String = Input::new()
-        .with_prompt("Profile name")
-        .default("default".into())
-        .interact_text()
-        .map_err(prompt_err)?;
+    let profile_name = prompt_profile_name(&ui, "default", &cfg.profiles)?;
 
     let controller: String = Input::new()
         .with_prompt("Controller URL")
@@ -558,7 +597,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             }
 
             let api_key_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &key,
                 &format!("{profile_name}/api-key"),
                 "Where to store the API key?",
@@ -571,7 +610,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             let (user, pass) = prompt_credentials()?;
 
             let password_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &pass,
                 &format!("{profile_name}/password"),
                 "Where to store the password?",
@@ -599,7 +638,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             }
 
             let api_key_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &key,
                 &format!("{profile_name}/api-key"),
                 "Where to store the API key?",
@@ -609,7 +648,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
             let (user, pass) = prompt_credentials()?;
 
             let password_field = prompt_keyring_storage(
-                &ui,
+                &mut secrets,
                 &pass,
                 &format!("{profile_name}/password"),
                 "Where to store the password?",
@@ -651,19 +690,20 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
         timeout: None,
     };
 
-    let mut profiles = HashMap::new();
-    profiles.insert(profile_name.clone(), profile);
-
-    let cfg = Config {
-        default_profile: Some(profile_name.clone()),
-        defaults: Defaults::default(),
-        profiles,
-        demo: crate::config::DemoConfig::default(),
-    };
-
-    save_config(&cfg)?;
+    let make_default = confirm_make_default(&cfg, &profile_name)?;
+    let stored = finish_wizard(
+        &config_path,
+        &crate::config::OsKeyring,
+        &profile_name,
+        profile,
+        make_default,
+        secrets,
+    )?;
 
     eprintln!();
+    for label in stored {
+        ui.success(&format!("{label} stored in system keyring"));
+    }
     ui.success("Configuration written");
     ui.meta("Profile", &ui.accent(&profile_name));
     ui.meta("Controller", &ui.accent(&controller_display));
@@ -676,13 +716,22 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
         &ui.accent(&config_path.display().to_string()),
     );
     eprintln!();
-    ui.meta("Try", &ui.keyword("unifly system info"));
+    let try_command = if make_default {
+        "unifly system info".to_owned()
+    } else {
+        format!("unifly -p {profile_name} system info")
+    };
+    ui.meta("Try", &ui.keyword(&try_command));
 
     Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
 pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError> {
+    // Load before any prompt, so a config file that cannot be loaded stops
+    // the wizard before it asks for anything.
+    let cfg = crate::config::load_config()?;
+    let mut secrets = PendingSecrets::default();
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
     let controller = global
@@ -728,23 +777,16 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
         .map_err(cloud_api_error)?;
     let site = select_site_internal_reference(&ui, &sites)?;
 
-    let mut cfg = crate::config::load_config_or_default();
     let suggested_profile = next_available_profile_name(&host.display_name(), &cfg.profiles);
     let profile_name = prompt_profile_name(&ui, &suggested_profile, &cfg.profiles)?;
-    let (api_key, api_key_env) = persist_cloud_api_key(&ui, &profile_name, &api_key_setup)?;
+    let (api_key, api_key_env) = persist_cloud_api_key(&mut secrets, &profile_name, &api_key_setup);
 
-    let make_default = if cfg.default_profile.as_deref() == Some(profile_name.as_str()) {
-        true
-    } else {
-        Confirm::new()
-            .with_prompt("Make this your default profile?")
-            .default(cfg.profiles.is_empty() || cfg.default_profile.is_none())
-            .interact()
-            .map_err(prompt_err)?
-    };
+    let make_default = confirm_make_default(&cfg, &profile_name)?;
 
-    cfg.profiles.insert(
-        profile_name.clone(),
+    let stored = finish_wizard(
+        &config_path,
+        &crate::config::OsKeyring,
+        &profile_name,
         Profile {
             controller: controller.clone(),
             site: site.clone(),
@@ -761,15 +803,14 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
             insecure: None,
             timeout: None,
         },
-    );
-
-    if make_default {
-        cfg.default_profile = Some(profile_name.clone());
-    }
-
-    save_config(&cfg)?;
+        make_default,
+        secrets,
+    )?;
 
     eprintln!();
+    for label in stored {
+        ui.success(&format!("{label} stored in system keyring"));
+    }
     ui.success("Cloud profile written");
     ui.meta("Profile", &ui.accent(&profile_name));
     ui.meta("Console", &ui.accent(&host.display_name()));
@@ -822,9 +863,62 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        cloud_connector_url, likely_self_signed, next_available_profile_name, slugify_profile_name,
+        add_profile, cloud_connector_url, finish_wizard, likely_self_signed,
+        next_available_profile_name, slugify_profile_name,
     };
-    use crate::config::Profile;
+    use crate::cli::commands::config_cmd::pending_secrets::PendingSecrets;
+    use crate::config::{Config, Profile, SecretStore, SecretStoreError};
+
+    /// A keyring for saves that hold no secrets.
+    struct NoSecrets;
+
+    impl SecretStore for NoSecrets {
+        fn get(&self, _key: &str) -> Result<Option<String>, SecretStoreError> {
+            Ok(None)
+        }
+
+        fn set(&self, _key: &str, _secret: &str) -> Result<(), SecretStoreError> {
+            Ok(())
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), SecretStoreError> {
+            Ok(())
+        }
+    }
+
+    /// A wizard can sit at a prompt for minutes. A profile added from
+    /// another terminal meanwhile must survive the wizard's save.
+    #[test]
+    fn finish_wizard_keeps_changes_made_while_it_ran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_profile = \"work\"\n[profiles.work]\ncontroller = \"https://10.0.0.1\"\n",
+        )
+        .expect("write config");
+        std::fs::write(
+            &path,
+            "default_profile = \"work\"\n[profiles.work]\ncontroller = \"https://10.0.0.1\"\n\
+             [profiles.lab]\ncontroller = \"https://10.0.9.1\"\n",
+        )
+        .expect("change config from another terminal");
+
+        finish_wizard(
+            &path,
+            &NoSecrets,
+            "home",
+            sample_profile(),
+            false,
+            PendingSecrets::default(),
+        )
+        .expect("finish");
+
+        let cfg = crate::config::load_config_from(&path).expect("reload");
+        assert!(cfg.profiles.contains_key("home"));
+        assert!(cfg.profiles.contains_key("work"));
+        assert!(cfg.profiles.contains_key("lab"), "the wizard lost a change");
+    }
 
     fn sample_profile() -> Profile {
         Profile {
@@ -843,6 +937,59 @@ mod tests {
             insecure: None,
             timeout: None,
         }
+    }
+
+    fn two_profile_config() -> Config {
+        toml::from_str(
+            r#"
+            default_profile = "work"
+
+            [defaults]
+            timeout = 45
+
+            [profiles.work]
+            controller = "https://10.0.0.1"
+
+            [profiles.lab]
+            controller = "https://10.0.9.1"
+
+            [demo]
+            redact_names = ["Bliss"]
+            "#,
+        )
+        .expect("sample config parses")
+    }
+
+    /// `config init` adds a profile next to the others; replacing the whole
+    /// file erased every other profile, [defaults], and [demo].
+    #[test]
+    fn add_profile_keeps_the_rest_of_the_config() {
+        let mut cfg = two_profile_config();
+        let mut home = sample_profile();
+        home.controller = "https://192.168.1.1".into();
+
+        add_profile(&mut cfg, "home", home, false);
+
+        assert_eq!(cfg.default_profile.as_deref(), Some("work"));
+        assert_eq!(cfg.profiles["home"].controller, "https://192.168.1.1");
+        assert_eq!(cfg.profiles["work"].controller, "https://10.0.0.1");
+        assert_eq!(cfg.profiles["lab"].controller, "https://10.0.9.1");
+        assert_eq!(cfg.defaults.timeout, 45);
+        assert_eq!(cfg.demo.redact_names, ["Bliss"]);
+    }
+
+    #[test]
+    fn add_profile_replaces_only_the_profile_of_that_name() {
+        let mut cfg = two_profile_config();
+        let mut lab = sample_profile();
+        lab.controller = "https://10.0.9.2".into();
+
+        add_profile(&mut cfg, "lab", lab, true);
+
+        assert_eq!(cfg.default_profile.as_deref(), Some("lab"));
+        assert_eq!(cfg.profiles.len(), 2);
+        assert_eq!(cfg.profiles["lab"].controller, "https://10.0.9.2");
+        assert_eq!(cfg.profiles["work"].controller, "https://10.0.0.1");
     }
 
     #[test]

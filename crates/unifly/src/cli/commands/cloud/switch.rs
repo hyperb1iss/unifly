@@ -6,26 +6,13 @@ use crate::config::{self, Profile};
 
 use super::load_cloud_connector_sites;
 
-fn available_profiles(cfg: &config::Config) -> String {
-    let mut available: Vec<_> = cfg.profiles.keys().cloned().collect();
-    available.sort();
-    if available.is_empty() {
-        "(none)".into()
-    } else {
-        available.join(", ")
-    }
-}
-
 fn require_cloud_profile(
     global: &GlobalOpts,
 ) -> Result<(config::Config, String, Profile), CliError> {
-    let cfg = config::resolve::load_config_or_default();
+    let cfg = config::load_config()?;
     let profile_name = config::resolve::active_profile_name(global, &cfg);
     let Some(profile) = cfg.profiles.get(&profile_name).cloned() else {
-        return Err(CliError::ProfileNotFound {
-            name: profile_name,
-            available: available_profiles(&cfg),
-        });
+        return Err(config::resolve::missing_profile(&cfg, &profile_name));
     };
 
     if profile.auth_mode != "cloud" {

@@ -328,7 +328,7 @@ pub(super) fn render_done(screen: &OnboardingScreen, frame: &mut Frame, area: Re
     let saved_path = crate::config::config_path();
     let details = vec![
         Line::from(Span::styled(
-            "  Profile: default".to_string(),
+            format!("  Profile: {}", screen.profile_name),
             Style::default().fg(theme::text_secondary()),
         )),
         Line::from(Span::styled(

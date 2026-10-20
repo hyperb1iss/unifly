@@ -10,6 +10,8 @@ mod input;
 mod render;
 mod state;
 
+pub use state::set_session_profile;
+
 use std::cell::{Cell, RefCell};
 
 use color_eyre::eyre::Result;

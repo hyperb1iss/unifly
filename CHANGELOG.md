@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Fields the typed record already carries (`localNetworks`, `peerIp`,
   `psk`, and the like) no longer appear a second time under their raw
   names; scripts that read the raw copies should read the typed fields.
+- **A `config.toml` that fails to load now stops every command**,
+  including runs that pass the controller and API key by flag or
+  environment variable, which used to ignore the broken file. The error
+  names the file and the problem and exits 2.
+- **Cloud fleet commands with no profile and no `--api-key` exit 1**
+  (configuration error) instead of 3 (missing credentials), reporting a
+  missing config file or an undefined profile.
 
 ### Fixed
 
@@ -239,6 +246,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   not found" or "API error: builder error" with exit 1; it is now an
   invalid configuration error with exit 2 that names the problem, and any
   password in the URL is masked in the message.
+- **A config file that fails to load is never saved over.** `config set`,
+  `config use`, `config theme`, `config init`, `config cloud-setup`,
+  `cloud switch`, and the TUI saves fell back to the built-in defaults
+  when `config.toml` failed to parse, then saved them, so one typo such
+  as `timeout = "thirty"` erased every profile. They now stop with an
+  error naming the file and the key at fault and leave the file as it
+  was. The error repeats a value only for plain settings, never a
+  password, API key, TOTP command, or URL credentials.
+- **Commands say why they found no profile.** A `config.toml` with a typo,
+  or `-p` naming a profile the file does not define, reported
+  "Configuration file not found" for a file that was there, and cloud
+  commands reported missing credentials. The error now names the file and
+  the problem, or the undefined profile, the profiles the file does
+  define, and how to create one. `unifly tui` reports a config that fails
+  to load the same way instead of opening the setup wizard.
+- **`UNIFI_DEMO` and `UNIFI_DEMO_SEED` no longer hide every profile.** The
+  config loader also read each `UNIFI_*` variable as a config key, where
+  these two collided with the `[demo]` table and failed the load, so every
+  command acted as if no config existed. The variables still drive their
+  flags; the loader now reads only the file.
+- **The TUI no longer writes over profiles it was not asked to touch.**
+  The onboarding wizard saved a new file holding only a profile named
+  `default`, so `unifly tui -p work` replaced a working `default` profile
+  and its keyring secret, and repairing a profile that could not connect
+  dropped its CA certificate, timeout, and TOTP command. Settings always
+  edited the default profile, whatever profile the session used. Both
+  now work on the session's profile, onboarding starts from that profile
+  when it exists, and other profiles and settings are kept.
+- **`config init` adds a profile instead of replacing the file.** Running
+  it to set up a second controller erased the first. It now adds or
+  replaces only the profile it sets up, asks before replacing one that
+  exists, and asks whether a new profile becomes the default.
+- **The setup wizards store secrets only once they finish.** `config init`
+  and `config cloud-setup` wrote the keyring mid-wizard, so aborting at a
+  later prompt or failing the save left the old config pointing at a
+  keyring entry that now held a new secret, and they saved the config as
+  it was when they started, undoing changes made meanwhile. Secrets are
+  now stored after the last prompt and put back if the save fails, and
+  the config is reloaded just before the new profile goes in.
+- **`config show` masks stored secrets in every output format.** JSON,
+  compact JSON, and YAML printed plaintext `api_key` and `password`
+  values, full `totp_command` arguments, and credentials embedded in a
+  controller URL; only the table masked any of them. Every format now
+  masks all of them, and so do the TUI's startup log and URL errors.
+- **`config.toml` is saved atomically and is never readable by others.**
+  A save wrote the file in place and only then restricted it to its owner,
+  so a new file was briefly readable under the umask and a crash
+  mid-write left it truncated. Saves now go to an owner-only staging file
+  that replaces the config in one rename, a symlinked config stays a
+  link, a config bind-mounted as a single file is still written in place,
+  and a failed save names the file and exits 1.
 
 ## [0.11.0] - 2026-10-12
 

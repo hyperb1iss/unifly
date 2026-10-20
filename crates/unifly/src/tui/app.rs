@@ -168,6 +168,32 @@ impl App {
         }
     }
 
+    /// Have the setup wizard, when it is showing, set up `profile_name`: the
+    /// profile this launch asked for, so finishing it never writes over a
+    /// different one. When `cfg` already holds that profile (it could not
+    /// connect), the wizard starts from it.
+    pub fn with_setup_profile(
+        mut self,
+        profile_name: &str,
+        cfg: Option<&crate::config::Config>,
+    ) -> Self {
+        use crate::tui::screens::onboarding::OnboardingScreen;
+
+        if let Some(setup) = self.screens.get_mut(&ScreenId::Setup) {
+            let screen = match cfg.and_then(|cfg| Some((cfg.profiles.get(profile_name)?, cfg))) {
+                Some((existing, cfg)) => OnboardingScreen::for_existing_profile(
+                    profile_name,
+                    existing,
+                    &cfg.defaults,
+                    &crate::config::OsKeyring,
+                ),
+                None => OnboardingScreen::for_profile(profile_name),
+            };
+            *setup = Box::new(screen);
+        }
+        self
+    }
+
     /// Initialize all screen components with the action sender.
     fn init_screens(&mut self) -> Result<()> {
         for screen in self.screens.values_mut() {

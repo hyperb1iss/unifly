@@ -188,16 +188,6 @@ pub enum CliError {
     Validation { field: String, reason: String },
 
     // ── Configuration ────────────────────────────────────────────────
-    #[error("Profile '{name}' not found in configuration")]
-    #[diagnostic(
-        code(unifi::profile_not_found),
-        help(
-            "Available profiles: {available}\n\
-             Create one with: unifly config init or unifly config cloud-setup"
-        )
-    )]
-    ProfileNotFound { name: String, available: String },
-
     #[error("Configuration file not found")]
     #[diagnostic(
         code(unifi::no_config),
@@ -218,10 +208,6 @@ pub enum CliError {
         )
     )]
     InvalidConfig { message: String },
-
-    #[error(transparent)]
-    #[diagnostic(code(unifi::config))]
-    Config(Box<figment::Error>),
 
     // ── Interactive ──────────────────────────────────────────────────
     #[error("Destructive operation '{action}' requires confirmation")]
@@ -272,12 +258,6 @@ pub enum CliError {
     ConfigError(crate::config::ConfigError),
 }
 
-impl From<figment::Error> for CliError {
-    fn from(err: figment::Error) -> Self {
-        Self::Config(Box::new(err))
-    }
-}
-
 /// Config resolution reports the same failures the CLI detects itself, so
 /// those map onto the CLI's own variants: a missing credential or invalid
 /// value then exits and explains itself the same way whether it came from
@@ -291,12 +271,17 @@ impl From<crate::config::ConfigError> for CliError {
                 Self::profile_missing_credentials(&profile, None, false)
             }
             ConfigError::Validation { field, reason } => Self::Validation { field, reason },
-            // Reading or writing the file failed: keep the config error's
-            // own message and the general exit code.
-            err
-            @ (ConfigError::Serialization(_) | ConfigError::Figment(_) | ConfigError::Io(_)) => {
-                Self::ConfigError(err)
-            }
+            // The file could not be read or written, or lacks the profile
+            // asked for: keep the config error's own message, which names
+            // the file (and for a profile, the defined ones and how to
+            // create one). A file that fails to load is invalid input and
+            // exits 2 (see `exit_code`); the rest exit 1, as the
+            // profile-not-found error did.
+            err @ (ConfigError::Serialization(_)
+            | ConfigError::Io(_)
+            | ConfigError::Load { .. }
+            | ConfigError::ProfileNotDefined { .. }
+            | ConfigError::Save { .. }) => Self::ConfigError(err),
         }
     }
 }
@@ -314,6 +299,7 @@ impl CliError {
             Self::Timeout { .. } => exit_code::TIMEOUT,
             Self::Validation { .. }
             | Self::InvalidConfig { .. }
+            | Self::ConfigError(crate::config::ConfigError::Load { .. })
             | Self::NonInteractiveRequiresYes { .. }
             | Self::SiteAmbiguous { .. }
             | Self::Ambiguous { .. } => exit_code::USAGE,
@@ -497,7 +483,7 @@ impl From<CoreError> for CliError {
     fn from(err: CoreError) -> Self {
         match err {
             CoreError::ConnectionFailed { url, reason } => CliError::ConnectionFailed {
-                url: redact_userinfo(&url),
+                url: crate::config::redact_url_userinfo(&url),
                 source: reason.into(),
             },
 
@@ -602,21 +588,6 @@ impl From<CoreError> for CliError {
                 request_id: None,
             },
         }
-    }
-}
-
-/// `url` with any userinfo replaced by `***`, for messages that echo a
-/// controller URL. Works on text that does not parse as a URL too, since
-/// those are exactly the URLs an error reports.
-pub fn redact_userinfo(url: &str) -> String {
-    let Some(scheme_end) = url.find("://") else {
-        return url.to_owned();
-    };
-    let (prefix, rest) = url.split_at(scheme_end + 3);
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    match rest[..authority_end].rfind('@') {
-        Some(at) => format!("{prefix}***@{}", &rest[at + 1..]),
-        None => url.to_owned(),
     }
 }
 
@@ -726,26 +697,6 @@ mod tests {
             named.contains("unifly config set-password 'my lab'"),
             "{named}"
         );
-    }
-
-    #[test]
-    fn redact_userinfo_hides_credentials_only() {
-        for (url, redacted) in [
-            (
-                "https://admin:hunter2@10.0.0.1:8443/x",
-                "https://***@10.0.0.1:8443/x",
-            ),
-            ("http://admin@host", "http://***@host"),
-            ("http://a:b@[::1", "http://***@[::1"),
-            (
-                "https://10.0.0.1/path@not-userinfo",
-                "https://10.0.0.1/path@not-userinfo",
-            ),
-            ("https://unifi.local", "https://unifi.local"),
-            ("not a url", "not a url"),
-        ] {
-            assert_eq!(super::redact_userinfo(url), redacted, "{url}");
-        }
     }
 
     #[test]

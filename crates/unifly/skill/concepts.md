@@ -37,12 +37,12 @@ and `%APPDATA%\unifly\config\config.toml` on Windows. Use named profiles with
 `-p NAME` or `UNIFI_PROFILE` for multiple controllers. Local setup uses
 `unifly config init`; cloud setup uses `unifly config cloud-setup`.
 
-Inspect saved configuration with `unifly config show -o table`. Table
-output masks stored API keys and passwords; JSON/YAML output can expose
-them. Always specify `-o table` here, even when it is normally the default,
-because `UNIFI_OUTPUT` can select another format. The display does not
-resolve all command-line or environment overrides. Account for those
-overrides when checking the actual controller, site, or credentials.
+Inspect saved configuration with `unifly config show`. Every output format
+masks stored API keys and passwords as `****`, along with the arguments of
+a `totp_command`, so JSON output is as safe to read as the table. The
+display does not resolve all command-line or environment overrides.
+Account for those overrides when checking the actual controller, site, or
+credentials.
 
 Connection values generally resolve as flag/environment, profile,
 `[defaults]`, then built-in fallback. The timeout fallback is 30 seconds.
@@ -237,7 +237,8 @@ retrying. A write with an uncertain outcome needs a read-back before any
 retry, especially for create commands.
 
 Exit status is `0` on success. CLI errors use `1` for general failure, `2`
-for usage/validation or missing confirmation, `3` for authentication, `4`
+for usage/validation (a config file that fails to load included) or missing
+confirmation, `3` for authentication, `4`
 for a missing resource, `5` for unsupported/unimplemented operations, `6`
 for conflict, `7` for connection/TLS failure, and `8` for timeout. Preserve
 the diagnostic as well as the number: not every controller-side error maps

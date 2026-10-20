@@ -42,7 +42,19 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
 
     let _log_guard = setup_tracing(global.verbose, &args.log_file);
 
-    let loaded_config = demo_fleet::startup_config(global, || config::load_config().ok());
+    // A config that fails to load is reported, not taken for a first run:
+    // the setup wizard would only refuse to save over it.
+    let mut load_error = None;
+    let loaded_config = demo_fleet::startup_config(global, || match config::load_config() {
+        Ok(config) => Some(config),
+        Err(error) => {
+            load_error = Some(error);
+            None
+        }
+    });
+    if let Some(error) = load_error {
+        return Err(error.into());
+    }
     let theme_name = global.theme.as_deref().or_else(|| {
         loaded_config
             .as_ref()
@@ -55,8 +67,12 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
             .and_then(|config| config.defaults.chart_quality.as_deref()),
     );
 
+    let url = global.controller.as_deref().map_or_else(
+        || "(not set)".to_owned(),
+        crate::config::redact_url_userinfo,
+    );
     info!(
-        url = global.controller.as_deref().unwrap_or("(not set)"),
+        url = url.as_str(),
         site = global.site.as_deref().unwrap_or("default"),
         "starting unifly tui"
     );
@@ -73,10 +89,24 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     let effects_enabled = resolve_effects_enabled(global, cfg);
     let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 
-    let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate);
+    let session_profile = session_profile_name(global, cfg);
+    screens::settings::set_session_profile(&session_profile);
+    let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate)
+        .with_setup_profile(&session_profile, cfg);
     app.run().await?;
 
     Ok(())
+}
+
+/// The profile this session runs on (`--profile`, else the config's default,
+/// else `default`). Onboarding sets it up and Settings edits it, so neither
+/// writes over another profile.
+fn session_profile_name(global: &GlobalOpts, cfg: Option<&config::Config>) -> String {
+    global
+        .profile
+        .clone()
+        .or_else(|| cfg.and_then(|cfg| cfg.default_profile.clone()))
+        .unwrap_or_else(|| "default".into())
 }
 
 /// Resolve whether TUI effects should run this session.
@@ -143,7 +173,11 @@ fn build_controller_direct(
     let url = match url_str.parse() {
         Ok(url) => url,
         Err(error) => {
-            tracing::warn!(%error, url = url_str, "invalid controller URL, ignoring direct flags");
+            tracing::warn!(
+                %error,
+                url = %config::redact_url_userinfo(url_str),
+                "invalid controller URL, ignoring direct flags"
+            );
             return None;
         }
     };
@@ -308,5 +342,32 @@ fn resolve_sanitizer(global: &GlobalOpts, cfg: Option<&config::Config>) -> Optio
         Some(Arc::new(Sanitizer::new(&demo_config)))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::session_profile_name;
+    use crate::cli::args::{Cli, GlobalOpts};
+    use crate::config::Config;
+
+    fn global(argv: &[&str]) -> GlobalOpts {
+        Cli::try_parse_from(argv).expect("valid arguments").global
+    }
+
+    #[test]
+    fn the_session_runs_on_the_profile_the_launch_selected() {
+        let cfg = Config {
+            default_profile: Some("home".into()),
+            ..Config::default()
+        };
+
+        let work = global(&["unifly", "tui", "-p", "work"]);
+        assert_eq!(session_profile_name(&work, Some(&cfg)), "work");
+        let plain = global(&["unifly", "tui"]);
+        assert_eq!(session_profile_name(&plain, Some(&cfg)), "home");
+        assert_eq!(session_profile_name(&plain, None), "default");
     }
 }

@@ -15,10 +15,9 @@ whole array for lists. Convert list output to one object per line with
 `jq -c '.[]'` when needed. Event watching emits
 one compact JSON event per line with either JSON format.
 
-Config inspection is an exception to the JSON preference: use `config show
--o table`. JSON/YAML config output includes stored credentials; the explicit
-format also overrides `UNIFI_OUTPUT`. Stats and raw API commands use pretty
-JSON for table/plain output. Port export always emits JSONC.
+`config show` masks stored credentials in every format, so the JSON
+preference holds for config inspection too. Stats and raw API commands use
+pretty JSON for table/plain output. Port export always emits JSONC.
 
 Plain output (`-o plain`) usually emits record IDs. IDs may be Integration
 UUIDs or Session IDs; a command accepting a MAC needs the `mac` field instead.

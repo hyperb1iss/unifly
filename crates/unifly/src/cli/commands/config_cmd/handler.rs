@@ -5,7 +5,7 @@ use crate::config::resolve;
 
 use super::interactive::{run_cloud_setup, run_init, store_profile_secrets};
 use super::support::{
-    empty_profile, format_config_redacted, profile_not_found, resolve_set_target, save_config,
+    empty_profile, format_config_redacted, redact_secrets, resolve_set_target, save_config,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -15,7 +15,8 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         ConfigCommand::CloudSetup => run_cloud_setup(global).await,
 
         ConfigCommand::Show => {
-            let cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
+            redact_secrets(&mut cfg);
             let out = output::render_single(&global.output, &cfg, format_config_redacted, |_| {
                 "config".into()
             });
@@ -24,7 +25,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Set { key, value } => {
-            let mut cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
             let active_profile = resolve::active_profile_name(global, &cfg);
             let (profile_name, field) = resolve_set_target(&key, &active_profile)?;
 
@@ -90,7 +91,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Profiles => {
-            let cfg = crate::config::load_config_or_default();
+            let cfg = crate::config::load_config()?;
             let default = cfg.default_profile.as_deref().unwrap_or("default");
 
             if cfg.profiles.is_empty() {
@@ -110,10 +111,10 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Use { name } => {
-            let mut cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
 
             if !cfg.profiles.contains_key(&name) {
-                return Err(profile_not_found(&cfg, name));
+                return Err(resolve::missing_profile(&cfg, &name));
             }
 
             cfg.default_profile = Some(name.clone());
@@ -123,7 +124,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Theme { name } => {
-            let mut cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
             let current = cfg.defaults.theme.as_deref().unwrap_or("silkcircuit-neon");
 
             if let Some(name) = name {
@@ -163,7 +164,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
             profile,
             profile_flag,
         } => {
-            let cfg = crate::config::load_config_or_default();
+            let cfg = crate::config::load_config()?;
             let profile_name = profile
                 .or(profile_flag)
                 .unwrap_or_else(|| resolve::active_profile_name(global, &cfg));
@@ -171,7 +172,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
             let prof = cfg
                 .profiles
                 .get(&profile_name)
-                .ok_or_else(|| profile_not_found(&cfg, profile_name.clone()))?;
+                .ok_or_else(|| resolve::missing_profile(&cfg, &profile_name))?;
 
             store_profile_secrets(&profile_name, &prof.auth_mode)
         }

@@ -2,6 +2,7 @@
 
 mod handler;
 mod interactive;
+mod pending_secrets;
 mod support;
 
 use crate::cli::args::{ConfigArgs, GlobalOpts};
