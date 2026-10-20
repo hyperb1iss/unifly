@@ -91,6 +91,7 @@ Typing still needs a keyboard: search, the Networks edit form, the Settings fiel
 | -------------------- | --------------- | ----------------------------------------------------------------- |
 | **Devices**          | `R`             | Restart selected device                                           |
 | **Devices**          | `L`             | Locate (flash LED)                                                |
+| **Devices**          | `U`             | Upgrade firmware (asks first)                                     |
 | **Devices** (detail) | `h` / `l`       | Previous / next detail tab                                        |
 | **Clients**          | `Tab`           | Cycle filter (All / Wireless / Wired / VPN / Guest)               |
 | **Clients**          | `b` / `B`       | Block / unblock client                                            |
@@ -213,11 +214,11 @@ The same seed reproduces, from launch:
 - **The animation**: WAN traffic, device telemetry, client traffic, roams, arrivals, departures, and events, tick for tick.
 - **History**: the Stats charts for every period, the week of past events, roam history, and Wi-Fi neighbors, all laid out relative to the launch time.
 
-Timestamps follow the wall clock, so the same history appears shifted to whenever you launch, and anything you trigger interactively (a restart, a kick, a power cycle) changes what happens after it. To reshoot a sequence, relaunch with the same seed and repeat the same keystrokes at the same moments.
+Timestamps follow the wall clock, so the same history appears shifted to whenever you launch, and anything you trigger interactively (a restart, a kick, a block) changes what happens after it. To reshoot a sequence, relaunch with the same seed and repeat the same keystrokes at the same moments.
 
 When `--demo` is set and no controller can be resolved from flags, environment, or config, the TUI opens the demo fleet instead of onboarding and logs that it did. The sanitizer never runs on the demo fleet, because its data is fictional already: documentation and private address ranges, locally administered MACs, and invented names.
 
-Device actions (restart, locate, upgrade, PoE power cycle) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Power cycling the dark camera port on `sw-core` brings that camera back. Changes that need a real controller, such as editing a network or deleting a policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
+Device actions (restart, locate, upgrade) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Changes that need a real controller, such as editing a network or moving a firewall policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
 
 `--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 
