@@ -653,6 +653,19 @@ mod tests {
     }
 
     #[test]
+    fn the_help_overlay_lists_only_keys_that_work_everywhere() {
+        let mut app = dashboard_app();
+        app.help_visible = true;
+        let text = render_lines(120, 34, |frame, _| app.render(frame)).join("\n");
+
+        for screen_key in ["Sort column", "Filter"] {
+            assert!(!text.contains(screen_key), "{screen_key}:\n{text}");
+        }
+        assert!(text.contains("Search lists"), "{text}");
+        assert!(text.contains("own keys"), "{text}");
+    }
+
+    #[test]
     fn search_input_updates_query_and_can_close() {
         let mut app = App::new(None, None, false, true);
         app.active_screen = ScreenId::Dashboard;

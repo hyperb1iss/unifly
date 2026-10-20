@@ -574,15 +574,9 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from(Span::styled("  ──────────────", theme::key_hint())),
         Line::from(vec![
             Span::styled("  /           ", theme::key_hint_key()),
-            Span::styled("Search            ", theme::key_hint()),
+            Span::styled("Search lists       ", theme::key_hint()),
             Span::styled("?  ", theme::key_hint_key()),
             Span::styled("This help", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  s           ", theme::key_hint_key()),
-            Span::styled("Sort column        ", theme::key_hint()),
-            Span::styled("f  ", theme::key_hint_key()),
-            Span::styled("Filter", theme::key_hint()),
         ]),
         Line::from(vec![
             Span::styled("  ,           ", theme::key_hint_key()),
@@ -600,6 +594,14 @@ fn help_lines() -> Vec<Line<'static>> {
             Span::styled("  Mouse       ", theme::key_hint_key()),
             Span::styled(
                 "Tap tabs, rows, and key hints; wheel scrolls",
+                theme::key_hint(),
+            ),
+        ]),
+        // Keys that work on one screen only live in that screen's hints.
+        Line::from(vec![
+            Span::styled("  Screens     ", theme::key_hint_key()),
+            Span::styled(
+                "Each screen's own keys sit in its hint bar",
                 theme::key_hint(),
             ),
         ]),
