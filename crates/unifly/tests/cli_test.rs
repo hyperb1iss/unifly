@@ -2501,3 +2501,42 @@ fn test_controller_url_errors_never_echo_a_password() {
         }
     }
 }
+
+#[test]
+fn test_insecure_accepts_the_documented_boolean_spellings() {
+    for value in ["1", "0", "true", "false", "yes", "no", "on", "off"] {
+        let output = unifly_cmd()
+            .env("UNIFI_INSECURE", value)
+            .args(["--demo-fleet", "devices", "list", "-o", "plain"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "UNIFI_INSECURE={value}: {}",
+            combined_output(&output)
+        );
+    }
+    for flag in [
+        "-k",
+        "--insecure",
+        "--insecure=1",
+        "--insecure=0",
+        "--insecure=false",
+    ] {
+        let output = unifly_cmd()
+            .args(["--demo-fleet", flag, "devices", "list", "-o", "plain"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{flag}: {}",
+            combined_output(&output)
+        );
+    }
+    unifly_cmd()
+        .env("UNIFI_INSECURE", "maybe")
+        .args(["--demo-fleet", "devices", "list"])
+        .assert()
+        .failure()
+        .code(2);
+}

@@ -365,6 +365,30 @@ mod tests {
     }
 
     #[test]
+    fn insecure_reads_boolish_values_and_keeps_its_tri_state() {
+        use clap::Parser;
+        use unifly::cli::args::Cli;
+
+        let parse = |flag: &str| {
+            Cli::try_parse_from(["unifly", flag, "devices", "list"])
+                .expect("valid arguments")
+                .global
+                .insecure
+        };
+        for (flag, expected) in [
+            ("-k", Some(true)),
+            ("--insecure", Some(true)),
+            ("--insecure=1", Some(true)),
+            ("--insecure=yes", Some(true)),
+            ("--insecure=0", Some(false)),
+            ("--insecure=false", Some(false)),
+            ("--insecure=off", Some(false)),
+        ] {
+            assert_eq!(parse(flag), expected, "{flag}");
+        }
+    }
+
+    #[test]
     fn api_ui_url_is_detected_as_cloud() {
         assert!(controller_points_to_cloud(Some("https://api.ui.com")));
         assert!(!controller_points_to_cloud(Some("https://192.168.1.1")));

@@ -95,7 +95,8 @@ pub struct GlobalOpts {
         num_args = 0..=1,
         default_missing_value = "true",
         require_equals = true,
-        value_name = "BOOL"
+        value_name = "BOOL",
+        value_parser = clap::builder::BoolishValueParser::new()
     )]
     pub insecure: Option<bool>,
 

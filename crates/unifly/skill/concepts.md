@@ -52,8 +52,9 @@ verification over an insecure profile/default; bare `-k` disables it.
 
 Connection environment variables use `UNIFI_` (for example `UNIFI_URL`,
 `UNIFI_API_KEY`, `UNIFI_USERNAME`, `UNIFI_PASSWORD`, `UNIFI_SITE`,
-`UNIFI_HOST_ID`, `UNIFI_TIMEOUT`, and `UNIFI_INSECURE`). Use `true` or `false`
-for the insecure override. The theme variable is `UNIFLY_THEME`.
+`UNIFI_HOST_ID`, `UNIFI_TIMEOUT`, and `UNIFI_INSECURE`). The insecure
+override takes `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`. The theme
+variable is `UNIFLY_THEME`.
 `UNIFI_DEMO_FLEET` and `UNIFI_DEMO_SEED` switch to the synthetic demo fleet,
 which never reads configuration; see `unifly skill commands`.
 
