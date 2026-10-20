@@ -10,6 +10,7 @@ use super::{
 };
 use crate::tui::theme;
 use crate::tui::widgets::bytes_fmt;
+use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::hyperchart::{
     Baseline, ChartGradient, Denominator, Domain, FillStyle, HyperBars, HyperChart, Renderer, Row,
     Series, SeriesData, SeriesDirection, ValueFormat, XAxis,
@@ -167,6 +168,7 @@ impl StatsScreen {
     }
 
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let block = Block::default()
             .title(" Statistics ")
             .title_style(theme::title_style())
@@ -189,9 +191,9 @@ impl StatsScreen {
         ])
         .split(inner);
 
-        let period_line =
-            sub_tabs::render_sub_tabs(&["1h", "24h", "7d", "30d"], self.period_index());
-        frame.render_widget(Paragraph::new(period_line), layout[0]);
+        let strip = sub_tabs::sub_tab_strip(&["1h", "24h", "7d", "30d"], self.period_index());
+        let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[0]);
 
         self.render_bandwidth_chart(frame, layout[1]);
 
@@ -204,19 +206,15 @@ impl StatsScreen {
         self.render_categories(frame, left_col[1]);
         self.render_top_apps(frame, bottom[1]);
 
-        let hints = Line::from(vec![
-            Span::styled("  h ", theme::key_hint_key()),
-            Span::styled("1h  ", theme::key_hint()),
-            Span::styled("d ", theme::key_hint_key()),
-            Span::styled("24h  ", theme::key_hint()),
-            Span::styled("w ", theme::key_hint_key()),
-            Span::styled("7d  ", theme::key_hint()),
-            Span::styled("m ", theme::key_hint_key()),
-            Span::styled("30d  ", theme::key_hint()),
-            Span::styled("r ", theme::key_hint_key()),
-            Span::styled("refresh", theme::key_hint()),
+        let hints = click::key_hints(&[
+            Hint::button("h", "1h", click::char_key('h')),
+            Hint::button("d", "24h", click::char_key('d')),
+            Hint::button("w", "7d", click::char_key('w')),
+            Hint::button("m", "30d", click::char_key('m')),
+            Hint::button("r", "refresh", click::char_key('r')),
         ]);
-        frame.render_widget(Paragraph::new(hints), layout[3]);
+        let line = hints.draw(layout[3], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[3]);
     }
 }
 

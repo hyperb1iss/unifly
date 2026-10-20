@@ -1,3 +1,4 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -6,9 +7,20 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::tui::screens::networks::state::NetworkEditState;
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Click, Hint, HitMap};
 
-pub(super) fn render_edit_overlay(frame: &mut Frame, area: Rect, edit: &NetworkEditState) {
-    let overlay_w = 44u16.min(area.width.saturating_sub(4));
+pub(super) fn render_edit_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    edit: &NetworkEditState,
+    hits: &mut HitMap<Click>,
+) {
+    // The form holds the input while it is open, so it swallows taps on
+    // the rows behind it.
+    hits.push(area, Click::Absorb);
+
+    // Wide enough for the hint bar (48 columns) inside the border.
+    let overlay_w = 52u16.min(area.width.saturating_sub(4));
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     let overlay_h = (NetworkEditState::FIELD_COUNT as u16 + 6).min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
@@ -73,16 +85,19 @@ pub(super) fn render_edit_overlay(frame: &mut Frame, area: Rect, edit: &NetworkE
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(" Tab", theme::key_hint_key()),
-        Span::styled(" next  ", theme::key_hint()),
-        Span::styled("Space", theme::key_hint_key()),
-        Span::styled(" toggle  ", theme::key_hint()),
-        Span::styled("Enter", theme::key_hint_key()),
-        Span::styled(" save  ", theme::key_hint()),
-        Span::styled("Esc", theme::key_hint_key()),
-        Span::styled(" cancel", theme::key_hint()),
-    ]));
+    // Space only toggles a yes/no field; on a text field it types a space,
+    // so the toggle button shows only where it toggles.
+    let mut buttons = vec![Hint::button("Tab", "next", KeyCode::Tab)];
+    if NetworkEditState::is_bool_field(edit.field_idx) {
+        buttons.push(Hint::button("Space", "toggle", click::char_key(' ')));
+    }
+    buttons.extend([
+        Hint::button("Enter", "save", KeyCode::Enter),
+        Hint::button("Esc", "cancel", KeyCode::Esc),
+    ]);
+    let bar = click::key_hints(&buttons);
+    let hint_row = click::paragraph_row(inner, lines.len());
+    lines.push(bar.draw(hint_row, hits));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

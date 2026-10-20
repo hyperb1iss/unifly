@@ -19,6 +19,7 @@ impl DevicesScreen {
             detail_open: false,
             detail_device_id: None,
             detail_tab: crate::tui::action::DeviceDetailTab::default(),
+            hits: std::cell::RefCell::default(),
             search_query: String::new(),
         }
     }

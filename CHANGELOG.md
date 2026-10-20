@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Mouse and touch input across the TUI** (#67). Tabs, list rows, key
+  hints, dialogs, and dashboard panels take a click or a tap, so
+  `unifly tui` runs on a touchscreen kiosk without a keyboard. Tabs
+  switch screens and sub-tabs.
+  A tap selects a row and a second tap opens it, and an open device detail
+  follows a tap on another device while keeping its tab, so stepping from
+  switch to switch stays on their ports. Key hints are buttons that press
+  their key, including the status bar's help, search, settings, and quit.
+  Confirmations take `y` and `n` taps, overlays close on a tap outside
+  them, a tap dismisses a notification, and dashboard panels open their
+  screens. The wheel scrolls lists and the event feed (scrolling back
+  pauses a live feed), zooms the topology, and walks the theme picker, and
+  a drag pans the topology map. Typing still needs a keyboard.
+
+### Fixed
+
+- **The TUI tab bar draws all nine tabs.** Full labels need 120 columns
+  but switched on at 100, and short labels need 92 but were used at every
+  width below 100, so the WiFi tab (and at some widths Stats) was cut off
+  on common terminal sizes. The bar now takes the roomiest style that
+  fits, dropping padding before it shortens labels, and draws every tab
+  from 74 columns up.
+- **Typing in the TUI Networks edit form stays in the form.** `Tab`, the
+  form's next-field key, also switched to the next screen, a digit typed
+  into a field jumped to that screen, and `q` quit. Keys now stop at a
+  screen that is taking typed input, and `Ctrl+C` still quits.
+- **An Esc that closes part of a TUI screen stays on that screen.**
+  Collapsing a network detail, closing the WiFi channel map, or clearing
+  the WiFi roaming focus also ran the global Esc and jumped back to the
+  previous screen.
+- **`Tab` in a TUI client detail switches the type filter**, closing the
+  detail, instead of jumping to the next screen.
+- **The TUI Stats screen reloads the period it shows.** Returning to Stats
+  always fetched one hour, while the period strip kept highlighting the
+  period picked last.
+- **Clicks in the TUI Settings form redraw right away** instead of waiting
+  for the next data refresh to repaint the toggled field.
+- **The TUI Firewall hint bar drops `Enter detail`**, which it advertised
+  though Firewall has no detail view and never handled `Enter`.
+
 ## [0.11.0] - 2026-10-12
 
 ### Added

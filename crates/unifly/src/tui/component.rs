@@ -35,6 +35,13 @@ pub trait Component: Send {
     /// Render into the provided frame area.
     fn render(&self, frame: &mut Frame, area: Rect);
 
+    /// Whether the component is taking typed input, such as a form field.
+    /// Its keys then skip the global shortcuts, so typing `q` or a digit
+    /// edits the field instead of quitting or switching screens.
+    fn captures_input(&self) -> bool {
+        false
+    }
+
     /// Whether this component currently holds input focus.
     #[allow(dead_code)]
     fn focused(&self) -> bool {

@@ -1,9 +1,10 @@
 use color_eyre::eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use super::{App, ConnectionStatus};
 use crate::tui::action::Action;
 use crate::tui::screen::ScreenId;
+use crate::tui::widgets::click::Click;
 
 impl App {
     /// Map a key event to an action. Global keys are handled here;
@@ -59,8 +60,16 @@ impl App {
             return Ok(Some(Action::RetryConnect));
         }
 
+        // Read before forwarding: a key that closes the form (Esc) must not
+        // go on to a global shortcut either.
+        let typing = self.active_screen_captures_input();
         if let Ok(Some(action)) = self.forward_key_to_active_screen(key) {
             return Ok(Some(action));
+        }
+
+        let quit = key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c');
+        if typing && !quit {
+            return Ok(None);
         }
 
         if let Some(action) = self.handle_global_key_event(key) {
@@ -70,12 +79,32 @@ impl App {
         Ok(None)
     }
 
-    /// Handle mouse events — check donate button first, then delegate to active screen.
+    /// Handle mouse events: the App's own targets first, then the active
+    /// screen.
     pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
-        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some(action) = self.check_donate_click(mouse.column, mouse.row)
+        // Presses, drags, and wheel turns can change screen state without
+        // dispatching an invalidating action (a selection, a settings
+        // toggle). Bare pointer motion changes nothing and stays out.
+        if !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Up(_)) {
+            self.needs_redraw = true;
+        }
+        // App chrome sits on top: the tab and status bars, and any overlay,
+        // whose backdrop covers the screen beneath it.
+        if let Some(target) = self.hits.clicked(mouse) {
+            return match target {
+                Click::Key(key) => self.handle_key_event(key),
+                Click::Action(action) => Ok(Some(action)),
+                Click::Tab(_) | Click::Row(_) | Click::Absorb => Ok(None),
+            };
+        }
+
+        // Overlays hold wheel turns and drags too, as they do for keys.
+        if self.pending_confirm.is_some()
+            || self.search_active
+            || self.help_visible
+            || self.about_visible
         {
-            return Ok(Some(action));
+            return Ok(None);
         }
 
         if let Some(screen) = self.screens.get_mut(&self.active_screen) {
@@ -84,29 +113,11 @@ impl App {
         Ok(None)
     }
 
-    /// Check if a click landed on the sponsor button in the status bar.
-    fn check_donate_click(&self, col: u16, row: u16) -> Option<Action> {
-        if !self.show_donate || self.search_active {
-            return None;
-        }
-        if matches!(self.active_screen, ScreenId::Setup | ScreenId::Settings) {
-            return None;
-        }
-
-        let (w, h) = self.terminal_size;
-        if h == 0 || w == 0 {
-            return None;
-        }
-
-        let button_width = 12u16;
-        let donate_x = w.saturating_sub(button_width);
-        let status_y = h.saturating_sub(1);
-
-        if row == status_y && col >= donate_x {
-            Some(Action::OpenDonate)
-        } else {
-            None
-        }
+    /// Whether the active screen is taking typed input, such as a form.
+    pub(super) fn active_screen_captures_input(&self) -> bool {
+        self.screens
+            .get(&self.active_screen)
+            .is_some_and(|screen| screen.captures_input())
     }
 
     fn handle_special_screen_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
@@ -180,6 +191,124 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
+    use crate::tui::table::render_lines;
+    use crate::tui::widgets::click::{click_label, left_click};
+
+    fn dashboard_app() -> App {
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        app
+    }
+
+    fn render(app: &mut App, width: u16) -> Vec<String> {
+        render_lines(width, 24, |frame, _| app.render(frame))
+    }
+
+    /// The tab bar row of a rendered frame.
+    fn tab_row(rows: &[String]) -> &str {
+        rows.iter()
+            .find(|row| row.contains("6 Topo"))
+            .expect("tab bar row")
+    }
+
+    /// The label a tab bar row shows for `id`, full or short.
+    fn shown_label(row: &str, id: ScreenId) -> String {
+        [id.label(), id.label_short()]
+            .into_iter()
+            .map(|label| format!("{} {label}", id.number()))
+            .find(|label| row.contains(label.as_str()))
+            .unwrap_or_else(|| panic!("{id} tab not drawn in {row:?}"))
+    }
+
+    #[test]
+    fn clicking_a_tab_switches_to_its_screen() {
+        for width in [130, 110, 95, 80] {
+            let mut app = dashboard_app();
+            let rows = render(&mut app, width);
+
+            for id in ScreenId::ALL {
+                let label = shown_label(tab_row(&rows), id);
+                let click = click_label(&rows, "6 Topo", &label);
+                let action = app.handle_mouse_event(click).expect("click handling");
+                assert!(
+                    matches!(action, Some(Action::SwitchScreen(target)) if target == id),
+                    "{width} cols, {label}: {action:?}"
+                );
+
+                // The space before the number belongs to the tab as well.
+                let action = app
+                    .handle_mouse_event(left_click(click.column - 1, click.row))
+                    .expect("click handling");
+                assert!(
+                    matches!(action, Some(Action::SwitchScreen(target)) if target == id),
+                    "{width} cols, left edge of {label}: {action:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_tab_is_drawn_from_74_columns_up() {
+        for width in 74..=130 {
+            let mut app = dashboard_app();
+            let rows = render(&mut app, width);
+            let row = tab_row(&rows);
+            for id in ScreenId::ALL {
+                shown_label(row, id);
+            }
+            let full = row.contains("1 Dashboard");
+            assert_eq!(full, width >= 102, "{width} cols: {row:?}");
+        }
+    }
+
+    #[test]
+    fn overlays_and_full_screen_views_swallow_tab_clicks() {
+        let mut app = dashboard_app();
+        let rows = render(&mut app, 120);
+        let devices = click_label(&rows, "6 Topo", "2 Devices");
+
+        // A tap outside the help overlay closes it rather than switching.
+        app.help_visible = true;
+        render(&mut app, 120);
+        let action = app.handle_mouse_event(devices).expect("click");
+        assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
+        app.help_visible = false;
+
+        app.search_active = true;
+        render(&mut app, 120);
+        assert!(app.handle_mouse_event(devices).expect("click").is_none());
+        app.search_active = false;
+
+        // Settings draws over the tab bar, so it leaves no tabs to click.
+        app.active_screen = ScreenId::Settings;
+        render(&mut app, 120);
+        assert!(app.handle_mouse_event(devices).expect("click").is_none());
+    }
+
+    #[test]
+    fn clicks_drags_and_wheel_turns_reopen_the_render_gate() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        use crate::tui::widgets::click::mouse;
+
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::ScrollDown,
+        ] {
+            let mut app = dashboard_app();
+            app.needs_redraw = false;
+            app.handle_mouse_event(mouse(kind, 0, 0))
+                .expect("mouse handling");
+            assert!(app.should_draw(), "{kind:?}");
+        }
+
+        let mut app = dashboard_app();
+        app.needs_redraw = false;
+        app.handle_mouse_event(mouse(MouseEventKind::Moved, 0, 0))
+            .expect("mouse handling");
+        assert!(!app.should_draw(), "pointer motion");
+    }
 
     #[test]
     fn tab_navigation_cycles_between_primary_screens() {
@@ -198,6 +327,227 @@ mod tests {
             .handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
             .expect("key handling should succeed");
         assert!(matches!(action, Some(Action::SwitchScreen(ScreenId::Wifi))));
+    }
+
+    #[test]
+    fn a_screen_taking_typed_input_keeps_keys_from_global_shortcuts() {
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Networks;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        app.process_action(&Action::NetworksUpdated(std::sync::Arc::new(vec![
+            std::sync::Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": "11111111-1111-1111-1111-111111111111", "name": "Studio",
+                    "vlan_id": 10, "enabled": true, "management": "Gateway",
+                    "purpose": "Corporate", "is_default": false, "subnet": null,
+                    "gateway_ip": null, "isolation_enabled": false,
+                    "internet_access_enabled": true, "mdns_forwarding_enabled": false,
+                    "ipv6_enabled": false, "ipv6_mode": null, "ipv6_prefix": null,
+                    "dhcpv6_enabled": false, "slaac_enabled": false, "ntp_server": null,
+                    "pxe_enabled": false, "tftp_server": null, "firewall_zone_id": null,
+                    "cellular_backup_enabled": false, "origin": null, "dhcp": null
+                }))
+                .expect("network fixture"),
+            ),
+        ])))
+        .expect("networks update");
+        app.handle_key_event(press(KeyCode::Char('e')))
+            .expect("open the edit form");
+
+        for code in [KeyCode::Tab, KeyCode::Char('1'), KeyCode::Char('q')] {
+            let action = app.handle_key_event(press(code)).expect("typed key");
+            assert!(
+                action.is_none(),
+                "{code:?} leaked to a global shortcut: {action:?}"
+            );
+        }
+        assert!(app.running);
+
+        let quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .expect("ctrl+c");
+        assert!(matches!(quit, Some(Action::Quit)));
+    }
+
+    #[test]
+    fn a_tapped_key_hint_presses_its_key_through_the_key_path() {
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Events;
+        let rows = render(&mut app, 120);
+
+        let action = app
+            .handle_mouse_event(click_label(&rows, "pause/resume", "pause/resume"))
+            .expect("click handling");
+        let Some(Action::PressKey(key)) = action else {
+            panic!("expected a key press, got {action:?}");
+        };
+        assert_eq!(key, crate::tui::widgets::click::char_key(' '));
+
+        app.process_action(&Action::PressKey(key))
+            .expect("key press handling");
+        let queued = app.action_rx.try_recv().expect("the press dispatches");
+        assert!(matches!(queued, Action::ToggleEventPause), "{queued:?}");
+
+        // Global keys work from a screen's hints too: Events leaves `/` to
+        // the App, which opens search.
+        let rows = render(&mut app, 120);
+        let Some(Action::PressKey(slash)) = app
+            .handle_mouse_event(click_label(&rows, "pause/resume", "search"))
+            .expect("click handling")
+        else {
+            panic!("expected a key press");
+        };
+        app.process_action(&Action::PressKey(slash))
+            .expect("key press handling");
+        let queued = app.action_rx.try_recv().expect("the press dispatches");
+        assert!(matches!(queued, Action::OpenSearch), "{queued:?}");
+    }
+
+    #[test]
+    fn overlays_close_on_an_outside_tap_and_take_taps_on_their_buttons() {
+        // Tall enough for the whole help overlay, close hint included.
+        let draw = |app: &mut App| render_lines(120, 34, |frame, _| app.render(frame));
+        let mut app = dashboard_app();
+        let tap = |app: &mut App, marker: &str, label: &str| {
+            let rows = draw(app);
+            app.handle_mouse_event(click_label(&rows, marker, label))
+                .expect("click handling")
+        };
+
+        app.help_visible = true;
+        let rows = draw(&mut app);
+        assert!(
+            app.handle_mouse_event(click_label(&rows, "Navigation", "Navigation"))
+                .expect("click")
+                .is_none(),
+            "a tap inside the overlay does nothing"
+        );
+        let action = tap(&mut app, "to close", "Esc or ? to close");
+        assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
+        app.help_visible = false;
+
+        app.about_visible = true;
+        let action = tap(&mut app, "onate", "onate");
+        assert!(matches!(action, Some(Action::OpenDonate)), "{action:?}");
+        let action = tap(&mut app, "to close", "Esc or a to close");
+        assert!(matches!(action, Some(Action::ToggleAbout)), "{action:?}");
+        app.about_visible = false;
+
+        app.pending_confirm = Some(crate::tui::action::ConfirmAction::RestartDevice {
+            id: unifly_api::EntityId::Legacy("device-1".into()),
+            name: "sw-core".into(),
+        });
+        let action = tap(&mut app, "confirm", "confirm");
+        assert!(matches!(action, Some(Action::ConfirmYes)), "{action:?}");
+        let action = tap(&mut app, "6 Topo", "2 Devices");
+        assert!(
+            matches!(action, Some(Action::ConfirmNo)),
+            "a tap outside answers no: {action:?}"
+        );
+    }
+
+    #[test]
+    fn the_status_bar_and_toasts_take_taps() {
+        let mut app = dashboard_app();
+        let rows = render(&mut app, 120);
+        let action = app
+            .handle_mouse_event(click_label(&rows, "settings", "help"))
+            .expect("click");
+        assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
+        let action = app
+            .handle_mouse_event(click_label(&rows, "settings", "Sponsor"))
+            .expect("click");
+        assert!(matches!(action, Some(Action::OpenDonate)), "{action:?}");
+
+        app.show_notification(crate::tui::action::Notification::info(
+            "restart requested for sw-core",
+        ));
+        let rows = render(&mut app, 120);
+        let action = app
+            .handle_mouse_event(click_label(&rows, "restart requested", "restart"))
+            .expect("click");
+        assert!(
+            matches!(action, Some(Action::DismissNotification)),
+            "{action:?}"
+        );
+
+        app.notification = None;
+        app.search_active = true;
+        app.search_query = "ap".into();
+        let rows = render(&mut app, 120);
+        let action = app
+            .handle_mouse_event(click_label(&rows, "submit", "cancel"))
+            .expect("click");
+        assert!(matches!(action, Some(Action::CloseSearch)), "{action:?}");
+    }
+
+    fn networks_app() -> App {
+        let mut app = dashboard_app();
+        app.process_action(&Action::NetworksUpdated(std::sync::Arc::new(vec![
+            std::sync::Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": "11111111-1111-1111-1111-111111111111", "name": "Studio",
+                    "vlan_id": 10, "enabled": true, "management": "Gateway",
+                    "purpose": "Corporate", "is_default": false, "subnet": null,
+                    "gateway_ip": null, "isolation_enabled": false,
+                    "internet_access_enabled": true, "mdns_forwarding_enabled": false,
+                    "ipv6_enabled": false, "ipv6_mode": null, "ipv6_prefix": null,
+                    "dhcpv6_enabled": false, "slaac_enabled": false, "ntp_server": null,
+                    "pxe_enabled": false, "tftp_server": null, "firewall_zone_id": null,
+                    "cellular_backup_enabled": false, "origin": null, "dhcp": null
+                }))
+                .expect("network fixture"),
+            ),
+        ])))
+        .expect("networks update");
+        app.switch_screen(ScreenId::Networks).expect("switch");
+        app
+    }
+
+    #[test]
+    fn an_esc_a_screen_uses_does_not_also_go_back() {
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // Collapsing a network detail.
+        let mut app = networks_app();
+        app.handle_key_event(press(KeyCode::Enter)).expect("expand");
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("collapse");
+        assert!(!matches!(action, Some(Action::GoBack)), "{action:?}");
+
+        // Cancelling the edit form.
+        let mut app = networks_app();
+        app.handle_key_event(press(KeyCode::Char('e')))
+            .expect("edit");
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("cancel");
+        assert!(action.is_none(), "{action:?}");
+
+        // Editing opened the detail too; the next Esc collapses it, and with
+        // nothing left to close, Esc goes back as before.
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("collapse");
+        assert!(matches!(action, Some(Action::Invalidate)), "{action:?}");
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("back");
+        assert!(matches!(action, Some(Action::GoBack)), "{action:?}");
+    }
+
+    #[test]
+    fn the_chrome_holds_still_while_a_form_takes_typed_input() {
+        let mut app = networks_app();
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+            .expect("edit");
+        let rows = render(&mut app, 120);
+
+        for (marker, label) in [
+            ("settings", "quit"),
+            ("settings", "help"),
+            ("6 Topo", "2 Devices"),
+        ] {
+            let action = app
+                .handle_mouse_event(click_label(&rows, marker, label))
+                .expect("click");
+            assert!(action.is_none(), "{label}: {action:?}");
+        }
+        assert!(app.running);
     }
 
     #[test]

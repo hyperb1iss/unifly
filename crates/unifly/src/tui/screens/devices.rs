@@ -4,10 +4,11 @@ mod input;
 mod render;
 mod state;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
@@ -17,6 +18,7 @@ use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Action, DeviceDetailTab};
 use crate::tui::component::Component;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct DevicesScreen {
     focused: bool,
@@ -28,6 +30,8 @@ pub struct DevicesScreen {
     detail_open: bool,
     detail_device_id: Option<EntityId>,
     detail_tab: DeviceDetailTab,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
     search_query: String,
 }
 
@@ -45,6 +49,10 @@ impl Component for DevicesScreen {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         Ok(self.handle_key_input(key))
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(self.handle_mouse_input(mouse))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

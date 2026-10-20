@@ -155,6 +155,7 @@ impl NetworksScreen {
             table_state: TableState::default(),
             detail_open: false,
             edit_state: None,
+            hits: std::cell::RefCell::default(),
             action_tx: None,
         }
     }
@@ -257,6 +258,50 @@ mod tests {
             }
         }))
         .expect("network fixture should deserialize")
+    }
+
+    #[test]
+    fn tapping_a_row_selects_it_and_a_second_tap_toggles_its_detail() {
+        use crate::tui::component::Component;
+        use crate::tui::table::render_lines;
+        use crate::tui::widgets::click::click_label;
+
+        let mut studio = test_network();
+        studio.id = EntityId::Uuid(Uuid::from_u128(2));
+        studio.name = "Studio".into();
+        let mut screen = NetworksScreen::new();
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
+            Arc::new(test_network()),
+            Arc::new(studio),
+        ])));
+        let draw = |screen: &NetworksScreen| {
+            render_lines(120, 20, |frame, area| screen.render(frame, area))
+        };
+
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "Studio", "Studio"));
+        assert_eq!(screen.selected_index(), 1);
+        assert!(!screen.detail_open);
+
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "Studio", "Studio"));
+        assert!(screen.detail_open);
+
+        screen.edit_state = Some(NetworkEditState::from_network(&test_network()));
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "Primary LAN", "Primary LAN"));
+        assert_eq!(screen.selected_index(), 1, "the edit form holds the input");
+
+        assert!(
+            !rows.iter().any(|row| row.contains("toggle")),
+            "Space would type into the Name field, so no toggle button"
+        );
+
+        let save = screen.handle_mouse_input(click_label(&rows, "save", "save"));
+        assert!(
+            matches!(save, Some(Action::PressKey(key)) if key.code == crossterm::event::KeyCode::Enter),
+            "{save:?}"
+        );
     }
 
     #[test]

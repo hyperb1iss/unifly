@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine, Rectangle};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
@@ -12,6 +12,7 @@ use unifly_api::DeviceType;
 use super::TopologyScreen;
 use super::layout::{LinkKind, MARGIN, TopoEdge, TopoNode, fit_cells, layout};
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Hint};
 
 impl TopologyScreen {
     #[allow(
@@ -20,6 +21,7 @@ impl TopologyScreen {
         clippy::as_conversions
     )]
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let zoom_pct = (self.zoom * 100.0) as u32;
         let title = format!(
             " Topology  ·  Zoom: {zoom_pct}%  Pan: {:.0},{:.0} ",
@@ -92,23 +94,24 @@ impl TopologyScreen {
 
         frame.render_widget(canvas, content_area);
 
-        let hints = Line::from(vec![
-            Span::styled("  ←→↑↓ ", theme::key_hint_key()),
-            Span::styled("pan  ", theme::key_hint()),
-            Span::styled("+/- ", theme::key_hint_key()),
-            Span::styled("zoom  ", theme::key_hint()),
-            Span::styled("f ", theme::key_hint_key()),
-            Span::styled("fit  ", theme::key_hint()),
-            Span::styled("r ", theme::key_hint_key()),
-            Span::styled("reset  ", theme::key_hint()),
-            Span::styled("─ ", Style::default().fg(theme::accent_secondary())),
-            Span::styled("wired  ", theme::key_hint()),
-            Span::styled("╌ ", Style::default().fg(theme::info())),
-            Span::styled("mesh  ", theme::key_hint()),
-            Span::styled("┄ ", Style::default().fg(theme::border_unfocused())),
-            Span::styled("uplink unknown", theme::key_hint()),
+        let mut bar = click::key_hints(&[
+            Hint::info("←→↑↓", "pan"),
+            Hint::button("+", "zoom in", click::char_key('+')),
+            Hint::button("-", "zoom out", click::char_key('-')),
+            Hint::button("f", "fit", click::char_key('f')),
+            Hint::button("r", "reset", click::char_key('r')),
         ]);
-        frame.render_widget(Paragraph::new(hints), hints_area);
+        for (symbol, color, label) in [
+            ("─ ", theme::accent_secondary(), "wired"),
+            ("╌ ", theme::info(), "mesh"),
+            ("┄ ", theme::border_unfocused(), "uplink unknown"),
+        ] {
+            bar.push_gap(Span::raw("  "));
+            bar.push_gap(Span::styled(symbol, Style::default().fg(color)));
+            bar.push_gap(Span::styled(label, theme::key_hint()));
+        }
+        let line = bar.draw(hints_area, &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), hints_area);
     }
 }
 

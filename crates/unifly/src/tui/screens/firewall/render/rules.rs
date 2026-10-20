@@ -69,12 +69,14 @@ impl FirewallScreen {
             )
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, area.width))
             .header(header)
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.acl_table;
         frame.render_stateful_widget(table, area, &mut state);
+        self.hits.borrow_mut().push_table_rows(area, &state, len);
     }
 
     pub(super) fn render_nat_policies(&self, frame: &mut Frame, area: Rect) {
@@ -128,12 +130,14 @@ impl FirewallScreen {
             .map(|(index, (policy, cells))| nat_row(index == selected_idx, policy, cells))
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, area.width))
             .header(header)
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.nat_table;
         frame.render_stateful_widget(table, area, &mut state);
+        self.hits.borrow_mut().push_table_rows(area, &state, len);
     }
 }
 

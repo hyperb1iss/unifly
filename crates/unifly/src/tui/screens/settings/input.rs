@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use opaline::ThemeSelectorAction;
 
 use crate::tui::action::Action;
+use crate::tui::widgets::click::{self, Click};
 
 // ── Keyboard input ──────────────────────────────────────────────────
 
@@ -198,6 +199,26 @@ impl SettingsScreen {
 
 impl SettingsScreen {
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // The wheel walks the theme picker, previewing each theme.
+        if let Some(delta) = click::wheel_delta(mouse)
+            && self.theme_selector.borrow().is_some()
+        {
+            let key = if delta < 0 {
+                KeyCode::Up
+            } else {
+                KeyCode::Down
+            };
+            self.handle_theme_selector_key(key.into());
+            return None;
+        }
+
+        let target = self.hits.borrow().clicked(mouse);
+        match target {
+            Some(Click::Key(key)) => return Some(Action::PressKey(key)),
+            Some(Click::Absorb) => return None,
+            _ => {}
+        }
+
         if self.state != SettingsState::Editing || self.theme_selector.borrow().is_some() {
             return None;
         }

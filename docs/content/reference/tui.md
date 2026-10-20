@@ -18,7 +18,7 @@ unifly tui --demo-fleet      # Synthetic offline fleet, no controller needed
 
 ## Screens
 
-Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, or `,` for Settings:
+Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, a click or tap on the tab bar, or `,` for Settings:
 
 | Key | Screen         | When to Use                                                    |
 | --- | -------------- | -------------------------------------------------------------- |
@@ -66,6 +66,24 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 | `?`                       | Help overlay                        |
 | `Ctrl+r`                  | Force reconnect (when disconnected) |
 | `q`                       | Quit                                |
+
+### Mouse and Touch
+
+Tabs, list rows, key hints, dialogs, and dashboard panels take a click, so the TUI runs on a touchscreen kiosk without a keyboard. On a touchscreen, taps work wherever the terminal reports them as mouse clicks.
+
+| Target               | Click or tap                                                                                                                                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tabs**             | Switches to the tab: the screen tabs along the bottom, and the sub-tabs inside the Devices detail, Clients, Firewall, Stats, and WiFi                                                                       |
+| **Table rows**       | The first tap selects a row, and a second tap does what `Enter` does there: opens a device or client, or toggles a network or WiFi detail                                                                   |
+| **Open details**     | A tap on another row moves an open device or client detail to it. The device detail keeps its tab, so stepping from switch to switch stays on their ports                                                   |
+| **Key hints**        | Every hint with a key is a button that presses it: `R restart`, `Esc back`, `Space pause/resume`, and the status bar's help, about, search, settings, and quit. Hints such as `j/k navigate` are plain text |
+| **Dialogs**          | A confirmation takes `y` and `n` taps, and a tap outside it answers no. Help and About close on a tap outside them                                                                                          |
+| **Notifications**    | A tap dismisses the toast                                                                                                                                                                                   |
+| **Dashboard panels** | Opens the screen behind the panel: WAN Traffic opens Stats, Gateway and Capacity open Devices, and Networks, WiFi, Top Clients, and Recent Events open their screens                                        |
+
+The wheel moves the selection in lists, and an open device or client detail follows it. On Events it scrolls the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms and a drag pans the map. In Settings it walks the theme picker, previewing each theme; a tap outside the picker cancels it.
+
+Typing still needs a keyboard: search, the Networks edit form, the Settings fields, and the onboarding wizard.
 
 ### Screen-Specific
 

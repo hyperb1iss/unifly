@@ -5,10 +5,11 @@ mod layout;
 mod render;
 mod state;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
@@ -17,6 +18,7 @@ use unifly_api::Device;
 
 use crate::tui::action::Action;
 use crate::tui::component::Component;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct TopologyScreen {
     focused: bool,
@@ -24,6 +26,10 @@ pub struct TopologyScreen {
     pan_x: f64,
     pan_y: f64,
     zoom: f64,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
+    /// The cell a left-button drag last reached, while one is under way.
+    drag_from: Option<(u16, u16)>,
 }
 
 impl Default for TopologyScreen {
@@ -39,6 +45,10 @@ impl Component for TopologyScreen {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         Ok(self.handle_key_input(key))
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(self.handle_mouse_input(mouse))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

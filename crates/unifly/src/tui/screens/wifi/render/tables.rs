@@ -102,12 +102,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.ap_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
     pub(super) fn render_client_table(&self, frame: &mut Frame, area: Rect) {
@@ -202,12 +204,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.client_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
     pub(super) fn render_neighbors(&self, frame: &mut Frame, area: Rect) {
@@ -260,12 +264,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = rows.len();
         let table = Table::new(rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.neighbor_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
     pub(super) fn render_roaming(&self, frame: &mut Frame, area: Rect) {
@@ -313,12 +319,14 @@ impl WifiScreen {
             })
             .collect();
 
+        let len = table_rows.len();
         let table = Table::new(table_rows, plan_columns(&columns, inner.width))
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
         let mut state = self.roam_table_state;
         frame.render_stateful_widget(table, inner, &mut state);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 }
 
@@ -431,6 +439,34 @@ mod tests {
         })
     }
 
+    #[test]
+    fn a_tap_inside_a_narrow_overlay_leaves_the_rows_beneath_alone() {
+        use crate::tui::component::Component;
+        use crate::tui::widgets::click::left_click;
+
+        let named = |id: &str, name: &str| {
+            let mut device = ap(&json!([radio(5.0, 36, 80)]));
+            device.id = unifly_api::EntityId::Legacy(id.into());
+            device.name = Some(name.into());
+            Arc::new(device)
+        };
+        let mut screen = WifiScreen::new();
+        screen.apply_action(&Action::DevicesUpdated(Arc::new(
+            (0..8)
+                .map(|index| named(&format!("ap-{index}"), &format!("ap-{index}")))
+                .collect(),
+        )));
+        screen.detail_open = true;
+        let selected = screen.ap_table_state.selected();
+
+        // Under 110 columns the AP detail draws as an overlay over the table.
+        render_lines(80, 22, |frame, area| screen.render(frame, area));
+        let action = screen.handle_mouse_input(left_click(40, 11));
+
+        assert!(action.is_none(), "{action:?}");
+        assert_eq!(screen.ap_table_state.selected(), selected);
+        assert!(screen.detail_open);
+    }
     #[test]
     fn every_radio_lands_in_its_band() {
         let tri_band = ap(&json!([

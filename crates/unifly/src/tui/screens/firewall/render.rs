@@ -4,17 +4,18 @@ mod rules;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph};
 
 use crate::tui::action::FirewallSubTab;
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Click, ClickLine, Hint};
 use crate::tui::widgets::sub_tabs;
 
 use super::FirewallScreen;
 
 impl FirewallScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let block = Block::default()
             .title(" Firewall ")
             .title_style(theme::title_style())
@@ -37,8 +38,9 @@ impl FirewallScreen {
         .split(inner);
 
         let tab_labels = &["Policies", "Zones", "ACL Rules", "NAT"];
-        let tab_line = sub_tabs::render_sub_tabs(tab_labels, self.sub_tab_index());
-        frame.render_widget(Paragraph::new(tab_line), layout[0]);
+        let strip = sub_tabs::sub_tab_strip(tab_labels, self.sub_tab_index());
+        let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[0]);
 
         match self.sub_tab {
             FirewallSubTab::Policies => self.render_policies(frame, layout[1]),
@@ -47,29 +49,21 @@ impl FirewallScreen {
             FirewallSubTab::NatPolicies => self.render_nat_policies(frame, layout[1]),
         }
 
-        frame.render_widget(Paragraph::new(self.hint_line()), layout[2]);
+        let line = self
+            .hint_line()
+            .draw(layout[2], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[2]);
     }
 
-    fn hint_line(&self) -> Line<'static> {
+    fn hint_line(&self) -> ClickLine<'static, Click> {
         match self.sub_tab {
-            FirewallSubTab::Policies => Line::from(vec![
-                Span::styled("  j/k ", theme::key_hint_key()),
-                Span::styled("navigate  ", theme::key_hint()),
-                Span::styled("K/J ", theme::key_hint_key()),
-                Span::styled("reorder  ", theme::key_hint()),
-                Span::styled("h/l ", theme::key_hint_key()),
-                Span::styled("sub-tab  ", theme::key_hint()),
-                Span::styled("Enter ", theme::key_hint_key()),
-                Span::styled("detail", theme::key_hint()),
+            FirewallSubTab::Policies => click::key_hints(&[
+                Hint::info("j/k", "navigate"),
+                Hint::button("K", "move up", click::char_key('K')),
+                Hint::button("J", "move down", click::char_key('J')),
+                Hint::info("h/l", "sub-tab"),
             ]),
-            _ => Line::from(vec![
-                Span::styled("  j/k ", theme::key_hint_key()),
-                Span::styled("navigate  ", theme::key_hint()),
-                Span::styled("h/l ", theme::key_hint_key()),
-                Span::styled("sub-tab  ", theme::key_hint()),
-                Span::styled("Enter ", theme::key_hint_key()),
-                Span::styled("detail", theme::key_hint()),
-            ]),
+            _ => click::key_hints(&[Hint::info("j/k", "navigate"), Hint::info("h/l", "sub-tab")]),
         }
     }
 }

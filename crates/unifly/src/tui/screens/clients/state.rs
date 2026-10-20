@@ -18,6 +18,7 @@ impl ClientsScreen {
             links: super::labels::LinkIndex::default(),
             table_state: TableState::default(),
             filter: ClientTypeFilter::All,
+            hits: std::cell::RefCell::default(),
             search_query: String::new(),
             detail_open: false,
             detail_client_id: None,
@@ -104,13 +105,17 @@ impl ClientsScreen {
     }
 
     pub(super) fn cycle_filter(&mut self) {
-        self.filter = match self.filter {
+        self.set_filter(match self.filter {
             ClientTypeFilter::All => ClientTypeFilter::Wireless,
             ClientTypeFilter::Wireless => ClientTypeFilter::Wired,
             ClientTypeFilter::Wired => ClientTypeFilter::Vpn,
             ClientTypeFilter::Vpn => ClientTypeFilter::Guest,
             ClientTypeFilter::Guest => ClientTypeFilter::All,
-        };
+        });
+    }
+
+    pub(super) fn set_filter(&mut self, filter: ClientTypeFilter) {
+        self.filter = filter;
         self.table_state.select(Some(0));
     }
 
@@ -160,13 +165,10 @@ impl ClientsScreen {
     }
 
     pub(super) fn filter_index(&self) -> usize {
-        match self.filter {
-            ClientTypeFilter::All => 0,
-            ClientTypeFilter::Wireless => 1,
-            ClientTypeFilter::Wired => 2,
-            ClientTypeFilter::Vpn => 3,
-            ClientTypeFilter::Guest => 4,
-        }
+        ClientTypeFilter::ALL
+            .iter()
+            .position(|filter| *filter == self.filter)
+            .unwrap_or_default()
     }
 
     pub(super) fn selected_client_id(&self) -> Option<EntityId> {

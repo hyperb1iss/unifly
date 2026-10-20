@@ -1,7 +1,7 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use unifly_api::Network;
@@ -9,11 +9,13 @@ use unifly_api::Network;
 use crate::tui::screens::networks::NetworksScreen;
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Hint};
 
 use super::detail::render_detail;
 use super::edit::render_edit_overlay;
 
 pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Rect) {
+    screen.hits.borrow_mut().clear();
     let count = screen.networks.len();
     let title = format!(" Networks ({count}) ");
     let block = Block::default()
@@ -68,24 +70,30 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         .map(|(index, cells)| render_table_row(index == selected_idx, cells))
         .collect();
 
+    let len = rows.len();
     let table = Table::new(rows, plan_columns(&columns, layout[0].width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
     let mut state = screen.table_state;
     frame.render_stateful_widget(table, layout[0], &mut state);
+    screen
+        .hits
+        .borrow_mut()
+        .push_table_rows(layout[0], &state, len);
 
-    let hints = Line::from(vec![
-        Span::styled("  j/k ", theme::key_hint_key()),
-        Span::styled("navigate  ", theme::key_hint()),
-        Span::styled("Enter ", theme::key_hint_key()),
-        Span::styled("expand  ", theme::key_hint()),
-        Span::styled("e ", theme::key_hint_key()),
-        Span::styled("edit  ", theme::key_hint()),
-        Span::styled("Esc ", theme::key_hint_key()),
-        Span::styled("collapse", theme::key_hint()),
+    let toggle = if screen.detail_open {
+        Hint::button("Esc", "collapse", KeyCode::Esc)
+    } else {
+        Hint::button("Enter", "expand", KeyCode::Enter)
+    };
+    let hints = click::key_hints(&[
+        Hint::info("j/k", "navigate"),
+        toggle,
+        Hint::button("e", "edit", click::char_key('e')),
     ]);
-    frame.render_widget(Paragraph::new(hints), layout[1]);
+    let line = hints.draw(layout[1], &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(line), layout[1]);
 
     if let Some(detail_area) = detail_area
         && let Some(network) = screen.networks.get(selected_idx)
@@ -94,7 +102,7 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
     }
 
     if let Some(edit) = screen.edit_state.as_ref() {
-        render_edit_overlay(frame, area, edit);
+        render_edit_overlay(frame, area, edit, &mut screen.hits.borrow_mut());
     }
 }
 

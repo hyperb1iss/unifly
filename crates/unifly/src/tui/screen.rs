@@ -96,7 +96,7 @@ impl ScreenId {
         }
     }
 
-    /// Compact label for narrow terminals (< 100 cols).
+    /// Compact label for a tab bar too narrow for the full labels.
     pub fn label_short(self) -> &'static str {
         match self {
             Self::Dashboard => "Dash",

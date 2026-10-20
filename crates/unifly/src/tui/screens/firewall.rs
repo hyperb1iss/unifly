@@ -4,10 +4,11 @@ mod input;
 mod render;
 mod state;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
@@ -18,6 +19,7 @@ use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
 use crate::tui::action::{Action, FirewallSubTab};
 use crate::tui::component::Component;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct FirewallScreen {
     focused: bool,
@@ -33,6 +35,8 @@ pub struct FirewallScreen {
     zone_table: TableState,
     acl_table: TableState,
     nat_table: TableState,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
 }
 
 impl Default for FirewallScreen {
@@ -49,6 +53,10 @@ impl Component for FirewallScreen {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         Ok(self.handle_key_input(key))
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(self.handle_mouse_input(mouse))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

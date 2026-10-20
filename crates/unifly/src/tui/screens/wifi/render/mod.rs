@@ -1,5 +1,6 @@
 mod tables;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -8,6 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use crate::tui::action::{WifiBand, WifiSubTab};
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Click, ClickLine, Hint};
 use crate::tui::widgets::hyperchart::{HeatmapCell, HyperHeatmap};
 use crate::tui::widgets::signal_bars;
 
@@ -16,6 +18,7 @@ use super::state::{display_client_name, display_device_name, json_i32, json_stri
 
 impl WifiScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let block = Block::default()
             .title(" WiFi ")
             .title_style(theme::title_style())
@@ -38,7 +41,10 @@ impl WifiScreen {
         ])
         .split(inner);
 
-        frame.render_widget(Paragraph::new(self.tab_line()), layout[0]);
+        let line = self
+            .tab_strip()
+            .draw(layout[0], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[0]);
         frame.render_widget(Paragraph::new(self.health_banner()), layout[1]);
 
         match self.sub_tab {
@@ -48,7 +54,10 @@ impl WifiScreen {
             WifiSubTab::Roaming => self.render_roaming(frame, layout[2]),
         }
 
-        frame.render_widget(Paragraph::new(self.hint_line()), layout[3]);
+        let line = self
+            .hint_line()
+            .draw(layout[3], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[3]);
     }
 
     fn render_overview(&self, frame: &mut Frame, area: Rect) {
@@ -69,6 +78,8 @@ impl WifiScreen {
             }
         } else if show_side_panel {
             let overlay = centered_rect(area, 82, 78);
+            // The overlay covers rows registered beneath it.
+            self.hits.borrow_mut().push(overlay, Click::Absorb);
             frame.render_widget(Clear, overlay);
             if self.detail_open {
                 self.render_ap_detail(frame, overlay);
@@ -91,6 +102,7 @@ impl WifiScreen {
             self.render_client_detail(frame, detail_area);
         } else if self.detail_open {
             let overlay = centered_rect(area, 86, 74);
+            self.hits.borrow_mut().push(overlay, Click::Absorb);
             frame.render_widget(Clear, overlay);
             self.render_client_detail(frame, overlay);
         }
@@ -357,11 +369,11 @@ impl WifiScreen {
         );
     }
 
-    fn tab_line(&self) -> Line<'static> {
-        let mut spans = Vec::new();
+    fn tab_strip(&self) -> ClickLine<'static, Click> {
+        let mut strip = ClickLine::default();
         for (index, tab) in WifiSubTab::ALL.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled("  ", Style::default().fg(theme::text_muted())));
+                strip.push_gap(Span::styled("  ", Style::default().fg(theme::text_muted())));
             }
             let label = tab.label();
             let style = if *tab == self.sub_tab {
@@ -371,21 +383,24 @@ impl WifiScreen {
             } else {
                 Style::default().fg(theme::text_secondary())
             };
-            spans.push(Span::styled(
-                if *tab == self.sub_tab {
-                    format!("[{label}]")
-                } else {
-                    label.to_string()
-                },
-                style,
-            ));
+            strip.push(
+                Click::Tab(index),
+                Span::styled(
+                    if *tab == self.sub_tab {
+                        format!("[{label}]")
+                    } else {
+                        label.to_string()
+                    },
+                    style,
+                ),
+            );
         }
         if let Some(ap) = self.focused_ap_label() {
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 "  Focused AP: ",
                 Style::default().fg(theme::text_muted()),
             ));
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 ap,
                 Style::default()
                     .fg(theme::accent_secondary())
@@ -393,18 +408,18 @@ impl WifiScreen {
             ));
         }
         if let Some(client) = self.focused_client_label() {
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 "  Client: ",
                 Style::default().fg(theme::text_muted()),
             ));
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 client,
                 Style::default()
                     .fg(theme::accent_secondary())
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        Line::from(spans)
+        strip
     }
 
     fn health_banner(&self) -> Line<'static> {
@@ -443,45 +458,40 @@ impl WifiScreen {
         ))
     }
 
-    fn hint_line(&self) -> Line<'static> {
-        match self.sub_tab {
-            WifiSubTab::Overview => Line::from(vec![
-                Span::styled("  j/k ", key_style()),
-                Span::styled("select  ", hint_style()),
-                Span::styled("Tab ", key_style()),
-                Span::styled("sub-tab  ", hint_style()),
-                Span::styled("Enter ", key_style()),
-                Span::styled("detail  ", hint_style()),
-                Span::styled("c ", key_style()),
-                Span::styled("channels  ", hint_style()),
-                Span::styled("R/L ", key_style()),
-                Span::styled("restart/locate", hint_style()),
-            ]),
-            WifiSubTab::Clients => Line::from(vec![
-                Span::styled("  j/k ", key_style()),
-                Span::styled("select  ", hint_style()),
-                Span::styled("Enter ", key_style()),
-                Span::styled("detail  ", hint_style()),
-                Span::styled("b/u/x ", key_style()),
-                Span::styled("block/unblock/kick", hint_style()),
-            ]),
-            WifiSubTab::Neighbors => Line::from(vec![
-                Span::styled("  j/k ", key_style()),
-                Span::styled("select  ", hint_style()),
-                Span::styled("s ", key_style()),
-                Span::styled("sort  ", hint_style()),
-                Span::styled("f ", key_style()),
-                Span::styled("filter band", hint_style()),
-            ]),
-            WifiSubTab::Roaming => Line::from(vec![
-                Span::styled("  j/k ", key_style()),
-                Span::styled("scroll  ", hint_style()),
-                Span::styled("r ", key_style()),
-                Span::styled("refresh  ", hint_style()),
-                Span::styled("Esc ", key_style()),
-                Span::styled("clear focus", hint_style()),
-            ]),
-        }
+    fn hint_line(&self) -> ClickLine<'static, Click> {
+        let hints = match self.sub_tab {
+            WifiSubTab::Overview => vec![
+                Hint::info("j/k", "select"),
+                Hint::button("Tab", "sub-tab", KeyCode::Tab),
+                Hint::button("Enter", "detail", KeyCode::Enter),
+                Hint::button("c", "channels", click::char_key('c')),
+                Hint::button("R", "restart", click::char_key('R')),
+                Hint::button("L", "locate", click::char_key('L')),
+            ],
+            WifiSubTab::Clients => vec![
+                Hint::info("j/k", "select"),
+                Hint::button("Enter", "detail", KeyCode::Enter),
+                Hint::button("b", "block", click::char_key('b')),
+                Hint::button("u", "unblock", click::char_key('u')),
+                Hint::button("x", "kick", click::char_key('x')),
+            ],
+            WifiSubTab::Neighbors => vec![
+                Hint::info("j/k", "select"),
+                Hint::button("s", "sort", click::char_key('s')),
+                Hint::button("f", "filter band", click::char_key('f')),
+            ],
+            WifiSubTab::Roaming => {
+                let mut hints = vec![
+                    Hint::info("j/k", "scroll"),
+                    Hint::button("r", "refresh", click::char_key('r')),
+                ];
+                if self.focused_client_id.is_some() {
+                    hints.push(Hint::button("Esc", "clear focus", KeyCode::Esc));
+                }
+                hints
+            }
+        };
+        click::key_hints_styled(&hints, key_style(), hint_style())
     }
 }
 

@@ -1,7 +1,8 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::WifiScreen;
 use crate::tui::action::{Action, WifiSortField, WifiSubTab};
+use crate::tui::widgets::click::{self, Click};
 
 impl WifiScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -87,6 +88,42 @@ impl WifiScreen {
         }
     }
 
+    /// Mouse and touch input: sub-tabs and rows by click, the list by wheel.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if let Some(delta) = click::wheel_delta(mouse) {
+            self.move_selection(delta);
+            return None;
+        }
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Tab(index) => self.click_sub_tab(index),
+            Click::Row(index) => self.click_row(index),
+            Click::Key(key) => Some(Action::PressKey(key)),
+            _ => None,
+        }
+    }
+
+    /// A sub-tab switches to it, like `Tab`.
+    fn click_sub_tab(&mut self, index: usize) -> Option<Action> {
+        let tab = *WifiSubTab::ALL.get(index)?;
+        if tab == self.sub_tab {
+            return None;
+        }
+        self.sub_tab = tab;
+        Some(Action::WifiSubTab(tab))
+    }
+
+    /// A row selects it, and a second tap acts like `Enter`. An open client
+    /// detail follows the selection on the next tick, as it does for keys.
+    fn click_row(&mut self, index: usize) -> Option<Action> {
+        if self.active_table_state().selected() == Some(index) {
+            return self.handle_enter();
+        }
+        self.active_table_state().select(Some(index));
+        self.update_focus_from_selection();
+        None
+    }
+
     pub(super) fn move_selection(&mut self, delta: isize) {
         let len = self.active_len();
         if len == 0 {
@@ -151,9 +188,11 @@ impl WifiScreen {
             return Some(Action::CloseDetail);
         }
 
+        // A consumed Esc still returns an action, or the App would go on to
+        // its global Esc and jump back to the previous screen.
         if self.channel_map_open {
             self.channel_map_open = false;
-            return None;
+            return Some(Action::Invalidate);
         }
 
         if self.focused_client_id.is_some() {
@@ -161,7 +200,7 @@ impl WifiScreen {
             self.roam_history = std::sync::Arc::new(Vec::new());
             self.roam_history_mac = None;
             self.roam_history_pending_mac = None;
-            return None;
+            return Some(Action::Invalidate);
         }
 
         if self.focused_ap_id.is_some() {
@@ -231,5 +270,33 @@ fn next_sort_field(
             _ => WifiSortField::Signal,
         },
         crate::tui::action::WifiSubTab::Roaming => WifiSortField::Time,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::action::{Action, WifiSubTab};
+    use crate::tui::component::Component;
+    use crate::tui::screens::wifi::WifiScreen;
+    use crate::tui::table::render_lines;
+    use crate::tui::widgets::click::click_label;
+
+    #[test]
+    fn clicking_a_sub_tab_switches_to_it() {
+        let mut screen = WifiScreen::new();
+        for tab in [
+            WifiSubTab::Clients,
+            WifiSubTab::Neighbors,
+            WifiSubTab::Roaming,
+            WifiSubTab::Overview,
+        ] {
+            let rows = render_lines(120, 30, |frame, area| screen.render(frame, area));
+            let action = screen.handle_mouse_input(click_label(&rows, "Roaming", tab.label()));
+            assert!(
+                matches!(action, Some(Action::WifiSubTab(clicked)) if clicked == tab),
+                "{tab:?}: {action:?}"
+            );
+            assert_eq!(screen.sub_tab, tab);
+        }
     }
 }

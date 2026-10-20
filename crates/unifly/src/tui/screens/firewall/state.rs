@@ -25,6 +25,7 @@ impl FirewallScreen {
             zone_table: TableState::default(),
             acl_table: TableState::default(),
             nat_table: TableState::default(),
+            hits: std::cell::RefCell::default(),
         }
     }
 
@@ -76,12 +77,10 @@ impl FirewallScreen {
     }
 
     pub(super) fn sub_tab_index(&self) -> usize {
-        match self.sub_tab {
-            FirewallSubTab::Policies => 0,
-            FirewallSubTab::Zones => 1,
-            FirewallSubTab::AclRules => 2,
-            FirewallSubTab::NatPolicies => 3,
-        }
+        FirewallSubTab::ALL
+            .iter()
+            .position(|tab| *tab == self.sub_tab)
+            .unwrap_or_default()
     }
 
     pub(super) fn apply_action(&mut self, action: &Action) {

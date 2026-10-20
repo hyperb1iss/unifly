@@ -1,9 +1,10 @@
 use super::NetworksScreen;
 use super::state::NetworkEditState;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::Action;
+use crate::tui::widgets::click::{self, Click};
 
 impl NetworksScreen {
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
@@ -43,9 +44,11 @@ impl NetworksScreen {
                 self.detail_open = !self.detail_open;
                 None
             }
+            // A consumed Esc still returns an action, or the App would go on
+            // to its global Esc and jump back to the previous screen.
             KeyCode::Esc if self.detail_open => {
                 self.detail_open = false;
-                None
+                Some(Action::Invalidate)
             }
             KeyCode::Char('e') => {
                 if let Some(network) = self.selected_network().cloned() {
@@ -54,6 +57,31 @@ impl NetworksScreen {
                 }
                 None
             }
+            _ => None,
+        }
+    }
+
+    /// Mouse and touch input: rows and key hints by click, the list by
+    /// wheel. The edit form holds the input while it is open.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if let Some(delta) = click::wheel_delta(mouse) {
+            if self.edit_state.is_none() {
+                self.move_selection(delta);
+            }
+            return None;
+        }
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Row(index) => {
+                // A second tap on the selected row toggles its detail, like `Enter`.
+                if self.selected_index() == index {
+                    self.detail_open = !self.detail_open;
+                } else {
+                    self.select(index);
+                }
+                None
+            }
+            Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
     }

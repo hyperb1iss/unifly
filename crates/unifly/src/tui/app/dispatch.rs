@@ -35,6 +35,11 @@ impl App {
                 self.terminal_size = (*w, *h);
             }
             Action::SwitchScreen(target) => self.switch_screen(*target)?,
+            Action::PressKey(key) => {
+                if let Some(next) = self.handle_key_event(*key)? {
+                    self.action_tx.send(next)?;
+                }
+            }
             Action::GoBack => {
                 if let Some(prev) = self.previous_screen.take() {
                     self.action_tx.send(Action::SwitchScreen(prev))?;

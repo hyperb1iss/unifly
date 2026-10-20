@@ -8,14 +8,18 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use unifly_api::{Device, DeviceState};
 
+use crossterm::event::KeyCode;
+
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::{bytes_fmt, status_indicator};
 
 use super::detail::render_detail;
 use crate::tui::screens::devices::DevicesScreen;
 
 pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
+    screen.hits.borrow_mut().clear();
     let filtered = screen.filtered_devices();
     let selected_index = screen.selected_row_index(&filtered);
     let total = screen.devices.len();
@@ -57,7 +61,7 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
 
     render_filter_bar(screen, frame, header_layout[0], shown);
     render_device_table(screen, frame, header_layout[1], &filtered, selected_index);
-    render_table_hints(frame, header_layout[2]);
+    render_table_hints(screen, frame, header_layout[2]);
 
     if let Some(detail_area) = detail_area
         && let Some(device) = screen.detail_device()
@@ -219,12 +223,14 @@ fn render_device_table(
         })
         .collect();
 
+    let len = rows.len();
     let table = Table::new(rows, plan_columns(&columns, area.width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
     let mut state = screen.table_state;
     frame.render_stateful_widget(table, area, &mut state);
+    screen.hits.borrow_mut().push_table_rows(area, &state, len);
 }
 
 fn render_table_row(
@@ -288,18 +294,15 @@ fn render_table_row(
     })
 }
 
-fn render_table_hints(frame: &mut Frame, area: Rect) {
-    let hints = Line::from(vec![
-        Span::styled("  j/k ", theme::key_hint_key()),
-        Span::styled("navigate  ", theme::key_hint()),
-        Span::styled("Enter ", theme::key_hint_key()),
-        Span::styled("detail  ", theme::key_hint()),
-        Span::styled("R ", theme::key_hint_key()),
-        Span::styled("restart  ", theme::key_hint()),
-        Span::styled("L ", theme::key_hint_key()),
-        Span::styled("locate", theme::key_hint()),
+fn render_table_hints(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
+    let hints = click::key_hints(&[
+        Hint::info("j/k", "navigate"),
+        Hint::button("Enter", "detail", KeyCode::Enter),
+        Hint::button("R", "restart", click::char_key('R')),
+        Hint::button("L", "locate", click::char_key('L')),
     ]);
-    frame.render_widget(Paragraph::new(hints), area);
+    let line = hints.draw(area, &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 #[cfg(test)]
@@ -353,6 +356,94 @@ mod tests {
             device(2, "sw-core", "USW Pro Max 24 PoE", "7.2.123", false),
         ])));
         screen
+    }
+
+    #[test]
+    fn clicking_a_detail_tab_switches_to_it_until_the_detail_closes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use crate::tui::action::DeviceDetailTab;
+        use crate::tui::widgets::click::click_label;
+
+        let mut screen = screen();
+        screen.handle_key_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(screen.detail_open);
+
+        for (label, tab) in [
+            ("Ports", DeviceDetailTab::Ports),
+            ("Radios", DeviceDetailTab::Radios),
+            ("Overview", DeviceDetailTab::Overview),
+        ] {
+            let rows = render_lines(120, 30, |frame, area| screen.render_screen(frame, area));
+            let action = screen.handle_mouse_input(click_label(&rows, "Performance", label));
+            assert!(
+                matches!(action, Some(Action::DeviceDetailTab(clicked)) if clicked == tab),
+                "{label}: {action:?}"
+            );
+            assert_eq!(screen.detail_tab, tab);
+        }
+
+        let rows = render_lines(120, 30, |frame, area| screen.render_screen(frame, area));
+        let ports = click_label(&rows, "Performance", "Ports");
+        screen.handle_key_input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        render_lines(120, 30, |frame, area| screen.render_screen(frame, area));
+
+        assert!(screen.handle_mouse_input(ports).is_none());
+        assert_eq!(screen.detail_tab, DeviceDetailTab::Overview);
+    }
+
+    #[test]
+    fn tapping_rows_selects_then_opens_and_the_detail_follows() {
+        use crossterm::event::MouseEventKind;
+
+        use crate::tui::action::DeviceDetailTab;
+        use crate::tui::widgets::click::{click_label, mouse};
+
+        let draw = |screen: &DevicesScreen| {
+            render_lines(120, 30, |frame, area| screen.render_screen(frame, area))
+        };
+        let selected = |screen: &DevicesScreen| {
+            screen
+                .selected_device()
+                .and_then(|device| device.name.clone())
+        };
+        let shown = |screen: &DevicesScreen| {
+            screen
+                .detail_device()
+                .and_then(|device| device.name.clone())
+        };
+        let mut screen = screen();
+
+        let rows = draw(&screen);
+        let action = screen.handle_mouse_input(click_label(&rows, "ap-roof", "ap-roof"));
+        assert!(action.is_none());
+        assert_eq!(selected(&screen).as_deref(), Some("ap-roof"));
+        assert!(!screen.detail_open);
+
+        let rows = draw(&screen);
+        let action = screen.handle_mouse_input(click_label(&rows, "ap-roof", "ap-roof"));
+        assert!(matches!(action, Some(Action::OpenDeviceDetail(_))));
+        assert_eq!(shown(&screen).as_deref(), Some("ap-roof"));
+
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "Performance", "Ports"));
+        let rows = draw(&screen);
+        screen.handle_mouse_input(click_label(&rows, "sw-core", "sw-core"));
+        assert_eq!(shown(&screen).as_deref(), Some("sw-core"));
+        assert_eq!(
+            screen.detail_tab,
+            DeviceDetailTab::Ports,
+            "the tab stays put"
+        );
+
+        draw(&screen);
+        screen.handle_mouse_input(mouse(MouseEventKind::ScrollUp, 10, 10));
+        assert_eq!(
+            shown(&screen).as_deref(),
+            Some("ap-roof"),
+            "the wheel moves it too"
+        );
+        assert_eq!(screen.detail_tab, DeviceDetailTab::Ports);
     }
 
     fn render(width: u16) -> String {
