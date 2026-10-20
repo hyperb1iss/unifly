@@ -2,7 +2,7 @@ use color_eyre::eyre::Result;
 use tracing::debug;
 
 use super::App;
-use crate::tui::action::{Action, StatsPeriod};
+use crate::tui::action::Action;
 use crate::tui::component::Component;
 use crate::tui::screen::ScreenId;
 
@@ -28,9 +28,11 @@ impl App {
             self.effects.start_screen_transition();
         }
 
+        // The Stats screen keeps showing the period last picked on it, so
+        // reload that one rather than the default.
         if target == ScreenId::Stats {
             self.action_tx
-                .send(Action::RequestStats(StatsPeriod::default()))?;
+                .send(Action::RequestStats(self.stats_period))?;
         }
         if target == ScreenId::Wifi {
             self.action_tx.send(Action::RequestWifiChannels)?;
@@ -80,6 +82,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::action::StatsPeriod;
 
     #[test]
     fn switching_to_stats_requests_default_period() {
@@ -97,6 +100,28 @@ mod tests {
             .try_recv()
             .expect("stats request should be queued");
         assert!(matches!(queued, Action::RequestStats(StatsPeriod::OneHour)));
+    }
+
+    #[test]
+    fn returning_to_stats_reloads_the_period_it_shows() {
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = ScreenId::Stats;
+        app.process_action(&Action::RequestStats(StatsPeriod::SevenDays))
+            .expect("stats request should be handled");
+
+        app.switch_screen(ScreenId::Dashboard)
+            .expect("screen switch should succeed");
+        app.switch_screen(ScreenId::Stats)
+            .expect("screen switch should succeed");
+
+        let queued = app
+            .action_rx
+            .try_recv()
+            .expect("stats request should be queued");
+        assert!(matches!(
+            queued,
+            Action::RequestStats(StatsPeriod::SevenDays)
+        ));
     }
 
     #[test]
