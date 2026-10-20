@@ -2322,3 +2322,68 @@ fn test_unsupported_controller_scheme_is_an_invalid_configuration() {
         .code(2)
         .stderr(predicate::str::contains("'gopher'"));
 }
+
+#[tokio::test]
+async fn test_vpn_lists_render_yaml_and_json_without_duplicate_keys() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    for (route, record) in [
+        (
+            "vpn/servers",
+            serde_json::json!({
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "Home WG",
+                "type": "WIREGUARD",
+                "enabled": true,
+                "port": 51820,
+                "mtu": 1420,
+            }),
+        ),
+        (
+            "vpn/site-to-site-tunnels",
+            serde_json::json!({
+                "id": "22222222-2222-2222-2222-222222222222",
+                "name": "Branch",
+                "type": "IPSEC",
+                "enabled": false,
+                "preSharedKey": "hunter2",
+                "lifetime": 3600,
+            }),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/{route}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 1, "totalCount": 1, "data": [record],
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+
+    for (command, unmapped) in [("servers", "mtu"), ("tunnels", "lifetime")] {
+        let yaml = mock_cmd(&server)
+            .args(["vpn", command, "-o", "yaml"])
+            .output()
+            .unwrap();
+        assert!(yaml.status.success(), "{}", combined_output(&yaml));
+        let parsed: serde_json::Value = serde_yaml_ng::from_slice(&yaml.stdout)
+            .unwrap_or_else(|err| panic!("invalid YAML ({err}): {}", combined_output(&yaml)));
+        assert!(parsed[0][unmapped].as_i64().is_some(), "{parsed}");
+
+        let json = mock_cmd(&server)
+            .args(["vpn", command, "-o", "json-compact"])
+            .output()
+            .unwrap();
+        assert!(json.status.success(), "{}", combined_output(&json));
+        let text = String::from_utf8_lossy(&json.stdout);
+        for key in ["\"id\":", "\"name\":", "\"enabled\":"] {
+            assert_eq!(text.matches(key).count(), 1, "{key} repeated in {text}");
+        }
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+}
