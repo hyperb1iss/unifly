@@ -1,8 +1,8 @@
 use super::ClientsScreen;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
-use crate::tui::action::Action;
+use crate::tui::action::{Action, ClientTypeFilter};
 
 impl ClientsScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -85,6 +85,21 @@ impl ClientsScreen {
         }
     }
 
+    /// A click on a type filter selects it, like `Tab`. The filters stay
+    /// put while a client's detail is open, as they do for keys.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if self.detail_open {
+            return None;
+        }
+        let index = self.filter_targets.borrow().clicked(mouse)?;
+        let filter = *ClientTypeFilter::ALL.get(index)?;
+        if filter == self.filter {
+            return None;
+        }
+        self.set_filter(filter);
+        Some(Action::FilterClientType(filter))
+    }
+
     fn handle_detail_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Esc => {
@@ -103,5 +118,50 @@ impl ClientsScreen {
                 .map(Action::RequestKickClient),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::action::{Action, ClientTypeFilter};
+    use crate::tui::component::Component;
+    use crate::tui::screens::clients::ClientsScreen;
+    use crate::tui::table::render_lines;
+    use crate::tui::widgets::tab_strip::click_label;
+
+    fn render(screen: &ClientsScreen) -> Vec<String> {
+        render_lines(100, 12, |frame, area| screen.render(frame, area))
+    }
+
+    #[test]
+    fn clicking_a_type_filter_selects_it() {
+        let mut screen = ClientsScreen::new();
+        for (label, filter) in [
+            ("Wireless", ClientTypeFilter::Wireless),
+            ("Wired", ClientTypeFilter::Wired),
+            ("VPN", ClientTypeFilter::Vpn),
+            ("Guest", ClientTypeFilter::Guest),
+            ("All", ClientTypeFilter::All),
+        ] {
+            let rows = render(&screen);
+            let action = screen.handle_mouse_input(click_label(&rows, "Wireless", label));
+            assert!(
+                matches!(action, Some(Action::FilterClientType(clicked)) if clicked == filter),
+                "{label}: {action:?}"
+            );
+            assert_eq!(screen.filter, filter);
+        }
+    }
+
+    #[test]
+    fn filters_ignore_clicks_while_a_detail_is_open() {
+        let mut screen = ClientsScreen::new();
+        let rows = render(&screen);
+        screen.detail_open = true;
+
+        let action = screen.handle_mouse_input(click_label(&rows, "Wireless", "Wired"));
+
+        assert!(action.is_none());
+        assert_eq!(screen.filter, ClientTypeFilter::All);
     }
 }

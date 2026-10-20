@@ -71,8 +71,18 @@ fn render_detail_tabs(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
         DeviceDetailTab::Clients => 3,
         DeviceDetailTab::Ports => 4,
     };
-    let tab_line = sub_tabs::render_sub_tabs(tab_labels, active_idx);
-    frame.render_widget(Paragraph::new(vec![Line::from(""), tab_line]), area);
+    let strip = sub_tabs::sub_tab_strip(tab_labels, active_idx);
+    // The tabs sit on the second row, under a spacer line.
+    let tab_row = Rect {
+        y: area.y.saturating_add(1),
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    *screen.detail_tab_targets.borrow_mut() = strip.targets(tab_row);
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(""), strip.into_line()]),
+        area,
+    );
 }
 
 fn render_detail_hints(frame: &mut Frame, area: Rect) {

@@ -2,10 +2,11 @@ mod input;
 mod render;
 mod state;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
@@ -17,6 +18,7 @@ use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Action, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::component::Component;
+use crate::tui::widgets::tab_strip::TabTargets;
 
 pub struct WifiScreen {
     focused: bool,
@@ -28,6 +30,8 @@ pub struct WifiScreen {
     neighbor_table_state: TableState,
     roam_table_state: TableState,
     sub_tab: WifiSubTab,
+    /// Where the sub-tabs were last drawn, for clicks.
+    tab_targets: RefCell<TabTargets>,
     sort_field: WifiSortField,
     selected_band: WifiBand,
     detail_open: bool,
@@ -61,6 +65,10 @@ impl Component for WifiScreen {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         Ok(self.handle_key_input(key))
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(self.handle_mouse_input(mouse))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

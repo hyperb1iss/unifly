@@ -10,6 +10,7 @@ use unifly_api::{Device, DeviceState};
 
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::tab_strip::TabTargets;
 use crate::tui::widgets::{bytes_fmt, status_indicator};
 
 use super::detail::render_detail;
@@ -59,6 +60,8 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
     render_device_table(screen, frame, header_layout[1], &filtered, selected_index);
     render_table_hints(frame, header_layout[2]);
 
+    // A closed detail leaves no tabs to click.
+    *screen.detail_tab_targets.borrow_mut() = TabTargets::default();
     if let Some(detail_area) = detail_area
         && let Some(device) = screen.detail_device()
     {
@@ -353,6 +356,40 @@ mod tests {
             device(2, "sw-core", "USW Pro Max 24 PoE", "7.2.123", false),
         ])));
         screen
+    }
+
+    #[test]
+    fn clicking_a_detail_tab_switches_to_it_until_the_detail_closes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use crate::tui::action::DeviceDetailTab;
+        use crate::tui::widgets::tab_strip::click_label;
+
+        let mut screen = screen();
+        screen.handle_key_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(screen.detail_open);
+
+        for (label, tab) in [
+            ("Ports", DeviceDetailTab::Ports),
+            ("Radios", DeviceDetailTab::Radios),
+            ("Overview", DeviceDetailTab::Overview),
+        ] {
+            let rows = render_lines(120, 30, |frame, area| screen.render_screen(frame, area));
+            let action = screen.handle_mouse_input(click_label(&rows, "Performance", label));
+            assert!(
+                matches!(action, Some(Action::DeviceDetailTab(clicked)) if clicked == tab),
+                "{label}: {action:?}"
+            );
+            assert_eq!(screen.detail_tab, tab);
+        }
+
+        let rows = render_lines(120, 30, |frame, area| screen.render_screen(frame, area));
+        let ports = click_label(&rows, "Performance", "Ports");
+        screen.handle_key_input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        render_lines(120, 30, |frame, area| screen.render_screen(frame, area));
+
+        assert!(screen.handle_mouse_input(ports).is_none());
+        assert_eq!(screen.detail_tab, DeviceDetailTab::Overview);
     }
 
     fn render(width: u16) -> String {

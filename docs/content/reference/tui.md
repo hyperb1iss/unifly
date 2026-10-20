@@ -18,7 +18,7 @@ unifly tui --demo-fleet      # Synthetic offline fleet, no controller needed
 
 ## Screens
 
-Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, or `,` for Settings:
+Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, a click or tap on the tab bar, or `,` for Settings:
 
 | Key | Screen         | When to Use                                                    |
 | --- | -------------- | -------------------------------------------------------------- |
@@ -66,6 +66,10 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 | `?`                       | Help overlay                        |
 | `Ctrl+r`                  | Force reconnect (when disconnected) |
 | `q`                       | Quit                                |
+
+### Mouse and Touch
+
+A click or tap on any tab switches to it. That covers the screen tabs along the bottom and the sub-tabs inside the Devices detail view, Clients, Firewall, Stats, and WiFi, so a touchscreen kiosk can move between screens without a keyboard. Table rows and actions still use the keys.
 
 ### Screen-Specific
 

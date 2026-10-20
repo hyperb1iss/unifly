@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, Direction, FirewallSubTab};
 
@@ -60,5 +60,48 @@ impl FirewallScreen {
                 .map(|id| Action::ReorderPolicy(id, Direction::Down)),
             _ => None,
         }
+    }
+
+    /// A click on a sub-tab switches to it, like `h`/`l`.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        let index = self.tab_targets.borrow().clicked(mouse)?;
+        let tab = *FirewallSubTab::ALL.get(index)?;
+        if tab == self.sub_tab {
+            return None;
+        }
+        self.sub_tab = tab;
+        Some(Action::FirewallSubTab(tab))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::action::{Action, FirewallSubTab};
+    use crate::tui::component::Component;
+    use crate::tui::screens::firewall::FirewallScreen;
+    use crate::tui::table::render_lines;
+    use crate::tui::widgets::tab_strip::click_label;
+
+    #[test]
+    fn clicking_a_sub_tab_switches_to_it() {
+        let mut screen = FirewallScreen::new();
+        for (label, tab) in [
+            ("Zones", FirewallSubTab::Zones),
+            ("ACL Rules", FirewallSubTab::AclRules),
+            ("NAT", FirewallSubTab::NatPolicies),
+            ("Policies", FirewallSubTab::Policies),
+        ] {
+            let rows = render_lines(100, 12, |frame, area| screen.render(frame, area));
+            let action = screen.handle_mouse_input(click_label(&rows, "ACL Rules", label));
+            assert!(
+                matches!(action, Some(Action::FirewallSubTab(clicked)) if clicked == tab),
+                "{label}: {action:?}"
+            );
+            assert_eq!(screen.sub_tab, tab);
+        }
+
+        let rows = render_lines(100, 12, |frame, area| screen.render(frame, area));
+        let action = screen.handle_mouse_input(click_label(&rows, "ACL Rules", "Policies"));
+        assert!(action.is_none(), "the active tab is already showing");
     }
 }

@@ -5,13 +5,14 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Tabs},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
 use super::{App, ConnectionStatus};
 use crate::tui::action::{ConfirmAction, Notification, NotificationLevel};
 use crate::tui::screen::ScreenId;
 use crate::tui::theme;
+use crate::tui::widgets::tab_strip::TabStrip;
 
 impl App {
     /// Render the full application frame.
@@ -78,36 +79,40 @@ impl App {
         }
     }
 
-    /// Render the bottom tab bar showing all primary screens.
-    fn render_tab_bar(&self, frame: &mut Frame, area: Rect) {
-        let compact = area.width < 100;
-        let titles: Vec<Line> = ScreenId::ALL
-            .iter()
-            .map(|&id| {
-                let style = if id == self.active_screen {
-                    theme::tab_active()
-                } else {
-                    theme::tab_inactive()
-                };
-                let label = if compact {
-                    id.label_short()
-                } else {
-                    id.label()
-                };
-                Line::from(Span::styled(format!(" {} {} ", id.number(), label), style))
-            })
-            .collect();
+    /// Render the bottom tab bar showing all primary screens, and keep
+    /// where each tab landed so a click can switch to it.
+    fn render_tab_bar(&mut self, frame: &mut Frame, area: Rect) {
+        let strip = self.tab_strip(area.width < 100);
+        self.tab_targets = strip.targets(area);
+        frame.render_widget(Paragraph::new(strip.into_line()), area);
+    }
 
-        let tabs = Tabs::new(titles)
-            .divider(Span::styled(" ", theme::key_hint()))
-            .select(
-                ScreenId::ALL
-                    .iter()
-                    .position(|&screen| screen == self.active_screen)
-                    .unwrap_or(0),
+    /// The tab bar's spans. Each tab owns the padding around its title, so
+    /// only the one-column dividers fall between click targets.
+    fn tab_strip(&self, compact: bool) -> TabStrip<'static> {
+        let mut strip = TabStrip::default();
+        for (index, &id) in ScreenId::ALL.iter().enumerate() {
+            if index > 0 {
+                strip.push_gap(Span::styled(" ", theme::key_hint()));
+            }
+            let style = if id == self.active_screen {
+                theme::tab_active().add_modifier(Modifier::REVERSED)
+            } else {
+                theme::tab_inactive()
+            };
+            let label = if compact {
+                id.label_short()
+            } else {
+                id.label()
+            };
+            strip.push_tab(index, Span::raw(" "));
+            strip.push_tab(
+                index,
+                Span::styled(format!(" {} {} ", id.number(), label), style),
             );
-
-        frame.render_widget(tabs, area);
+            strip.push_tab(index, Span::raw(" "));
+        }
+        strip
     }
 
     /// Render the bottom status bar with connection status and key hints.

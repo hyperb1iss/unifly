@@ -5,10 +5,11 @@ mod labels;
 mod render;
 mod state;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
@@ -18,6 +19,7 @@ use unifly_api::{Client, EntityId};
 
 use crate::tui::action::{Action, ClientTypeFilter};
 use crate::tui::component::Component;
+use crate::tui::widgets::tab_strip::TabTargets;
 
 pub struct ClientsScreen {
     focused: bool,
@@ -27,6 +29,8 @@ pub struct ClientsScreen {
     links: labels::LinkIndex,
     table_state: TableState,
     filter: ClientTypeFilter,
+    /// Where the type filters were last drawn, for clicks.
+    filter_targets: RefCell<TabTargets>,
     search_query: String,
     detail_open: bool,
     detail_client_id: Option<EntityId>,
@@ -46,6 +50,10 @@ impl Component for ClientsScreen {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         Ok(self.handle_key_input(key))
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(self.handle_mouse_input(mouse))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

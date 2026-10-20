@@ -25,6 +25,7 @@ impl FirewallScreen {
             zone_table: TableState::default(),
             acl_table: TableState::default(),
             nat_table: TableState::default(),
+            tab_targets: std::cell::RefCell::default(),
         }
     }
 

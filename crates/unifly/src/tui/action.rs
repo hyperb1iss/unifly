@@ -31,6 +31,17 @@ pub enum ClientTypeFilter {
     Guest,
 }
 
+impl ClientTypeFilter {
+    /// All filters in filter-bar order.
+    pub const ALL: [Self; 5] = [
+        Self::All,
+        Self::Wireless,
+        Self::Wired,
+        Self::Vpn,
+        Self::Guest,
+    ];
+}
+
 /// Device detail sub-tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeviceDetailTab {
@@ -42,6 +53,17 @@ pub enum DeviceDetailTab {
     Ports,
 }
 
+impl DeviceDetailTab {
+    /// All tabs in tab-bar order.
+    pub const ALL: [Self; 5] = [
+        Self::Overview,
+        Self::Performance,
+        Self::Radios,
+        Self::Clients,
+        Self::Ports,
+    ];
+}
+
 /// Firewall view sub-tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FirewallSubTab {
@@ -50,6 +72,16 @@ pub enum FirewallSubTab {
     Zones,
     AclRules,
     NatPolicies,
+}
+
+impl FirewallSubTab {
+    /// All tabs in tab-bar order.
+    pub const ALL: [Self; 4] = [
+        Self::Policies,
+        Self::Zones,
+        Self::AclRules,
+        Self::NatPolicies,
+    ];
 }
 
 /// WiFi dashboard sub-tab.
@@ -166,6 +198,14 @@ pub enum StatsPeriod {
 }
 
 impl StatsPeriod {
+    /// All periods in period-bar order.
+    pub const ALL: [Self; 4] = [
+        Self::OneHour,
+        Self::TwentyFourHours,
+        Self::SevenDays,
+        Self::ThirtyDays,
+    ];
+
     /// Session API interval string for `stat/report` endpoints.
     pub fn api_interval(self) -> &'static str {
         match self {

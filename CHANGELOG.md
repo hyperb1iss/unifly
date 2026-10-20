@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Clickable tabs in the TUI.** A click or tap on a tab switches to it:
+  the screen tabs along the bottom, and the sub-tabs inside the Devices
+  detail, Clients, Firewall, Stats, and WiFi screens. A touchscreen kiosk
+  can now move between screens without a keyboard. Open overlays (help,
+  about, a confirmation, search) still hold the input, as they do for
+  keys. ([#67](https://github.com/hyperb1iss/unifly/issues/67))
+
+### Fixed
+
+- **Clicks in the TUI Settings form redraw right away** instead of waiting
+  for the next data refresh to repaint the toggled field.
+
 ## [0.11.0] - 2026-10-12
 
 ### Added

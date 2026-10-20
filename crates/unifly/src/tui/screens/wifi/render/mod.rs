@@ -10,6 +10,7 @@ use crate::tui::action::{WifiBand, WifiSubTab};
 use crate::tui::theme;
 use crate::tui::widgets::hyperchart::{HeatmapCell, HyperHeatmap};
 use crate::tui::widgets::signal_bars;
+use crate::tui::widgets::tab_strip::TabStrip;
 
 use super::WifiScreen;
 use super::state::{display_client_name, display_device_name, json_i32, json_string, json_u64};
@@ -38,7 +39,9 @@ impl WifiScreen {
         ])
         .split(inner);
 
-        frame.render_widget(Paragraph::new(self.tab_line()), layout[0]);
+        let strip = self.tab_strip();
+        *self.tab_targets.borrow_mut() = strip.targets(layout[0]);
+        frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
         frame.render_widget(Paragraph::new(self.health_banner()), layout[1]);
 
         match self.sub_tab {
@@ -357,11 +360,11 @@ impl WifiScreen {
         );
     }
 
-    fn tab_line(&self) -> Line<'static> {
-        let mut spans = Vec::new();
+    fn tab_strip(&self) -> TabStrip<'static> {
+        let mut strip = TabStrip::default();
         for (index, tab) in WifiSubTab::ALL.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled("  ", Style::default().fg(theme::text_muted())));
+                strip.push_gap(Span::styled("  ", Style::default().fg(theme::text_muted())));
             }
             let label = tab.label();
             let style = if *tab == self.sub_tab {
@@ -371,21 +374,24 @@ impl WifiScreen {
             } else {
                 Style::default().fg(theme::text_secondary())
             };
-            spans.push(Span::styled(
-                if *tab == self.sub_tab {
-                    format!("[{label}]")
-                } else {
-                    label.to_string()
-                },
-                style,
-            ));
+            strip.push_tab(
+                index,
+                Span::styled(
+                    if *tab == self.sub_tab {
+                        format!("[{label}]")
+                    } else {
+                        label.to_string()
+                    },
+                    style,
+                ),
+            );
         }
         if let Some(ap) = self.focused_ap_label() {
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 "  Focused AP: ",
                 Style::default().fg(theme::text_muted()),
             ));
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 ap,
                 Style::default()
                     .fg(theme::accent_secondary())
@@ -393,18 +399,18 @@ impl WifiScreen {
             ));
         }
         if let Some(client) = self.focused_client_label() {
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 "  Client: ",
                 Style::default().fg(theme::text_muted()),
             ));
-            spans.push(Span::styled(
+            strip.push_gap(Span::styled(
                 client,
                 Style::default()
                     .fg(theme::accent_secondary())
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        Line::from(spans)
+        strip
     }
 
     fn health_banner(&self) -> Line<'static> {

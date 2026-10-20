@@ -1,6 +1,6 @@
 use super::DevicesScreen;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, DeviceDetailTab};
 
@@ -86,6 +86,20 @@ impl DevicesScreen {
             KeyCode::Char('U') => self.current_action_device_id().map(Action::RequestUpgrade),
             _ => None,
         }
+    }
+
+    /// A click on a detail tab switches to it, like `h`/`l`.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if !self.detail_open {
+            return None;
+        }
+        let index = self.detail_tab_targets.borrow().clicked(mouse)?;
+        let tab = *DeviceDetailTab::ALL.get(index)?;
+        if tab == self.detail_tab {
+            return None;
+        }
+        self.detail_tab = tab;
+        Some(Action::DeviceDetailTab(tab))
     }
 }
 

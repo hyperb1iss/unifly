@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::WifiScreen;
 use crate::tui::action::{Action, WifiSortField, WifiSubTab};
@@ -85,6 +85,17 @@ impl WifiScreen {
                 }),
             _ => None,
         }
+    }
+
+    /// A click on a sub-tab switches to it, like `Tab`.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        let index = self.tab_targets.borrow().clicked(mouse)?;
+        let tab = *WifiSubTab::ALL.get(index)?;
+        if tab == self.sub_tab {
+            return None;
+        }
+        self.sub_tab = tab;
+        Some(Action::WifiSubTab(tab))
     }
 
     pub(super) fn move_selection(&mut self, delta: isize) {
@@ -231,5 +242,33 @@ fn next_sort_field(
             _ => WifiSortField::Signal,
         },
         crate::tui::action::WifiSubTab::Roaming => WifiSortField::Time,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::action::{Action, WifiSubTab};
+    use crate::tui::component::Component;
+    use crate::tui::screens::wifi::WifiScreen;
+    use crate::tui::table::render_lines;
+    use crate::tui::widgets::tab_strip::click_label;
+
+    #[test]
+    fn clicking_a_sub_tab_switches_to_it() {
+        let mut screen = WifiScreen::new();
+        for tab in [
+            WifiSubTab::Clients,
+            WifiSubTab::Neighbors,
+            WifiSubTab::Roaming,
+            WifiSubTab::Overview,
+        ] {
+            let rows = render_lines(120, 30, |frame, area| screen.render(frame, area));
+            let action = screen.handle_mouse_input(click_label(&rows, "Roaming", tab.label()));
+            assert!(
+                matches!(action, Some(Action::WifiSubTab(clicked)) if clicked == tab),
+                "{tab:?}: {action:?}"
+            );
+            assert_eq!(screen.sub_tab, tab);
+        }
     }
 }

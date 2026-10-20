@@ -5,3 +5,4 @@ pub mod hyperchart;
 pub mod signal_bars;
 pub mod status_indicator;
 pub mod sub_tabs;
+pub mod tab_strip;

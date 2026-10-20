@@ -56,8 +56,9 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
     .split(table_area);
 
     let filter_labels = &["All", "Wireless", "Wired", "VPN", "Guest"];
-    let filter_line = sub_tabs::render_sub_tabs(filter_labels, screen.filter_index());
-    frame.render_widget(Paragraph::new(filter_line), layout[0]);
+    let strip = sub_tabs::sub_tab_strip(filter_labels, screen.filter_index());
+    *screen.filter_targets.borrow_mut() = strip.targets(layout[0]);
+    frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
 
     let selected_idx = if screen.detail_open {
         screen

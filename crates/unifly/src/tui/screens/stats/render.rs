@@ -189,9 +189,9 @@ impl StatsScreen {
         ])
         .split(inner);
 
-        let period_line =
-            sub_tabs::render_sub_tabs(&["1h", "24h", "7d", "30d"], self.period_index());
-        frame.render_widget(Paragraph::new(period_line), layout[0]);
+        let strip = sub_tabs::sub_tab_strip(&["1h", "24h", "7d", "30d"], self.period_index());
+        *self.period_targets.borrow_mut() = strip.targets(layout[0]);
+        frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
 
         self.render_bandwidth_chart(frame, layout[1]);
 

@@ -110,7 +110,7 @@ graph LR
 8 --> 9["9 WiFi<br/><i>RF health & roaming</i>"]
 {% end %}
 
-Eleven screens in total: the nine above on number keys `1`-`9`, a Settings screen on `,` (profiles, themes, display options), and an Onboarding wizard that appears automatically on first launch. Press `?` for help, `q` to quit.
+Eleven screens in total: the nine above on number keys `1`-`9` or a click on their tab, a Settings screen on `,` (profiles, themes, display options), and an Onboarding wizard that appears automatically on first launch. Press `?` for help, `q` to quit.
 
 {% tip(title="Heads Up") %}
 

@@ -8,6 +8,7 @@ impl StatsScreen {
         Self {
             focused: false,
             period: StatsPeriod::default(),
+            period_targets: std::cell::RefCell::default(),
             bandwidth_tx: Vec::new(),
             bandwidth_rx: Vec::new(),
             bandwidth_tx_y_max: 0.0,

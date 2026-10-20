@@ -70,18 +70,45 @@ impl App {
         Ok(None)
     }
 
-    /// Handle mouse events — check donate button first, then delegate to active screen.
+    /// Handle mouse events: the sponsor button and the screen tabs first,
+    /// then the active screen.
     pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
-        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some(action) = self.check_donate_click(mouse.column, mouse.row)
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            // A click can change screen state without dispatching an
+            // invalidating action (a stats period, a settings toggle).
+            self.needs_redraw = true;
+            if let Some(action) = self.check_donate_click(mouse.column, mouse.row) {
+                return Ok(Some(action));
+            }
+        }
+
+        // Overlays hold the input while they are up, as they do for keys.
+        if self.pending_confirm.is_some()
+            || self.search_active
+            || self.help_visible
+            || self.about_visible
         {
-            return Ok(Some(action));
+            return Ok(None);
+        }
+
+        if let Some(target) = self.clicked_screen_tab(mouse) {
+            return Ok(Some(Action::SwitchScreen(target)));
         }
 
         if let Some(screen) = self.screens.get_mut(&self.active_screen) {
             return screen.handle_mouse_event(mouse);
         }
         Ok(None)
+    }
+
+    /// The screen whose tab-bar tab a click landed on.
+    fn clicked_screen_tab(&self, mouse: MouseEvent) -> Option<ScreenId> {
+        // Setup and Settings draw over the tab bar, so its last targets are stale.
+        if matches!(self.active_screen, ScreenId::Setup | ScreenId::Settings) {
+            return None;
+        }
+        let index = self.tab_targets.clicked(mouse)?;
+        ScreenId::ALL.get(index).copied()
     }
 
     /// Check if a click landed on the sponsor button in the status bar.
@@ -180,6 +207,91 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
+    use crate::tui::table::render_lines;
+    use crate::tui::widgets::tab_strip::{click_label, left_click};
+
+    fn dashboard_app() -> App {
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        app
+    }
+
+    fn render(app: &mut App, width: u16) -> Vec<String> {
+        render_lines(width, 24, |frame, _| app.render(frame))
+    }
+
+    /// The tab bar row of a rendered frame.
+    fn tab_row(rows: &[String]) -> &str {
+        rows.iter()
+            .find(|row| row.contains("6 Topo"))
+            .expect("tab bar row")
+    }
+
+    /// The label a tab bar row shows for `id`, full or short.
+    fn shown_label(row: &str, id: ScreenId) -> String {
+        [id.label(), id.label_short()]
+            .into_iter()
+            .map(|label| format!("{} {label}", id.number()))
+            .find(|label| row.contains(label.as_str()))
+            .unwrap_or_else(|| panic!("{id} tab not drawn in {row:?}"))
+    }
+
+    #[test]
+    fn clicking_a_tab_switches_to_its_screen() {
+        for width in [120, 95] {
+            let mut app = dashboard_app();
+            let rows = render(&mut app, width);
+
+            for id in ScreenId::ALL {
+                let label = shown_label(tab_row(&rows), id);
+                let click = click_label(&rows, "6 Topo", &label);
+                let action = app.handle_mouse_event(click).expect("click handling");
+                assert!(
+                    matches!(action, Some(Action::SwitchScreen(target)) if target == id),
+                    "{width} cols, {label}: {action:?}"
+                );
+
+                // The space before the number belongs to the tab as well.
+                let action = app
+                    .handle_mouse_event(left_click(click.column - 1, click.row))
+                    .expect("click handling");
+                assert!(
+                    matches!(action, Some(Action::SwitchScreen(target)) if target == id),
+                    "{width} cols, left edge of {label}: {action:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overlays_and_full_screen_views_swallow_tab_clicks() {
+        let mut app = dashboard_app();
+        let rows = render(&mut app, 120);
+        let devices = click_label(&rows, "6 Topo", "2 Devices");
+
+        app.help_visible = true;
+        assert!(app.handle_mouse_event(devices).expect("click").is_none());
+        app.help_visible = false;
+
+        app.search_active = true;
+        assert!(app.handle_mouse_event(devices).expect("click").is_none());
+        app.search_active = false;
+
+        // Settings draws over the tab bar, so the last tab targets are stale.
+        app.active_screen = ScreenId::Settings;
+        assert!(app.handle_mouse_event(devices).expect("click").is_none());
+    }
+
+    #[test]
+    fn a_click_reopens_the_render_gate() {
+        let mut app = dashboard_app();
+        app.needs_redraw = false;
+
+        app.handle_mouse_event(left_click(0, 0))
+            .expect("click handling");
+
+        assert!(app.should_draw());
+    }
 
     #[test]
     fn tab_navigation_cycles_between_primary_screens() {

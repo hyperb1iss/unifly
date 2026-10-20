@@ -4,17 +4,22 @@ mod input;
 mod render;
 mod state;
 
+use std::cell::RefCell;
+
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::tui::action::{Action, StatsPeriod};
 use crate::tui::component::Component;
+use crate::tui::widgets::tab_strip::TabTargets;
 
 pub struct StatsScreen {
     focused: bool,
     period: StatsPeriod,
+    /// Where the period tabs were last drawn, for clicks.
+    period_targets: RefCell<TabTargets>,
     bandwidth_tx: Vec<(f64, f64)>,
     bandwidth_rx: Vec<(f64, f64)>,
     bandwidth_tx_y_max: f64,
@@ -41,6 +46,10 @@ impl Default for StatsScreen {
 impl Component for StatsScreen {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         Ok(self.handle_key_input(key))
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(self.handle_mouse_input(mouse))
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
