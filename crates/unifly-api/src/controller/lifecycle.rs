@@ -45,7 +45,6 @@ impl Controller {
         self.connect_with_refresh(false).await
     }
 
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn connect_with_refresh(&self, initial_refresh: bool) -> Result<(), CoreError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
 
@@ -54,11 +53,22 @@ impl Controller {
             return self.demo_connect(std::sync::Arc::clone(demo)).await;
         }
 
-        let _ = self
-            .inner
+        self.inner
             .connection_state
-            .send(ConnectionState::Connecting);
+            .send_replace(ConnectionState::Connecting);
+        let result = self.establish_connection(initial_refresh).await;
+        if result.is_err() {
+            self.inner
+                .connection_state
+                .send_replace(ConnectionState::Failed);
+        }
+        result
+    }
 
+    /// Authenticate, load the initial snapshot, and start the background
+    /// tasks. Runs under the lifecycle lock held by the caller.
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+    async fn establish_connection(&self, initial_refresh: bool) -> Result<(), CoreError> {
         // Fresh child token for this connection (supports reconnect).
         let child = self.inner.cancel.child_token();
         *self.inner.cancel_child.lock().await = child.clone();
@@ -307,7 +317,9 @@ impl Controller {
             )));
         }
 
-        let _ = self.inner.connection_state.send(ConnectionState::Connected);
+        self.inner
+            .connection_state
+            .send_replace(ConnectionState::Connected);
         info!("connected to controller");
         Ok(())
     }
@@ -482,10 +494,9 @@ impl Controller {
         *self.inner.integration_client.lock().await = None;
         *self.inner.site_id.lock().await = None;
 
-        let _ = self
-            .inner
+        self.inner
             .connection_state
-            .send(ConnectionState::Disconnected);
+            .send_replace(ConnectionState::Disconnected);
         debug!("disconnected");
     }
 }

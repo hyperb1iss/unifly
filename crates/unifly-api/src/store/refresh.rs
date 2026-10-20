@@ -171,7 +171,7 @@ impl DataStore {
             (format!("fwg:{}", g.id), g.id.clone())
         });
 
-        let _ = self.last_full_refresh.send(Some(Utc::now()));
+        self.last_full_refresh.send_replace(Some(Utc::now()));
     }
 }
 

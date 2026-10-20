@@ -1913,3 +1913,55 @@ async fn execute_after_disconnect_fails_fast() {
     );
     controller.disconnect().await;
 }
+
+#[tokio::test]
+async fn status_channels_hold_their_value_without_subscribers() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let controller = legacy_controller(&server);
+
+    controller.connect().await.unwrap();
+
+    assert_eq!(
+        *controller.connection_state().borrow(),
+        unifly_api::ConnectionState::Connected,
+        "a subscriber that arrives after connect must see Connected"
+    );
+    assert!(
+        controller.store().last_full_refresh().is_some(),
+        "the initial refresh must be recorded"
+    );
+    assert!(controller.store().data_age().is_some());
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn failed_connect_publishes_failed_state() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/auth/login"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+
+    controller.connect().await.unwrap_err();
+
+    assert_eq!(
+        *controller.connection_state().borrow(),
+        unifly_api::ConnectionState::Failed,
+        "a failed connect must not leave the state at Connecting"
+    );
+}

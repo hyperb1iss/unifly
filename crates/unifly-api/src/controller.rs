@@ -68,6 +68,8 @@ pub struct Controller {
 struct ControllerInner {
     config: ControllerConfig,
     store: Arc<DataStore>,
+    /// Created without a receiver; publish with `send_replace`, since
+    /// `send` drops the value while nobody is subscribed.
     connection_state: watch::Sender<ConnectionState>,
     event_tx: broadcast::Sender<Arc<Event>>,
     /// Feeds the command processor of the current connection. `None`
