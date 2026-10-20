@@ -359,7 +359,14 @@ fn save_profile(
 ) -> Result<(), crate::config::ConfigError> {
     let mut cfg = crate::config::load_config_from(path)?;
     cfg.profiles.insert(profile_name.to_owned(), profile);
-    if cfg.default_profile.is_none() {
+    // A fresh config names a `default` profile that does not exist yet, so
+    // point the default at this one whenever it names no saved profile, as
+    // onboarding does.
+    if !cfg
+        .default_profile
+        .as_ref()
+        .is_some_and(|name| cfg.profiles.contains_key(name))
+    {
         cfg.default_profile = Some(profile_name.to_owned());
     }
     crate::config::save_config_to(path, &cfg)
@@ -451,6 +458,17 @@ mod tests {
 
     /// A config that fails to load must fail the save and stay as it was;
     /// saving defaults over it would erase every other profile.
+    #[test]
+    fn a_first_saved_profile_becomes_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        save_profile(&path, "work", test_screen().build_profile()).expect("save");
+
+        let cfg = crate::config::load_config_from(&path).expect("load");
+        assert_eq!(cfg.default_profile.as_deref(), Some("work"));
+    }
+
     #[test]
     fn save_profile_leaves_a_config_that_fails_to_load_untouched() {
         let dir = tempfile::tempdir().expect("tempdir");
