@@ -298,6 +298,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   link, a config bind-mounted as a single file is still written in place,
   and a failed save names the file and exits 1.
 
+### Security
+
+- **rustls moves to 0.23.46** for RUSTSEC-2026-0346 through 0349: TLS
+  secrets exposed by client session `Debug` impls, buffered data sent to
+  the outer server after an ECH rejection, a 1 GiB allocation during
+  Brotli certificate decompression before authentication, and an
+  unauthenticated ServerHello downgrading later connections to classical
+  key exchange.
+
 ## [0.11.0] - 2026-10-12
 
 ### Added
