@@ -15,7 +15,7 @@ use unifly_api::{
 use crate::cli::args::{ColorMode, GlobalOpts};
 use crate::cli::error::CliError;
 use crate::cli::output;
-use crate::config::{Config, Defaults, Profile};
+use crate::config::{Config, Profile};
 
 use super::support::save_config;
 
@@ -500,8 +500,34 @@ fn persist_cloud_api_key(
     }
 }
 
+/// Ask whether the profile just set up becomes the default, unless it
+/// already is.
+fn confirm_make_default(cfg: &Config, profile_name: &str) -> Result<bool, CliError> {
+    if cfg.default_profile.as_deref() == Some(profile_name) {
+        return Ok(true);
+    }
+    Confirm::new()
+        .with_prompt("Make this your default profile?")
+        .default(cfg.profiles.is_empty() || cfg.default_profile.is_none())
+        .interact()
+        .map_err(prompt_err)
+}
+
+/// Put `profile` into `cfg` under `name`, replacing only a profile of that
+/// name, and make it the default when `make_default` is set. Every other
+/// profile and setting stays as it was.
+fn add_profile(cfg: &mut Config, name: &str, profile: Profile, make_default: bool) {
+    cfg.profiles.insert(name.to_owned(), profile);
+    if make_default {
+        cfg.default_profile = Some(name.to_owned());
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
+    // Load before any prompt or keyring write, so a config file that cannot
+    // be loaded stops the wizard before it asks for anything.
+    let mut cfg = crate::config::load_config()?;
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
     ui.banner(
@@ -514,11 +540,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
     );
     eprintln!();
 
-    let profile_name: String = Input::new()
-        .with_prompt("Profile name")
-        .default("default".into())
-        .interact_text()
-        .map_err(prompt_err)?;
+    let profile_name = prompt_profile_name(&ui, "default", &cfg.profiles)?;
 
     let controller: String = Input::new()
         .with_prompt("Controller URL")
@@ -651,15 +673,8 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
         timeout: None,
     };
 
-    let mut profiles = HashMap::new();
-    profiles.insert(profile_name.clone(), profile);
-
-    let cfg = Config {
-        default_profile: Some(profile_name.clone()),
-        defaults: Defaults::default(),
-        profiles,
-        demo: crate::config::DemoConfig::default(),
-    };
+    let make_default = confirm_make_default(&cfg, &profile_name)?;
+    add_profile(&mut cfg, &profile_name, profile, make_default);
 
     save_config(&cfg)?;
 
@@ -676,7 +691,12 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
         &ui.accent(&config_path.display().to_string()),
     );
     eprintln!();
-    ui.meta("Try", &ui.keyword("unifly system info"));
+    let try_command = if make_default {
+        "unifly system info".to_owned()
+    } else {
+        format!("unifly -p {profile_name} system info")
+    };
+    ui.meta("Try", &ui.keyword(&try_command));
 
     Ok(())
 }
@@ -735,18 +755,11 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
     let profile_name = prompt_profile_name(&ui, &suggested_profile, &cfg.profiles)?;
     let (api_key, api_key_env) = persist_cloud_api_key(&ui, &profile_name, &api_key_setup)?;
 
-    let make_default = if cfg.default_profile.as_deref() == Some(profile_name.as_str()) {
-        true
-    } else {
-        Confirm::new()
-            .with_prompt("Make this your default profile?")
-            .default(cfg.profiles.is_empty() || cfg.default_profile.is_none())
-            .interact()
-            .map_err(prompt_err)?
-    };
+    let make_default = confirm_make_default(&cfg, &profile_name)?;
 
-    cfg.profiles.insert(
-        profile_name.clone(),
+    add_profile(
+        &mut cfg,
+        &profile_name,
         Profile {
             controller: controller.clone(),
             site: site.clone(),
@@ -763,11 +776,8 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
             insecure: None,
             timeout: None,
         },
+        make_default,
     );
-
-    if make_default {
-        cfg.default_profile = Some(profile_name.clone());
-    }
 
     save_config(&cfg)?;
 
@@ -824,9 +834,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        cloud_connector_url, likely_self_signed, next_available_profile_name, slugify_profile_name,
+        add_profile, cloud_connector_url, likely_self_signed, next_available_profile_name,
+        slugify_profile_name,
     };
-    use crate::config::Profile;
+    use crate::config::{Config, Profile};
 
     fn sample_profile() -> Profile {
         Profile {
@@ -845,6 +856,59 @@ mod tests {
             insecure: None,
             timeout: None,
         }
+    }
+
+    fn two_profile_config() -> Config {
+        toml::from_str(
+            r#"
+            default_profile = "work"
+
+            [defaults]
+            timeout = 45
+
+            [profiles.work]
+            controller = "https://10.0.0.1"
+
+            [profiles.lab]
+            controller = "https://10.0.9.1"
+
+            [demo]
+            redact_names = ["Bliss"]
+            "#,
+        )
+        .expect("sample config parses")
+    }
+
+    /// `config init` adds a profile next to the others; replacing the whole
+    /// file erased every other profile, [defaults], and [demo].
+    #[test]
+    fn add_profile_keeps_the_rest_of_the_config() {
+        let mut cfg = two_profile_config();
+        let mut home = sample_profile();
+        home.controller = "https://192.168.1.1".into();
+
+        add_profile(&mut cfg, "home", home, false);
+
+        assert_eq!(cfg.default_profile.as_deref(), Some("work"));
+        assert_eq!(cfg.profiles["home"].controller, "https://192.168.1.1");
+        assert_eq!(cfg.profiles["work"].controller, "https://10.0.0.1");
+        assert_eq!(cfg.profiles["lab"].controller, "https://10.0.9.1");
+        assert_eq!(cfg.defaults.timeout, 45);
+        assert_eq!(cfg.demo.redact_names, ["Bliss"]);
+    }
+
+    #[test]
+    fn add_profile_replaces_only_the_profile_of_that_name() {
+        let mut cfg = two_profile_config();
+        let mut lab = sample_profile();
+        lab.controller = "https://10.0.9.2".into();
+
+        add_profile(&mut cfg, "lab", lab, true);
+
+        assert_eq!(cfg.default_profile.as_deref(), Some("lab"));
+        assert_eq!(cfg.profiles.len(), 2);
+        assert_eq!(cfg.profiles["lab"].controller, "https://10.0.9.2");
+        assert_eq!(cfg.profiles["work"].controller, "https://10.0.0.1");
     }
 
     #[test]

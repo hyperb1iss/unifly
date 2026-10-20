@@ -620,6 +620,35 @@ fn test_writers_leave_a_config_that_fails_to_load_untouched() {
     }
 }
 
+/// The setup wizards load the config before their first prompt, so a file
+/// that cannot be loaded stops them before they ask for (and store) any
+/// secret. `UNIFI_API_KEY` makes cloud-setup's first prompt a menu, which
+/// fails at once without a terminal instead of waiting on one.
+#[cfg(not(windows))]
+#[test]
+fn test_setup_wizards_stop_on_a_config_that_fails_to_load() {
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+
+    for args in [&["config", "init"][..], &["config", "cloud-setup"]] {
+        let home = TempDir::new().unwrap();
+        let path = write_config(&home, &broken);
+
+        let output = unifly_cmd_in(home.path())
+            .env("UNIFI_API_KEY", "probe-key")
+            .args(args)
+            .output()
+            .unwrap();
+        let text = combined_output(&output);
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&path.display().to_string()) && !text.contains("prompt failed"),
+            "{args:?} should stop on the config before prompting:\n{text}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+}
+
 #[test]
 fn test_invalid_output_format() {
     let output = unifly_cmd()
