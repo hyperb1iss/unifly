@@ -69,7 +69,21 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 
 ### Mouse and Touch
 
-A click or tap on any tab switches to it. That covers the screen tabs along the bottom and the sub-tabs inside the Devices detail view, Clients, Firewall, Stats, and WiFi, so a touchscreen kiosk can move between screens without a keyboard. Table rows and actions still use the keys.
+Every tab, table row, and key hint also takes a click, so the TUI runs on a touchscreen kiosk without a keyboard. On a touchscreen, taps work wherever the terminal reports them as mouse clicks.
+
+| Target               | Click or tap                                                                                                                                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tabs**             | Switches to the tab: the screen tabs along the bottom, and the sub-tabs inside the Devices detail, Clients, Firewall, Stats, and WiFi                                                                       |
+| **Table rows**       | The first tap selects a row, and a second tap does what `Enter` does there: opens a device or client, or toggles a network or WiFi detail                                                                   |
+| **Open details**     | A tap on another row moves an open device or client detail to it. The device detail keeps its tab, so stepping from switch to switch stays on their ports                                                   |
+| **Key hints**        | Every hint with a key is a button that presses it: `R restart`, `Esc back`, `Space pause/resume`, and the status bar's help, about, search, settings, and quit. Hints such as `j/k navigate` are plain text |
+| **Dialogs**          | A confirmation takes `y` and `n` taps, and a tap outside it answers no. Help and About close on a tap outside them                                                                                          |
+| **Notifications**    | A tap dismisses the toast                                                                                                                                                                                   |
+| **Dashboard panels** | Opens the screen behind the panel: WAN Traffic opens Stats, Gateway and Capacity open Devices, and Networks, WiFi, Top Clients, and Recent Events open their screens                                        |
+
+The wheel moves the selection in lists, and an open device or client detail follows it. On Events it scrolls the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms and a drag pans the map. In Settings it walks the theme picker.
+
+Typing still needs a keyboard: search, the Networks edit form, the Settings fields, and the onboarding wizard.
 
 ### Screen-Specific
 

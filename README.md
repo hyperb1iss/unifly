@@ -372,6 +372,8 @@ still outside the TUI surface today.
 | **Settings**   | Profile switching, theme selector, display preferences                                           |
 | **Onboarding** | First-run setup wizard                                                                           |
 
+Every tab, table row, and key hint also takes a click or a tap, so the TUI runs on a touchscreen kiosk without a keyboard: tap a switch to open it, tap Ports, and tap the next switch to see its ports. The wheel scrolls lists and zooms the topology, and a drag pans the map.
+
 ### ✦ Gallery
 
 Every capture below is the built-in `--demo-fleet` network at 183x47 in Ghostty.

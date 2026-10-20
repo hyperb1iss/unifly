@@ -9,23 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Clickable tabs in the TUI.** A click or tap on a tab switches to it:
-  the screen tabs along the bottom, and the sub-tabs inside the Devices
-  detail, Clients, Firewall, Stats, and WiFi screens. A touchscreen kiosk
-  can now move between screens without a keyboard. Open overlays (help,
-  about, a confirmation, search) still hold the input, as they do for
-  keys. ([#67](https://github.com/hyperb1iss/unifly/issues/67))
+- **Mouse and touch input across the TUI** (#67). Every tab, table row,
+  and key hint takes a click or a tap, so `unifly tui` runs on a
+  touchscreen kiosk without a keyboard. Tabs switch screens and sub-tabs.
+  A tap selects a row and a second tap opens it, and an open device detail
+  follows a tap on another device while keeping its tab, so stepping from
+  switch to switch stays on their ports. Key hints are buttons that press
+  their key, including the status bar's help, search, settings, and quit.
+  Confirmations take `y` and `n` taps, overlays close on a tap outside
+  them, a tap dismisses a notification, and dashboard panels open their
+  screens. The wheel scrolls lists and the event feed (scrolling back
+  pauses a live feed), zooms the topology, and walks the theme picker, and
+  a drag pans the topology map. Typing still needs a keyboard.
 
 ### Fixed
 
-- **The TUI tab bar draws all nine tabs.** Full labels switched on at 100
-  columns but need 120, and short labels need 92 columns but were used
-  down to 80, so the WiFi tab (and at some widths Stats) was cut off on
-  common terminal sizes. The bar now takes the roomiest style that fits,
-  trading padding before it shortens labels, and shows every tab from 74
-  columns up.
+- **The TUI tab bar draws all nine tabs.** Full labels need 120 columns
+  but switched on at 100, and short labels need 92 but were used at every
+  width below 100, so the WiFi tab (and at some widths Stats) was cut off
+  on common terminal sizes. The bar now takes the roomiest style that
+  fits, dropping padding before it shortens labels, and draws every tab
+  from 74 columns up.
+- **Typing in the TUI Networks edit form stays in the form.** `Tab`, the
+  form's next-field key, also switched to the next screen, a digit typed
+  into a field jumped to that screen, and `q` quit. Keys now stop at a
+  screen that is taking typed input, and `Ctrl+C` still quits.
+- **The TUI Stats screen reloads the period it shows.** Returning to Stats
+  always fetched one hour, while the period strip kept highlighting the
+  period picked last.
 - **Clicks in the TUI Settings form redraw right away** instead of waiting
   for the next data refresh to repaint the toggled field.
+- **The TUI Firewall hint bar drops `Enter detail`**, which it advertised
+  though Firewall has no detail view and never handled `Enter`.
 
 ## [0.11.0] - 2026-10-12
 
