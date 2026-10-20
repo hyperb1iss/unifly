@@ -3,6 +3,7 @@
 mod punchcard;
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
@@ -26,8 +27,10 @@ use punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
 
 pub struct EventsScreen {
     focused: bool,
-    events: Vec<Arc<Event>>,
+    events: VecDeque<Arc<Event>>,
     paused: bool,
+    /// How many events below the newest the view ends, so 0 shows the
+    /// newest event at the bottom.
     scroll_offset: usize,
     /// Max events to keep in memory.
     capacity: usize,
@@ -45,7 +48,7 @@ impl EventsScreen {
     pub fn new() -> Self {
         Self {
             focused: false,
-            events: Vec::new(),
+            events: VecDeque::new(),
             paused: false,
             scroll_offset: 0,
             capacity: 10_000,
@@ -132,10 +135,16 @@ impl Component for EventsScreen {
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
         if let Action::EventReceived(event) = action {
-            self.events.push(Arc::clone(event));
-            if self.events.len() > self.capacity {
-                self.events.remove(0);
+            self.events.push_back(Arc::clone(event));
+            // The view ends `scroll_offset` events above the newest, so a
+            // paused view steps back over each arrival to hold its rows.
+            if self.paused {
+                self.scroll_offset += 1;
             }
+            if self.events.len() > self.capacity {
+                self.events.pop_front();
+            }
+            self.scroll_offset = self.scroll_offset.min(self.events.len().saturating_sub(1));
         }
         Ok(None)
     }
@@ -238,7 +247,7 @@ impl EventsScreen {
         let meta_cols: u16 = 2 + 12 + 11; // indent + time + category
         let msg_width = usize::from(area.width.saturating_sub(meta_cols).max(10));
 
-        for event in self.events.get(start..end).unwrap_or_default() {
+        for event in self.events.iter().skip(start).take(end - start) {
             let time_str = event.timestamp.format("%H:%M:%S").to_string();
             let severity_color = match event.severity {
                 EventSeverity::Error | EventSeverity::Critical => theme::error(),
@@ -343,7 +352,7 @@ mod tests {
 
         let mut screen = EventsScreen::new();
         for index in 0..5 {
-            screen.events.push(event(index));
+            screen.events.push_back(event(index));
         }
 
         let action = screen
@@ -381,6 +390,112 @@ mod tests {
                 text.join("\n")
             );
         }
+    }
+
+    /// The event rows a 100x30 frame shows, newest last.
+    fn shown_events(screen: &EventsScreen) -> Vec<String> {
+        render_lines(100, 30, |frame, area| screen.render(frame, area))
+            .into_iter()
+            .filter(|row| row.contains(" connected"))
+            .map(|row| row.trim_matches(['│', ' ']).to_owned())
+            .collect()
+    }
+
+    fn receive(screen: &mut EventsScreen, minutes: std::ops::Range<u32>) {
+        for minute in minutes {
+            screen
+                .update(&Action::EventReceived(event(minute)))
+                .expect("update");
+        }
+    }
+
+    #[test]
+    fn a_paused_feed_holds_still_as_events_arrive() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let press = |screen: &mut EventsScreen, code: KeyCode| {
+            screen.handle_key_event(KeyEvent::from(code)).expect("key");
+        };
+        let mut screen = EventsScreen::new();
+        receive(&mut screen, 0..40);
+
+        press(&mut screen, KeyCode::Char(' '));
+        let paused = shown_events(&screen);
+        assert!(paused.last().is_some_and(|row| row.contains("client-39")));
+        receive(&mut screen, 40..45);
+        assert_eq!(shown_events(&screen), paused, "new events moved the view");
+
+        // Scrolled back, the view holds its place as well.
+        for _ in 0..3 {
+            press(&mut screen, KeyCode::Char('k'));
+        }
+        let scrolled = shown_events(&screen);
+        assert!(scrolled.last().is_some_and(|row| row.contains("client-36")));
+        receive(&mut screen, 45..50);
+        assert_eq!(shown_events(&screen), scrolled, "new events moved the view");
+
+        // Scrolling forward reaches the events that arrived while paused,
+        // and resuming jumps to the newest.
+        press(&mut screen, KeyCode::Char('G'));
+        assert!(
+            shown_events(&screen)
+                .last()
+                .is_some_and(|row| row.contains("client-49"))
+        );
+        press(&mut screen, KeyCode::Char('k'));
+        press(&mut screen, KeyCode::Char(' '));
+        assert!(
+            shown_events(&screen)
+                .last()
+                .is_some_and(|row| row.contains("client-49"))
+        );
+    }
+
+    #[test]
+    fn a_full_feed_drops_its_oldest_events() {
+        let mut screen = EventsScreen::new();
+        screen.capacity = 5;
+        receive(&mut screen, 0..8);
+
+        let kept: Vec<_> = screen
+            .events
+            .iter()
+            .map(|event| event.message.as_str())
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                "client-03 connected",
+                "client-04 connected",
+                "client-05 connected",
+                "client-06 connected",
+                "client-07 connected",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_paused_view_of_the_oldest_events_survives_their_eviction() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut screen = EventsScreen::new();
+        screen.capacity = 5;
+        receive(&mut screen, 0..5);
+        screen
+            .handle_key_event(KeyEvent::from(KeyCode::Char(' ')))
+            .expect("pause");
+        screen
+            .handle_key_event(KeyEvent::from(KeyCode::Char('g')))
+            .expect("top");
+
+        receive(&mut screen, 5..8);
+
+        let shown = shown_events(&screen);
+        assert_eq!(
+            shown.first().map(String::as_str),
+            Some("09:03:00    Client     client-03 connected"),
+            "{shown:?}"
+        );
     }
 
     #[test]
