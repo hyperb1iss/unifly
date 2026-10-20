@@ -18,7 +18,6 @@ use crate::cli::output;
 use crate::config::{Config, Profile};
 
 use super::pending_secrets::{PendingSecrets, keyring_error};
-use super::support::save_config;
 
 enum ApiKeyStorage {
     Env(String),
@@ -518,11 +517,33 @@ fn add_profile(cfg: &mut Config, name: &str, profile: Profile, make_default: boo
     }
 }
 
+/// Save what a setup wizard collected: `profile` under `profile_name` in
+/// the config at `path`, then the held `secrets`, undone if the save fails.
+/// Returns the labels of the secrets stored in the keyring.
+///
+/// The config is loaded again here rather than reused from when the wizard
+/// started: it can wait at a prompt for minutes, and a change made from
+/// another terminal meanwhile must not be lost.
+fn finish_wizard(
+    path: &std::path::Path,
+    store: &dyn crate::config::SecretStore,
+    profile_name: &str,
+    profile: Profile,
+    make_default: bool,
+    secrets: PendingSecrets,
+) -> Result<Vec<&'static str>, CliError> {
+    let mut cfg = crate::config::load_config_from(path)?;
+    add_profile(&mut cfg, profile_name, profile, make_default);
+    secrets.commit(store, || {
+        crate::config::save_config_to(path, &cfg).map_err(CliError::from)
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
     // Load before any prompt, so a config file that cannot be loaded stops
     // the wizard before it asks for anything.
-    let mut cfg = crate::config::load_config()?;
+    let cfg = crate::config::load_config()?;
     let mut secrets = PendingSecrets::default();
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
@@ -670,9 +691,14 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
     };
 
     let make_default = confirm_make_default(&cfg, &profile_name)?;
-    add_profile(&mut cfg, &profile_name, profile, make_default);
-
-    let stored = secrets.commit(&crate::config::OsKeyring, || save_config(&cfg))?;
+    let stored = finish_wizard(
+        &config_path,
+        &crate::config::OsKeyring,
+        &profile_name,
+        profile,
+        make_default,
+        secrets,
+    )?;
 
     eprintln!();
     for label in stored {
@@ -704,7 +730,7 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
 pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError> {
     // Load before any prompt, so a config file that cannot be loaded stops
     // the wizard before it asks for anything.
-    let mut cfg = crate::config::load_config()?;
+    let cfg = crate::config::load_config()?;
     let mut secrets = PendingSecrets::default();
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
@@ -757,8 +783,9 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
 
     let make_default = confirm_make_default(&cfg, &profile_name)?;
 
-    add_profile(
-        &mut cfg,
+    let stored = finish_wizard(
+        &config_path,
+        &crate::config::OsKeyring,
         &profile_name,
         Profile {
             controller: controller.clone(),
@@ -777,9 +804,8 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
             timeout: None,
         },
         make_default,
-    );
-
-    let stored = secrets.commit(&crate::config::OsKeyring, || save_config(&cfg))?;
+        secrets,
+    )?;
 
     eprintln!();
     for label in stored {
@@ -837,10 +863,62 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        add_profile, cloud_connector_url, likely_self_signed, next_available_profile_name,
-        slugify_profile_name,
+        add_profile, cloud_connector_url, finish_wizard, likely_self_signed,
+        next_available_profile_name, slugify_profile_name,
     };
-    use crate::config::{Config, Profile};
+    use crate::cli::commands::config_cmd::pending_secrets::PendingSecrets;
+    use crate::config::{Config, Profile, SecretStore, SecretStoreError};
+
+    /// A keyring for saves that hold no secrets.
+    struct NoSecrets;
+
+    impl SecretStore for NoSecrets {
+        fn get(&self, _key: &str) -> Result<Option<String>, SecretStoreError> {
+            Ok(None)
+        }
+
+        fn set(&self, _key: &str, _secret: &str) -> Result<(), SecretStoreError> {
+            Ok(())
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), SecretStoreError> {
+            Ok(())
+        }
+    }
+
+    /// A wizard can sit at a prompt for minutes. A profile added from
+    /// another terminal meanwhile must survive the wizard's save.
+    #[test]
+    fn finish_wizard_keeps_changes_made_while_it_ran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_profile = \"work\"\n[profiles.work]\ncontroller = \"https://10.0.0.1\"\n",
+        )
+        .expect("write config");
+        std::fs::write(
+            &path,
+            "default_profile = \"work\"\n[profiles.work]\ncontroller = \"https://10.0.0.1\"\n\
+             [profiles.lab]\ncontroller = \"https://10.0.9.1\"\n",
+        )
+        .expect("change config from another terminal");
+
+        finish_wizard(
+            &path,
+            &NoSecrets,
+            "home",
+            sample_profile(),
+            false,
+            PendingSecrets::default(),
+        )
+        .expect("finish");
+
+        let cfg = crate::config::load_config_from(&path).expect("reload");
+        assert!(cfg.profiles.contains_key("home"));
+        assert!(cfg.profiles.contains_key("work"));
+        assert!(cfg.profiles.contains_key("lab"), "the wizard lost a change");
+    }
 
     fn sample_profile() -> Profile {
         Profile {
