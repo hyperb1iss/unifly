@@ -1813,3 +1813,103 @@ async fn api_key_mode_reports_unsupported_when_integration_api_missing() {
         other => panic!("expected CoreError::Unsupported, got: {other:?}"),
     }
 }
+
+async fn mount_speedtest_route(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api/s/default/cmd/devmgr"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_legacy_envelope()))
+        .mount(server)
+        .await;
+}
+
+async fn speedtest_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == "/api/s/default/cmd/devmgr")
+        .count()
+}
+
+fn legacy_controller(server: &MockServer) -> Controller {
+    Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    ))
+}
+
+#[tokio::test]
+async fn execute_before_connect_fails_fast_and_never_replays() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_speedtest_route(&server).await;
+    let controller = legacy_controller(&server);
+
+    let early = tokio::spawn({
+        let controller = controller.clone();
+        async move {
+            controller
+                .execute(unifly_api::Command::SpeedtestDevice)
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+
+    controller.connect().await.unwrap();
+    let early = timeout(Duration::from_secs(2), early)
+        .await
+        .expect("a command issued before connect must not wait for one")
+        .unwrap();
+    assert!(
+        matches!(early, Err(CoreError::ControllerDisconnected)),
+        "expected ControllerDisconnected, got {early:?}"
+    );
+    assert_eq!(
+        speedtest_requests(&server).await,
+        0,
+        "a command issued before connect must not run once connected"
+    );
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn execute_after_disconnect_fails_fast() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_speedtest_route(&server).await;
+    let controller = legacy_controller(&server);
+
+    controller.connect().await.unwrap();
+    controller
+        .execute(unifly_api::Command::SpeedtestDevice)
+        .await
+        .expect("a connected controller runs commands");
+    controller.disconnect().await;
+
+    let late = timeout(
+        Duration::from_secs(2),
+        controller.execute(unifly_api::Command::SpeedtestDevice),
+    )
+    .await
+    .expect("a command issued after disconnect must not wait for a connection");
+    assert!(
+        matches!(late, Err(CoreError::ControllerDisconnected)),
+        "expected ControllerDisconnected, got {late:?}"
+    );
+
+    controller.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        speedtest_requests(&server).await,
+        1,
+        "only the command issued while connected may reach the controller"
+    );
+    controller.disconnect().await;
+}

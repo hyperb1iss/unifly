@@ -267,12 +267,16 @@ impl Controller {
         // Spawn background tasks
         let mut handles = self.inner.task_handles.lock().await;
 
-        if let Some(rx) = self.inner.command_rx.lock().await.take() {
-            let ctrl = self.clone();
-            handles.push(tokio::spawn(super::runtime::command_processor_task(
-                ctrl, rx,
-            )));
-        }
+        // Each connection gets its own channel. Replacing the sender drops
+        // any previous one, so a command can only ever reach the processor
+        // that serves this connection.
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
+        handles.push(tokio::spawn(super::runtime::command_processor_task(
+            self.clone(),
+            command_rx,
+            child.clone(),
+        )));
+        *self.inner.command_tx.lock().await = Some(command_tx);
 
         let interval_secs = config.refresh_interval_secs;
         if interval_secs > 0 {
@@ -443,6 +447,9 @@ impl Controller {
     /// the connection state to [`Disconnected`](ConnectionState::Disconnected).
     pub async fn disconnect(&self) {
         let _lifecycle = self.inner.lifecycle.lock().await;
+        // Stop accepting commands before the processor goes away. Commands
+        // still queued are dropped with its receiver, which fails them.
+        *self.inner.command_tx.lock().await = None;
         self.inner.cancel_child.lock().await.cancel();
 
         if let Some(handle) = self.inner.ws_handle.lock().await.take() {
@@ -474,12 +481,6 @@ impl Controller {
         *self.inner.session_client.lock().await = None;
         *self.inner.integration_client.lock().await = None;
         *self.inner.site_id.lock().await = None;
-
-        {
-            let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
-            *self.inner.command_tx.lock().await = tx;
-            *self.inner.command_rx.lock().await = Some(rx);
-        }
 
         let _ = self
             .inner
