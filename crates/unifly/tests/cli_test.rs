@@ -645,6 +645,34 @@ fn test_connecting_commands_report_a_config_that_fails_to_load() {
     }
 }
 
+/// `unifly tui` on a config that fails to load reports it as the CLI does
+/// and exits, instead of opening a setup wizard whose save it would refuse.
+#[cfg(all(feature = "tui", not(windows)))]
+#[test]
+fn test_tui_reports_a_config_that_fails_to_load() {
+    let home = TempDir::new().unwrap();
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+    let path = write_config(&home, &broken);
+
+    let output = unifly_cmd_in(home.path())
+        .arg("tui")
+        .arg("--log-file")
+        .arg(home.path().join("tui.log"))
+        .output()
+        .unwrap();
+    let text = combined_output(&output);
+
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains(&path.display().to_string())
+            && text.contains("thirty")
+            && text.contains("unifi::config_error"),
+        "tui should report the load error as the CLI does:\n{text}"
+    );
+    assert!(!text.contains("home-secret-api-key"), "{text}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+}
+
 /// A profile the config does not define is reported as exactly that, with
 /// the profiles it does define. Without a config file the old message
 /// still holds.

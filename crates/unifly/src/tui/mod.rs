@@ -42,7 +42,19 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
 
     let _log_guard = setup_tracing(global.verbose, &args.log_file);
 
-    let loaded_config = demo_fleet::startup_config(global, || config::load_config().ok());
+    // A config that fails to load is reported, not taken for a first run:
+    // the setup wizard would only refuse to save over it.
+    let mut load_error = None;
+    let loaded_config = demo_fleet::startup_config(global, || match config::load_config() {
+        Ok(config) => Some(config),
+        Err(error) => {
+            load_error = Some(error);
+            None
+        }
+    });
+    if let Some(error) = load_error {
+        return Err(error.into());
+    }
     let theme_name = global.theme.as_deref().or_else(|| {
         loaded_config
             .as_ref()
