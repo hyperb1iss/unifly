@@ -6,8 +6,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::json;
 use unifly_api::{Client, Device};
 
-use crate::tui::action::{Action, WifiSortField};
+use crate::tui::action::{Action, WifiSortField, WifiSubTab};
+use crate::tui::component::Component;
 use crate::tui::screens::wifi::WifiScreen;
+use crate::tui::screens::wifi::state::CLIENT_DETAIL_RETRY_INTERVAL;
+use crate::tui::table::render_lines;
 
 fn access_point(id: &str, name: &str) -> Arc<Device> {
     Arc::new(
@@ -189,4 +192,109 @@ fn sorting_from_the_keyboard_keeps_the_selected_ap() {
         screen.selected_ap().and_then(|ap| ap.name.clone()),
         Some("ap-b".to_owned())
     );
+}
+
+const FIRST_IP: &str = "10.40.10.1";
+const SECOND_IP: &str = "10.40.10.2";
+
+/// The Clients tab with two clients on one AP, the first selected and its
+/// detail open (and requested).
+fn client_detail_screen() -> WifiScreen {
+    let mut screen = WifiScreen::new();
+    screen.focused = true;
+    screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![access_point(
+        "01", "ap-a",
+    )])));
+    screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+        wireless_client(1, "aa:bb:cc:dd:ee:01", 80),
+        wireless_client(2, "aa:bb:cc:dd:ee:01", 70),
+    ])));
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
+    let request = screen.handle_key_input(key(KeyCode::Enter));
+    assert!(
+        matches!(request, Some(Action::RequestWifiClientDetail(ref ip)) if ip == FIRST_IP),
+        "{request:?}"
+    );
+    screen
+}
+
+fn detail_loaded(ip: &str, signal: i32) -> Action {
+    Action::WifiClientDetailLoaded {
+        ip: ip.to_owned(),
+        data: Arc::new(json!({ "signal": signal })),
+    }
+}
+
+fn rendered(screen: &WifiScreen) -> String {
+    render_lines(120, 40, |frame, area| screen.render(frame, area)).join("\n")
+}
+
+#[test]
+fn the_client_detail_shows_only_the_selected_clients_data() {
+    let mut screen = client_detail_screen();
+    screen.apply_action(&detail_loaded(FIRST_IP, -42));
+    assert!(rendered(&screen).contains("-42 dBm"));
+
+    screen.handle_key_input(key(KeyCode::Char('j')));
+
+    let shown = rendered(&screen);
+    assert!(!shown.contains("-42 dBm"), "{shown}");
+    assert!(shown.contains("Loading WiFi detail"), "{shown}");
+}
+
+#[test]
+fn a_late_detail_for_the_previous_client_leaves_the_new_request_in_flight() {
+    let mut screen = client_detail_screen();
+    screen.handle_key_input(key(KeyCode::Char('j')));
+    let request = screen.apply_action(&Action::Tick);
+    assert!(
+        matches!(request, Some(Action::RequestWifiClientDetail(ref ip)) if ip == SECOND_IP),
+        "{request:?}"
+    );
+
+    screen.apply_action(&detail_loaded(FIRST_IP, -42));
+
+    let again = screen.apply_action(&Action::Tick);
+    assert!(
+        again.is_none(),
+        "requested the second client twice: {again:?}"
+    );
+}
+
+#[test]
+fn a_failed_client_detail_fetch_is_retried() {
+    let mut screen = client_detail_screen();
+    let failed = || Action::WifiClientDetailFailed {
+        ip: FIRST_IP.to_owned(),
+        error: "wifiman unavailable".to_owned(),
+    };
+
+    let notice = screen.apply_action(&failed());
+    assert!(matches!(notice, Some(Action::Notify(_))), "{notice:?}");
+    assert!(rendered(&screen).contains("WiFi detail unavailable"));
+    assert!(
+        screen.apply_action(&Action::Tick).is_none(),
+        "a failure is not retried at once"
+    );
+
+    screen.client_detail_failure = screen.client_detail_failure.take().map(|(ip, at)| {
+        let earlier = at.checked_sub(CLIENT_DETAIL_RETRY_INTERVAL);
+        (
+            ip,
+            earlier.expect("the clock reaches back one retry interval"),
+        )
+    });
+    let retry = screen.apply_action(&Action::Tick);
+    assert!(
+        matches!(retry, Some(Action::RequestWifiClientDetail(ref ip)) if ip == FIRST_IP),
+        "{retry:?}"
+    );
+
+    let repeat = screen.apply_action(&failed());
+    assert!(
+        repeat.is_none(),
+        "a repeated failure toasts again: {repeat:?}"
+    );
+    screen.apply_action(&detail_loaded(FIRST_IP, -42));
+    assert!(rendered(&screen).contains("-42 dBm"));
 }

@@ -383,6 +383,10 @@ pub enum Action {
         ip: String,
         data: Arc<Value>,
     },
+    WifiClientDetailFailed {
+        ip: String,
+        error: String,
+    },
     WifiRoamHistoryLoaded {
         mac: String,
         events: Arc<Vec<Value>>,

@@ -124,6 +124,7 @@ impl App {
             | Action::WifiNeighborsUpdated(_)
             | Action::WifiChannelsUpdated(_)
             | Action::WifiClientDetailLoaded { .. }
+            | Action::WifiClientDetailFailed { .. }
             | Action::WifiRoamHistoryLoaded { .. }
             | Action::StatsUpdated(_)
             | Action::NetworkEditResult(_) => {

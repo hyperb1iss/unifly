@@ -10,11 +10,12 @@ use unifly_api::{Client, ClientType, Device, DeviceType, EntityId};
 
 use super::WifiScreen;
 use crate::cli::commands::util::order;
-use crate::tui::action::{Action, WifiBand, WifiSortField, WifiSubTab};
+use crate::tui::action::{Action, Notification, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::table::reselect;
 
 pub(super) const NEIGHBOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub(super) const CHANNEL_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
+pub(super) const CLIENT_DETAIL_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Default)]
 pub(super) struct ChannelOccupancy {
@@ -67,6 +68,7 @@ impl WifiScreen {
             client_detail_ip: None,
             client_detail_pending_ip: None,
             client_detail: None,
+            client_detail_failure: None,
             roam_history_mac: None,
             roam_history_pending_mac: None,
             roam_history: Arc::new(Vec::new()),
@@ -105,9 +107,27 @@ impl WifiScreen {
                 self.channels = Arc::clone(channels);
             }
             Action::WifiClientDetailLoaded { ip, data } => {
+                // A response can land after the selection moved on; it
+                // settles only its own request.
+                if self.client_detail_pending_ip.as_ref() == Some(ip) {
+                    self.client_detail_pending_ip = None;
+                }
+                if self.failed_client_detail() == Some(ip) {
+                    self.client_detail_failure = None;
+                }
                 self.client_detail_ip = Some(ip.clone());
-                self.client_detail_pending_ip = None;
                 self.client_detail = Some(Arc::clone(data));
+            }
+            Action::WifiClientDetailFailed { ip, error } => {
+                if self.client_detail_pending_ip.as_ref() == Some(ip) {
+                    self.client_detail_pending_ip = None;
+                }
+                // Retries of a client that keeps failing stay quiet.
+                let repeated = self.failed_client_detail() == Some(ip);
+                self.client_detail_failure = Some((ip.clone(), Instant::now()));
+                if !repeated {
+                    return Some(Action::Notify(Notification::error(error.clone())));
+                }
             }
             Action::WifiRoamHistoryLoaded { mac, events } => {
                 self.roam_history_mac = Some(mac.clone());
@@ -201,9 +221,14 @@ impl WifiScreen {
             && let Some(ip) = self.selected_client_ip()
             && self.client_detail_ip.as_deref() != Some(ip.as_str())
             && self.client_detail_pending_ip.as_deref() != Some(ip.as_str())
+            && !self
+                .client_detail_failure
+                .as_ref()
+                .is_some_and(|(failed, at)| {
+                    failed == &ip && now.duration_since(*at) < CLIENT_DETAIL_RETRY_INTERVAL
+                })
         {
-            self.client_detail_pending_ip = Some(ip.clone());
-            return Some(Action::RequestWifiClientDetail(ip));
+            return Some(self.request_client_detail(ip));
         }
 
         if self.sub_tab == WifiSubTab::Roaming
@@ -219,6 +244,17 @@ impl WifiScreen {
         }
 
         None
+    }
+
+    /// Fetch the WiFi detail of the client at `ip`, marking it in flight.
+    pub(super) fn request_client_detail(&mut self, ip: String) -> Action {
+        self.client_detail_pending_ip = Some(ip.clone());
+        Action::RequestWifiClientDetail(ip)
+    }
+
+    /// The IP of the client whose detail fetch failed last.
+    pub(super) fn failed_client_detail(&self) -> Option<&String> {
+        self.client_detail_failure.as_ref().map(|(ip, _)| ip)
     }
 
     pub(super) fn ap_devices(&self) -> Vec<&Arc<Device>> {

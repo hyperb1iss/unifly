@@ -72,9 +72,10 @@ impl App {
                     });
                 }
                 Err(error) => {
-                    let _ = tx.send(Action::Notify(crate::tui::action::Notification::error(
-                        format!("WiFi client detail: {error}"),
-                    )));
+                    let _ = tx.send(Action::WifiClientDetailFailed {
+                        ip,
+                        error: format!("WiFi client detail: {error}"),
+                    });
                 }
             }
         });

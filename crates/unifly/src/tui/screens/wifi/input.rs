@@ -165,8 +165,8 @@ impl WifiScreen {
                 self.detail_open = !self.detail_open;
                 if self.detail_open {
                     self.focus_client_from_selection();
-                    self.selected_client_ip()
-                        .map(Action::RequestWifiClientDetail)
+                    let ip = self.selected_client_ip()?;
+                    Some(self.request_client_detail(ip))
                 } else {
                     Some(Action::CloseDetail)
                 }

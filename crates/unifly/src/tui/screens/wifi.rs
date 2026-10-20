@@ -44,6 +44,9 @@ pub struct WifiScreen {
     client_detail_ip: Option<String>,
     client_detail_pending_ip: Option<String>,
     client_detail: Option<Arc<Value>>,
+    /// The client whose detail fetch failed last, and when, so the retry
+    /// waits instead of firing on every tick.
+    client_detail_failure: Option<(String, std::time::Instant)>,
     roam_history_mac: Option<String>,
     roam_history_pending_mac: Option<String>,
     roam_history: Arc<Vec<Value>>,
