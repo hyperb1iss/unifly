@@ -205,10 +205,9 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
         return Err(error);
     }
 
-    // On Windows, rename fails if the target exists — remove it first.
-    #[cfg(windows)]
-    let _ = fs::remove_file(path);
-
+    // rename replaces an existing target on every platform (MoveFileExW
+    // with MOVEFILE_REPLACE_EXISTING on Windows), so the cache file is
+    // never missing between the old copy and the new one.
     fs::rename(&staged, path).inspect_err(|_| {
         let _ = fs::remove_file(&staged);
     })
