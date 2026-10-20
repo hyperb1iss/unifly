@@ -180,6 +180,30 @@ async fn detect_platform_treats_dual_401_login_probes_as_unifi_os() {
     assert_eq!(platform, ControllerPlatform::UnifiOs);
 }
 
+#[tokio::test]
+async fn detect_platform_uses_the_transport_tls_mode() {
+    let server = MockServer::start().await;
+    let base_url = Url::parse(&server.uri()).unwrap();
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let transport = TransportConfig {
+        tls: unifly_api::TlsMode::CustomCa("/nonexistent/unifly-test-ca.pem".into()),
+        ..TransportConfig::default()
+    };
+    let err = SessionClient::detect_platform_with_transport(&base_url, &transport)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::Tls(_)),
+        "a CA that cannot be loaded must stop detection, got {err:?}"
+    );
+}
+
 // ── Device tests ────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -593,7 +617,7 @@ async fn test_list_nat_rules_rejects_non_array_body() {
     Mock::given(method("GET"))
         .and(path("/v2/api/site/default/nat"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "error": {"code": 500, "message": "internal error"},
+            "rules": "unexpected",
         })))
         .mount(&server)
         .await;
@@ -602,11 +626,35 @@ async fn test_list_nat_rules_rejects_non_array_body() {
     match result {
         Err(Error::Deserialization { ref body, .. }) => {
             assert!(
-                body.contains("internal error"),
+                body.contains("unexpected"),
                 "expected the raw body in the error, got: {body}"
             );
         }
         other => panic!("expected Deserialization error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_list_nat_rules_surfaces_unifi_os_error_in_200() {
+    let (server, client) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": {"code": 500, "message": "internal error"},
+        })))
+        .mount(&server)
+        .await;
+
+    let result = client.list_nat_rules().await;
+    match result {
+        Err(Error::SessionApi { ref message }) => {
+            assert!(
+                message.contains("internal error"),
+                "expected the controller's message, got: {message}"
+            );
+        }
+        other => panic!("expected SessionApi error, got: {other:?}"),
     }
 }
 
@@ -1242,4 +1290,112 @@ async fn provider_repeating_the_spent_code_sends_no_login() {
     assert!(matches!(error, Error::SessionExpired), "got {error:?}");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     server.verify().await;
+}
+
+// ── UniFi OS errors wrapped in HTTP 200 on raw paths ────────────────
+
+fn unifi_os_error_body() -> serde_json::Value {
+    json!({"error": {"code": 400, "message": "api.err.InvalidPayload"}})
+}
+
+fn assert_unifi_os_error<T: std::fmt::Debug>(result: Result<T, Error>) {
+    match result {
+        Err(Error::SessionApi { message }) => {
+            assert!(
+                message.contains("api.err.InvalidPayload"),
+                "message: {message}"
+            );
+        }
+        other => panic!("expected the wrapped error to surface, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn raw_writes_surface_unifi_os_errors_wrapped_in_200() {
+    let (server, client) = setup().await;
+    Mock::given(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unifi_os_error_body()))
+        .mount(&server)
+        .await;
+    Mock::given(path("/v2/api/site/default/nat/rule-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unifi_os_error_body()))
+        .mount(&server)
+        .await;
+
+    let body = json!({"description": "web"});
+    assert_unifi_os_error(client.create_nat_rule(&body).await);
+    assert_unifi_os_error(client.update_nat_rule("rule-1", &body).await);
+    assert_unifi_os_error(client.delete_nat_rule("rule-1").await);
+    assert_unifi_os_error(
+        client
+            .raw_patch("v2/api/site/default/nat/rule-1", &body)
+            .await,
+    );
+    assert_unifi_os_error(client.raw_get("v2/api/site/default/nat").await);
+}
+
+#[tokio::test]
+async fn raw_get_keeps_a_one_element_array_with_a_code_field() {
+    let (server, client) = setup().await;
+    let rules = json!([{"code": 1, "name": "rule"}]);
+    Mock::given(method("GET"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rules.clone()))
+        .mount(&server)
+        .await;
+
+    let value = client.raw_get("v2/api/site/default/nat").await.unwrap();
+    assert_eq!(value, rules);
+}
+
+#[tokio::test]
+async fn raw_write_captures_a_rotated_csrf_token_for_the_next_write() {
+    let (server, client) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-CSRF-Token", "token-1")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Updated-CSRF-Token", "token-2")
+                .set_body_json(json!({"_id": "rule-1"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v2/api/site/default/nat/rule-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"_id": "rule-1"})))
+        .mount(&server)
+        .await;
+
+    client
+        .login("admin", &secrecy::SecretString::from("pw".to_owned()), None)
+        .await
+        .unwrap();
+    let body = json!({"description": "web"});
+    client.create_nat_rule(&body).await.unwrap();
+    client.update_nat_rule("rule-1", &body).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let csrf_for = |verb: &str| {
+        requests
+            .iter()
+            .find(|request| request.method.as_str() == verb && request.url.path().contains("/nat"))
+            .and_then(|request| request.headers.get("x-csrf-token"))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    assert_eq!(csrf_for("POST").as_deref(), Some("token-1"));
+    assert_eq!(
+        csrf_for("PUT").as_deref(),
+        Some("token-2"),
+        "the write after a rotation must send the rotated token"
+    );
 }

@@ -110,14 +110,15 @@ impl IntegrationClient {
             ordered_firewall_policy_ids: body.clone(),
         };
         let resp = self
-            .http
-            .put(url)
-            .query(&[
-                ("sourceFirewallZoneId", source_zone_id.to_string()),
-                ("destinationFirewallZoneId", destination_zone_id.to_string()),
-            ])
-            .json(&envelope)
-            .send()
+            .send(
+                self.http
+                    .put(url)
+                    .query(&[
+                        ("sourceFirewallZoneId", source_zone_id.to_string()),
+                        ("destinationFirewallZoneId", destination_zone_id.to_string()),
+                    ])
+                    .json(&envelope),
+            )
             .await?;
         let result: types::FirewallPolicyOrderingEnvelope = self.handle_response(resp).await?;
         Ok(result.ordered_firewall_policy_ids)

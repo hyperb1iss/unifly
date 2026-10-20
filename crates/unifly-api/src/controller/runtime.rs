@@ -1,4 +1,5 @@
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::command::CommandEnvelope;
 use crate::model::MacAddress;
@@ -114,12 +115,15 @@ pub(super) fn apply_device_sync(store: &DataStore, data: &DeviceSync) {
 
 /// Process commands from the mpsc channel, routing each to the
 /// appropriate Session API call.
+///
+/// `cancel` is the token of the connection this processor serves. On
+/// cancellation the receiver is dropped along with any queued commands,
+/// whose callers then see the controller as disconnected.
 pub(super) async fn command_processor_task(
     controller: Controller,
     mut rx: mpsc::Receiver<CommandEnvelope>,
+    cancel: CancellationToken,
 ) {
-    let cancel = controller.inner.cancel_child.lock().await.clone();
-
     loop {
         tokio::select! {
             biased;

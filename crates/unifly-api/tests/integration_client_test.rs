@@ -858,3 +858,64 @@ async fn test_error_500_server_error() {
         other => panic!("expected Integration 500 error, got: {other:?}"),
     }
 }
+
+/// A body that is not JSON and has a multi-byte character straddling the
+/// 200-byte preview cut.
+fn non_json_body_split_at_preview_cut() -> String {
+    format!("{}é tail", "x".repeat(199))
+}
+
+#[tokio::test]
+async fn test_undecodable_body_with_multibyte_char_at_preview_cut() {
+    let (server, client) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/integration/v1/info"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(non_json_body_split_at_preview_cut()),
+        )
+        .mount(&server)
+        .await;
+
+    let err = client.get_info().await.unwrap_err();
+    match err {
+        Error::Deserialization { message, body } => {
+            assert!(message.contains("body preview"), "message: {message}");
+            assert_eq!(body, non_json_body_split_at_preview_cut());
+        }
+        other => panic!("expected Deserialization, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_timeout_reports_the_configured_duration() {
+    unifly_api::transport::ensure_crypto_provider();
+    let server = MockServer::start().await;
+    let transport = unifly_api::TransportConfig {
+        timeout: std::time::Duration::from_secs(1),
+        ..Default::default()
+    };
+    let client = IntegrationClient::from_api_key(
+        &server.uri(),
+        &secrecy::SecretString::from("the-key".to_owned()),
+        &transport,
+        ControllerPlatform::ClassicController,
+    )
+    .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/integration/v1/info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"applicationVersion": "10.1.84"}))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let err = client.get_info().await.unwrap_err();
+    assert!(
+        matches!(err, Error::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}

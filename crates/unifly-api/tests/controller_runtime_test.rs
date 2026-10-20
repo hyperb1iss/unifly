@@ -1813,3 +1813,748 @@ async fn api_key_mode_reports_unsupported_when_integration_api_missing() {
         other => panic!("expected CoreError::Unsupported, got: {other:?}"),
     }
 }
+
+async fn mount_speedtest_route(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api/s/default/cmd/devmgr"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_legacy_envelope()))
+        .mount(server)
+        .await;
+}
+
+async fn speedtest_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == "/api/s/default/cmd/devmgr")
+        .count()
+}
+
+fn legacy_controller(server: &MockServer) -> Controller {
+    Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    ))
+}
+
+#[tokio::test]
+async fn execute_before_connect_fails_fast_and_never_replays() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_speedtest_route(&server).await;
+    let controller = legacy_controller(&server);
+
+    let early = tokio::spawn({
+        let controller = controller.clone();
+        async move {
+            controller
+                .execute(unifly_api::Command::SpeedtestDevice)
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+
+    controller.connect().await.unwrap();
+    let early = timeout(Duration::from_secs(2), early)
+        .await
+        .expect("a command issued before connect must not wait for one")
+        .unwrap();
+    assert!(
+        matches!(early, Err(CoreError::ControllerDisconnected)),
+        "expected ControllerDisconnected, got {early:?}"
+    );
+    assert_eq!(
+        speedtest_requests(&server).await,
+        0,
+        "a command issued before connect must not run once connected"
+    );
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn execute_after_disconnect_fails_fast() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_speedtest_route(&server).await;
+    let controller = legacy_controller(&server);
+
+    controller.connect().await.unwrap();
+    controller
+        .execute(unifly_api::Command::SpeedtestDevice)
+        .await
+        .expect("a connected controller runs commands");
+    controller.disconnect().await;
+
+    let late = timeout(
+        Duration::from_secs(2),
+        controller.execute(unifly_api::Command::SpeedtestDevice),
+    )
+    .await
+    .expect("a command issued after disconnect must not wait for a connection");
+    assert!(
+        matches!(late, Err(CoreError::ControllerDisconnected)),
+        "expected ControllerDisconnected, got {late:?}"
+    );
+
+    controller.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        speedtest_requests(&server).await,
+        1,
+        "only the command issued while connected may reach the controller"
+    );
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn status_channels_hold_their_value_without_subscribers() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let controller = legacy_controller(&server);
+
+    controller.connect().await.unwrap();
+
+    assert_eq!(
+        *controller.connection_state().borrow(),
+        unifly_api::ConnectionState::Connected,
+        "a subscriber that arrives after connect must see Connected"
+    );
+    assert!(
+        controller.store().last_full_refresh().is_some(),
+        "the initial refresh must be recorded"
+    );
+    assert!(controller.store().data_age().is_some());
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn failed_connect_publishes_failed_state() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/auth/login"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+
+    controller.connect().await.unwrap_err();
+
+    assert_eq!(
+        *controller.connection_state().borrow(),
+        unifly_api::ConnectionState::Failed,
+        "a failed connect must not leave the state at Connecting"
+    );
+}
+
+/// Connect in API-key mode against a controller whose LAN network has the
+/// given IPv4 configuration, run `update` on it, and return the body the
+/// controller received on the network PUT.
+async fn update_lan_network(
+    ipv4_configuration: serde_json::Value,
+    update: unifly_api::UpdateNetworkRequest,
+) -> Result<serde_json::Value, CoreError> {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    detail["isolationEnabled"] = json!(false);
+    detail["ipv4Configuration"] = ipv4_configuration;
+    let route = integration_route(&format!("networks/{LAN_NETWORK_ID}"));
+    Mock::given(method("GET"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    let result = controller
+        .execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
+            update,
+        })
+        .await;
+    controller.disconnect().await;
+    result?;
+
+    let put = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::PUT && request.url.path() == route
+        })
+        .expect("the update must PUT the network");
+    Ok(serde_json::from_slice(&put.body).unwrap())
+}
+
+fn serving_dhcp_ipv4() -> serde_json::Value {
+    json!({
+        "autoScaleEnabled": false,
+        "hostIpAddress": "10.0.30.1",
+        "prefixLength": 24,
+        "dhcpConfiguration": {
+            "mode": "SERVER",
+            "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            "leaseTimeSeconds": 3600,
+            "pingConflictDetectionEnabled": true,
+        },
+    })
+}
+
+#[tokio::test]
+async fn update_network_writes_subnet_and_disables_dhcp() {
+    let body = update_lan_network(
+        serving_dhcp_ipv4(),
+        unifly_api::UpdateNetworkRequest {
+            subnet: Some("10.0.40.1/23".into()),
+            dhcp_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let ipv4 = &body["ipv4Configuration"];
+    assert_eq!(ipv4["hostIpAddress"], json!("10.0.40.1"));
+    assert_eq!(ipv4["prefixLength"], json!(23));
+    assert_eq!(ipv4["autoScaleEnabled"], json!(false));
+    let mut expected_dhcp = serving_dhcp_ipv4()["dhcpConfiguration"].clone();
+    expected_dhcp["mode"] = json!("NONE");
+    assert_eq!(
+        ipv4["dhcpConfiguration"], expected_dhcp,
+        "turning DHCP off sets mode NONE and keeps the rest"
+    );
+}
+
+#[tokio::test]
+async fn update_network_enables_dhcp_as_a_server() {
+    let body = update_lan_network(
+        json!({
+            "autoScaleEnabled": false,
+            "hostIpAddress": "10.0.30.1",
+            "prefixLength": 24,
+            "dhcpConfiguration": {
+                "mode": "NONE",
+                "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            },
+        }),
+        unifly_api::UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        body["ipv4Configuration"]["dhcpConfiguration"],
+        json!({
+            "mode": "SERVER",
+            "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            "leaseTimeSeconds": 86400,
+            "pingConflictDetectionEnabled": false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn update_network_refuses_to_enable_dhcp_without_a_range() {
+    let err = update_lan_network(
+        json!({"autoScaleEnabled": false, "hostIpAddress": "10.0.30.1", "prefixLength": 24}),
+        unifly_api::UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::ValidationFailed { ref message } if message.contains("range")),
+        "expected a ValidationFailed naming the range, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn update_network_leaves_legacy_dhcp_alone_when_unchanged() {
+    let legacy_ipv4 = json!({
+        "hostIpAddress": "10.0.30.1",
+        "prefixLength": 24,
+        "dhcp": {"server": {"enabled": true, "rangeStart": "10.0.30.100", "rangeStop": "10.0.30.254"}},
+    });
+    let body = update_lan_network(
+        legacy_ipv4.clone(),
+        unifly_api::UpdateNetworkRequest {
+            name: Some("Renamed".into()),
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body["name"], json!("Renamed"));
+    assert_eq!(body["ipv4Configuration"], legacy_ipv4);
+}
+
+#[tokio::test]
+async fn update_network_keeps_a_running_dhcp_server_as_is() {
+    let body = update_lan_network(
+        serving_dhcp_ipv4(),
+        unifly_api::UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body["ipv4Configuration"], serving_dhcp_ipv4());
+}
+
+#[tokio::test]
+async fn update_network_rejects_subnet_without_ipv4_configuration() {
+    let err = update_lan_network(
+        serde_json::Value::Null,
+        unifly_api::UpdateNetworkRequest {
+            subnet: Some("10.0.40.1/24".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::ValidationFailed { .. }),
+        "expected ValidationFailed, got {err:?}"
+    );
+}
+
+/// Run a speed test against a controller whose `cmd/devmgr` route stalls
+/// past a 1 s request timeout.
+async fn stalled_speedtest(api_key: bool) -> CoreError {
+    let server = MockServer::start().await;
+    let devmgr = if api_key {
+        mock_api_key_with_legacy(&server).await;
+        "/proxy/network/api/s/default/cmd/devmgr"
+    } else {
+        mock_legacy_connect(&server, legacy_site_envelope()).await;
+        "/api/s/default/cmd/devmgr"
+    };
+    Mock::given(method("POST"))
+        .and(path(devmgr))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_legacy_envelope())
+                .set_delay(Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let auth = if api_key {
+        AuthCredentials::ApiKey(secret("the-key"))
+    } else {
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        }
+    };
+    let mut config = base_config(
+        Url::parse(&server.uri()).unwrap(),
+        auth,
+        LEGACY_SITE_NAME,
+        false,
+    );
+    config.timeout = Duration::from_secs(1);
+    let controller = Controller::new(config);
+    controller.connect().await.unwrap();
+
+    let err = controller
+        .execute(unifly_api::Command::SpeedtestDevice)
+        .await
+        .unwrap_err();
+    controller.disconnect().await;
+    err
+}
+
+#[tokio::test]
+async fn session_timeout_reports_the_configured_duration() {
+    let err = stalled_speedtest(false).await;
+    assert!(
+        matches!(err, CoreError::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn api_key_session_timeout_reports_the_configured_duration() {
+    let err = stalled_speedtest(true).await;
+    assert!(
+        matches!(err, CoreError::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}
+
+/// An API-key controller whose two login probes answer only after `delay`.
+async fn api_key_controller_with_slow_probes(
+    delay: Duration,
+    request_timeout: Duration,
+) -> (MockServer, Controller) {
+    let server = MockServer::start().await;
+    for (route, status) in [("/api/auth/login", 401), ("/api/login", 404)] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(status).set_delay(delay))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    mock_api_key_with_legacy(&server).await;
+
+    let mut config = base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    );
+    config.timeout = request_timeout;
+    (server, Controller::new(config))
+}
+
+#[tokio::test]
+async fn platform_probes_honour_the_configured_timeout() {
+    let (_server, controller) =
+        api_key_controller_with_slow_probes(Duration::from_secs(10), Duration::from_secs(1)).await;
+
+    let err = timeout(Duration::from_secs(4), controller.connect())
+        .await
+        .expect("platform detection must give up at the request timeout")
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn platform_probes_run_concurrently() {
+    let probe_delay = Duration::from_millis(1500);
+    let (_server, controller) =
+        api_key_controller_with_slow_probes(probe_delay, Duration::from_secs(5)).await;
+
+    let started = std::time::Instant::now();
+    controller.connect().await.unwrap();
+    let elapsed = started.elapsed();
+    controller.disconnect().await;
+
+    // Back to back the probes alone would take 3s.
+    assert!(
+        elapsed < Duration::from_millis(2700),
+        "two {probe_delay:?} probes took {elapsed:?}; they should overlap"
+    );
+}
+
+#[tokio::test]
+async fn nat_create_rejected_in_a_200_is_an_error() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/proxy/network/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": {"code": 400, "message": "api.err.InvalidPayload"}
+        })))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let result = controller
+        .execute(unifly_api::Command::CreateNatPolicy(
+            serde_json::from_value(json!({
+                "name": "web",
+                "type": "destination",
+                "dst_port": "443",
+                "translated_address": "10.0.0.10",
+            }))
+            .unwrap(),
+        ))
+        .await;
+    controller.disconnect().await;
+
+    assert!(
+        matches!(&result, Err(CoreError::Api { message, .. }) if message.contains("InvalidPayload")),
+        "a rejected create must not report success, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    Mock::given(method("GET"))
+        .and(path(integration_route("networks")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "offset": 0,
+            "limit": 200,
+            "count": 1,
+            "totalCount": 1,
+            "data": [network_summary(LAN_NETWORK_ID, "LAN", 1)],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // Shaped as the 10.1.84 spec's IPv4 DHCP configuration describes it.
+    let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    detail["ipv4Configuration"] = json!({
+        "autoScaleEnabled": false,
+        "hostIpAddress": "10.0.30.1",
+        "prefixLength": 24,
+        "dhcpConfiguration": {
+            "mode": "NONE",
+            "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            "leaseTimeSeconds": 3600,
+        },
+    });
+    let route = integration_route(&format!("networks/{LAN_NETWORK_ID}"));
+    Mock::given(method("GET"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let dhcp = network_by_name(&controller, "LAN")
+        .dhcp
+        .clone()
+        .expect("the network reads its DHCP configuration");
+    assert!(!dhcp.enabled);
+    assert_eq!(dhcp.range_start, Some("10.0.30.100".parse().unwrap()));
+    assert_eq!(dhcp.range_stop, Some("10.0.30.254".parse().unwrap()));
+
+    controller
+        .execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
+            update: unifly_api::UpdateNetworkRequest {
+                dhcp_enabled: Some(true),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("a network with a spec-shaped range can turn DHCP on");
+    controller.disconnect().await;
+
+    let put = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::PUT && request.url.path() == route
+        })
+        .expect("the update must PUT the network");
+    let body: serde_json::Value = serde_json::from_slice(&put.body).unwrap();
+    let dhcp_body = &body["ipv4Configuration"]["dhcpConfiguration"];
+    assert_eq!(dhcp_body["mode"], json!("SERVER"));
+    assert_eq!(
+        dhcp_body["ipAddressRange"],
+        json!({"start": "10.0.30.100", "stop": "10.0.30.254"})
+    );
+    assert_eq!(dhcp_body["leaseTimeSeconds"], json!(3600));
+}
+
+#[tokio::test]
+async fn connecting_again_retires_the_previous_connection() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_speedtest_route(&server).await;
+    let mut config = base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    );
+    // Long enough that the refresh task only ever waits on its interval.
+    config.refresh_interval_secs = 3600;
+    let controller = Controller::new(config);
+
+    controller.connect().await.unwrap();
+    controller.connect().await.unwrap();
+    controller
+        .execute(unifly_api::Command::SpeedtestDevice)
+        .await
+        .expect("the second connection serves commands");
+
+    timeout(Duration::from_secs(5), controller.disconnect())
+        .await
+        .expect("disconnect must not wait on the first connection's tasks");
+}
+
+/// A network route that serves back whatever was last PUT to it, the way
+/// the controller stores an update.
+struct StoredNetwork(Arc<std::sync::Mutex<serde_json::Value>>);
+
+impl Respond for StoredNetwork {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let mut stored = self.0.lock().unwrap();
+        if request.method == wiremock::http::Method::PUT {
+            let update: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            for (key, value) in update.as_object().unwrap() {
+                stored[key] = value.clone();
+            }
+        }
+        ResponseTemplate::new(200).set_body_json(stored.clone())
+    }
+}
+
+#[tokio::test]
+async fn dhcp_off_then_on_restores_the_same_server() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    detail["ipv4Configuration"] = serving_dhcp_ipv4();
+    detail["ipv4Configuration"]["dhcpConfiguration"]["dnsServerIpAddressesOverride"] =
+        json!(["1.1.1.1"]);
+    detail["ipv4Configuration"]["dhcpConfiguration"]["domainName"] = json!("lan.example");
+    let original_dhcp = detail["ipv4Configuration"]["dhcpConfiguration"].clone();
+    let stored = Arc::new(std::sync::Mutex::new(detail));
+    Mock::given(path(integration_route(&format!(
+        "networks/{LAN_NETWORK_ID}"
+    ))))
+    .respond_with(StoredNetwork(Arc::clone(&stored)))
+    .mount(&server)
+    .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    let set_dhcp = |enabled: bool| {
+        controller.execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
+            update: unifly_api::UpdateNetworkRequest {
+                dhcp_enabled: Some(enabled),
+                ..Default::default()
+            },
+        })
+    };
+
+    set_dhcp(false).await.expect("DHCP turns off");
+    assert_eq!(
+        stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"]["mode"],
+        json!("NONE")
+    );
+    set_dhcp(true)
+        .await
+        .expect("DHCP turned off through unifly turns back on");
+    controller.disconnect().await;
+
+    assert_eq!(
+        stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"],
+        original_dhcp,
+        "the server comes back with its range, lease, DNS, and domain"
+    );
+}
+
+async fn logout_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == "/api/logout")
+        .count()
+}
+
+#[tokio::test]
+async fn failed_reconnect_leaves_no_stale_clients() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+    assert!(controller.has_session_access().await);
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    controller.connect().await.unwrap_err();
+
+    assert_eq!(
+        *controller.connection_state().borrow(),
+        unifly_api::ConnectionState::Failed
+    );
+    assert!(
+        !controller.has_session_access().await,
+        "a failed reconnect must not leave the old session client installed"
+    );
+    assert!(!controller.has_integration_access().await);
+
+    // The retired cookie session is logged out in the background.
+    timeout(Duration::from_secs(2), async {
+        while logout_requests(&server).await == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the retired session is logged out");
+}

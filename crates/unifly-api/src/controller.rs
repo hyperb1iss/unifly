@@ -68,10 +68,14 @@ pub struct Controller {
 struct ControllerInner {
     config: ControllerConfig,
     store: Arc<DataStore>,
+    /// Created without a receiver; publish with `send_replace`, since
+    /// `send` drops the value while nobody is subscribed.
     connection_state: watch::Sender<ConnectionState>,
     event_tx: broadcast::Sender<Arc<Event>>,
-    command_tx: Mutex<mpsc::Sender<CommandEnvelope>>,
-    command_rx: Mutex<Option<mpsc::Receiver<CommandEnvelope>>>,
+    /// Feeds the command processor of the current connection. `None`
+    /// whenever no processor is running, so a command fails at once
+    /// instead of waiting in a queue nobody reads.
+    command_tx: Mutex<Option<mpsc::Sender<CommandEnvelope>>>,
     cancel: CancellationToken,
     /// Child token for the current connection — cancelled on disconnect,
     /// replaced on reconnect (avoids permanent cancellation).
@@ -100,7 +104,6 @@ impl Controller {
         let store = Arc::new(DataStore::new());
         let (connection_state, _) = watch::channel(ConnectionState::Disconnected);
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_SIZE);
-        let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
         let cancel = CancellationToken::new();
         let cancel_child = cancel.child_token();
 
@@ -110,8 +113,7 @@ impl Controller {
                 store,
                 connection_state,
                 event_tx,
-                command_tx: Mutex::new(command_tx),
-                command_rx: Mutex::new(Some(command_rx)),
+                command_tx: Mutex::new(None),
                 cancel,
                 cancel_child: Mutex::new(cancel_child),
                 session_client: Mutex::new(None),
@@ -142,7 +144,8 @@ impl Controller {
     /// Execute a command against the controller.
     ///
     /// Sends the command through the internal channel to the command
-    /// processor task and awaits the result.
+    /// processor task and awaits the result. Fails with
+    /// [`CoreError::ControllerDisconnected`] when no connection is up.
     pub async fn execute(&self, cmd: Command) -> Result<CommandResult, CoreError> {
         #[cfg(feature = "demo")]
         if let Some(demo) = self.demo_runtime() {
@@ -151,7 +154,13 @@ impl Controller {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        let command_tx = self.inner.command_tx.lock().await.clone();
+        let command_tx = self
+            .inner
+            .command_tx
+            .lock()
+            .await
+            .clone()
+            .ok_or(CoreError::ControllerDisconnected)?;
 
         command_tx
             .send(CommandEnvelope {

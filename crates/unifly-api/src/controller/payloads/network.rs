@@ -1,7 +1,14 @@
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
+use serde_json::{Map, Value};
+
+use crate::command::UpdateNetworkRequest;
 use crate::core_error::CoreError;
 use crate::model::WifiSecurityMode;
+
+/// DHCP lease time used when a request does not name one.
+pub(in super::super) const DEFAULT_DHCP_LEASE_SECS: u32 = 86_400;
 
 pub(in super::super) fn parse_ipv4_cidr(cidr: &str) -> Result<(Ipv4Addr, u8), CoreError> {
     let (host, prefix) = cidr
@@ -25,6 +32,106 @@ pub(in super::super) fn parse_ipv4_cidr(cidr: &str) -> Result<(Ipv4Addr, u8), Co
         });
     }
     Ok((host_ip, prefix_len))
+}
+
+/// Apply the IPv4 parts of a network update (subnet, DHCP server state,
+/// DHCP DNS servers) to the fields of the network as last read.
+///
+/// The Integration API replaces the whole network on update, so these are
+/// written into `ipv4Configuration` alongside everything the controller
+/// returned. A DHCP server is `dhcpConfiguration.mode = "SERVER"`, which
+/// the API requires to carry an `ipAddressRange`. Turning it off sets
+/// `mode = "NONE"`, as network create does, and keeps the range, lease,
+/// and overrides, so turning it back on restores the same server.
+///
+/// `dhcp_serving` is the server state as the network reads back, so a
+/// request that restates it (the TUI form always sends one) changes
+/// nothing, whatever shape the controller described it in.
+pub(in super::super) fn apply_ipv4_update(
+    extra: &mut HashMap<String, Value>,
+    dhcp_serving: bool,
+    update: &UpdateNetworkRequest,
+) -> Result<(), CoreError> {
+    if let Some(cidr) = update.subnet.as_deref() {
+        let (host_ip, prefix_len) = parse_ipv4_cidr(cidr)?;
+        let ipv4 = ipv4_configuration(extra, "subnet")?;
+        ipv4.insert("hostIpAddress".into(), Value::String(host_ip.to_string()));
+        ipv4.insert("prefixLength".into(), Value::from(prefix_len));
+    }
+
+    if let Some(enable) = update.dhcp_enabled
+        && enable != dhcp_serving
+    {
+        let ipv4 = ipv4_configuration(extra, "dhcp_enabled")?;
+        let current = ipv4.get("dhcpConfiguration").and_then(Value::as_object);
+        if enable {
+            let mut dhcp = current.cloned().unwrap_or_default();
+            let range = dhcp.get("ipAddressRange");
+            let bound = |key| {
+                range
+                    .and_then(|range| range.get(key))
+                    .is_some_and(Value::is_string)
+            };
+            if !(bound("start") && bound("stop")) {
+                return Err(CoreError::ValidationFailed {
+                    message: "turning DHCP on needs an address range, and this network has \
+                              none; set the DHCP range on the controller first"
+                        .into(),
+                });
+            }
+            dhcp.insert("mode".into(), Value::String("SERVER".into()));
+            // Relay targets do not belong to a server configuration.
+            dhcp.remove("dhcpServerIpAddresses");
+            dhcp.entry("leaseTimeSeconds")
+                .or_insert_with(|| Value::from(DEFAULT_DHCP_LEASE_SECS));
+            dhcp.entry("pingConflictDetectionEnabled")
+                .or_insert(Value::Bool(false));
+            ipv4.insert("dhcpConfiguration".into(), Value::Object(dhcp));
+        } else if let Some(Value::Object(dhcp)) = ipv4.get_mut("dhcpConfiguration")
+            && dhcp.get("mode").and_then(Value::as_str) == Some("SERVER")
+        {
+            dhcp.insert("mode".into(), Value::String("NONE".into()));
+        } else {
+            return Err(CoreError::ValidationFailed {
+                message: "this network does not describe its DHCP server in \
+                          dhcpConfiguration, so it cannot be turned off here"
+                    .into(),
+            });
+        }
+    }
+
+    if let Some(servers) = update
+        .dhcp
+        .as_ref()
+        .and_then(|dhcp| dhcp.dns_servers.as_ref())
+        && let Some(dhcp) = extra
+            .get_mut("ipv4Configuration")
+            .and_then(|ipv4| ipv4.get_mut("dhcpConfiguration"))
+            .and_then(Value::as_object_mut)
+    {
+        dhcp.insert(
+            "dnsServerIpAddressesOverride".into(),
+            serde_json::json!(servers),
+        );
+    }
+
+    Ok(())
+}
+
+/// The network's `ipv4Configuration`, which only gateway- and
+/// switch-managed networks carry.
+fn ipv4_configuration<'a>(
+    extra: &'a mut HashMap<String, Value>,
+    field: &str,
+) -> Result<&'a mut Map<String, Value>, CoreError> {
+    extra
+        .get_mut("ipv4Configuration")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| CoreError::ValidationFailed {
+            message: format!(
+                "{field} needs a network with an IPv4 configuration (gateway or switch managed)"
+            ),
+        })
 }
 
 fn wifi_security_mode_name(mode: WifiSecurityMode) -> &'static str {
@@ -223,10 +330,120 @@ pub(in super::super) fn build_update_wifi_broadcast_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_create_wifi_broadcast_payload, parse_ipv4_cidr};
-    use crate::command::CreateWifiBroadcastRequest;
+    use std::collections::HashMap;
+
+    use super::{apply_ipv4_update, build_create_wifi_broadcast_payload, parse_ipv4_cidr};
+    use crate::command::{CreateWifiBroadcastRequest, UpdateNetworkRequest};
     use crate::model::WifiSecurityMode;
     use serde_json::json;
+
+    fn relay_network() -> HashMap<String, serde_json::Value> {
+        HashMap::from([(
+            "ipv4Configuration".to_owned(),
+            json!({
+                "hostIpAddress": "10.0.50.1",
+                "prefixLength": 24,
+                "dhcpConfiguration": {
+                    "mode": "RELAY",
+                    "dhcpServerIpAddresses": ["10.0.0.5"],
+                },
+            }),
+        )])
+    }
+
+    #[test]
+    fn dhcp_off_leaves_a_relay_untouched() {
+        let mut extra = relay_network();
+        let update = UpdateNetworkRequest {
+            dhcp_enabled: Some(false),
+            ..Default::default()
+        };
+
+        apply_ipv4_update(&mut extra, false, &update).expect("update applies");
+
+        assert_eq!(extra, relay_network());
+    }
+
+    #[test]
+    fn dhcp_on_turns_a_relay_with_a_range_into_a_server_with_dns() {
+        let mut extra = relay_network();
+        extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"]["ipAddressRange"] =
+            json!({"start": "10.0.50.100", "stop": "10.0.50.200"});
+        let update: UpdateNetworkRequest = serde_json::from_value(json!({
+            "dhcp_enabled": true,
+            "dhcp": {"dns_servers": ["1.1.1.1"]},
+        }))
+        .expect("update deserializes");
+
+        apply_ipv4_update(&mut extra, false, &update).expect("update applies");
+
+        assert_eq!(
+            extra["ipv4Configuration"]["dhcpConfiguration"],
+            json!({
+                "mode": "SERVER",
+                "ipAddressRange": {"start": "10.0.50.100", "stop": "10.0.50.200"},
+                "leaseTimeSeconds": 86400,
+                "pingConflictDetectionEnabled": false,
+                "dnsServerIpAddressesOverride": ["1.1.1.1"],
+            })
+        );
+    }
+
+    #[test]
+    fn dhcp_on_without_a_range_is_refused() {
+        let mut extra = relay_network();
+        let update = UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        };
+
+        assert!(apply_ipv4_update(&mut extra, false, &update).is_err());
+        assert_eq!(extra, relay_network());
+    }
+
+    #[test]
+    fn dhcp_on_with_an_empty_range_is_refused() {
+        for range in [json!(null), json!({}), json!({"start": "10.0.50.100"})] {
+            let mut extra = relay_network();
+            extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"]["ipAddressRange"] =
+                range.clone();
+            let update = UpdateNetworkRequest {
+                dhcp_enabled: Some(true),
+                ..Default::default()
+            };
+
+            assert!(
+                apply_ipv4_update(&mut extra, false, &update).is_err(),
+                "range {range} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn dhcp_off_without_a_dhcp_configuration_is_refused() {
+        let mut extra = HashMap::from([(
+            "ipv4Configuration".to_owned(),
+            json!({"dhcp": {"server": {"enabled": true}}}),
+        )]);
+        let update = UpdateNetworkRequest {
+            dhcp_enabled: Some(false),
+            ..Default::default()
+        };
+
+        assert!(apply_ipv4_update(&mut extra, true, &update).is_err());
+    }
+
+    #[test]
+    fn dhcp_on_needs_an_ipv4_configuration() {
+        let mut extra = HashMap::new();
+        let update = UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        };
+
+        assert!(apply_ipv4_update(&mut extra, false, &update).is_err());
+        assert!(extra.is_empty());
+    }
 
     #[test]
     fn parse_ipv4_cidr_accepts_valid_input() {

@@ -13,6 +13,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -189,32 +190,59 @@ fn simple_hash(s: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// Atomic write: write to a temp file in the same directory, then rename.
+/// Atomic write: stage the data in a new file beside `path`, then rename
+/// it over the target.
 fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let tmp_path = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp_path)?;
-    file.write_all(data)?;
-    file.flush()?;
-
-    // Restrict to owner-only access
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let (staged, mut file) = create_staging_file(path)?;
+    let written = file.write_all(data).and_then(|()| file.flush());
+    drop(file);
+    if let Err(error) = written {
+        let _ = fs::remove_file(&staged);
+        return Err(error);
     }
 
-    drop(file);
+    // rename replaces an existing target on every platform (MoveFileExW
+    // with MOVEFILE_REPLACE_EXISTING on Windows), so the cache file is
+    // never missing between the old copy and the new one.
+    fs::rename(&staged, path).inspect_err(|_| {
+        let _ = fs::remove_file(&staged);
+    })
+}
 
-    // On Windows, rename fails if the target exists — remove it first.
-    #[cfg(windows)]
-    let _ = fs::remove_file(path);
+/// Create the staging file for a write to `path`.
+///
+/// The name is unique to this process and call, so concurrent writers
+/// never share one, and `create_new` refuses any existing entry (a planted
+/// symlink included) instead of following it. On Unix the file is
+/// owner-only from the moment it exists, before the cookie is written.
+fn create_staging_file(path: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    fs::rename(&tmp_path, path)?;
-    Ok(())
+    let name = path
+        .file_name()
+        .map_or_else(|| "session".into(), |name| name.to_string_lossy());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let staged = path.with_file_name(format!(
+        ".{name}.{}.{}.{nanos}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&staged)?;
+    Ok((staged, file))
 }
 
 #[cfg(test)]
@@ -255,6 +283,71 @@ mod tests {
         let loaded = cache.load().expect("cache should load");
         assert_eq!(loaded.0, "TOKEN=abc");
         assert_eq!(loaded.1.as_deref(), Some("csrf123"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_never_writes_through_a_planted_temp_path() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let path = dir.path().join("planted.json");
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "untouched").expect("victim written");
+        std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).expect("symlink");
+        let cache = SessionCache { path };
+
+        cache.save("TOKEN=secret", None, fallback_expiry());
+
+        assert_eq!(fs::read_to_string(&victim).expect("victim"), "untouched");
+        assert_eq!(cache.load().expect("cache loads").0, "TOKEN=secret");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_file_is_owner_only_before_any_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let (staged, file) = create_staging_file(&dir.path().join("mode.json")).expect("staged");
+
+        let mode = file.metadata().expect("metadata").permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "staging file mode {mode:o} is open to others"
+        );
+        drop(file);
+        fs::remove_file(staged).expect("cleanup");
+    }
+
+    #[test]
+    fn concurrent_saves_leave_one_whole_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let path = dir.path().join("shared.json");
+
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let cache = SessionCache { path: path.clone() };
+                scope.spawn(move || {
+                    for round in 0..25 {
+                        let cookie = format!("TOKEN={writer}-{round}-{}", "x".repeat(4096));
+                        cache.save(&cookie, Some("csrf"), fallback_expiry());
+                    }
+                });
+            }
+        });
+
+        let cache = SessionCache { path };
+        assert!(cache.load().expect("cache loads").0.starts_with("TOKEN="));
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name != "shared.json")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging files left behind: {leftovers:?}"
+        );
     }
 
     #[test]

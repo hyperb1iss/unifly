@@ -45,7 +45,6 @@ impl Controller {
         self.connect_with_refresh(false).await
     }
 
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn connect_with_refresh(&self, initial_refresh: bool) -> Result<(), CoreError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
 
@@ -54,14 +53,58 @@ impl Controller {
             return self.demo_connect(std::sync::Arc::clone(demo)).await;
         }
 
-        let _ = self
-            .inner
+        self.inner
             .connection_state
-            .send(ConnectionState::Connecting);
+            .send_replace(ConnectionState::Connecting);
+        let result = self.establish_connection(initial_refresh).await;
+        if result.is_err() {
+            // Whatever the failed attempt installed is not a connection.
+            self.retire_clients().await;
+            self.inner
+                .connection_state
+                .send_replace(ConnectionState::Failed);
+        }
+        result
+    }
 
-        // Fresh child token for this connection (supports reconnect).
+    /// Drop the installed clients, logging a cookie session out in the
+    /// background so a reconnect does not wait on it.
+    async fn retire_clients(&self) {
+        let session = self.inner.session_client.lock().await.take();
+        *self.inner.integration_client.lock().await = None;
+        *self.inner.site_id.lock().await = None;
+
+        if let Some(session) = session
+            && logs_out_on_close(&self.inner.config)
+        {
+            tokio::spawn(async move {
+                if let Err(error) = session.logout().await {
+                    debug!(error = %error, "logout of retired session failed (non-fatal)");
+                }
+            });
+        }
+    }
+
+    /// Authenticate, load the initial snapshot, and start the background
+    /// tasks. Runs under the lifecycle lock held by the caller.
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+    async fn establish_connection(&self, initial_refresh: bool) -> Result<(), CoreError> {
+        // Fresh child token for this connection (supports reconnect). A
+        // connection still running is retired first: its tasks hold the
+        // old token, and left running they would outlive it, and make the
+        // next disconnect wait on them forever.
         let child = self.inner.cancel.child_token();
-        *self.inner.cancel_child.lock().await = child.clone();
+        let previous = std::mem::replace(&mut *self.inner.cancel_child.lock().await, child.clone());
+        *self.inner.command_tx.lock().await = None;
+        previous.cancel();
+        if let Some(handle) = self.inner.ws_handle.lock().await.take() {
+            handle.shutdown();
+        }
+        let stale: Vec<_> = self.inner.task_handles.lock().await.drain(..).collect();
+        for handle in stale {
+            let _ = handle.await;
+        }
+        self.retire_clients().await;
 
         let config = &self.inner.config;
         let transport = build_transport(config);
@@ -69,7 +112,8 @@ impl Controller {
         match &config.auth {
             AuthCredentials::ApiKey(api_key) => {
                 // Detect platform so we use the right URL prefix
-                let platform = SessionClient::detect_platform(&config.url).await?;
+                let platform =
+                    SessionClient::detect_platform_with_transport(&config.url, &transport).await?;
                 debug!(?platform, "detected controller platform");
 
                 // Integration API client (preferred)
@@ -128,12 +172,14 @@ impl Controller {
                     resolved.slug,
                     platform,
                     crate::session::client::SessionAuth::ApiKey,
-                );
+                )
+                .with_request_timeout(transport.timeout);
                 *self.inner.session_client.lock().await = Some(Arc::new(session));
             }
             AuthCredentials::Credentials { username, password } => {
                 // Session-only auth
-                let platform = SessionClient::detect_platform(&config.url).await?;
+                let platform =
+                    SessionClient::detect_platform_with_transport(&config.url, &transport).await?;
                 debug!(?platform, "detected controller platform");
 
                 let client = SessionClient::new(
@@ -163,7 +209,8 @@ impl Controller {
                 password,
             } => {
                 // Hybrid: both Integration API (API key) and Session API (session auth)
-                let platform = SessionClient::detect_platform(&config.url).await?;
+                let platform =
+                    SessionClient::detect_platform_with_transport(&config.url, &transport).await?;
                 debug!(?platform, "detected controller platform (hybrid)");
 
                 // Integration API client
@@ -267,12 +314,16 @@ impl Controller {
         // Spawn background tasks
         let mut handles = self.inner.task_handles.lock().await;
 
-        if let Some(rx) = self.inner.command_rx.lock().await.take() {
-            let ctrl = self.clone();
-            handles.push(tokio::spawn(super::runtime::command_processor_task(
-                ctrl, rx,
-            )));
-        }
+        // Each connection gets its own channel. Replacing the sender drops
+        // any previous one, so a command can only ever reach the processor
+        // that serves this connection.
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
+        handles.push(tokio::spawn(super::runtime::command_processor_task(
+            self.clone(),
+            command_rx,
+            child.clone(),
+        )));
+        *self.inner.command_tx.lock().await = Some(command_tx);
 
         let interval_secs = config.refresh_interval_secs;
         if interval_secs > 0 {
@@ -303,7 +354,9 @@ impl Controller {
             )));
         }
 
-        let _ = self.inner.connection_state.send(ConnectionState::Connected);
+        self.inner
+            .connection_state
+            .send_replace(ConnectionState::Connected);
         info!("connected to controller");
         Ok(())
     }
@@ -443,6 +496,9 @@ impl Controller {
     /// the connection state to [`Disconnected`](ConnectionState::Disconnected).
     pub async fn disconnect(&self) {
         let _lifecycle = self.inner.lifecycle.lock().await;
+        // Stop accepting commands before the processor goes away. Commands
+        // still queued are dropped with its receiver, which fails them.
+        *self.inner.command_tx.lock().await = None;
         self.inner.cancel_child.lock().await.cancel();
 
         if let Some(handle) = self.inner.ws_handle.lock().await.take() {
@@ -456,15 +512,7 @@ impl Controller {
 
         let session = self.inner.session_client.lock().await.clone();
 
-        // Skip logout when session caching is active — we want the
-        // session cookie to survive for the next CLI invocation.
-        let cache_active = build_session_cache(&self.inner.config).is_some();
-
-        if !cache_active
-            && matches!(
-                self.inner.config.auth,
-                AuthCredentials::Credentials { .. } | AuthCredentials::Hybrid { .. }
-            )
+        if logs_out_on_close(&self.inner.config)
             && let Some(client) = session
             && let Err(error) = client.logout().await
         {
@@ -475,18 +523,22 @@ impl Controller {
         *self.inner.integration_client.lock().await = None;
         *self.inner.site_id.lock().await = None;
 
-        {
-            let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
-            *self.inner.command_tx.lock().await = tx;
-            *self.inner.command_rx.lock().await = Some(rx);
-        }
-
-        let _ = self
-            .inner
+        self.inner
             .connection_state
-            .send(ConnectionState::Disconnected);
+            .send_replace(ConnectionState::Disconnected);
         debug!("disconnected");
     }
+}
+
+/// Whether closing a connection should log its cookie session out. Not
+/// with session caching active: the cookie has to survive for the next
+/// CLI invocation.
+fn logs_out_on_close(config: &crate::config::ControllerConfig) -> bool {
+    build_session_cache(config).is_none()
+        && matches!(
+            config.auth,
+            AuthCredentials::Credentials { .. } | AuthCredentials::Hybrid { .. }
+        )
 }
 
 /// Where the connect-time login gets a TOTP code if the controller asks

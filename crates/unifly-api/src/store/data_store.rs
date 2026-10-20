@@ -36,6 +36,8 @@ pub struct DataStore {
     pub(crate) events: EntityCollection<Event>,
     pub(crate) traffic_matching_lists: EntityCollection<TrafficMatchingList>,
     pub(crate) firewall_groups: EntityCollection<FirewallGroup>,
+    // These senders are created without a receiver, and `send` discards
+    // the value when nobody is subscribed. Publish with `send_replace`.
     pub(crate) site_health: watch::Sender<Arc<Vec<HealthSummary>>>,
     pub(crate) last_full_refresh: watch::Sender<Option<DateTime<Utc>>>,
     pub(crate) last_ws_event: watch::Sender<Option<DateTime<Utc>>>,
@@ -241,7 +243,7 @@ impl DataStore {
     }
 
     pub(crate) fn mark_ws_event(&self, timestamp: DateTime<Utc>) {
-        let _ = self.last_ws_event.send(Some(timestamp));
+        self.last_ws_event.send_replace(Some(timestamp));
     }
 
     /// How long ago the last full refresh occurred, or `None` if never refreshed.
@@ -253,5 +255,22 @@ impl DataStore {
 impl Default for DataStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::DataStore;
+
+    #[test]
+    fn ws_event_mark_is_kept_without_subscribers() {
+        let store = DataStore::new();
+        let seen = Utc::now();
+
+        store.mark_ws_event(seen);
+
+        assert_eq!(store.last_ws_event(), Some(seen));
     }
 }
