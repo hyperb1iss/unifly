@@ -292,36 +292,216 @@ fn render_json<T: serde::Serialize + ?Sized>(data: &T, compact: bool) -> String 
 
 /// YAML output.
 ///
-/// After serialisation, quotes any unquoted scalar values that contain
-/// colons so the output is safe for YAML 1.1 parsers (which interpret
-/// colon-separated digits as sexagesimal numbers).
+/// serde_yaml_ng emits YAML 1.2, where a bare `12:34:56` is a string, but
+/// YAML 1.1 readers such as PyYAML read colon-separated digits as a base-60
+/// number. Single-line strings that contain a colon therefore come out
+/// single-quoted. The emitter picks scalar styles itself, so those strings
+/// go in as unique plain placeholders and are swapped for their quoted form
+/// afterwards: the choice is made on values, never by re-parsing lines.
 pub(crate) fn render_yaml<T: serde::Serialize + ?Sized>(data: &T) -> String {
-    let raw = serde_yaml_ng::to_string(data).expect("serialization should not fail");
-    quote_yaml_colons(&raw)
+    yaml_with_quoted_colons(data).expect("serialization should not fail")
 }
 
-/// Find unquoted YAML values that contain `:` and wrap them in single quotes.
-fn quote_yaml_colons(yaml: &str) -> String {
-    let mut out = String::with_capacity(yaml.len());
-    for line in yaml.lines() {
-        // Only touch "key: value" lines where the value is a bare
-        // (unquoted) string containing at least one colon.
-        if let Some(colon_pos) = line.find(": ") {
-            let value = &line[colon_pos + 2..];
-            let needs_quoting =
-                value.contains(':') && !value.starts_with('\'') && !value.starts_with('"');
-            if needs_quoting {
-                out.push_str(&line[..colon_pos + 2]);
-                out.push('\'');
-                out.push_str(value);
-                out.push('\'');
-            } else {
-                out.push_str(line);
-            }
-        } else {
-            out.push_str(line);
+const PLACEHOLDER_END: char = '_';
+
+/// Longest key worth quoting. The emitter writes longer keys in the explicit
+/// `? key` form, which a single-quoted replacement must not turn back into
+/// an implicit key past YAML's length limit.
+const MAX_QUOTED_KEY_LEN: usize = 128;
+
+fn yaml_with_quoted_colons<T: serde::Serialize + ?Sized>(
+    data: &T,
+) -> Result<String, serde_yaml_ng::Error> {
+    // Emit first and read the text back: `to_value` would widen an f32 such
+    // as 2.4 into 2.4000000953674316, while the emitter writes it short.
+    let mut value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&serde_yaml_ng::to_string(data)?)?;
+    let marker = placeholder_marker(&value);
+    let mut originals = Vec::new();
+    stash_colon_strings(&mut value, &marker, &mut originals);
+    let yaml = serde_yaml_ng::to_string(&value)?;
+    Ok(restore_quoted(&yaml, &marker, &originals))
+}
+
+/// A placeholder prefix that no key or string in `value` contains, so every
+/// occurrence in the emitted text is one this module inserted.
+fn placeholder_marker(value: &serde_yaml_ng::Value) -> String {
+    let mut attempt = 0_u32;
+    loop {
+        let marker = format!("uniflyq{attempt}x");
+        if !contains_text(value, &marker) {
+            return marker;
         }
-        out.push('\n');
+        attempt += 1;
     }
+}
+
+fn contains_text(value: &serde_yaml_ng::Value, needle: &str) -> bool {
+    use serde_yaml_ng::Value;
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Sequence(items) => items.iter().any(|item| contains_text(item, needle)),
+        Value::Mapping(map) => map
+            .iter()
+            .any(|(key, item)| contains_text(key, needle) || contains_text(item, needle)),
+        Value::Tagged(tagged) => contains_text(&tagged.value, needle),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
+/// Whether `text` should be emitted single-quoted. Multi-line strings stay
+/// with the emitter, which writes them as block scalars that no reader
+/// types, and so do strings a single-quoted scalar cannot carry verbatim.
+fn wants_single_quotes(text: &str) -> bool {
+    text.contains(':')
+        && text.chars().all(|c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{FEFF}' | '\u{FFFE}' | '\u{FFFF}'
+                )
+        })
+}
+
+fn stash_colon_strings(
+    value: &mut serde_yaml_ng::Value,
+    marker: &str,
+    originals: &mut Vec<String>,
+) {
+    use serde_yaml_ng::Value;
+    match value {
+        Value::String(text) if wants_single_quotes(text) => {
+            let placeholder = format!("{marker}{}{PLACEHOLDER_END}", originals.len());
+            originals.push(std::mem::replace(text, placeholder));
+        }
+        Value::Sequence(items) => {
+            for item in items {
+                stash_colon_strings(item, marker, originals);
+            }
+        }
+        Value::Mapping(map) => {
+            let entries = std::mem::take(map);
+            for (mut key, mut item) in entries {
+                if key
+                    .as_str()
+                    .is_none_or(|text| text.len() <= MAX_QUOTED_KEY_LEN)
+                {
+                    stash_colon_strings(&mut key, marker, originals);
+                }
+                stash_colon_strings(&mut item, marker, originals);
+                map.insert(key, item);
+            }
+        }
+        Value::Tagged(tagged) => stash_colon_strings(&mut tagged.value, marker, originals),
+        Value::String(_) | Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn restore_quoted(yaml: &str, marker: &str, originals: &[String]) -> String {
+    let mut out = String::with_capacity(yaml.len());
+    let mut rest = yaml;
+    while let Some(start) = rest.find(marker) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + marker.len()..];
+        let (digits, tail) = after.split_at(after.bytes().take_while(u8::is_ascii_digit).count());
+        let original = digits.parse::<usize>().ok().and_then(|i| originals.get(i));
+        if let (Some(original), Some(tail)) = (original, tail.strip_prefix(PLACEHOLDER_END)) {
+            out.push('\'');
+            out.push_str(&original.replace('\'', "''"));
+            out.push('\'');
+            rest = tail;
+        } else {
+            out.push_str(marker);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::render_yaml;
+
+    fn round_trip(value: &serde_json::Value) -> String {
+        let yaml = render_yaml(value);
+        let parsed: serde_json::Value = serde_yaml_ng::from_str(&yaml)
+            .unwrap_or_else(|err| panic!("invalid YAML ({err}):\n{yaml}"));
+        assert_eq!(&parsed, value, "YAML did not round-trip:\n{yaml}");
+        yaml
+    }
+
+    #[test]
+    fn yaml_escapes_apostrophes_in_quoted_colon_values() {
+        round_trip(&json!({ "name": "Bob's AP:5G", "nested": [{ "ssid": "o'k:3" }] }));
+    }
+
+    #[test]
+    fn yaml_leaves_block_scalar_content_alone() {
+        round_trip(&json!({ "note": "line one\nkey: x:y\n  indented: a:b\nlast" }));
+    }
+
+    #[test]
+    fn yaml_handles_keys_the_emitter_quotes() {
+        round_trip(&json!({ "quoted key: x": "v:1", "12:30": "noon:ish" }));
+    }
+
+    #[test]
+    fn yaml_quotes_colon_scalars_for_yaml_1_1_readers() {
+        let yaml = round_trip(&json!({
+            "mac": "12:34:56:01:02:03",
+            "times": ["12:30", "plain"],
+            "url": "http://example.com:8080/x",
+        }));
+        assert!(yaml.contains("mac: '12:34:56:01:02:03'"), "{yaml}");
+        assert!(yaml.contains("- '12:30'"), "{yaml}");
+        assert!(yaml.contains("- plain"), "{yaml}");
+        assert!(yaml.contains("url: 'http://example.com:8080/x'"), "{yaml}");
+    }
+
+    #[test]
+    fn yaml_placeholders_never_collide_with_data() {
+        round_trip(&json!({
+            "a": "uniflyq0x0_",
+            "b": "uniflyq0x0_:",
+            "c": "time 10:00",
+            "d": ["uniflyq1x", "x:y"],
+        }));
+    }
+
+    #[test]
+    fn yaml_keeps_single_precision_floats_short() {
+        #[derive(serde::Serialize)]
+        struct Radio {
+            frequency_ghz: f32,
+            bands: Vec<f32>,
+        }
+        let yaml = render_yaml(&Radio {
+            frequency_ghz: 2.4,
+            bands: vec![5.0, 6.0],
+        });
+        assert_eq!(yaml, "frequency_ghz: 2.4\nbands:\n- 5.0\n- 6.0\n");
+    }
+
+    #[test]
+    fn yaml_handles_keys_too_long_to_be_implicit() {
+        let key = format!("{}:x", "k".repeat(1021));
+        round_trip(&json!({ key: "v:1" }));
+    }
+
+    #[test]
+    fn yaml_keeps_struct_field_order() {
+        #[derive(serde::Serialize)]
+        struct Row {
+            zeta: &'static str,
+            alpha: &'static str,
+        }
+        let yaml = render_yaml(&Row {
+            zeta: "a:b",
+            alpha: "c",
+        });
+        assert_eq!(yaml, "zeta: 'a:b'\nalpha: c\n");
+    }
 }
