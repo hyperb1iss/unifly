@@ -113,21 +113,7 @@ async fn watch_events(
                             }
                         }
 
-                        let line = match format {
-                            OutputFormat::Json | OutputFormat::JsonCompact => {
-                                serde_json::to_string(&*event)
-                                    .unwrap_or_else(|_| format!("{event:?}"))
-                            }
-                            OutputFormat::Yaml => {
-                                serde_yaml_ng::to_string(&*event)
-                                    .unwrap_or_else(|_| format!("{event:?}"))
-                            }
-                            _ => {
-                                let time = event.timestamp.format("%H:%M:%S");
-                                let cat = format!("{:?}", event.category);
-                                format!("{time}  [{cat}]  {}", event.message)
-                            }
-                        };
+                        let line = watch_line(&event, format);
 
                         if writeln!(stdout, "{line}").is_err() {
                             break; // Broken pipe
@@ -143,4 +129,74 @@ async fn watch_events(
     }
 
     Ok(())
+}
+
+/// One streamed event in the selected format, without a trailing newline.
+fn watch_line(event: &Event, format: &OutputFormat) -> String {
+    match format {
+        OutputFormat::Json | OutputFormat::JsonCompact => {
+            serde_json::to_string(event).unwrap_or_else(|_| format!("{event:?}"))
+        }
+        // Each event is its own document, so the stream stays valid YAML.
+        OutputFormat::Yaml => {
+            let yaml = output::render_yaml(event);
+            // Drop only the final newline: earlier ones can belong to a
+            // block scalar that keeps its trailing line breaks.
+            format!("---\n{}", yaml.strip_suffix('\n').unwrap_or(&yaml))
+        }
+        _ => {
+            let time = event.timestamp.format("%H:%M:%S");
+            let cat = format!("{:?}", event.category);
+            format!("{time}  [{cat}]  {}", event.message)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use unifly_api::Event;
+
+    use super::watch_line;
+    use crate::cli::args::OutputFormat;
+
+    fn event(message: &str) -> Event {
+        serde_json::from_value(json!({
+            "id": null,
+            "timestamp": "2026-03-18T15:30:00Z",
+            "category": "Client",
+            "severity": "Info",
+            "event_type": "EVT_WU_Connected",
+            "message": message,
+            "device_mac": "12:34:56:01:02:03",
+            "client_mac": null,
+            "site_id": null,
+            "raw_key": null,
+        }))
+        .expect("event fixture")
+    }
+
+    #[test]
+    fn yaml_watch_stream_is_one_document_per_event() {
+        let mut last = event("trailing block");
+        last.raw_key = Some("kept\n\n".into());
+        let events = [event("first: joined"), event("second's turn"), last];
+        let mut stream = String::new();
+        for event in &events {
+            stream.push_str(&watch_line(event, &OutputFormat::Yaml));
+            stream.push('\n');
+        }
+
+        let documents: Vec<serde_json::Value> = serde_yaml_ng::Deserializer::from_str(&stream)
+            .map(|document| {
+                serde::Deserialize::deserialize(document)
+                    .unwrap_or_else(|err| panic!("invalid YAML stream ({err}):\n{stream}"))
+            })
+            .collect();
+        let expected: Vec<serde_json::Value> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).expect("event serializes"))
+            .collect();
+        assert_eq!(documents, expected, "{stream}");
+    }
 }

@@ -52,8 +52,9 @@ verification over an insecure profile/default; bare `-k` disables it.
 
 Connection environment variables use `UNIFI_` (for example `UNIFI_URL`,
 `UNIFI_API_KEY`, `UNIFI_USERNAME`, `UNIFI_PASSWORD`, `UNIFI_SITE`,
-`UNIFI_HOST_ID`, `UNIFI_TIMEOUT`, and `UNIFI_INSECURE`). Use `true` or `false`
-for the insecure override. The theme variable is `UNIFLY_THEME`.
+`UNIFI_HOST_ID`, `UNIFI_TIMEOUT`, and `UNIFI_INSECURE`). The insecure
+override takes `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`. The theme
+variable is `UNIFLY_THEME`.
 `UNIFI_DEMO_FLEET` and `UNIFI_DEMO_SEED` switch to the synthetic demo fleet,
 which never reads configuration; see `unifly skill commands`.
 
@@ -108,8 +109,9 @@ controller response or current snapshot.
 Ordinary list filters run locally against serialized field names and
 support one expression: `field.eq('value')`, `field.contains('value')`, or
 `field.in('a','b')`. Equality and substring matching ignore case. Boolean
-combinators and range comparisons are unsupported. Invalid expressions
-can produce an empty result with exit status zero, so verify the filter
+combinators and range comparisons are unsupported. A malformed expression
+is a usage error (exit 2). A well-formed expression naming a field the JSON
+output lacks matches nothing with exit status zero, so verify field names
 before concluding the collection is empty. The filter on `hotspot purge`
 instead goes to the controller's Integration filter DSL.
 

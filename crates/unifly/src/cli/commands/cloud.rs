@@ -42,6 +42,7 @@ pub(crate) fn build_site_manager_client(
 
     let api_key = resolve_cloud_api_key(profile.as_ref(), &profile_name, global)?;
     let controller = resolve_site_manager_url(profile.as_ref(), global);
+    super::util::require_http_url(&controller)?;
     let transport = cloud_transport(
         global,
         profile.as_ref().and_then(|p| p.timeout),
@@ -69,6 +70,7 @@ pub(crate) async fn build_cloud_integration_client(
 ) -> Result<IntegrationClient, CliError> {
     let api_key = resolve_cloud_api_key(Some(profile), profile_name, global)?;
     let controller = resolve_site_manager_url(Some(profile), global);
+    super::util::require_http_url(&controller)?;
     let transport = cloud_transport(global, profile.timeout, defaults_timeout);
     let host_id = if let Some(host_id) = &global.host_id {
         host_id.clone()
@@ -132,9 +134,7 @@ pub(crate) fn resolve_cloud_api_key(
         return Ok(SecretString::from(api_key.clone()));
     }
 
-    let profile = profile.ok_or_else(|| CliError::NoCredentials {
-        profile: profile_name.to_owned(),
-    })?;
+    let profile = profile.ok_or_else(CliError::no_cloud_api_key)?;
 
     config::resolve_api_key(profile, profile_name).map_err(CliError::from)
 }

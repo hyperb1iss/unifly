@@ -62,6 +62,10 @@ fn unifly_cmd_in(config_home: &std::path::Path) -> assert_cmd::Command {
 }
 
 fn written_config(tempdir: &TempDir) -> String {
+    std::fs::read_to_string(config_file(tempdir)).unwrap()
+}
+
+fn config_file(tempdir: &TempDir) -> std::path::PathBuf {
     let candidates = [
         tempdir.path().join("unifly").join("config.toml"),
         tempdir
@@ -72,12 +76,10 @@ fn written_config(tempdir: &TempDir) -> String {
             .join("config.toml"),
     ];
 
-    let path = candidates
+    candidates
         .into_iter()
         .find(|candidate| candidate.exists())
-        .expect("config file should be written to one of the platform config directories");
-
-    std::fs::read_to_string(path).unwrap()
+        .expect("config file should be written to one of the platform config directories")
 }
 
 /// Concatenate stdout + stderr from a command output for flexible matching.
@@ -385,6 +387,102 @@ fn test_config_set_bare_key_still_targets_active_profile() {
     );
 }
 
+/// Write a session-auth profile named `name` into an isolated config dir.
+fn write_session_profile(config_home: &std::path::Path, name: &str, controller: &str) {
+    for (key, value) in [("controller", controller), ("auth_mode", "session")] {
+        unifly_cmd_in(config_home)
+            .args(["config", "set", &format!("profiles.{name}.{key}"), value])
+            .assert()
+            .success();
+    }
+}
+
+/// stderr with whitespace collapsed, since miette wraps help text.
+fn squeezed_stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn test_missing_credentials_get_the_hint_that_fixes_them() {
+    // Ad-hoc flags without a key: the fix is a key, not a profile secret.
+    let output = unifly_cmd()
+        .args(["-c", "https://127.0.0.1:9", "devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = squeezed_stderr(&output);
+    assert!(stderr.contains("--api-key"), "{stderr}");
+    assert!(stderr.contains("UNIFI_API_KEY"), "{stderr}");
+    assert!(!stderr.contains("set-password"), "{stderr}");
+
+    // A session profile without a username needs one, then a password.
+    // Session auth without a username fails before any keyring lookup.
+    for name in ["lab", "my lab"] {
+        let tempdir = tempfile::tempdir().unwrap();
+        write_session_profile(tempdir.path(), name, "https://127.0.0.1:9");
+        let output = unifly_cmd_in(tempdir.path())
+            .args(["-p", name, "devices", "list"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{}",
+            combined_output(&output)
+        );
+        let stderr = squeezed_stderr(&output);
+        let quoted = if name.contains(' ') {
+            format!("'{name}'")
+        } else {
+            name.to_owned()
+        };
+        assert!(
+            stderr.contains(&format!("No credentials configured for profile '{name}'")),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("unifly -p {quoted} config set username")),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("unifly config set-password {quoted}")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("UNIFI_API_KEY"), "{stderr}");
+        assert!(!stderr.contains("cloud-setup"), "{stderr}");
+    }
+}
+
+#[test]
+fn test_profile_validation_errors_are_usage_errors() {
+    let tempdir = tempfile::tempdir().unwrap();
+    write_session_profile(tempdir.path(), "lab", "https://127.0.0.1:9");
+    let path = config_file(&tempdir);
+    let cfg = std::fs::read_to_string(&path).unwrap();
+    let cfg = cfg.replace(
+        "[profiles.lab]\n",
+        "[profiles.lab]\ntotp_command = [\"\"]\n",
+    );
+    std::fs::write(&path, cfg).unwrap();
+
+    unifly_cmd_in(tempdir.path())
+        .env("UNIFI_USERNAME", "admin")
+        .env("UNIFI_PASSWORD", "test-password")
+        .args(["-p", "lab", "devices", "list"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("Invalid value for totp_command"));
+}
+
 #[test]
 fn test_config_set_help_mentions_profile_dot_path() {
     unifly_cmd()
@@ -560,7 +658,14 @@ fn test_api_command_rejects_invalid_method() {
 fn test_devices_pending_list_flags_parse() {
     unifly_cmd()
         .args([
-            "devices", "pending", "--limit", "1", "--offset", "1", "--filter", "pending",
+            "devices",
+            "pending",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+            "--filter",
+            "state.eq('pending')",
         ])
         .assert()
         .failure()
@@ -584,6 +689,59 @@ fn test_devices_list_supports_expression_filter_syntax() {
                 .or(predicate::str::contains("controller"))
                 .or(predicate::str::contains("profile")),
         );
+}
+
+#[test]
+fn test_unparseable_filter_is_a_usage_error() {
+    for filter in [
+        "garbage((",
+        "name.starts_with('x')",
+        "name.eq('a','b')",
+        "name",
+    ] {
+        unifly_cmd()
+            .args([
+                "--demo-fleet",
+                "clients",
+                "list",
+                "-o",
+                "json",
+                "--filter",
+                filter,
+            ])
+            .assert()
+            .failure()
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("--filter"));
+    }
+}
+
+#[test]
+fn test_quiet_silences_the_truncation_hint() {
+    unifly_cmd()
+        .args(["--demo-fleet", "clients", "list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Showing 25 of"));
+    unifly_cmd()
+        .args(["--demo-fleet", "-q", "clients", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn test_valid_filter_still_matches_on_the_demo_fleet() {
+    let devices = demo_json(&["devices", "list", "--filter", "name.eq('AP-ROOF')"]);
+    let names: Vec<&str> = devices
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|device| device["name"].as_str())
+        .collect();
+    assert_eq!(names, ["ap-roof"]);
 }
 
 #[test]
@@ -1679,6 +1837,38 @@ fn test_demo_fleet_lists_come_out_in_the_same_order_every_run() {
 }
 
 #[test]
+fn test_demo_fleet_topology_machine_formats_are_structured() {
+    let clients = demo_json(&["clients", "list", "--all"]);
+    let client_count = clients.as_array().map_or(0, Vec::len);
+
+    for format in ["json", "json-compact", "yaml"] {
+        let output = unifly_cmd()
+            .args(["--demo-fleet", "topology", "-o", format])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", combined_output(&output));
+        let topology: serde_json::Value = if format == "yaml" {
+            serde_yaml_ng::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("{format}: invalid YAML ({err})"))
+        } else {
+            serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("{format}: invalid JSON ({err})"))
+        };
+        assert_eq!(topology["gateway"]["name"], "gw-harbor", "{format}");
+        let devices = topology["devices"].as_array().unwrap();
+        assert!(!devices.is_empty(), "{format}");
+
+        // Every client sits exactly once: under its uplink or unlinked.
+        let placed = std::iter::once(&topology["gateway"])
+            .chain(devices)
+            .map(|node| node["clients"].as_array().map_or(0, Vec::len))
+            .sum::<usize>()
+            + topology["unlinked_clients"].as_array().map_or(0, Vec::len);
+        assert_eq!(placed, client_count, "{format}");
+    }
+}
+
+#[test]
 fn test_demo_fleet_topology_reads_the_same_every_run() {
     let run = || {
         let output = unifly_cmd()
@@ -1748,4 +1938,627 @@ fn test_demo_fleet_firewall_policies_list_in_evaluation_order() {
         keys, expected,
         "policies must group by zone pair and run by ascending index"
     );
+}
+
+// ── Mock controller ─────────────────────────────────────────────────
+
+const MOCK_SITE_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
+const MOCK_API_KEY: &str = "cli-test-key";
+
+/// A UniFi OS controller that answers an API-key connect with one empty
+/// site. Tests mount the routes they exercise at a higher priority.
+async fn mock_api_key_controller() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let empty_page = serde_json::json!({
+        "offset": 0, "limit": 200, "count": 0, "totalCount": 0, "data": [],
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/auth/login"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "offset": 0, "limit": 50, "count": 1, "totalCount": 1,
+            "data": [{ "id": MOCK_SITE_ID, "internalReference": "default", "name": "Default" }],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/proxy/network/integration/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/proxy/network/api/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "meta": { "rc": "ok" }, "data": [],
+        })))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/proxy/network/v2/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    server
+}
+
+fn mock_cmd(server: &wiremock::MockServer) -> assert_cmd::Command {
+    let mut cmd = unifly_cmd();
+    cmd.args([
+        "-c",
+        &server.uri(),
+        "--api-key",
+        MOCK_API_KEY,
+        "--timeout",
+        "5",
+    ]);
+    cmd
+}
+
+const MOCK_WIFI_ID: &str = "6b0e5f4e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+
+async fn mock_wifi_detail(server: &wiremock::MockServer, response: wiremock::ResponseTemplate) {
+    use wiremock::matchers::{method, path};
+    wiremock::Mock::given(method("GET"))
+        .and(path(format!(
+            "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/wifi/broadcasts/{MOCK_WIFI_ID}"
+        )))
+        .respond_with(response)
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_wifi_get_reports_failures_by_kind() {
+    use wiremock::ResponseTemplate;
+
+    let rejected = mock_api_key_controller().await;
+    mock_wifi_detail(&rejected, ResponseTemplate::new(401)).await;
+    mock_cmd(&rejected)
+        .args(["wifi", "get", MOCK_WIFI_ID])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("Authentication failed"))
+        .stderr(predicate::str::contains("not found").not());
+
+    let broken = mock_api_key_controller().await;
+    mock_wifi_detail(
+        &broken,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({ "message": "boom" })),
+    )
+    .await;
+    mock_cmd(&broken)
+        .args(["wifi", "get", MOCK_WIFI_ID])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("boom"))
+        .stderr(predicate::str::contains("not found").not());
+
+    let missing = mock_api_key_controller().await;
+    mock_wifi_detail(&missing, ResponseTemplate::new(404)).await;
+    for identifier in [MOCK_WIFI_ID, "No Such SSID"] {
+        mock_cmd(&missing)
+            .args(["wifi", "get", identifier])
+            .assert()
+            .failure()
+            .code(4)
+            .stderr(predicate::str::contains(format!(
+                "WiFi broadcast '{identifier}' not found"
+            )));
+    }
+}
+
+#[test]
+fn test_not_found_hints_name_real_commands_spelled_right() {
+    for (args, list) in [
+        (
+            &["firewall", "policies", "get", "nope"][..],
+            "firewall policies list",
+        ),
+        (&["nat", "policies", "get", "nope"][..], "nat policies list"),
+        (&["wifi", "get", "nope"][..], "wifi list"),
+    ] {
+        let output = unifly_cmd()
+            .arg("--demo-fleet")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "{}",
+            combined_output(&output)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("unifly {list}")), "{stderr}");
+        assert!(!stderr.contains("policys"), "{stderr}");
+    }
+}
+
+#[test]
+fn test_unusable_controller_url_is_not_a_missing_config_file() {
+    for url in ["foo:bar", "mailto:admin@example.com"] {
+        unifly_cmd()
+            .args(["-c", url, "--api-key", "k", "devices", "list"])
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("Configuration file not found").not())
+            .stderr(predicate::str::contains("controller URL"));
+    }
+}
+
+/// A controller whose API key check fails during connect.
+async fn mock_rejecting_controller() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(401))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn test_auth_failure_help_names_the_profile_in_use() {
+    let server = mock_rejecting_controller().await;
+
+    // Ad-hoc flags: the rejected key is the flag's, nothing is stored.
+    let output = mock_cmd(&server)
+        .args(["devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = squeezed_stderr(&output);
+    assert!(stderr.contains("Authentication failed"), "{stderr}");
+    assert!(stderr.contains("--api-key"), "{stderr}");
+    assert!(!stderr.contains("current"), "{stderr}");
+    assert!(!stderr.contains("set-password"), "{stderr}");
+
+    let tempdir = tempfile::tempdir().unwrap();
+    for (key, value) in [
+        ("controller", server.uri()),
+        ("auth_mode", "integration".into()),
+        ("api_key", MOCK_API_KEY.into()),
+    ] {
+        unifly_cmd_in(tempdir.path())
+            .args(["config", "set", &format!("profiles.my lab.{key}"), &value])
+            .assert()
+            .success();
+    }
+
+    // The profile's own key was rejected: replace the stored secret.
+    let output = unifly_cmd_in(tempdir.path())
+        .args(["-p", "my lab", "devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = squeezed_stderr(&output);
+    assert!(
+        stderr.contains("unifly config set-password 'my lab'"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("current"), "{stderr}");
+
+    // An explicit --api-key overrides the profile, so the profile's stored
+    // secret is not what failed.
+    let output = unifly_cmd_in(tempdir.path())
+        .args(["-p", "my lab", "--api-key", "other-key", "devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = squeezed_stderr(&output);
+    assert!(stderr.contains("--api-key"), "{stderr}");
+    assert!(!stderr.contains("set-password"), "{stderr}");
+}
+
+#[tokio::test]
+async fn test_demo_flag_never_prints_unsanitized_cli_output() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/clients"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
+            "data": [{
+                "id": "c56a4180-65aa-42ec-a945-5fd21dec0538",
+                "name": "Bob's iPhone",
+                "type": "WIRELESS",
+                "ipAddress": "10.0.0.50",
+                "connectedAt": null,
+                "macAddress": "aa:bb:cc:dd:ee:ff",
+                "access": {},
+            }],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    // Without --demo the client shows up as is.
+    mock_cmd(&server)
+        .args(["clients", "list", "-o", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Bob's iPhone"));
+
+    let before = request_count(&server).await;
+    // The allowed run above was recorded, so a zero delta means something.
+    assert!(before > 0, "the mock controller is not recording requests");
+    for demo in [["--demo"].as_slice(), [].as_slice()] {
+        let mut cmd = mock_cmd(&server);
+        if demo.is_empty() {
+            cmd.env("UNIFI_DEMO", "1");
+        }
+        cmd.args(demo)
+            .args(["clients", "list", "-o", "json"])
+            .assert()
+            .failure()
+            .code(5)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("demo mode"))
+            .stderr(predicate::str::contains("Bob").not());
+    }
+    assert_eq!(
+        request_count(&server).await,
+        before,
+        "a refused demo run reached the controller"
+    );
+}
+
+/// Requests the mock controller has received so far.
+async fn request_count(server: &wiremock::MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .map_or(0, |requests| requests.len())
+}
+
+#[test]
+fn test_demo_flag_still_runs_offline_and_synthetic_commands() {
+    unifly_cmd()
+        .args(["--demo", "--demo-fleet", "clients", "list", "-o", "json"])
+        .assert()
+        .success();
+    let tempdir = tempfile::tempdir().unwrap();
+    unifly_cmd_in(tempdir.path())
+        .args(["--demo", "config", "profiles"])
+        .assert()
+        .success();
+    unifly_cmd()
+        .args(["--demo", "completions", "bash"])
+        .assert()
+        .success();
+    unifly_cmd().args(["--demo", "skill"]).assert().success();
+}
+
+#[tokio::test]
+async fn test_demo_mode_from_the_config_file_is_refused_too() {
+    let server = mock_api_key_controller().await;
+    let tempdir = tempfile::tempdir().unwrap();
+    for (key, value) in [
+        ("controller", server.uri()),
+        ("auth_mode", "integration".into()),
+    ] {
+        unifly_cmd_in(tempdir.path())
+            .args(["config", "set", &format!("profiles.lab.{key}"), &value])
+            .assert()
+            .success();
+    }
+    let path = config_file(&tempdir);
+    let cfg = std::fs::read_to_string(&path).unwrap();
+    assert!(cfg.contains("[demo]\nenabled = false\n"), "{cfg}");
+    std::fs::write(
+        &path,
+        cfg.replace("[demo]\nenabled = false\n", "[demo]\nenabled = true\n"),
+    )
+    .unwrap();
+
+    // The refusal names the file and key that turn demo mode off, and
+    // nothing reaches the controller.
+    let output = unifly_cmd_in(tempdir.path())
+        .args(["-p", "lab", "--api-key", MOCK_API_KEY, "clients", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        request_count(&server).await,
+        0,
+        "refused run reached the controller"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "{}",
+        combined_output(&output)
+    );
+    assert!(output.stdout.is_empty(), "{}", combined_output(&output));
+    // miette wraps help text to the terminal width, even inside a path, so
+    // compare without whitespace.
+    let squeezed = |text: &str| text.split_whitespace().collect::<String>();
+    let stderr = squeezed(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("enabled=false"), "{stderr}");
+    assert!(
+        stderr.contains(&squeezed(&path.display().to_string())),
+        "{stderr}"
+    );
+
+    // Config commands stay usable, so the switch can be inspected and
+    // profiles managed while it is on.
+    for args in [&["config", "show"][..], &["config", "profiles"][..]] {
+        unifly_cmd_in(tempdir.path()).args(args).assert().success();
+    }
+
+    // The synthetic fleet never reads the config, so it still answers.
+    unifly_cmd_in(tempdir.path())
+        .args(["--demo-fleet", "clients", "list"])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn test_wifi_channels_renders_every_country_as_one_document() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/api/s/default/stat/current-channel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "meta": { "rc": "ok" },
+            "data": [
+                { "code": "840", "key": "US", "name": "United States",
+                  "channels_ng": [1, 6, 11], "channels_na": [36, 40] },
+                { "code": "124", "key": "CA", "name": "Canada",
+                  "channels_ng": [1, 6, 11] },
+            ],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let json_rows = |format: &str| -> Vec<serde_json::Value> {
+        let output = mock_cmd(&server)
+            .args(["wifi", "channels", "-o", format])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", combined_output(&output));
+        let rows: serde_json::Value = if format == "yaml" {
+            serde_yaml_ng::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("invalid YAML ({err}): {}", combined_output(&output)))
+        } else {
+            serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("invalid JSON ({err}): {}", combined_output(&output)))
+        };
+        rows.as_array().cloned().unwrap_or_default()
+    };
+
+    for format in ["json", "json-compact", "yaml"] {
+        let rows = json_rows(format);
+        let countries: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row["country"].as_str())
+            .collect();
+        assert_eq!(
+            countries,
+            ["United States", "United States", "Canada"],
+            "{format}: {rows:?}"
+        );
+    }
+
+    let plain = mock_cmd(&server)
+        .args(["wifi", "channels", "-o", "plain"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&plain.stdout).lines().count(),
+        3,
+        "{}",
+        combined_output(&plain)
+    );
+}
+
+#[test]
+fn test_unsupported_controller_scheme_is_an_invalid_configuration() {
+    for command in [
+        &["devices", "list"][..],
+        &["system", "info"][..],
+        &["cloud", "hosts"][..],
+    ] {
+        let output = unifly_cmd()
+            .args(["-c", "ftp://192.0.2.1", "--api-key", "k"])
+            .args(command)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            combined_output(&output)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("'ftp'"), "{stderr}");
+        assert!(!stderr.contains("builder error"), "{stderr}");
+    }
+
+    let tempdir = tempfile::tempdir().unwrap();
+    unifly_cmd_in(tempdir.path())
+        .args([
+            "config",
+            "set",
+            "profiles.lab.controller",
+            "gopher://192.0.2.1",
+        ])
+        .assert()
+        .success();
+    unifly_cmd_in(tempdir.path())
+        .args(["-p", "lab", "--api-key", "k", "devices", "list"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("'gopher'"));
+}
+
+#[tokio::test]
+async fn test_vpn_lists_render_yaml_and_json_without_duplicate_keys() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    for (route, record) in [
+        (
+            "vpn/servers",
+            serde_json::json!({
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "Home WG",
+                "type": "WIREGUARD",
+                "enabled": true,
+                "port": 51820,
+                "mtu": 1420,
+            }),
+        ),
+        (
+            "vpn/site-to-site-tunnels",
+            serde_json::json!({
+                "id": "22222222-2222-2222-2222-222222222222",
+                "name": "Branch",
+                "type": "IPSEC",
+                "enabled": false,
+                "preSharedKey": "hunter2",
+                "lifetime": 3600,
+            }),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/{route}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 1, "totalCount": 1, "data": [record],
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+
+    for (command, unmapped) in [("servers", "mtu"), ("tunnels", "lifetime")] {
+        let yaml = mock_cmd(&server)
+            .args(["vpn", command, "-o", "yaml"])
+            .output()
+            .unwrap();
+        assert!(yaml.status.success(), "{}", combined_output(&yaml));
+        let parsed: serde_json::Value = serde_yaml_ng::from_slice(&yaml.stdout)
+            .unwrap_or_else(|err| panic!("invalid YAML ({err}): {}", combined_output(&yaml)));
+        assert!(parsed[0][unmapped].as_i64().is_some(), "{parsed}");
+
+        let json = mock_cmd(&server)
+            .args(["vpn", command, "-o", "json-compact"])
+            .output()
+            .unwrap();
+        assert!(json.status.success(), "{}", combined_output(&json));
+        let text = String::from_utf8_lossy(&json.stdout);
+        for key in ["\"id\":", "\"name\":", "\"enabled\":"] {
+            assert_eq!(text.matches(key).count(), 1, "{key} repeated in {text}");
+        }
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+}
+
+#[test]
+fn test_controller_url_errors_never_echo_a_password() {
+    for url in [
+        "ftp://admin:hunter2@192.0.2.1",
+        "http://admin:hunter2@[::1",
+        "gopher://admin:hunter2@192.0.2.1/x",
+    ] {
+        for command in [&["devices", "list"][..], &["cloud", "hosts"][..]] {
+            let output = unifly_cmd()
+                .args(["-c", url, "--api-key", "k"])
+                .args(command)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{}",
+                combined_output(&output)
+            );
+            let text = combined_output(&output);
+            assert!(!text.contains("hunter2"), "{url} {command:?}: {text}");
+            assert!(text.contains("***@"), "{url} {command:?}: {text}");
+        }
+    }
+}
+
+#[test]
+fn test_insecure_accepts_the_documented_boolean_spellings() {
+    for value in ["1", "0", "true", "false", "yes", "no", "on", "off"] {
+        let output = unifly_cmd()
+            .env("UNIFI_INSECURE", value)
+            .args(["--demo-fleet", "devices", "list", "-o", "plain"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "UNIFI_INSECURE={value}: {}",
+            combined_output(&output)
+        );
+    }
+    for flag in [
+        "-k",
+        "--insecure",
+        "--insecure=1",
+        "--insecure=0",
+        "--insecure=false",
+    ] {
+        let output = unifly_cmd()
+            .args(["--demo-fleet", flag, "devices", "list", "-o", "plain"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{flag}: {}",
+            combined_output(&output)
+        );
+    }
+    unifly_cmd()
+        .env("UNIFI_INSECURE", "maybe")
+        .args(["--demo-fleet", "devices", "list"])
+        .assert()
+        .failure()
+        .code(2);
 }

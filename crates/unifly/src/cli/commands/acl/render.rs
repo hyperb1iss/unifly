@@ -50,7 +50,8 @@ pub(super) fn render_reorder_ids(output: &OutputFormat, ids: &[String]) -> Strin
     match output {
         OutputFormat::Json => serde_json::to_string_pretty(ids).unwrap_or_default(),
         OutputFormat::JsonCompact => serde_json::to_string(ids).unwrap_or_default(),
-        _ => ids.join("\n"),
+        OutputFormat::Yaml => output::render_yaml(ids),
+        OutputFormat::Table | OutputFormat::Plain => ids.join("\n"),
     }
 }
 
@@ -63,6 +64,14 @@ mod tests {
     fn render_reorder_ids_keeps_json_compact_compact() {
         let rendered = render_reorder_ids(&OutputFormat::JsonCompact, &["a".into(), "b".into()]);
         assert_eq!(rendered, "[\"a\",\"b\"]");
+    }
+
+    #[test]
+    fn render_reorder_ids_yaml_is_a_sequence() {
+        let rendered = render_reorder_ids(&OutputFormat::Yaml, &["a".into(), "b:c".into()]);
+        let parsed: Vec<String> = serde_yaml_ng::from_str(&rendered)
+            .unwrap_or_else(|err| panic!("not a YAML sequence ({err}):\n{rendered}"));
+        assert_eq!(parsed, ["a", "b:c"]);
     }
 
     #[test]

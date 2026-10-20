@@ -135,7 +135,7 @@ async fn handle_servers(
             let servers = util::apply_list_args(
                 controller.list_vpn_servers().await?,
                 &args.list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -184,7 +184,7 @@ async fn handle_tunnels(
             let tunnels = util::apply_list_args(
                 controller.list_vpn_tunnels().await?,
                 &args.list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -211,7 +211,7 @@ async fn handle_site_to_site(
             let vpns = util::apply_list_args(
                 controller.list_site_to_site_vpns().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -302,7 +302,7 @@ async fn handle_remote_access(
             let servers = util::apply_list_args(
                 controller.list_remote_access_vpn_servers().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -400,11 +400,8 @@ async fn handle_settings(
 
     match args.command {
         VpnSettingsCommand::List(list) => {
-            let settings = util::apply_list_args(
-                controller.list_vpn_settings().await?,
-                &list,
-                util::matches_json_filter,
-            );
+            let settings =
+                util::apply_list_args(controller.list_vpn_settings().await?, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &settings,
@@ -463,7 +460,7 @@ async fn handle_clients(
             let clients = util::apply_list_args(
                 controller.list_vpn_client_profiles().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -540,7 +537,7 @@ async fn handle_connections(
             let connections = util::apply_list_args(
                 controller.list_vpn_client_connections().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -591,7 +588,7 @@ async fn handle_peers(
                     .list_wireguard_peers(server_id.as_deref())
                     .await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -688,7 +685,7 @@ async fn handle_magic_site_to_site(
             let configs = util::apply_list_args(
                 controller.list_magic_site_to_site_vpn_configs().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,

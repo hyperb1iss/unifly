@@ -36,9 +36,10 @@ substring.
 Most lists default to 25 entries. Pass `--all` for complete enumeration when
 available. The shared list handler applies filtering, offset, and limit to
 its available collection; `--all` removes the limit but preserves the offset.
-A truncation hint appears only when more matching entries exist than the
-limit. Hotspot, events, and alarms lists default to 100 and lack `--all`;
-client roams defaults to 50. Check each command's help for pagination.
+A truncation hint appears on stderr only when more matching entries exist
+than the limit, and `-q` silences it. Hotspot, events, and alarms lists
+default to 100 and lack `--all`; client roams defaults to 50. Check each
+command's help for pagination.
 
 Lists built from the controller snapshot sort before filtering and paging,
 so every run and every output format agrees and consecutive `--offset`
@@ -59,8 +60,10 @@ state.in('Online','Offline')
 
 Field paths follow the JSON shape and support nested fields. Boolean
 combinations and comparison operators are unsupported in local filters.
-Invalid expressions silently match nothing. Hotspot purge passes its filter
-to the controller and uses the server's filter language instead.
+A malformed expression fails with exit 2 before anything is fetched, but a
+well-formed one naming a missing field matches nothing and exits 0. Hotspot
+purge passes its filter to the controller and uses the server's filter
+language instead.
 
 Create commands generally print the created record on stdout and a
 confirmation on stderr. Sites create and system backup create have no
@@ -143,7 +146,10 @@ APs, and uplink information when the controller provides them.
 WiFi neighbors uses Session observations from your APs. The time window is
 in seconds, not milliseconds. Results default to 25; use `--all` or an
 explicit limit. WiFi channels reports country-level regulatory availability,
-not the current channel of each AP. Device radios describe individual APs.
+not the current channel of each AP; its JSON and YAML rows carry `country` and
+`country_code`. Device radios describe individual APs. Topology draws a tree in
+table and plain output; its JSON and YAML hold `gateway`, `devices` (each with
+its uplinked `clients`), and `unlinked_clients`.
 
 ## Networks, WiFi, firewall, NAT, ACL, and DNS
 
@@ -293,4 +299,8 @@ the `// last-seen` markers of `devices ports-export --with-clients`, which
 carry a fixed 2026-03-18T15:30Z so a seed exports the same bytes on every
 run. The data is fictional, so never present it as the user's network.
 `unifly tui --demo-fleet` runs the dashboard against the same fleet, while
-plain `--demo` sanitizes a real controller's data in the TUI.
+plain `--demo` sanitizes a real controller's data in the TUI. Controller and
+cloud commands cannot sanitize their output, so in demo mode (`--demo`,
+`UNIFI_DEMO`, or `[demo] enabled = true` in config) without `--demo-fleet`
+they exit 5 before connecting or reading credentials. `config` commands still
+run; turn the file switch off by setting `enabled = false` under `[demo]`.

@@ -1,23 +1,22 @@
-use crate::cli::args::ListArgs;
+use crate::cli::args::{FilterOp, ListArgs, ListFilter};
 
-pub fn apply_list_args<T>(
+/// Apply a list command's `--filter`, `--offset`, and `--limit`/`--all` to
+/// `items`. Unless `quiet`, a hint on stderr says when the limit cut the
+/// list short.
+pub fn apply_list_args<T: serde::Serialize>(
     items: impl IntoIterator<Item = T>,
     list: &ListArgs,
-    matches_filter: impl Fn(&T, &str) -> bool,
+    quiet: bool,
 ) -> Vec<T> {
     let offset = usize::try_from(list.offset).unwrap_or(usize::MAX);
     let limit = usize::try_from(list.limit).unwrap_or(usize::MAX);
-    let filter = list
-        .filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|expr| !expr.is_empty());
 
     let filtered: Vec<T> = items
         .into_iter()
-        .filter(|item| match filter {
-            Some(expr) => matches_filter(item, expr),
-            None => true,
+        .filter(|item| {
+            list.filter
+                .as_ref()
+                .is_none_or(|filter| filter.matches(item))
         })
         .skip(offset)
         .collect();
@@ -25,158 +24,34 @@ pub fn apply_list_args<T>(
     if list.all {
         filtered
     } else if filtered.len() > limit {
-        eprintln!(
-            "Showing {limit} of {} results. Use --all (-a) to see everything.",
-            filtered.len()
-        );
+        if !quiet {
+            eprintln!(
+                "Showing {limit} of {} results. Use --all (-a) to see everything.",
+                filtered.len()
+            );
+        }
         filtered.into_iter().take(limit).collect()
     } else {
         filtered
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum FilterOp {
-    Eq,
-    Contains,
-    In,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FilterExpr {
-    path: Vec<String>,
-    op: FilterOp,
-    values: Vec<String>,
-}
-
-/// Parse and evaluate a tiny local filter grammar:
-/// `field.eq('value')`, `field.contains('value')`, or `field.in('a','b')`.
-pub fn matches_json_filter<T: serde::Serialize>(item: &T, filter: &str) -> bool {
-    let Some(expr) = parse_filter_expr(filter) else {
-        return false;
-    };
-
-    let Ok(value) = serde_json::to_value(item) else {
-        return false;
-    };
-
-    let mut matches = Vec::new();
-    collect_path_values(&value, &expr.path, &mut matches);
-    matches
-        .into_iter()
-        .any(|candidate| matches_filter_value(candidate, &expr.op, &expr.values))
-}
-
-fn parse_filter_expr(filter: &str) -> Option<FilterExpr> {
-    let filter = filter.trim();
-    if filter.is_empty() {
-        return None;
-    }
-
-    let open_paren = filter.find('(')?;
-    let close_paren = filter.rfind(')')?;
-    if close_paren != filter.len().saturating_sub(1) || close_paren <= open_paren {
-        return None;
-    }
-
-    let head = filter[..open_paren].trim();
-    let args = filter[open_paren + 1..close_paren].trim();
-    let dot = head.rfind('.')?;
-    let path = head[..dot]
-        .split('.')
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if path.is_empty() {
-        return None;
-    }
-
-    let op = match head[dot + 1..].trim().to_ascii_lowercase().as_str() {
-        "eq" => FilterOp::Eq,
-        "contains" => FilterOp::Contains,
-        "in" => FilterOp::In,
-        _ => return None,
-    };
-
-    let values = parse_quoted_values(args)?;
-    match op {
-        FilterOp::Eq | FilterOp::Contains if values.len() != 1 => return None,
-        FilterOp::In if values.is_empty() => return None,
-        _ => {}
-    }
-
-    Some(FilterExpr { path, op, values })
-}
-
-fn parse_quoted_values(input: &str) -> Option<Vec<String>> {
-    let mut values = Vec::new();
-    let mut chars = input.chars().peekable();
-
-    loop {
-        while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
-            chars.next();
-        }
-
-        if chars.peek().is_none() {
-            break;
-        }
-
-        let quote = match chars.next()? {
-            '\'' => '\'',
-            '"' => '"',
-            _ => return None,
+impl ListFilter {
+    /// Whether `item`, serialized to JSON, satisfies the expression.
+    pub fn matches<T: serde::Serialize>(&self, item: &T) -> bool {
+        let Some(expr) = &self.expr else {
+            return true;
+        };
+        let Ok(value) = serde_json::to_value(item) else {
+            return false;
         };
 
-        let mut value = String::new();
-        let mut escaped = false;
-        let mut closed = false;
-        for ch in chars.by_ref() {
-            if escaped {
-                let decoded = match ch {
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    '\\' => '\\',
-                    '\'' => '\'',
-                    '"' => '"',
-                    other => other,
-                };
-                value.push(decoded);
-                escaped = false;
-                continue;
-            }
-
-            match ch {
-                '\\' => escaped = true,
-                c if c == quote => {
-                    closed = true;
-                    break;
-                }
-                other => value.push(other),
-            }
-        }
-
-        if !closed || escaped {
-            return None;
-        }
-
-        values.push(value);
-
-        while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
-            chars.next();
-        }
-
-        match chars.peek() {
-            Some(',') => {
-                chars.next();
-            }
-            None => break,
-            _ => return None,
-        }
+        let mut matches = Vec::new();
+        collect_path_values(&value, &expr.path, &mut matches);
+        matches
+            .into_iter()
+            .any(|candidate| matches_filter_value(candidate, &expr.op, &expr.values))
     }
-
-    Some(values)
 }
 
 fn collect_path_values<'a>(
@@ -243,8 +118,12 @@ fn matches_filter_value(value: &serde_json::Value, op: &FilterOp, candidates: &[
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_list_args, matches_json_filter};
+    use super::{ListFilter, apply_list_args};
     use crate::cli::args::ListArgs;
+
+    fn filter(expr: &str) -> ListFilter {
+        ListFilter::parse(expr).expect("valid filter")
+    }
 
     #[test]
     fn apply_list_args_respects_offset_limit() {
@@ -255,7 +134,7 @@ mod tests {
             filter: None,
         };
         let rows = vec![1, 2, 3, 4];
-        let sliced = apply_list_args(rows, &args, |_, _| true);
+        let sliced = apply_list_args(rows, &args, true);
         assert_eq!(sliced, vec![2, 3]);
     }
 
@@ -265,21 +144,19 @@ mod tests {
             limit: 25,
             offset: 0,
             all: false,
-            filter: Some("name.eq('beta')".into()),
+            filter: Some(filter("name.eq('beta')")),
         };
         let rows = vec![
             serde_json::json!({"name":"alpha"}),
             serde_json::json!({"name":"beta"}),
         ];
-        let filtered = apply_list_args(rows, &args, |item, filter| {
-            matches_json_filter(item, filter)
-        });
+        let filtered = apply_list_args(rows, &args, true);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0]["name"], "beta");
     }
 
     #[test]
-    fn matches_json_filter_supports_contains_and_in() {
+    fn list_filter_supports_contains_and_in() {
         let item = serde_json::json!({
             "name": "Alpha Beta",
             "state": "online",
@@ -289,11 +166,29 @@ mod tests {
             }
         });
 
-        assert!(matches_json_filter(&item, "name.contains('beta')"));
-        assert!(matches_json_filter(&item, "state.in('offline', 'ONLINE')"));
-        assert!(matches_json_filter(&item, "nested.ssid.eq('novanet')"));
-        assert!(!matches_json_filter(&item, "name.eq('gamma')"));
-        assert!(!matches_json_filter(&item, "Alpha Beta"));
-        assert!(!matches_json_filter(&item, "name.starts_with('alpha')"));
+        assert!(filter("name.contains('beta')").matches(&item));
+        assert!(filter("state.in('offline', 'ONLINE')").matches(&item));
+        assert!(filter("nested.ssid.eq('novanet')").matches(&item));
+        assert!(!filter("name.eq('gamma')").matches(&item));
+    }
+
+    #[test]
+    fn list_filter_rejects_malformed_expressions() {
+        for expr in [
+            "Alpha Beta",
+            "name.starts_with('alpha')",
+            "name.eq('a','b')",
+            "name.in()",
+            "name.eq('unterminated)",
+            ".eq('x')",
+        ] {
+            assert!(ListFilter::parse(expr).is_err(), "{expr} should not parse");
+        }
+    }
+
+    #[test]
+    fn empty_list_filter_matches_everything() {
+        let empty = filter("  ");
+        assert!(empty.matches(&serde_json::json!({"name": "anything"})));
     }
 }

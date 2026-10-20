@@ -113,9 +113,7 @@ pub(super) async fn handle(
                 &controller.firewall_policies_snapshot(),
                 &controller.firewall_zones_snapshot(),
             );
-            let snapshot = util::apply_list_args(all, &list, |policy, filter| {
-                util::matches_json_filter(policy, filter)
-            });
+            let snapshot = util::apply_list_args(all, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,
@@ -390,7 +388,7 @@ pub(super) async fn handle(
                     OutputFormat::JsonCompact => {
                         serde_json::to_string(&ordering).unwrap_or_default()
                     }
-                    OutputFormat::Yaml => serde_yaml_ng::to_string(&ordering).unwrap_or_default(),
+                    OutputFormat::Yaml => output::render_yaml(&ordering),
                 };
                 output::print_output(&out, global.quiet);
             }

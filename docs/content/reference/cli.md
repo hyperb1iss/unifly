@@ -402,6 +402,7 @@ unifly cloud switch <SITE>                      # Point the cloud profile at a s
 
 ```bash
 unifly topology                                 # Network tree visualization
+unifly topology -o json                         # The same tree as data
 unifly radius profiles                          # List RADIUS profiles
 unifly wans list                                # List WAN interfaces
 unifly sites list                               # List sites
@@ -462,7 +463,7 @@ unifly clients list --filter "name.contains('ring')"
 unifly networks list --filter "vlan.in('20','30','40')"
 ```
 
-Field paths address the JSON output shape (dot notation for nesting). An unparseable expression matches nothing and exits 0, so a silent empty result usually means a typo in the filter, not an empty collection.
+Field paths address the JSON output shape (dot notation for nesting). An unparseable expression fails with exit code 2 before the command fetches anything. A well-formed expression that names a field the output lacks still matches nothing and exits 0, so a silent empty result usually means a misspelled field, not an empty collection. An empty expression applies no filter.
 
 The full server-side Integration filter DSL (`neq`, `gt`/`lt`, `startswith`, `&&`/`||`) applies only to `hotspot purge --filter`, which passes the expression to the controller.
 
@@ -529,6 +530,8 @@ writes through a symlinked skill directory or file.
     --demo-fleet         Use the synthetic offline demo fleet (env UNIFI_DEMO_FLEET)
     --demo-seed <SEED>   Demo fleet seed (env UNIFI_DEMO_SEED)
 ```
+
+`--demo` sanitizes names, addresses, and SSIDs only in the TUI. Controller and cloud commands cannot sanitize their output, so in demo mode (`--demo`, `UNIFI_DEMO=1`, or `enabled = true` under `[demo]` in the config file) without `--demo-fleet` they exit with code 5 before they connect or read credentials, rather than print real data. The error names the switch that is on; no `config set` key covers the file switch, so set `enabled = false` under `[demo]` in the file to turn it off. Combined with `--demo-fleet`, the synthetic fleet answers as usual, and `config`, `skill`, and `completions` run in demo mode too.
 
 `--insecure` is tri-state: absent defers to the profile and `[defaults]`, `-k` / `--insecure` accepts self-signed certificates, and `--insecure=false` forces verification no matter what the config says. The explicit value requires the equals form (`--insecure false` does not parse). `--timeout` has no baked-in flag default; when the flag and `UNIFI_TIMEOUT` are absent, the profile's `timeout` wins, then `[defaults]`, then the built-in 30 seconds.
 

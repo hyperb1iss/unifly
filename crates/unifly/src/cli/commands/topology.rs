@@ -7,10 +7,89 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use unifly_api::{Client, Controller, Device, Network};
+use serde::Serialize;
+use unifly_api::{Client, ClientType, Controller, Device, DeviceState, DeviceType, Network};
 
-use crate::cli::args::GlobalOpts;
+use crate::cli::args::{GlobalOpts, OutputFormat};
 use crate::cli::error::CliError;
+use crate::cli::output;
+
+/// The tree as data, for the structured output formats.
+#[derive(Serialize)]
+struct Topology {
+    gateway: Option<TopologyDevice>,
+    devices: Vec<TopologyDevice>,
+    unlinked_clients: Vec<TopologyClient>,
+}
+
+#[derive(Serialize)]
+struct TopologyDevice {
+    id: String,
+    mac: String,
+    name: Option<String>,
+    model: Option<String>,
+    device_type: DeviceType,
+    state: DeviceState,
+    ip: Option<std::net::IpAddr>,
+    /// The controller's count, which can include clients it reaches
+    /// through other devices.
+    client_count: Option<u32>,
+    /// Clients whose uplink is this device.
+    clients: Vec<TopologyClient>,
+}
+
+#[derive(Serialize)]
+struct TopologyClient {
+    id: String,
+    mac: String,
+    name: Option<String>,
+    ip: Option<std::net::IpAddr>,
+    /// The network whose subnet holds the client's IP.
+    network: Option<String>,
+    client_type: ClientType,
+    signal_dbm: Option<i32>,
+}
+
+impl TopologyDevice {
+    fn new(
+        device: &Device,
+        clients_by_uplink: &HashMap<String, Vec<&Arc<Client>>>,
+        networks: &[Arc<Network>],
+    ) -> Self {
+        let clients = clients_by_uplink
+            .get(device.mac.as_str())
+            .map_or(&[][..], Vec::as_slice);
+        Self {
+            id: device.id.to_string(),
+            mac: device.mac.to_string(),
+            name: device.name.clone(),
+            model: device.model.clone(),
+            device_type: device.device_type,
+            state: device.state,
+            ip: device.ip,
+            client_count: device.client_count,
+            clients: clients
+                .iter()
+                .map(|client| TopologyClient::new(client, networks))
+                .collect(),
+        }
+    }
+}
+
+impl TopologyClient {
+    fn new(client: &Client, networks: &[Arc<Network>]) -> Self {
+        let network = vlan_label(client.ip, networks);
+        Self {
+            id: client.id.to_string(),
+            mac: client.mac.to_string(),
+            name: client.name.clone().or_else(|| client.hostname.clone()),
+            ip: client.ip,
+            network: (network != "?").then_some(network),
+            client_type: client.client_type,
+            signal_dbm: client.wireless.as_ref().and_then(|w| w.signal_dbm),
+        }
+    }
+}
 
 #[allow(clippy::too_many_lines, clippy::unused_async)]
 pub async fn handle(controller: &Controller, global: &GlobalOpts) -> Result<(), CliError> {
@@ -19,7 +98,7 @@ pub async fn handle(controller: &Controller, global: &GlobalOpts) -> Result<(), 
     let devices = super::util::order::devices(&controller.devices_snapshot());
     let clients = super::util::order::clients(&controller.clients_snapshot());
     let networks = controller.networks_snapshot();
-    let p = crate::cli::output::Painter::new(global);
+    let p = output::Painter::new(global);
 
     // Build MAC → device lookup
     let _device_by_mac: HashMap<&str, &Arc<Device>> =
@@ -50,6 +129,33 @@ pub async fn handle(controller: &Controller, global: &GlobalOpts) -> Result<(), 
         .iter()
         .filter(|d| d.device_type != unifly_api::DeviceType::Gateway)
         .collect();
+
+    // JSON and YAML get the tree as data. The drawing below lists only the
+    // gateway's client count, so here its clients sit under it instead.
+    if matches!(
+        global.output,
+        OutputFormat::Json | OutputFormat::JsonCompact | OutputFormat::Yaml
+    ) {
+        let topology = Topology {
+            gateway: gateway.map(|gw| TopologyDevice::new(gw, &clients_by_uplink, &networks)),
+            devices: infra
+                .iter()
+                .map(|device| TopologyDevice::new(device, &clients_by_uplink, &networks))
+                .collect(),
+            unlinked_clients: unlinked
+                .iter()
+                .map(|client| TopologyClient::new(client, &networks))
+                .collect(),
+        };
+        let out = output::render_single(
+            &global.output,
+            &topology,
+            |_| String::new(),
+            |_| String::new(),
+        );
+        output::print_output(&out, global.quiet);
+        return Ok(());
+    }
 
     // Print gateway
     if let Some(gw) = gateway {

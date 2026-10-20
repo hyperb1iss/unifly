@@ -26,10 +26,7 @@ pub(super) async fn handle(
     match args.command {
         DevicesCommand::List(list) => {
             let all = controller.devices_snapshot();
-            let snapshot =
-                util::apply_list_args(util::order::devices(&all), &list, |device, filter| {
-                    util::matches_json_filter(device, filter)
-                });
+            let snapshot = util::apply_list_args(util::order::devices(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,
@@ -130,7 +127,7 @@ pub(super) async fn handle(
             let pending = util::apply_list_args(
                 controller.list_pending_devices().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,
@@ -176,11 +173,8 @@ pub(super) async fn handle(
         }
 
         DevicesCommand::Tags(list) => {
-            let tags = util::apply_list_args(
-                controller.list_device_tags().await?,
-                &list,
-                util::matches_json_filter,
-            );
+            let tags =
+                util::apply_list_args(controller.list_device_tags().await?, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &tags,

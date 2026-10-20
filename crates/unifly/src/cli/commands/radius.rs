@@ -40,7 +40,7 @@ pub async fn handle(
             let profiles = util::apply_list_args(
                 controller.list_radius_profiles().await?,
                 &list,
-                util::matches_json_filter,
+                global.quiet,
             );
             let out = output::render_list(
                 &global.output,

@@ -5,8 +5,8 @@ use tracing_subscriber::EnvFilter;
 
 use unifly::cli::args::{Cli, Command, ConfigCommand, EventsCommand, GlobalOpts};
 use unifly::cli::commands;
-use unifly::cli::demo_fleet;
-use unifly::cli::error::CliError;
+use unifly::cli::demo_fleet::{self, DemoSwitch};
+use unifly::cli::error::{CliError, CredentialSource, redact_userinfo};
 use unifly::config::resolve;
 
 use unifly_api::Controller;
@@ -82,20 +82,41 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
     if cli.global.demo_fleet && !demo_fleet::supports(command_path) {
         return Err(demo_fleet::refuse(command_path));
     }
+    // Demo mode comes from the flag, UNIFI_DEMO, or `[demo] enabled` in the
+    // config; the config is read only for commands that would refuse it.
+    if !demo_fleet::honors_demo(command_path, cli.global.demo_fleet) {
+        if cli.global.demo {
+            return Err(demo_fleet::refuse_demo(command_path, &DemoSwitch::Flag));
+        }
+        if resolve::load_config_or_default().demo.enabled {
+            let file = unifly::config::config_path();
+            return Err(demo_fleet::refuse_demo(
+                command_path,
+                &DemoSwitch::ConfigFile(file),
+            ));
+        }
+    }
 
-    match cli.command {
-        Command::Skill(args) => unifly::cli::skill::handle(&args, cli.global.quiet),
+    let Cli { global, command } = cli;
+    let result = run_command(command, &global).await;
+    result.map_err(|err| explain_credentials(err, &global))
+}
+
+#[allow(clippy::future_not_send)]
+async fn run_command(command: Command, global: &GlobalOpts) -> Result<(), CliError> {
+    match command {
+        Command::Skill(args) => unifly::cli::skill::handle(&args, global.quiet),
 
         Command::Cloud(args) => {
-            init_tracing(cli.global.verbose);
-            commands::cloud::handle(args, &cli.global).await
+            init_tracing(global.verbose);
+            commands::cloud::handle(args, global).await
         }
 
         Command::Config(args) => {
             if matches!(&args.command, ConfigCommand::CloudSetup) {
-                init_tracing(cli.global.verbose);
+                init_tracing(global.verbose);
             }
-            commands::config_cmd::handle(args, &cli.global).await
+            commands::config_cmd::handle(args, global).await
         }
 
         Command::Completions(args) => {
@@ -109,7 +130,7 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
 
         #[cfg(feature = "tui")]
         Command::Tui(args) => {
-            unifly::tui::launch(&cli.global, args)
+            unifly::tui::launch(global, args)
                 .await
                 .map_err(|e| CliError::ApiError {
                     code: "tui".into(),
@@ -119,11 +140,12 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
         }
 
         cmd => {
-            init_tracing(cli.global.verbose);
-            let controller = if cli.global.demo_fleet {
-                demo_fleet::controller(&cli.global)
+            init_tracing(global.verbose);
+            let controller = if global.demo_fleet {
+                demo_fleet::controller(global)
             } else {
-                let mut controller_config = build_controller_config(&cli.global).await?;
+                let mut controller_config = build_controller_config(global).await?;
+                commands::util::require_http_url(controller_config.url.as_str())?;
                 controller_config.websocket_enabled = command_uses_websocket(&cmd);
                 Controller::new(controller_config)
             };
@@ -136,17 +158,56 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
                     .map_err(CliError::from)?;
             }
             for warning in controller.take_warnings().await {
-                if !cli.global.quiet {
+                if !global.quiet {
                     eprintln!("warning: {warning}");
                 }
             }
 
             tracing::debug!(command = ?cmd, "dispatching command");
-            let result = commands::dispatch(cmd, &controller, &cli.global).await;
+            let result = commands::dispatch(cmd, &controller, global).await;
 
             controller.disconnect().await;
             result
         }
+    }
+}
+
+/// Fit credential hints to the command's actual source of credentials:
+/// an explicit `--api-key`, or the profile it ran with and that profile's
+/// auth mode. The config is only read on these failure paths, and never for
+/// the demo fleet, which keeps its promise not to open the config file.
+fn explain_credentials(err: CliError, global: &GlobalOpts) -> CliError {
+    if global.demo_fleet {
+        return err;
+    }
+    match err {
+        CliError::AuthFailed { .. } if global.api_key.is_some() => {
+            err.with_credential_source(CredentialSource::ApiKeyFlag)
+        }
+        CliError::AuthFailed { .. } => {
+            let cfg = resolve::load_config_or_default();
+            let name = resolve::active_profile_name(global, &cfg);
+            if cfg.profiles.contains_key(&name) {
+                err.with_credential_source(CredentialSource::Profile(&name))
+            } else {
+                err
+            }
+        }
+        CliError::NoCredentials {
+            profile: Some(name),
+            ..
+        } => {
+            let cfg = resolve::load_config_or_default();
+            let profile = cfg.profiles.get(&name);
+            let has_username = profile.is_some_and(|p| p.username.is_some())
+                || std::env::var_os("UNIFI_USERNAME").is_some();
+            CliError::profile_missing_credentials(
+                &name,
+                profile.map(|p| p.auth_mode.as_str()),
+                has_username,
+            )
+        }
+        other => other,
     }
 }
 
@@ -207,7 +268,7 @@ async fn build_controller_config(
 
     let url: url::Url = url_str.parse().map_err(|_| CliError::Validation {
         field: "controller".into(),
-        reason: format!("invalid URL: {url_str}"),
+        reason: format!("invalid URL: {}", redact_userinfo(url_str)),
     })?;
 
     let auth = if let Some(ref key) = global.api_key {
@@ -225,9 +286,7 @@ async fn build_controller_config(
             unifly_api::AuthCredentials::ApiKey(api_key)
         }
     } else {
-        return Err(CliError::NoCredentials {
-            profile: profile_name,
-        });
+        return Err(CliError::no_api_key());
     };
 
     let tls = if is_cloud {
@@ -303,6 +362,30 @@ mod tests {
         assert!(!command_needs_initial_refresh(&info));
         assert!(!command_needs_initial_refresh(&sysinfo));
         assert!(!command_needs_initial_refresh(&backup));
+    }
+
+    #[test]
+    fn insecure_reads_boolish_values_and_keeps_its_tri_state() {
+        use clap::Parser;
+        use unifly::cli::args::Cli;
+
+        let parse = |flag: &str| {
+            Cli::try_parse_from(["unifly", flag, "devices", "list"])
+                .expect("valid arguments")
+                .global
+                .insecure
+        };
+        for (flag, expected) in [
+            ("-k", Some(true)),
+            ("--insecure", Some(true)),
+            ("--insecure=1", Some(true)),
+            ("--insecure=yes", Some(true)),
+            ("--insecure=0", Some(false)),
+            ("--insecure=false", Some(false)),
+            ("--insecure=off", Some(false)),
+        ] {
+            assert_eq!(parse(flag), expected, "{flag}");
+        }
     }
 
     #[test]

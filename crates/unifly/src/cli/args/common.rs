@@ -1,5 +1,7 @@
 use clap::{Args, ValueEnum};
 
+use super::ListFilter;
+
 /// Controller URL, site, auth, and output options shared by all commands.
 #[derive(Debug, Args)]
 #[allow(clippy::struct_excessive_bools)]
@@ -62,7 +64,7 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_cache: bool,
 
-    /// Sanitize PII for demo recordings (uses [demo] config section)
+    /// Sanitize PII in the TUI for demo recordings (uses [demo] config section)
     #[arg(
         long,
         env = "UNIFI_DEMO",
@@ -93,7 +95,8 @@ pub struct GlobalOpts {
         num_args = 0..=1,
         default_missing_value = "true",
         require_equals = true,
-        value_name = "BOOL"
+        value_name = "BOOL",
+        value_parser = clap::builder::BoolishValueParser::new()
     )]
     pub insecure: Option<bool>,
 
@@ -145,10 +148,10 @@ pub struct ListArgs {
     #[arg(long, short = 'a')]
     pub all: bool,
 
-    /// Filter expression (Integration API syntax)
+    /// Filter expression, evaluated locally on the JSON fields.
     /// Examples: "name.eq('MyNetwork')", "state.in('ONLINE','OFFLINE')"
-    #[arg(long, short = 'f')]
-    pub filter: Option<String>,
+    #[arg(long, short = 'f', value_parser = ListFilter::parse)]
+    pub filter: Option<ListFilter>,
 }
 
 /// Arguments for the `tui` subcommand (real-time terminal dashboard).

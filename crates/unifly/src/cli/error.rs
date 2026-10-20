@@ -54,39 +54,42 @@ pub enum CliError {
 
     // ── Authentication ───────────────────────────────────────────────
     #[error("Authentication failed: {message}")]
-    #[diagnostic(
-        code(unifi::auth_failed),
-        help(
-            "Verify your API key or credentials.\n\
-             For local controller API keys: check Settings > Integrations on your controller.\n\
-             For Site Manager cloud profiles: verify the API key can see the console and your UI account has UniFi Network admin access.\n\
-             For local username/password profiles: run unifly config set-password --profile {profile}\n\
-             To re-run cloud onboarding: unifly config cloud-setup"
-        )
-    )]
-    AuthFailed { profile: String, message: String },
+    #[diagnostic(code(unifi::auth_failed))]
+    AuthFailed {
+        message: String,
+        /// Built by [`CliError::auth_failed`], which knows the profile.
+        #[help]
+        help: String,
+    },
 
-    #[error("No credentials configured for profile '{profile}'")]
-    #[diagnostic(
-        code(unifi::no_credentials),
-        help(
-            "Configure credentials with: unifly config init (local)\n\
-             Or: unifly config cloud-setup (Site Manager)\n\
-             Or set UNIFI_API_KEY environment variable."
-        )
-    )]
-    NoCredentials { profile: String },
+    #[error("{}", no_credentials_title(profile.as_deref()))]
+    #[diagnostic(code(unifi::no_credentials))]
+    NoCredentials {
+        /// The profile missing a secret, or none for ad-hoc flags.
+        profile: Option<String>,
+        /// Built by the constructors below, which know what is missing.
+        #[help]
+        help: String,
+    },
 
     // ── Resources ────────────────────────────────────────────────────
     #[error("{resource_type} '{identifier}' not found")]
     #[diagnostic(
         code(unifi::not_found),
-        help("Run: unifly {list_command} to see available {resource_type}s")
+        help("See what exists with: unifly {list_command}")
     )]
     NotFound {
         resource_type: String,
         identifier: String,
         list_command: String,
+    },
+
+    /// A missing record that no list command enumerates.
+    #[error("{resource_type} '{identifier}' not found")]
+    #[diagnostic(code(unifi::not_found))]
+    NotFoundUnlisted {
+        resource_type: String,
+        identifier: String,
     },
 
     #[error("{resource_type} '{identifier}' is ambiguous ({count} matches)")]
@@ -163,6 +166,15 @@ pub enum CliError {
     )]
     DemoUnavailable { command: String, supported: String },
 
+    #[error("`unifly {command}` cannot sanitize its output for demo mode")]
+    #[diagnostic(code(unifi::demo_not_sanitized))]
+    DemoNotSanitized {
+        command: String,
+        /// Built by `demo_fleet::refuse_demo`, which knows the switch.
+        #[help]
+        help: String,
+    },
+
     #[error("'{feature}' is not yet implemented")]
     #[diagnostic(
         code(unifi::not_implemented),
@@ -196,6 +208,16 @@ pub enum CliError {
         )
     )]
     NoConfig { path: String },
+
+    #[error("Invalid controller configuration: {message}")]
+    #[diagnostic(
+        code(unifi::invalid_config),
+        help(
+            "The controller URL must be an http:// or https:// address, set with \
+             --controller or the profile's `controller` key."
+        )
+    )]
+    InvalidConfig { message: String },
 
     #[error(transparent)]
     #[diagnostic(code(unifi::config))]
@@ -247,12 +269,35 @@ pub enum CliError {
     // ── Config crate errors ──────────────────────────────────────────
     #[error(transparent)]
     #[diagnostic(code(unifi::config_error))]
-    ConfigError(#[from] crate::config::ConfigError),
+    ConfigError(crate::config::ConfigError),
 }
 
 impl From<figment::Error> for CliError {
     fn from(err: figment::Error) -> Self {
         Self::Config(Box::new(err))
+    }
+}
+
+/// Config resolution reports the same failures the CLI detects itself, so
+/// those map onto the CLI's own variants: a missing credential or invalid
+/// value then exits and explains itself the same way whether it came from
+/// a profile or from flags. The match names every variant, so a new one
+/// needs its own mapping decision.
+impl From<crate::config::ConfigError> for CliError {
+    fn from(err: crate::config::ConfigError) -> Self {
+        use crate::config::ConfigError;
+        match err {
+            ConfigError::NoCredentials { profile } => {
+                Self::profile_missing_credentials(&profile, None, false)
+            }
+            ConfigError::Validation { field, reason } => Self::Validation { field, reason },
+            // Reading or writing the file failed: keep the config error's
+            // own message and the general exit code.
+            err
+            @ (ConfigError::Serialization(_) | ConfigError::Figment(_) | ConfigError::Io(_)) => {
+                Self::ConfigError(err)
+            }
+        }
     }
 }
 
@@ -262,19 +307,188 @@ impl CliError {
         match self {
             Self::ConnectionFailed { .. } | Self::TlsError { .. } => exit_code::CONNECTION,
             Self::AuthFailed { .. } | Self::NoCredentials { .. } => exit_code::AUTH,
-            Self::NotFound { .. } | Self::SiteNotFound { .. } => exit_code::NOT_FOUND,
+            Self::NotFound { .. } | Self::NotFoundUnlisted { .. } | Self::SiteNotFound { .. } => {
+                exit_code::NOT_FOUND
+            }
             Self::Conflict { .. } | Self::SkillFileExists { .. } => exit_code::CONFLICT,
             Self::Timeout { .. } => exit_code::TIMEOUT,
             Self::Validation { .. }
+            | Self::InvalidConfig { .. }
             | Self::NonInteractiveRequiresYes { .. }
             | Self::SiteAmbiguous { .. }
             | Self::Ambiguous { .. } => exit_code::USAGE,
             Self::Unsupported { .. }
             | Self::NotYetImplemented { .. }
-            | Self::DemoUnavailable { .. } => exit_code::PERMISSION,
+            | Self::DemoUnavailable { .. }
+            | Self::DemoNotSanitized { .. } => exit_code::PERMISSION,
             _ => exit_code::GENERAL,
         }
     }
+
+    /// An authentication failure whose hint fixes the credentials `source`
+    /// supplied.
+    pub fn auth_failed(message: String, source: CredentialSource<'_>) -> Self {
+        let fix = match source {
+            CredentialSource::ApiKeyFlag => "The key came from --api-key or UNIFI_API_KEY, \
+                which override any profile: check that value."
+                .to_owned(),
+            CredentialSource::Profile(name) => format!(
+                "To replace this profile's stored secret: unifly config set-password {}",
+                shell_quote(name)
+            ),
+            CredentialSource::Unknown => {
+                "To keep credentials in a profile: unifly config init".to_owned()
+            }
+        };
+        Self::AuthFailed {
+            message,
+            help: format!(
+                "Verify your API key or credentials.\n\
+                 For local controller API keys: check Settings > Integrations on your controller.\n\
+                 For Site Manager cloud profiles: verify the API key can see the console and your UI account has UniFi Network admin access.\n\
+                 {fix}\n\
+                 To re-run cloud onboarding: unifly config cloud-setup"
+            ),
+        }
+    }
+
+    /// Point an authentication failure's hint at where its credentials
+    /// came from. Errors convert from `CoreError` without knowing that, so
+    /// the binary applies this once it has the result.
+    #[must_use]
+    pub fn with_credential_source(self, source: CredentialSource<'_>) -> Self {
+        match self {
+            Self::AuthFailed { message, .. } => Self::auth_failed(message, source),
+            other => other,
+        }
+    }
+
+    /// No API key for an ad-hoc `--controller` run.
+    pub fn no_api_key() -> Self {
+        Self::NoCredentials {
+            profile: None,
+            help: "Pass --api-key or set UNIFI_API_KEY alongside --controller.\n\
+                   To save the controller and its credentials instead: unifly config init \
+                   (local) or unifly config cloud-setup (Site Manager)"
+                .into(),
+        }
+    }
+
+    /// No API key for a Site Manager query and no profile to read one from.
+    pub fn no_cloud_api_key() -> Self {
+        Self::NoCredentials {
+            profile: None,
+            help: "Pass --api-key or set UNIFI_API_KEY with a Site Manager API key.\n\
+                   To save one in a profile instead: unifly config cloud-setup"
+                .into(),
+        }
+    }
+
+    /// Profile `name` lacks a secret it needs. Its `auth_mode`, when known,
+    /// and whether a username is set say which secret, and so which fix.
+    pub fn profile_missing_credentials(
+        name: &str,
+        auth_mode: Option<&str>,
+        has_username: bool,
+    ) -> Self {
+        let quoted = shell_quote(name);
+        let store = format!("unifly config set-password {quoted}");
+        let set_username = format!(
+            "Set the username: unifly -p {quoted} config set username <name> \
+             (or set UNIFI_USERNAME)"
+        );
+        let help = match (auth_mode, has_username) {
+            (Some("integration" | "cloud"), _) => format!(
+                "Store this profile's API key: {store}\n\
+                 Or pass --api-key, set UNIFI_API_KEY, or set the profile's api_key_env \
+                 to a variable that holds the key."
+            ),
+            (Some("session" | "legacy"), false) => {
+                format!("{set_username}\nThen store the password: {store} (or set UNIFI_PASSWORD)")
+            }
+            (Some("session" | "legacy"), true) => {
+                format!("Store this profile's password: {store}\nOr set UNIFI_PASSWORD.")
+            }
+            (Some("hybrid"), false) => format!(
+                "{set_username}\nThen store the API key and password: {store} \
+                 (or set UNIFI_API_KEY and UNIFI_PASSWORD)"
+            ),
+            (Some("hybrid"), true) => format!(
+                "Store this profile's API key and password: {store}\n\
+                 Or set UNIFI_API_KEY and UNIFI_PASSWORD."
+            ),
+            _ => format!(
+                "Store this profile's secret: {store}\n\
+                 Or set UNIFI_API_KEY for an API key, or UNIFI_USERNAME and UNIFI_PASSWORD \
+                 for a login."
+            ),
+        };
+        Self::NoCredentials {
+            profile: Some(name.to_owned()),
+            help,
+        }
+    }
+}
+
+/// Where the credentials behind an authentication failure came from.
+#[derive(Debug, Clone, Copy)]
+pub enum CredentialSource<'a> {
+    /// `--api-key` or `UNIFI_API_KEY`, which override any profile.
+    ApiKeyFlag,
+    /// The named profile's configured or stored secrets.
+    Profile(&'a str),
+    /// Not known where the error was raised.
+    Unknown,
+}
+
+fn no_credentials_title(profile: Option<&str>) -> String {
+    match profile {
+        Some(name) => format!("No credentials configured for profile '{name}'"),
+        None => "No API key given for the controller".into(),
+    }
+}
+
+/// `word` as one shell word: bare when it needs no quoting, otherwise in
+/// single quotes, so a hint like `set-password 'my lab'` pastes as is.
+pub fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '@'));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// The list command for each entity type `CoreError::NotFound` names. The
+/// types are free text from the API layer, so a missing entry means no
+/// hint rather than a guessed command.
+const LIST_COMMANDS: &[(&str, &str)] = &[
+    ("network", "networks list"),
+    ("wifi broadcast", "wifi list"),
+    ("firewall policy", "firewall policies list"),
+    ("firewall group", "firewall groups list"),
+    ("NAT rule", "nat policies list"),
+    ("site-to-site VPN", "vpn site-to-site list"),
+    ("remote-access VPN server", "vpn remote-access list"),
+    ("WireGuard peer", "vpn peers list"),
+    ("VPN client profile", "vpn clients list"),
+    ("VPN client connection", "vpn connections list"),
+    (
+        "magic site-to-site VPN config",
+        "vpn magic-site-to-site list",
+    ),
+    ("vpn setting", "vpn settings list"),
+    ("setting", "settings list"),
+];
+
+fn list_command_for(entity_type: &str) -> Option<&'static str> {
+    LIST_COMMANDS
+        .iter()
+        .find(|(kind, _)| kind.eq_ignore_ascii_case(entity_type))
+        .map(|(_, command)| *command)
 }
 
 // ── CoreError → CliError mapping ─────────────────────────────────────
@@ -283,14 +497,13 @@ impl From<CoreError> for CliError {
     fn from(err: CoreError) -> Self {
         match err {
             CoreError::ConnectionFailed { url, reason } => CliError::ConnectionFailed {
-                url,
+                url: redact_userinfo(&url),
                 source: reason.into(),
             },
 
-            CoreError::AuthenticationFailed { message } => CliError::AuthFailed {
-                profile: "current".into(),
-                message,
-            },
+            CoreError::AuthenticationFailed { message } => {
+                CliError::auth_failed(message, CredentialSource::Unknown)
+            }
 
             CoreError::ControllerDisconnected => CliError::ConnectionFailed {
                 url: "(disconnected)".into(),
@@ -332,10 +545,16 @@ impl From<CoreError> for CliError {
             CoreError::NotFound {
                 entity_type,
                 identifier,
-            } => CliError::NotFound {
-                list_command: format!("{entity_type}s list"),
-                resource_type: entity_type,
-                identifier,
+            } => match list_command_for(&entity_type) {
+                Some(list_command) => CliError::NotFound {
+                    list_command: list_command.into(),
+                    resource_type: entity_type,
+                    identifier,
+                },
+                None => CliError::NotFoundUnlisted {
+                    resource_type: entity_type,
+                    identifier,
+                },
             },
 
             CoreError::Unsupported {
@@ -373,18 +592,9 @@ impl From<CoreError> for CliError {
                 request_id: None,
             },
 
-            CoreError::Config { message } => {
-                if message.contains("profile") {
-                    CliError::ProfileNotFound {
-                        name: message,
-                        available: String::new(),
-                    }
-                } else {
-                    CliError::NoConfig {
-                        path: String::new(),
-                    }
-                }
-            }
+            // The API layer raises this when the controller URL cannot
+            // anchor its endpoint paths; config files are read before then.
+            CoreError::Config { message } => CliError::InvalidConfig { message },
 
             CoreError::Internal(message) => CliError::ApiError {
                 code: "internal".into(),
@@ -392,6 +602,21 @@ impl From<CoreError> for CliError {
                 request_id: None,
             },
         }
+    }
+}
+
+/// `url` with any userinfo replaced by `***`, for messages that echo a
+/// controller URL. Works on text that does not parse as a URL too, since
+/// those are exactly the URLs an error reports.
+pub fn redact_userinfo(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_owned();
+    };
+    let (prefix, rest) = url.split_at(scheme_end + 3);
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{prefix}***@{}", &rest[at + 1..]),
+        None => url.to_owned(),
     }
 }
 
@@ -404,4 +629,183 @@ fn render_site_hints(hints: &[unifly_api::SiteHint]) -> String {
         .map(|h| format!("{} ({})", h.internal_reference, h.display_name))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+    use miette::Diagnostic;
+    use unifly_api::model::{DnsPolicy, Voucher, WifiBroadcast};
+    use unifly_api::{
+        AclRule, Client, CoreError, Device, FirewallGroup, FirewallPolicy, FirewallZone, NatPolicy,
+        Network, TrafficMatchingList,
+    };
+
+    use super::{CliError, CredentialSource, LIST_COMMANDS, exit_code, shell_quote};
+    use crate::cli::args::Cli;
+    use crate::cli::commands::util::lookup::Lookup;
+
+    fn assert_is_command(path: &str) {
+        let root = Cli::command();
+        let mut command = &root;
+        for part in path.split(' ') {
+            command = command
+                .find_subcommand(part)
+                .unwrap_or_else(|| panic!("hint names `unifly {path}`, which does not exist"));
+        }
+    }
+
+    fn help(err: &CliError) -> Option<String> {
+        err.help().map(|help| help.to_string())
+    }
+
+    #[test]
+    fn every_list_hint_is_a_real_command() {
+        let lookups = [
+            Device::LIST,
+            Client::LIST,
+            Network::LIST,
+            WifiBroadcast::LIST,
+            FirewallPolicy::LIST,
+            FirewallZone::LIST,
+            FirewallGroup::LIST,
+            NatPolicy::LIST,
+            AclRule::LIST,
+            TrafficMatchingList::LIST,
+            DnsPolicy::LIST,
+            Voucher::LIST,
+        ];
+        for path in LIST_COMMANDS.iter().map(|(_, path)| *path).chain(lookups) {
+            assert_is_command(path);
+        }
+    }
+
+    #[test]
+    fn core_not_found_points_at_the_real_list_command() {
+        for (entity_type, list) in [
+            ("wifi broadcast", "wifi list"),
+            ("NAT rule", "nat policies list"),
+            ("firewall policy", "firewall policies list"),
+            ("WireGuard peer", "vpn peers list"),
+        ] {
+            let err = CliError::from(CoreError::NotFound {
+                entity_type: entity_type.into(),
+                identifier: "x".into(),
+            });
+            let help = help(&err).unwrap_or_default();
+            assert!(
+                help.contains(&format!("unifly {list}")),
+                "{entity_type}: {help}"
+            );
+            assert!(!help.contains("policys"), "{help}");
+        }
+    }
+
+    #[test]
+    fn core_not_found_without_a_list_command_offers_no_hint() {
+        let err = CliError::from(CoreError::NotFound {
+            entity_type: "resource".into(),
+            identifier: "/proxy/network/x".into(),
+        });
+        assert_eq!(help(&err), None);
+        assert_eq!(err.exit_code(), exit_code::NOT_FOUND);
+    }
+
+    #[test]
+    fn auth_failure_hint_names_only_a_real_profile() {
+        let err = CliError::from(CoreError::AuthenticationFailed {
+            message: "Invalid API key".into(),
+        });
+        let generic = help(&err).unwrap_or_default();
+        assert!(!generic.contains("current"), "{generic}");
+        assert!(!generic.contains("set-password"), "{generic}");
+
+        let named = help(&err.with_credential_source(CredentialSource::Profile("my lab")))
+            .unwrap_or_default();
+        assert!(
+            named.contains("unifly config set-password 'my lab'"),
+            "{named}"
+        );
+    }
+
+    #[test]
+    fn redact_userinfo_hides_credentials_only() {
+        for (url, redacted) in [
+            (
+                "https://admin:hunter2@10.0.0.1:8443/x",
+                "https://***@10.0.0.1:8443/x",
+            ),
+            ("http://admin@host", "http://***@host"),
+            ("http://a:b@[::1", "http://***@[::1"),
+            (
+                "https://10.0.0.1/path@not-userinfo",
+                "https://10.0.0.1/path@not-userinfo",
+            ),
+            ("https://unifi.local", "https://unifi.local"),
+            ("not a url", "not a url"),
+        ] {
+            assert_eq!(super::redact_userinfo(url), redacted, "{url}");
+        }
+    }
+
+    #[test]
+    fn missing_credentials_hint_fixes_the_missing_secret() {
+        let hint = |mode: Option<&str>, has_username: bool| {
+            help(&CliError::profile_missing_credentials(
+                "lab",
+                mode,
+                has_username,
+            ))
+            .unwrap_or_default()
+        };
+
+        let api_key = hint(Some("integration"), false);
+        assert!(
+            api_key.contains("API key: unifly config set-password lab"),
+            "{api_key}"
+        );
+
+        let password = hint(Some("session"), true);
+        assert!(
+            password.contains("password: unifly config set-password lab"),
+            "{password}"
+        );
+        assert!(!password.contains("UNIFI_API_KEY"), "{password}");
+        assert!(!password.contains("username"), "{password}");
+
+        let username = hint(Some("session"), false);
+        assert!(
+            username.contains("unifly -p lab config set username"),
+            "{username}"
+        );
+
+        let hybrid = hint(Some("hybrid"), true);
+        assert!(hybrid.contains("API key and password"), "{hybrid}");
+
+        for mode in [Some("integration"), Some("session"), Some("hybrid"), None] {
+            let text = hint(mode, true);
+            assert!(!text.contains("cloud-setup"), "{mode:?}: {text}");
+            assert!(!text.contains("config init"), "{mode:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn shell_quote_keeps_hints_pasteable() {
+        assert_eq!(shell_quote("lab"), "lab");
+        assert_eq!(shell_quote("home-1.lan"), "home-1.lan");
+        assert_eq!(shell_quote("my lab"), "'my lab'");
+        assert_eq!(shell_quote("bob's"), "'bob'\\''s'");
+        assert_eq!(shell_quote("$HOME"), "'$HOME'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn bad_controller_url_is_a_usage_error_not_a_missing_file() {
+        let err = CliError::from(CoreError::Config {
+            message: "Invalid URL: relative URL with a cannot-be-a-base base".into(),
+        });
+        assert!(matches!(err, CliError::InvalidConfig { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), exit_code::USAGE);
+        assert!(err.to_string().contains("cannot-be-a-base"), "{err}");
+    }
 }

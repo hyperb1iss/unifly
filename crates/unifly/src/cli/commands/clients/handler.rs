@@ -37,10 +37,7 @@ pub(super) async fn handle(
     match args.command {
         ClientsCommand::List(list) => {
             let all = controller.clients_snapshot();
-            let snapshot =
-                util::apply_list_args(util::order::clients(&all), &list, |client, filter| {
-                    util::matches_json_filter(client, filter)
-                });
+            let snapshot = util::apply_list_args(util::order::clients(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,
@@ -214,9 +211,7 @@ pub(super) async fn handle(
                 .filter(|u| u.use_fixedip.unwrap_or(false))
                 .map(Reservation::from)
                 .collect();
-            let snapshot = util::apply_list_args(reservations, &list, |res, filter| {
-                util::matches_json_filter(res, filter)
-            });
+            let snapshot = util::apply_list_args(reservations, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,

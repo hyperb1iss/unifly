@@ -56,9 +56,7 @@ pub(super) async fn handle(
         FirewallZonesCommand::List(list) => {
             let all = controller.firewall_zones_snapshot();
             let snapshot =
-                util::apply_list_args(util::order::firewall_zones(&all), &list, |zone, filter| {
-                    util::matches_json_filter(zone, filter)
-                });
+                util::apply_list_args(util::order::firewall_zones(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snapshot,

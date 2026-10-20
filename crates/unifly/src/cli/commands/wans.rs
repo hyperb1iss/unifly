@@ -43,11 +43,7 @@ pub async fn handle(
 
     match args.command {
         WansCommand::List(list) => {
-            let wans = util::apply_list_args(
-                controller.list_wans().await?,
-                &list,
-                util::matches_json_filter,
-            );
+            let wans = util::apply_list_args(controller.list_wans().await?, &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &wans,

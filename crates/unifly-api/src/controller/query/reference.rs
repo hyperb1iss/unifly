@@ -255,7 +255,7 @@ fn parse_vpn_server(fields: &std::collections::HashMap<String, serde_json::Value
             &["connectedClients", "connectedClientCount", "numClients"],
         ),
         protocol: field_string(fields, &["protocol", "transportProtocol"]),
-        extra: collect_extra(fields),
+        extra: collect_extra(fields, VPN_SERVER_MAPPED_KEYS),
     }
 }
 
@@ -280,7 +280,7 @@ fn parse_vpn_tunnel(fields: &std::collections::HashMap<String, serde_json::Value
             .or_else(|| fields.get("preSharedKey"))
             .is_some_and(|value| !value.is_null()),
         ike_version: field_string(fields, &["ikeVersion", "ike"]),
-        extra: collect_extra(fields),
+        extra: collect_extra(fields, VPN_TUNNEL_MAPPED_KEYS),
     }
 }
 
@@ -350,11 +350,69 @@ fn field_string_list(
         .collect()
 }
 
+/// Raw keys `parse_vpn_server` reads into typed fields, plus the typed
+/// fields' own serialized names.
+const VPN_SERVER_MAPPED_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "type",
+    "serverType",
+    "server_type",
+    "enabled",
+    "subnet",
+    "addressRange",
+    "port",
+    "wanIp",
+    "wanIP",
+    "wanAddress",
+    "wan_ip",
+    "connectedClients",
+    "connectedClientCount",
+    "numClients",
+    "connected_clients",
+    "protocol",
+    "transportProtocol",
+];
+
+/// Raw keys `parse_vpn_tunnel` reads into typed fields, plus the typed
+/// fields' own serialized names.
+const VPN_TUNNEL_MAPPED_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "type",
+    "tunnelType",
+    "tunnel_type",
+    "enabled",
+    "peerIp",
+    "peerAddress",
+    "remoteAddress",
+    "remoteHost",
+    "peer_address",
+    "localNetworks",
+    "localSubnets",
+    "local_subnets",
+    "remoteNetworks",
+    "remoteSubnets",
+    "remote_subnets",
+    "psk",
+    "preSharedKey",
+    "has_psk",
+    "ikeVersion",
+    "ike",
+    "ike_version",
+];
+
+/// The fields a record's typed fields do not already carry. `extra` is
+/// flattened next to those typed fields when serialized, so copying a
+/// mapped key would write it twice, and a mapped secret such as a
+/// pre-shared key would leak through the copy.
 fn collect_extra(
     fields: &std::collections::HashMap<String, serde_json::Value>,
+    mapped: &[&str],
 ) -> serde_json::Map<String, serde_json::Value> {
     fields
         .iter()
+        .filter(|(key, _)| !mapped.contains(&key.as_str()))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
 }
@@ -413,7 +471,29 @@ mod tests {
         assert_eq!(server.wan_ip.as_deref(), Some("198.51.100.10"));
         assert_eq!(server.connected_clients, Some(4));
         assert_eq!(server.protocol.as_deref(), Some("UDP"));
-        assert_eq!(server.extra.len(), fields.len());
+        assert!(server.extra.is_empty(), "{:?}", server.extra);
+    }
+
+    #[test]
+    fn vpn_extra_keeps_only_fields_the_typed_record_lacks() {
+        let fields: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "Home WG",
+                "type": "WIREGUARD",
+                "enabled": true,
+                "port": 51820,
+                "mtu": 1420
+            }))
+            .expect("hash map");
+
+        let server = parse_vpn_server(&fields);
+        assert_eq!(server.extra.keys().collect::<Vec<_>>(), ["mtu"]);
+
+        let json = serde_json::to_string(&server).expect("serializes");
+        for key in ["\"id\":", "\"name\":", "\"enabled\":", "\"port\":"] {
+            assert_eq!(json.matches(key).count(), 1, "{key} repeated in {json}");
+        }
     }
 
     #[test]
@@ -449,7 +529,9 @@ mod tests {
         );
         assert!(tunnel.has_psk);
         assert_eq!(tunnel.ike_version.as_deref(), Some("2"));
-        assert_eq!(tunnel.extra.len(), fields.len());
+        // The pre-shared key maps onto `has_psk`; its value never lands in
+        // the record.
+        assert!(tunnel.extra.is_empty(), "{:?}", tunnel.extra);
     }
 
     #[test]

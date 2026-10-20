@@ -7,11 +7,13 @@ use tabled::Tabled;
 use unifly_api::model::{WifiBroadcast, WifiSecurityMode};
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
-    Command as CoreCommand, Controller, CreateWifiBroadcastRequest, EntityId,
+    Command as CoreCommand, Controller, CoreError, CreateWifiBroadcastRequest, EntityId,
     UpdateWifiBroadcastRequest,
 };
 
-use crate::cli::args::{GlobalOpts, WifiArgs, WifiBroadcastType, WifiCommand, WifiSecurity};
+use crate::cli::args::{
+    GlobalOpts, OutputFormat, WifiArgs, WifiBroadcastType, WifiCommand, WifiSecurity,
+};
 use crate::cli::error::CliError;
 use crate::cli::output;
 
@@ -72,7 +74,7 @@ struct NeighborRow {
     observer: String,
 }
 
-#[derive(Tabled, Serialize)]
+#[derive(Tabled, Serialize, Clone)]
 struct ChannelRow {
     #[tabled(rename = "Band")]
     band: String,
@@ -80,6 +82,11 @@ struct ChannelRow {
     channels: String,
     #[tabled(rename = "Count")]
     count: String,
+    /// The table titles each country instead of repeating it per row.
+    #[tabled(skip)]
+    country: Option<String>,
+    #[tabled(skip)]
+    country_code: Option<String>,
 }
 
 fn wifi_row(w: &Arc<WifiBroadcast>, p: &output::Painter) -> WifiRow {
@@ -131,6 +138,8 @@ fn channel_rows(record: &ChannelAvailability, p: &output::Painter) -> Vec<Channe
             && !chs.is_empty()
         {
             rows.push(ChannelRow {
+                country: record.name.clone().or_else(|| record.key.clone()),
+                country_code: record.code.clone(),
                 band: p.name(label),
                 channels: p.muted(
                     &chs.iter()
@@ -183,9 +192,7 @@ pub async fn handle(
 
             let all = controller.wifi_broadcasts_snapshot();
             let snap =
-                util::apply_list_args(util::order::wifi_broadcasts(&all), &list, |w, filter| {
-                    util::matches_json_filter(w, filter)
-                });
+                util::apply_list_args(util::order::wifi_broadcasts(&all), &list, global.quiet);
             let out = output::render_list(
                 &global.output,
                 &snap,
@@ -218,28 +225,35 @@ pub async fn handle(
 
         WifiCommand::Channels => {
             let records = controller.list_channels().await?;
-            // Print country header, then per-band channel rows.
-            for record in &records {
-                let country = record
-                    .name
-                    .as_deref()
-                    .or(record.key.as_deref())
-                    .unwrap_or("Unknown");
-                let code = record.code.as_deref().unwrap_or("-");
-                if !global.quiet && matches!(global.output, crate::cli::args::OutputFormat::Table) {
-                    eprintln!("Country: {country} ({code})");
+            if matches!(global.output, OutputFormat::Table) {
+                // A titled table per country reads best on a terminal.
+                for record in &records {
+                    let country = record
+                        .name
+                        .as_deref()
+                        .or(record.key.as_deref())
+                        .unwrap_or("Unknown");
+                    let code = record.code.as_deref().unwrap_or("-");
+                    if !global.quiet {
+                        eprintln!("Country: {country} ({code})");
+                    }
+                    let rows = channel_rows(record, &p);
+                    let out =
+                        output::render_list(&global.output, &rows, ChannelRow::clone, |row| {
+                            row.band.clone()
+                        });
+                    output::print_output(&out, global.quiet);
                 }
-                let rows: Vec<ChannelRow> = channel_rows(record, &p);
-                let out = output::render_list(
-                    &global.output,
-                    &rows,
-                    |row| ChannelRow {
-                        band: row.band.clone(),
-                        channels: row.channels.clone(),
-                        count: row.count.clone(),
-                    },
-                    |row| row.band.clone(),
-                );
+            } else {
+                // Machine formats need a single document, so every country's
+                // rows go out together and carry their country.
+                let rows: Vec<ChannelRow> = records
+                    .iter()
+                    .flat_map(|record| channel_rows(record, &p))
+                    .collect();
+                let out = output::render_list(&global.output, &rows, ChannelRow::clone, |row| {
+                    row.band.clone()
+                });
                 output::print_output(&out, global.quiet);
             }
             Ok(())
@@ -357,17 +371,29 @@ async fn handle_get(
 ) -> Result<(), CliError> {
     util::ensure_integration_access(controller, "wifi").await?;
 
-    // Names resolve against the snapshot; an ID it lacks still goes to the
-    // controller, which holds the full broadcast detail.
+    // Names resolve against the snapshot; a UUID it lacks still goes to the
+    // controller, which holds the full broadcast detail. Anything else is a
+    // name that matched nothing.
     let snapshot = controller.wifi_broadcasts_snapshot();
     let entity_id = match util::lookup::lookup(snapshot.as_slice(), id)? {
         Some(broadcast) => broadcast.id.clone(),
         None => EntityId::from(id.trim().to_owned()),
     };
+    if entity_id.as_uuid().is_none() {
+        return Err(util::lookup::not_found::<WifiBroadcast>(id));
+    }
+    // Only a missing record is "not found"; auth, timeout, and server
+    // failures keep their own message and exit code.
     let broadcast = controller
         .get_wifi_broadcast_detail(&entity_id)
         .await
-        .map_err(|_| util::lookup::not_found::<WifiBroadcast>(id))?;
+        .map_err(|err| match err {
+            CoreError::NotFound { .. }
+            | CoreError::Api {
+                status: Some(404), ..
+            } => util::lookup::not_found::<WifiBroadcast>(id),
+            other => CliError::from(other),
+        })?;
     let broadcast = Arc::new(broadcast);
     let out = output::render_single(&global.output, &broadcast, detail, |w| w.id.to_string());
     output::print_output(&out, global.quiet);
