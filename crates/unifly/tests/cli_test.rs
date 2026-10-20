@@ -1990,3 +1990,108 @@ async fn test_wifi_get_reports_failures_by_kind() {
             )));
     }
 }
+
+#[test]
+fn test_not_found_hints_name_real_commands_spelled_right() {
+    for (args, list) in [
+        (
+            &["firewall", "policies", "get", "nope"][..],
+            "firewall policies list",
+        ),
+        (&["nat", "policies", "get", "nope"][..], "nat policies list"),
+        (&["wifi", "get", "nope"][..], "wifi list"),
+    ] {
+        let output = unifly_cmd()
+            .arg("--demo-fleet")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "{}",
+            combined_output(&output)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("unifly {list}")), "{stderr}");
+        assert!(!stderr.contains("policys"), "{stderr}");
+    }
+}
+
+#[test]
+fn test_unusable_controller_url_is_not_a_missing_config_file() {
+    for url in ["foo:bar", "mailto:admin@example.com"] {
+        unifly_cmd()
+            .args(["-c", url, "--api-key", "k", "devices", "list"])
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("Configuration file not found").not())
+            .stderr(predicate::str::contains("controller URL"));
+    }
+}
+
+/// A controller whose API key check fails during connect.
+async fn mock_rejecting_controller() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = mock_api_key_controller().await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(401))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn test_auth_failure_help_names_the_profile_in_use() {
+    let server = mock_rejecting_controller().await;
+
+    let output = mock_cmd(&server)
+        .args(["devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Authentication failed"), "{stderr}");
+    assert!(!stderr.contains("current"), "{stderr}");
+
+    let tempdir = tempfile::tempdir().unwrap();
+    for (key, value) in [
+        ("controller", server.uri()),
+        ("auth_mode", "integration".into()),
+    ] {
+        unifly_cmd_in(tempdir.path())
+            .args(["config", "set", &format!("profiles.lab.{key}"), &value])
+            .assert()
+            .success();
+    }
+    let output = unifly_cmd_in(tempdir.path())
+        .args(["-p", "lab", "--api-key", MOCK_API_KEY, "devices", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        combined_output(&output)
+    );
+    // miette wraps help text to the terminal width.
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        stderr.contains("unifly config set-password lab"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("current"), "{stderr}");
+}

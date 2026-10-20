@@ -54,17 +54,13 @@ pub enum CliError {
 
     // ── Authentication ───────────────────────────────────────────────
     #[error("Authentication failed: {message}")]
-    #[diagnostic(
-        code(unifi::auth_failed),
-        help(
-            "Verify your API key or credentials.\n\
-             For local controller API keys: check Settings > Integrations on your controller.\n\
-             For Site Manager cloud profiles: verify the API key can see the console and your UI account has UniFi Network admin access.\n\
-             For local username/password profiles: run unifly config set-password --profile {profile}\n\
-             To re-run cloud onboarding: unifly config cloud-setup"
-        )
-    )]
-    AuthFailed { profile: String, message: String },
+    #[diagnostic(code(unifi::auth_failed))]
+    AuthFailed {
+        message: String,
+        /// Built by [`CliError::auth_failed`], which knows the profile.
+        #[help]
+        help: String,
+    },
 
     #[error("No credentials configured for profile '{profile}'")]
     #[diagnostic(
@@ -81,12 +77,20 @@ pub enum CliError {
     #[error("{resource_type} '{identifier}' not found")]
     #[diagnostic(
         code(unifi::not_found),
-        help("Run: unifly {list_command} to see available {resource_type}s")
+        help("See what exists with: unifly {list_command}")
     )]
     NotFound {
         resource_type: String,
         identifier: String,
         list_command: String,
+    },
+
+    /// A missing record that no list command enumerates.
+    #[error("{resource_type} '{identifier}' not found")]
+    #[diagnostic(code(unifi::not_found))]
+    NotFoundUnlisted {
+        resource_type: String,
+        identifier: String,
     },
 
     #[error("{resource_type} '{identifier}' is ambiguous ({count} matches)")]
@@ -197,6 +201,16 @@ pub enum CliError {
     )]
     NoConfig { path: String },
 
+    #[error("Invalid controller configuration: {message}")]
+    #[diagnostic(
+        code(unifi::invalid_config),
+        help(
+            "The controller URL must be an http:// or https:// address, set with \
+             --controller or the profile's `controller` key."
+        )
+    )]
+    InvalidConfig { message: String },
+
     #[error(transparent)]
     #[diagnostic(code(unifi::config))]
     Config(Box<figment::Error>),
@@ -277,10 +291,13 @@ impl CliError {
         match self {
             Self::ConnectionFailed { .. } | Self::TlsError { .. } => exit_code::CONNECTION,
             Self::AuthFailed { .. } | Self::NoCredentials { .. } => exit_code::AUTH,
-            Self::NotFound { .. } | Self::SiteNotFound { .. } => exit_code::NOT_FOUND,
+            Self::NotFound { .. } | Self::NotFoundUnlisted { .. } | Self::SiteNotFound { .. } => {
+                exit_code::NOT_FOUND
+            }
             Self::Conflict { .. } | Self::SkillFileExists { .. } => exit_code::CONFLICT,
             Self::Timeout { .. } => exit_code::TIMEOUT,
             Self::Validation { .. }
+            | Self::InvalidConfig { .. }
             | Self::NonInteractiveRequiresYes { .. }
             | Self::SiteAmbiguous { .. }
             | Self::Ambiguous { .. } => exit_code::USAGE,
@@ -290,6 +307,67 @@ impl CliError {
             _ => exit_code::GENERAL,
         }
     }
+
+    /// An authentication failure whose recovery hint names `profile`, the
+    /// profile the command ran with, or none for ad-hoc `--controller` use.
+    pub fn auth_failed(message: String, profile: Option<&str>) -> Self {
+        let stored_secret = match profile {
+            Some(name) => format!(
+                "To replace this profile's stored secret: unifly config set-password {name}"
+            ),
+            None => "To keep credentials in a profile instead: unifly config init".into(),
+        };
+        Self::AuthFailed {
+            message,
+            help: format!(
+                "Verify your API key or credentials.\n\
+                 For local controller API keys: check Settings > Integrations on your controller.\n\
+                 For Site Manager cloud profiles: verify the API key can see the console and your UI account has UniFi Network admin access.\n\
+                 {stored_secret}\n\
+                 To re-run cloud onboarding: unifly config cloud-setup"
+            ),
+        }
+    }
+
+    /// Name `profile` in an authentication failure's hint. Errors convert
+    /// from `CoreError` without knowing which profile was active, so the
+    /// binary applies this once it has the result.
+    #[must_use]
+    pub fn for_profile(self, profile: Option<&str>) -> Self {
+        match self {
+            Self::AuthFailed { message, .. } => Self::auth_failed(message, profile),
+            other => other,
+        }
+    }
+}
+
+/// The list command for each entity type `CoreError::NotFound` names. The
+/// types are free text from the API layer, so a missing entry means no
+/// hint rather than a guessed command.
+const LIST_COMMANDS: &[(&str, &str)] = &[
+    ("network", "networks list"),
+    ("wifi broadcast", "wifi list"),
+    ("firewall policy", "firewall policies list"),
+    ("firewall group", "firewall groups list"),
+    ("NAT rule", "nat policies list"),
+    ("site-to-site VPN", "vpn site-to-site list"),
+    ("remote-access VPN server", "vpn remote-access list"),
+    ("WireGuard peer", "vpn peers list"),
+    ("VPN client profile", "vpn clients list"),
+    ("VPN client connection", "vpn connections list"),
+    (
+        "magic site-to-site VPN config",
+        "vpn magic-site-to-site list",
+    ),
+    ("vpn setting", "vpn settings list"),
+    ("setting", "settings list"),
+];
+
+fn list_command_for(entity_type: &str) -> Option<&'static str> {
+    LIST_COMMANDS
+        .iter()
+        .find(|(kind, _)| kind.eq_ignore_ascii_case(entity_type))
+        .map(|(_, command)| *command)
 }
 
 // ── CoreError → CliError mapping ─────────────────────────────────────
@@ -302,10 +380,7 @@ impl From<CoreError> for CliError {
                 source: reason.into(),
             },
 
-            CoreError::AuthenticationFailed { message } => CliError::AuthFailed {
-                profile: "current".into(),
-                message,
-            },
+            CoreError::AuthenticationFailed { message } => CliError::auth_failed(message, None),
 
             CoreError::ControllerDisconnected => CliError::ConnectionFailed {
                 url: "(disconnected)".into(),
@@ -347,10 +422,16 @@ impl From<CoreError> for CliError {
             CoreError::NotFound {
                 entity_type,
                 identifier,
-            } => CliError::NotFound {
-                list_command: format!("{entity_type}s list"),
-                resource_type: entity_type,
-                identifier,
+            } => match list_command_for(&entity_type) {
+                Some(list_command) => CliError::NotFound {
+                    list_command: list_command.into(),
+                    resource_type: entity_type,
+                    identifier,
+                },
+                None => CliError::NotFoundUnlisted {
+                    resource_type: entity_type,
+                    identifier,
+                },
             },
 
             CoreError::Unsupported {
@@ -388,18 +469,9 @@ impl From<CoreError> for CliError {
                 request_id: None,
             },
 
-            CoreError::Config { message } => {
-                if message.contains("profile") {
-                    CliError::ProfileNotFound {
-                        name: message,
-                        available: String::new(),
-                    }
-                } else {
-                    CliError::NoConfig {
-                        path: String::new(),
-                    }
-                }
-            }
+            // The API layer raises this when the controller URL cannot
+            // anchor its endpoint paths; config files are read before then.
+            CoreError::Config { message } => CliError::InvalidConfig { message },
 
             CoreError::Internal(message) => CliError::ApiError {
                 code: "internal".into(),
@@ -419,4 +491,108 @@ fn render_site_hints(hints: &[unifly_api::SiteHint]) -> String {
         .map(|h| format!("{} ({})", h.internal_reference, h.display_name))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+    use miette::Diagnostic;
+    use unifly_api::model::{DnsPolicy, Voucher, WifiBroadcast};
+    use unifly_api::{
+        AclRule, Client, CoreError, Device, FirewallGroup, FirewallPolicy, FirewallZone, NatPolicy,
+        Network, TrafficMatchingList,
+    };
+
+    use super::{CliError, LIST_COMMANDS, exit_code};
+    use crate::cli::args::Cli;
+    use crate::cli::commands::util::lookup::Lookup;
+
+    fn assert_is_command(path: &str) {
+        let root = Cli::command();
+        let mut command = &root;
+        for part in path.split(' ') {
+            command = command
+                .find_subcommand(part)
+                .unwrap_or_else(|| panic!("hint names `unifly {path}`, which does not exist"));
+        }
+    }
+
+    fn help(err: &CliError) -> Option<String> {
+        err.help().map(|help| help.to_string())
+    }
+
+    #[test]
+    fn every_list_hint_is_a_real_command() {
+        let lookups = [
+            Device::LIST,
+            Client::LIST,
+            Network::LIST,
+            WifiBroadcast::LIST,
+            FirewallPolicy::LIST,
+            FirewallZone::LIST,
+            FirewallGroup::LIST,
+            NatPolicy::LIST,
+            AclRule::LIST,
+            TrafficMatchingList::LIST,
+            DnsPolicy::LIST,
+            Voucher::LIST,
+        ];
+        for path in LIST_COMMANDS.iter().map(|(_, path)| *path).chain(lookups) {
+            assert_is_command(path);
+        }
+    }
+
+    #[test]
+    fn core_not_found_points_at_the_real_list_command() {
+        for (entity_type, list) in [
+            ("wifi broadcast", "wifi list"),
+            ("NAT rule", "nat policies list"),
+            ("firewall policy", "firewall policies list"),
+            ("WireGuard peer", "vpn peers list"),
+        ] {
+            let err = CliError::from(CoreError::NotFound {
+                entity_type: entity_type.into(),
+                identifier: "x".into(),
+            });
+            let help = help(&err).unwrap_or_default();
+            assert!(
+                help.contains(&format!("unifly {list}")),
+                "{entity_type}: {help}"
+            );
+            assert!(!help.contains("policys"), "{help}");
+        }
+    }
+
+    #[test]
+    fn core_not_found_without_a_list_command_offers_no_hint() {
+        let err = CliError::from(CoreError::NotFound {
+            entity_type: "resource".into(),
+            identifier: "/proxy/network/x".into(),
+        });
+        assert_eq!(help(&err), None);
+        assert_eq!(err.exit_code(), exit_code::NOT_FOUND);
+    }
+
+    #[test]
+    fn auth_failure_hint_names_only_a_real_profile() {
+        let err = CliError::from(CoreError::AuthenticationFailed {
+            message: "Invalid API key".into(),
+        });
+        let generic = help(&err).unwrap_or_default();
+        assert!(!generic.contains("current"), "{generic}");
+        assert!(!generic.contains("set-password"), "{generic}");
+
+        let named = help(&err.for_profile(Some("lab"))).unwrap_or_default();
+        assert!(named.contains("unifly config set-password lab"), "{named}");
+    }
+
+    #[test]
+    fn bad_controller_url_is_a_usage_error_not_a_missing_file() {
+        let err = CliError::from(CoreError::Config {
+            message: "Invalid URL: relative URL with a cannot-be-a-base base".into(),
+        });
+        assert!(matches!(err, CliError::InvalidConfig { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), exit_code::USAGE);
+        assert!(err.to_string().contains("cannot-be-a-base"), "{err}");
+    }
 }

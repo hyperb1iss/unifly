@@ -83,19 +83,26 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
         return Err(demo_fleet::refuse(command_path));
     }
 
-    match cli.command {
-        Command::Skill(args) => unifly::cli::skill::handle(&args, cli.global.quiet),
+    let Cli { global, command } = cli;
+    let result = run_command(command, &global).await;
+    result.map_err(|err| name_profile(err, &global))
+}
+
+#[allow(clippy::future_not_send)]
+async fn run_command(command: Command, global: &GlobalOpts) -> Result<(), CliError> {
+    match command {
+        Command::Skill(args) => unifly::cli::skill::handle(&args, global.quiet),
 
         Command::Cloud(args) => {
-            init_tracing(cli.global.verbose);
-            commands::cloud::handle(args, &cli.global).await
+            init_tracing(global.verbose);
+            commands::cloud::handle(args, global).await
         }
 
         Command::Config(args) => {
             if matches!(&args.command, ConfigCommand::CloudSetup) {
-                init_tracing(cli.global.verbose);
+                init_tracing(global.verbose);
             }
-            commands::config_cmd::handle(args, &cli.global).await
+            commands::config_cmd::handle(args, global).await
         }
 
         Command::Completions(args) => {
@@ -109,7 +116,7 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
 
         #[cfg(feature = "tui")]
         Command::Tui(args) => {
-            unifly::tui::launch(&cli.global, args)
+            unifly::tui::launch(global, args)
                 .await
                 .map_err(|e| CliError::ApiError {
                     code: "tui".into(),
@@ -119,11 +126,11 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
         }
 
         cmd => {
-            init_tracing(cli.global.verbose);
-            let controller = if cli.global.demo_fleet {
-                demo_fleet::controller(&cli.global)
+            init_tracing(global.verbose);
+            let controller = if global.demo_fleet {
+                demo_fleet::controller(global)
             } else {
-                let mut controller_config = build_controller_config(&cli.global).await?;
+                let mut controller_config = build_controller_config(global).await?;
                 controller_config.websocket_enabled = command_uses_websocket(&cmd);
                 Controller::new(controller_config)
             };
@@ -136,18 +143,31 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
                     .map_err(CliError::from)?;
             }
             for warning in controller.take_warnings().await {
-                if !cli.global.quiet {
+                if !global.quiet {
                     eprintln!("warning: {warning}");
                 }
             }
 
             tracing::debug!(command = ?cmd, "dispatching command");
-            let result = commands::dispatch(cmd, &controller, &cli.global).await;
+            let result = commands::dispatch(cmd, &controller, global).await;
 
             controller.disconnect().await;
             result
         }
     }
+}
+
+/// Point an authentication failure's hint at the profile the command used.
+/// The config is only read on this failure path, and never for the demo
+/// fleet, which keeps its promise not to open the config file.
+fn name_profile(err: CliError, global: &GlobalOpts) -> CliError {
+    if global.demo_fleet || !matches!(err, CliError::AuthFailed { .. }) {
+        return err;
+    }
+    let cfg = resolve::load_config_or_default();
+    let name = resolve::active_profile_name(global, &cfg);
+    let profile = cfg.profiles.contains_key(&name).then_some(name);
+    err.for_profile(profile.as_deref())
 }
 
 fn command_uses_websocket(command: &Command) -> bool {
