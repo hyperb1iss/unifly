@@ -419,6 +419,17 @@ impl WifiScreen {
                     .add_modifier(Modifier::BOLD),
             ));
         }
+        // Search filters every table here but the roaming history.
+        if !self.search_query.is_empty() && self.sub_tab != WifiSubTab::Roaming {
+            strip.push_gap(Span::styled(
+                "  Filter: ",
+                Style::default().fg(theme::text_muted()),
+            ));
+            strip.push_gap(Span::styled(
+                format!("\"{}\"", self.search_query),
+                Style::default().fg(theme::warning()),
+            ));
+        }
         if let Some(client) = self.focused_client_label() {
             strip.push_gap(Span::styled(
                 "  Client: ",

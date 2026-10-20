@@ -93,6 +93,10 @@ impl Component for WifiScreen {
         }
     }
 
+    fn search_query(&self) -> Option<&str> {
+        Some(&self.search_query)
+    }
+
     fn id(&self) -> &'static str {
         "WiFi"
     }

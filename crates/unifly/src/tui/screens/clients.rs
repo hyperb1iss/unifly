@@ -73,6 +73,10 @@ impl Component for ClientsScreen {
         self.focused = focused;
     }
 
+    fn search_query(&self) -> Option<&str> {
+        Some(&self.search_query)
+    }
+
     fn id(&self) -> &'static str {
         "Clients"
     }

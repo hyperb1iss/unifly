@@ -298,3 +298,18 @@ fn a_failed_client_detail_fetch_is_retried() {
     screen.apply_action(&detail_loaded(FIRST_IP, -42));
     assert!(rendered(&screen).contains("-42 dBm"));
 }
+
+#[test]
+fn a_kept_search_filter_stays_visible() {
+    let mut screen = client_detail_screen();
+    screen.apply_action(&Action::SearchInput("client-2".to_owned()));
+    assert!(rendered(&screen).contains("Filter: \"client-2\""));
+
+    // The roaming history is not filtered, so its tab claims no filter.
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Roaming));
+    assert!(!rendered(&screen).contains("Filter:"));
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
+
+    screen.apply_action(&Action::CloseSearch);
+    assert!(!rendered(&screen).contains("Filter:"));
+}

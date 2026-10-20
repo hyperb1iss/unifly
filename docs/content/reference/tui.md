@@ -62,7 +62,7 @@ The dashboard packs eight live panels into a dense, information-rich overview:
 | `Ctrl+d` / `Ctrl+u`       | Page down / up                      |
 | `Enter`                   | Select / expand detail              |
 | `Esc`                     | Close detail / go back              |
-| `/`                       | Search                              |
+| `/`                       | Search (Devices, Clients, WiFi)     |
 | `?`                       | Help overlay                        |
 | `Ctrl+r`                  | Force reconnect (when disconnected) |
 | `q`                       | Quit                                |
@@ -113,6 +113,8 @@ Typing still needs a keyboard: search, the Networks edit form, the Settings fiel
 ## Lists
 
 Every list screen orders its rows the way the CLI does: devices by name, clients by display name, networks by name, and firewall policies grouped by source zone, then destination zone, in the order they apply. The cursor stays on the same device, client, or policy when data refreshes or the order changes, so an action key always targets the row you see highlighted.
+
+`/` opens a search bar on the Devices, Clients, and WiFi screens that filters the list as you type. `Enter` closes the bar and keeps the filter, which stays on show above the list; `/` reopens the bar on that filter to refine it, and `Esc` in the bar clears it. The other screens have nothing to filter, so `/` there only says where search works, and their status bar has no search button.
 
 Columns size themselves to their content, and wider terminals reveal more of them:
 

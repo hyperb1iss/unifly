@@ -292,7 +292,6 @@ impl EventsScreen {
         let bar = click::key_hints(&[
             Hint::button("Space", "pause/resume", click::char_key(' ')),
             Hint::info("j/k", "scroll (paused)"),
-            Hint::button("/", "search", click::char_key('/')),
         ]);
         let line = bar.draw(area, &mut self.hits.borrow_mut());
         frame.render_widget(Paragraph::new(line), area);

@@ -51,13 +51,16 @@ impl App {
             Action::ToggleAbout => {
                 self.about_visible = !self.about_visible;
             }
-            Action::OpenSearch => {
-                self.search_active = true;
-                self.search_query.clear();
+            Action::OpenSearch => self.open_search(),
+            Action::SearchSubmit => {
+                // The screen keeps filtering by the query; only the bar
+                // closes, and reopening it picks the query back up.
+                self.search_active = false;
             }
             Action::CloseSearch => {
                 self.search_active = false;
                 self.search_query.clear();
+                self.forward_to_screen(self.active_screen, action)?;
             }
             Action::Connecting => {
                 self.connection_status = ConnectionStatus::Connecting;

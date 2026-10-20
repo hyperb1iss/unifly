@@ -169,8 +169,8 @@ impl App {
             line.push_gap(Span::raw("  "));
             line.push_hints(
                 &[
-                    Hint::button("Esc", "cancel", KeyCode::Esc),
-                    Hint::button("Enter", "submit", KeyCode::Enter),
+                    Hint::button("Esc", "clear", KeyCode::Esc),
+                    Hint::button("Enter", "done", KeyCode::Enter),
                 ],
                 theme::key_hint_key(),
                 theme::key_hint(),
@@ -205,18 +205,18 @@ impl App {
         // App-wide buttons dispatch their action directly: as keys they
         // would reach the screen first, which may use the same letter.
         let retry = Hint::action("^r", "retry", Action::RetryConnect);
+        let search = self
+            .active_screen_searches()
+            .then(|| Hint::action("/", "search", Action::OpenSearch));
         let global = [
-            Hint::action("?", "help", Action::ToggleHelp),
-            Hint::action("a", "about", Action::ToggleAbout),
-            Hint::action("/", "search", Action::OpenSearch),
-            Hint::action(",", "settings", Action::OpenSettings),
-            Hint::action("q", "quit", Action::Quit),
+            Some(Hint::action("?", "help", Action::ToggleHelp)),
+            Some(Hint::action("a", "about", Action::ToggleAbout)),
+            search,
+            Some(Hint::action(",", "settings", Action::OpenSettings)),
+            Some(Hint::action("q", "quit", Action::Quit)),
         ];
-        let shown: Vec<Hint> = if self.connection_status == ConnectionStatus::Disconnected {
-            std::iter::once(retry).chain(global).collect()
-        } else {
-            global.to_vec()
-        };
+        let retry = (self.connection_status == ConnectionStatus::Disconnected).then_some(retry);
+        let shown: Vec<Hint> = std::iter::once(retry).chain(global).flatten().collect();
         hints.push_hints(&shown, theme::key_hint_key(), theme::key_hint());
         let mut spans = vec![Span::raw(" "), connection_indicator];
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
