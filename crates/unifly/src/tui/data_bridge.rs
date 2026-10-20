@@ -48,7 +48,13 @@ pub async fn spawn_data_bridge(
             return;
         }
 
-        let _ = action_tx.send(Action::Reconnecting { attempt });
+        // The first attempt is the connect itself; only later ones retry.
+        let status = if attempt == 1 {
+            Action::Connecting
+        } else {
+            Action::Reconnecting { attempt }
+        };
+        let _ = action_tx.send(status);
 
         let connect_result = tokio::select! {
             biased;
@@ -270,6 +276,28 @@ mod tests {
         assert_eq!(connect_backoff(5), Duration::from_secs(30));
         assert_eq!(connect_backoff(6), Duration::from_secs(30));
         assert_eq!(connect_backoff(u32::MAX), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn the_first_attempt_reports_connecting() {
+        let controller = Controller::demo(unifly_api::DemoFleetOptions::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        let bridge = tokio::spawn(Box::pin(spawn_data_bridge(
+            controller,
+            tx,
+            cancel.clone(),
+            None,
+        )));
+
+        let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the bridge reports its first attempt")
+            .expect("the bridge is still running");
+        assert!(matches!(first, Action::Connecting), "{first:?}");
+
+        cancel.cancel();
+        bridge.await.expect("bridge task");
     }
 
     #[tokio::test]

@@ -59,6 +59,9 @@ impl App {
                 self.search_active = false;
                 self.search_query.clear();
             }
+            Action::Connecting => {
+                self.connection_status = ConnectionStatus::Connecting;
+            }
             Action::Connected => {
                 self.connection_status = ConnectionStatus::Connected;
                 self.connection_error = None;

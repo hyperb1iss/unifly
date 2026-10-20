@@ -389,6 +389,7 @@ pub enum Action {
     },
 
     // ── Connection Status ─────────────────────────────────────────
+    Connecting,
     Connected,
     Disconnected(String),
     Reconnecting {
