@@ -386,7 +386,7 @@ impl From<CoreError> for CliError {
     fn from(err: CoreError) -> Self {
         match err {
             CoreError::ConnectionFailed { url, reason } => CliError::ConnectionFailed {
-                url,
+                url: redact_userinfo(&url),
                 source: reason.into(),
             },
 
@@ -492,6 +492,21 @@ impl From<CoreError> for CliError {
     }
 }
 
+/// `url` with any userinfo replaced by `***`, for messages that echo a
+/// controller URL. Works on text that does not parse as a URL too, since
+/// those are exactly the URLs an error reports.
+pub fn redact_userinfo(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_owned();
+    };
+    let (prefix, rest) = url.split_at(scheme_end + 3);
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{prefix}***@{}", &rest[at + 1..]),
+        None => url.to_owned(),
+    }
+}
+
 fn render_site_hints(hints: &[unifly_api::SiteHint]) -> String {
     if hints.is_empty() {
         return "(none discovered -- run `unifly sites list` to verify connectivity)".into();
@@ -594,6 +609,26 @@ mod tests {
 
         let named = help(&err.for_profile(Some("lab"))).unwrap_or_default();
         assert!(named.contains("unifly config set-password lab"), "{named}");
+    }
+
+    #[test]
+    fn redact_userinfo_hides_credentials_only() {
+        for (url, redacted) in [
+            (
+                "https://admin:hunter2@10.0.0.1:8443/x",
+                "https://***@10.0.0.1:8443/x",
+            ),
+            ("http://admin@host", "http://***@host"),
+            ("http://a:b@[::1", "http://***@[::1"),
+            (
+                "https://10.0.0.1/path@not-userinfo",
+                "https://10.0.0.1/path@not-userinfo",
+            ),
+            ("https://unifi.local", "https://unifi.local"),
+            ("not a url", "not a url"),
+        ] {
+            assert_eq!(super::redact_userinfo(url), redacted, "{url}");
+        }
     }
 
     #[test]

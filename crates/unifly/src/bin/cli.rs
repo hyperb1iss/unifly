@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 use unifly::cli::args::{Cli, Command, ConfigCommand, EventsCommand, GlobalOpts};
 use unifly::cli::commands;
 use unifly::cli::demo_fleet::{self, DemoSwitch};
-use unifly::cli::error::CliError;
+use unifly::cli::error::{CliError, redact_userinfo};
 use unifly::config::resolve;
 
 use unifly_api::Controller;
@@ -242,7 +242,7 @@ async fn build_controller_config(
 
     let url: url::Url = url_str.parse().map_err(|_| CliError::Validation {
         field: "controller".into(),
-        reason: format!("invalid URL: {url_str}"),
+        reason: format!("invalid URL: {}", redact_userinfo(url_str)),
     })?;
 
     let auth = if let Some(ref key) = global.api_key {

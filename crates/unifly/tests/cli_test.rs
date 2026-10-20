@@ -2387,3 +2387,29 @@ async fn test_vpn_lists_render_yaml_and_json_without_duplicate_keys() {
         assert!(!text.contains("hunter2"), "{text}");
     }
 }
+
+#[test]
+fn test_controller_url_errors_never_echo_a_password() {
+    for url in [
+        "ftp://admin:hunter2@192.0.2.1",
+        "http://admin:hunter2@[::1",
+        "gopher://admin:hunter2@192.0.2.1/x",
+    ] {
+        for command in [&["devices", "list"][..], &["cloud", "hosts"][..]] {
+            let output = unifly_cmd()
+                .args(["-c", url, "--api-key", "k"])
+                .args(command)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{}",
+                combined_output(&output)
+            );
+            let text = combined_output(&output);
+            assert!(!text.contains("hunter2"), "{url} {command:?}: {text}");
+            assert!(text.contains("***@"), "{url} {command:?}: {text}");
+        }
+    }
+}

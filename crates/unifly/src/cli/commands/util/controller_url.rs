@@ -1,4 +1,4 @@
-use crate::cli::error::CliError;
+use crate::cli::error::{CliError, redact_userinfo};
 
 /// Require an `http` or `https` controller or Site Manager URL.
 ///
@@ -6,13 +6,14 @@ use crate::cli::error::CliError;
 /// fail there as an opaque "builder error"; checking first reports it as
 /// the configuration mistake it is.
 pub fn require_http_url(url: &str) -> Result<(), CliError> {
+    let shown = redact_userinfo(url);
     let parsed = url::Url::parse(url).map_err(|err| CliError::InvalidConfig {
-        message: format!("invalid URL '{url}': {err}"),
+        message: format!("invalid URL '{shown}': {err}"),
     })?;
     match parsed.scheme() {
         "http" | "https" => Ok(()),
         scheme => Err(CliError::InvalidConfig {
-            message: format!("unsupported URL scheme '{scheme}' in {url}"),
+            message: format!("unsupported URL scheme '{scheme}' in {shown}"),
         }),
     }
 }
