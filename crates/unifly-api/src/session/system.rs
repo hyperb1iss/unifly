@@ -80,13 +80,13 @@ impl SessionClient {
             .get(url)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(|e| self.transport_error(e))?;
         if !resp.status().is_success() {
             return Err(Error::SessionApi {
                 message: format!("backup download failed: HTTP {}", resp.status()),
             });
         }
-        let bytes = resp.bytes().await.map_err(Error::Transport)?;
+        let bytes = resp.bytes().await.map_err(|e| self.transport_error(e))?;
         Ok(bytes.to_vec())
     }
 

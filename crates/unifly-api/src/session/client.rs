@@ -112,6 +112,8 @@ pub struct SessionClient {
     /// The last TOTP code an MFA login sent. It is spent, so a re-login
     /// refuses a provider that hands it back.
     spent_totp: std::sync::Mutex<Option<secrecy::SecretString>>,
+    /// Request timeout `http` was built with, when known.
+    request_timeout: Option<std::time::Duration>,
 }
 
 impl SessionClient {
@@ -145,6 +147,7 @@ impl SessionClient {
             reauth: tokio::sync::Mutex::default(),
             session_generation: std::sync::atomic::AtomicU64::new(0),
             spent_totp: std::sync::Mutex::default(),
+            request_timeout: Some(config.timeout),
         })
     }
 
@@ -174,7 +177,20 @@ impl SessionClient {
             reauth: tokio::sync::Mutex::default(),
             session_generation: std::sync::atomic::AtomicU64::new(0),
             spent_totp: std::sync::Mutex::default(),
+            request_timeout: None,
         }
+    }
+
+    /// Record the request timeout the `reqwest::Client` given to
+    /// [`Self::with_client`] was built with, so timeouts report it.
+    pub(crate) fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.request_timeout = Some(timeout);
+        self
+    }
+
+    /// Wrap a reqwest failure, reporting a timeout with the configured limit.
+    pub(crate) fn transport_error(&self, error: reqwest::Error) -> Error {
+        Error::from_transport(error, self.request_timeout)
     }
 
     /// Keep credentials so the client can re-authenticate itself when a
@@ -581,7 +597,12 @@ impl SessionClient {
     async fn get_once<T: DeserializeOwned>(&self, url: Url) -> Result<Vec<T>, Error> {
         debug!("GET {}", url);
 
-        let resp = self.http.get(url).send().await.map_err(Error::Transport)?;
+        let resp = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| self.transport_error(e))?;
 
         self.parse_envelope(resp).await
     }
@@ -598,7 +619,12 @@ impl SessionClient {
     async fn get_raw_once(&self, url: Url) -> Result<serde_json::Value, Error> {
         debug!("GET (raw) {}", url);
 
-        let resp = self.http.get(url).send().await.map_err(Error::Transport)?;
+        let resp = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| self.transport_error(e))?;
         let status = resp.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -611,7 +637,7 @@ impl SessionClient {
             });
         }
 
-        let body = resp.bytes().await.map_err(Error::Transport)?;
+        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
         serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
             message: format!("{e}"),
             body: String::from_utf8_lossy(&body).into_owned(),
@@ -637,7 +663,7 @@ impl SessionClient {
         debug!("POST {}", url);
 
         let builder = self.apply_csrf(self.http.post(url).json(body));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
 
         self.parse_envelope(resp).await
     }
@@ -662,7 +688,7 @@ impl SessionClient {
         debug!("PUT {}", url);
 
         let builder = self.apply_csrf(self.http.put(url).json(body));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
 
         self.parse_envelope(resp).await
     }
@@ -679,7 +705,7 @@ impl SessionClient {
         debug!("DELETE {}", url);
 
         let builder = self.apply_csrf(self.http.delete(url));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
 
         self.parse_envelope(resp).await
     }
@@ -718,7 +744,7 @@ impl SessionClient {
         debug!("POST (raw) {}", url);
 
         let builder = self.apply_csrf(self.http.post(url).json(body));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
         let status = resp.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -731,7 +757,7 @@ impl SessionClient {
             });
         }
 
-        let body = resp.bytes().await.map_err(Error::Transport)?;
+        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
         serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
             message: format!("{e}"),
             body: String::from_utf8_lossy(&body).into_owned(),
@@ -761,7 +787,7 @@ impl SessionClient {
         debug!("PUT (raw) {}", url);
 
         let builder = self.apply_csrf(self.http.put(url).json(body));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
         let status = resp.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -774,7 +800,7 @@ impl SessionClient {
             });
         }
 
-        let body = resp.bytes().await.map_err(Error::Transport)?;
+        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
         serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
             message: format!("{e}"),
             body: String::from_utf8_lossy(&body).into_owned(),
@@ -804,7 +830,7 @@ impl SessionClient {
         debug!("PATCH (raw) {}", url);
 
         let builder = self.apply_csrf(self.http.patch(url).json(body));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
         let status = resp.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -817,7 +843,7 @@ impl SessionClient {
             });
         }
 
-        let body = resp.bytes().await.map_err(Error::Transport)?;
+        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
         serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
             message: format!("{e}"),
             body: String::from_utf8_lossy(&body).into_owned(),
@@ -839,7 +865,7 @@ impl SessionClient {
         debug!("DELETE (raw) {}", url);
 
         let builder = self.apply_csrf(self.http.delete(url));
-        let resp = builder.send().await.map_err(Error::Transport)?;
+        let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
         let status = resp.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -886,7 +912,7 @@ impl SessionClient {
             });
         }
 
-        let body = resp.bytes().await.map_err(Error::Transport)?;
+        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
 
         // UniFi OS sometimes returns `{"error":{"code":N,"message":"..."}}` with HTTP 200.
         if let Ok(wrapper) = serde_json::from_slice::<UnifiOsError>(&body)

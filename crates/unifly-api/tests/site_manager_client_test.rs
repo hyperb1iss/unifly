@@ -183,3 +183,35 @@ async fn test_undecodable_body_with_multibyte_char_at_preview_cut() {
         other => panic!("expected Deserialization, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn test_timeout_reports_the_configured_duration() {
+    unifly_api::transport::ensure_crypto_provider();
+    let server = MockServer::start().await;
+    let transport = unifly_api::TransportConfig {
+        timeout: std::time::Duration::from_secs(1),
+        ..Default::default()
+    };
+    let client = SiteManagerClient::from_api_key(
+        &server.uri(),
+        &secrecy::SecretString::from("the-key".to_owned()),
+        &transport,
+    )
+    .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/v1/hosts/host-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data": {"id": "host-1"}}))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let err = client.get_host("host-1").await.unwrap_err();
+    assert!(
+        matches!(err, Error::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}

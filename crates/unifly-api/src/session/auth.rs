@@ -76,7 +76,7 @@ impl SessionClient {
             .json(&body)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(|e| self.transport_error(e))?;
 
         let status = resp.status();
 
@@ -159,7 +159,7 @@ impl SessionClient {
             .json(&body)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(|e| self.transport_error(e))?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -292,7 +292,7 @@ impl SessionClient {
             .post(url)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(|e| self.transport_error(e))?;
 
         debug!("logout complete");
         Ok(())

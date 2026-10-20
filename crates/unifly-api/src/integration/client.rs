@@ -4,6 +4,7 @@
 // Auth: X-API-KEY header
 
 use std::future::Future;
+use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use secrecy::ExposeSecret;
@@ -46,6 +47,8 @@ pub struct IntegrationClient {
     base_url: Url,
     platform: crate::ControllerPlatform,
     cloud_host_id: Option<String>,
+    /// Request timeout `http` was built with, when this client built it.
+    timeout: Option<Duration>,
 }
 
 impl IntegrationClient {
@@ -79,6 +82,7 @@ impl IntegrationClient {
             base_url,
             platform,
             cloud_host_id,
+            timeout: Some(transport.timeout),
         })
     }
 
@@ -95,6 +99,7 @@ impl IntegrationClient {
             base_url,
             platform,
             cloud_host_id,
+            timeout: None,
         })
     }
 
@@ -168,11 +173,18 @@ impl IntegrationClient {
 
     // ── HTTP verbs ───────────────────────────────────────────────────
 
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
+        request
+            .send()
+            .await
+            .map_err(|error| Error::from_transport(error, self.timeout))
+    }
+
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         let url = self.url(path);
         debug!("GET {url}");
 
-        let resp = self.http.get(url).send().await?;
+        let resp = self.send(self.http.get(url)).await?;
         self.handle_response(resp).await
     }
 
@@ -184,7 +196,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("GET {url} params={params:?}");
 
-        let resp = self.http.get(url).query(params).send().await?;
+        let resp = self.send(self.http.get(url).query(params)).await?;
         self.handle_response(resp).await
     }
 
@@ -196,7 +208,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("POST {url}");
 
-        let resp = self.http.post(url).json(body).send().await?;
+        let resp = self.send(self.http.post(url).json(body)).await?;
         self.handle_response(resp).await
     }
 
@@ -208,7 +220,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("POST {url}");
 
-        let resp = self.http.post(url).json(body).send().await?;
+        let resp = self.send(self.http.post(url).json(body)).await?;
         self.handle_empty(resp).await
     }
 
@@ -220,7 +232,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("PUT {url}");
 
-        let resp = self.http.put(url).json(body).send().await?;
+        let resp = self.send(self.http.put(url).json(body)).await?;
         self.handle_response(resp).await
     }
 
@@ -232,7 +244,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("PATCH {url}");
 
-        let resp = self.http.patch(url).json(body).send().await?;
+        let resp = self.send(self.http.patch(url).json(body)).await?;
         self.handle_response(resp).await
     }
 
@@ -240,7 +252,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("DELETE {url}");
 
-        let resp = self.http.delete(url).send().await?;
+        let resp = self.send(self.http.delete(url)).await?;
         self.handle_empty(resp).await
     }
 
@@ -248,7 +260,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("DELETE {url}");
 
-        let resp = self.http.delete(url).send().await?;
+        let resp = self.send(self.http.delete(url)).await?;
         self.handle_response(resp).await
     }
 
@@ -260,7 +272,7 @@ impl IntegrationClient {
         let url = self.url(path);
         debug!("DELETE {url} params={params:?}");
 
-        let resp = self.http.delete(url).query(params).send().await?;
+        let resp = self.send(self.http.delete(url).query(params)).await?;
         self.handle_response(resp).await
     }
 
@@ -272,7 +284,10 @@ impl IntegrationClient {
     ) -> Result<T, Error> {
         let status = resp.status();
         if status.is_success() {
-            let body = resp.text().await?;
+            let body = resp
+                .text()
+                .await
+                .map_err(|error| Error::from_transport(error, self.timeout))?;
             serde_json::from_str(&body).map_err(|e| {
                 let preview = body_preview(body.as_bytes());
                 Error::Deserialization {

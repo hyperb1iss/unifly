@@ -138,7 +138,8 @@ impl Controller {
                     resolved.slug,
                     platform,
                     crate::session::client::SessionAuth::ApiKey,
-                );
+                )
+                .with_request_timeout(transport.timeout);
                 *self.inner.session_client.lock().await = Some(Arc::new(session));
             }
             AuthCredentials::Credentials { username, password } => {

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 /// Top-level error type for the `unifly-api` crate.
@@ -99,6 +101,21 @@ pub(crate) fn body_preview(body: &[u8]) -> std::borrow::Cow<'_, str> {
 }
 
 impl Error {
+    /// Wrap a reqwest failure from a client whose requests time out after
+    /// `timeout`, so a timeout reports that limit. Clients built around a
+    /// caller-supplied `reqwest::Client` do not know it and pass `None`.
+    pub(crate) fn from_transport(error: reqwest::Error, timeout: Option<Duration>) -> Self {
+        match timeout {
+            Some(timeout) if error.is_timeout() => Self::Timeout {
+                // Rounded up, so a sub-second limit never reads as 0s.
+                timeout_secs: timeout
+                    .as_secs()
+                    .saturating_add(u64::from(timeout.subsec_nanos() > 0)),
+            },
+            _ => Self::Transport(error),
+        }
+    }
+
     /// Returns `true` if this error indicates auth has expired
     /// and re-authentication might resolve it.
     pub fn is_auth_expired(&self) -> bool {

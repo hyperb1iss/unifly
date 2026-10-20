@@ -2110,3 +2110,68 @@ async fn update_network_rejects_subnet_without_ipv4_configuration() {
         "expected ValidationFailed, got {err:?}"
     );
 }
+
+/// Run a speed test against a controller whose `cmd/devmgr` route stalls
+/// past a 1 s request timeout.
+async fn stalled_speedtest(api_key: bool) -> CoreError {
+    let server = MockServer::start().await;
+    let devmgr = if api_key {
+        mock_api_key_with_legacy(&server).await;
+        "/proxy/network/api/s/default/cmd/devmgr"
+    } else {
+        mock_legacy_connect(&server, legacy_site_envelope()).await;
+        "/api/s/default/cmd/devmgr"
+    };
+    Mock::given(method("POST"))
+        .and(path(devmgr))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_legacy_envelope())
+                .set_delay(Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let auth = if api_key {
+        AuthCredentials::ApiKey(secret("the-key"))
+    } else {
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        }
+    };
+    let mut config = base_config(
+        Url::parse(&server.uri()).unwrap(),
+        auth,
+        LEGACY_SITE_NAME,
+        false,
+    );
+    config.timeout = Duration::from_secs(1);
+    let controller = Controller::new(config);
+    controller.connect().await.unwrap();
+
+    let err = controller
+        .execute(unifly_api::Command::SpeedtestDevice)
+        .await
+        .unwrap_err();
+    controller.disconnect().await;
+    err
+}
+
+#[tokio::test]
+async fn session_timeout_reports_the_configured_duration() {
+    let err = stalled_speedtest(false).await;
+    assert!(
+        matches!(err, CoreError::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn api_key_session_timeout_reports_the_configured_duration() {
+    let err = stalled_speedtest(true).await;
+    assert!(
+        matches!(err, CoreError::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}

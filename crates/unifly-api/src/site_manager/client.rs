@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::header::{HeaderMap, HeaderValue};
 use secrecy::ExposeSecret;
 use serde::Serialize;
@@ -33,6 +35,8 @@ struct ErrorResponse {
 pub struct SiteManagerClient {
     http: reqwest::Client,
     base_url: Url,
+    /// Request timeout `http` was built with, when this client built it.
+    timeout: Option<Duration>,
 }
 
 impl SiteManagerClient {
@@ -53,12 +57,20 @@ impl SiteManagerClient {
         let http = transport.build_client_with_headers(headers)?;
         let base_url = Self::normalize_base_url(base_url)?;
 
-        Ok(Self { http, base_url })
+        Ok(Self {
+            http,
+            base_url,
+            timeout: Some(transport.timeout),
+        })
     }
 
     pub fn from_reqwest(base_url: &str, http: reqwest::Client) -> Result<Self, Error> {
         let base_url = Self::normalize_base_url(base_url)?;
-        Ok(Self { http, base_url })
+        Ok(Self {
+            http,
+            base_url,
+            timeout: None,
+        })
     }
 
     fn normalize_base_url(raw: &str) -> Result<Url, Error> {
@@ -189,7 +201,13 @@ impl SiteManagerClient {
     ) -> Result<FleetEnvelope, Error> {
         let url = self.url(path);
         debug!("GET {url} params={params:?}");
-        let response = self.http.get(url).query(params).send().await?;
+        let response = self
+            .http
+            .get(url)
+            .query(params)
+            .send()
+            .await
+            .map_err(|error| Error::from_transport(error, self.timeout))?;
         self.handle_response(response).await
     }
 
@@ -200,14 +218,23 @@ impl SiteManagerClient {
     ) -> Result<FleetEnvelope, Error> {
         let url = self.url(path);
         debug!("POST {url}");
-        let response = self.http.post(url).json(body).send().await?;
+        let response = self
+            .http
+            .post(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| Error::from_transport(error, self.timeout))?;
         self.handle_response(response).await
     }
 
     async fn handle_response(&self, response: reqwest::Response) -> Result<FleetEnvelope, Error> {
         let status = response.status();
         if status.is_success() {
-            let body = response.text().await?;
+            let body = response
+                .text()
+                .await
+                .map_err(|error| Error::from_transport(error, self.timeout))?;
             serde_json::from_str(&body).map_err(|error| {
                 let preview = body_preview(body.as_bytes());
                 Error::Deserialization {
