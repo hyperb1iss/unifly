@@ -1,8 +1,8 @@
 //! Onboarding wizard - guides setup when no usable profile is configured.
 //!
 //! Flow: Welcome -> URL -> AuthMode -> Credentials -> Site -> Testing -> Done.
-//! On completion, saves its profile into the config file as the default,
-//! keeping any other profiles and settings there, and emits
+//! On completion, saves its profile into the config file under the name the
+//! launch selected, keeping any other profiles and settings there, and emits
 //! `OnboardingComplete` with the built `ControllerConfig` so the app can
 //! connect immediately.
 
@@ -51,6 +51,8 @@ pub struct OnboardingScreen {
     test_error: Option<String>,
     error: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
+    /// The profile the wizard sets up and saves.
+    profile_name: String,
 }
 
 impl Default for OnboardingScreen {

@@ -73,10 +73,22 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     let effects_enabled = resolve_effects_enabled(global, cfg);
     let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 
-    let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate);
+    let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate)
+        .with_setup_profile(&setup_profile_name(global, cfg));
     app.run().await?;
 
     Ok(())
+}
+
+/// The profile onboarding sets up when nothing could connect: the one this
+/// launch selected (`--profile`, else the config's default, else
+/// `default`), so finishing the wizard never writes over another profile.
+fn setup_profile_name(global: &GlobalOpts, cfg: Option<&config::Config>) -> String {
+    global
+        .profile
+        .clone()
+        .or_else(|| cfg.and_then(|cfg| cfg.default_profile.clone()))
+        .unwrap_or_else(|| "default".into())
 }
 
 /// Resolve whether TUI effects should run this session.
@@ -308,5 +320,32 @@ fn resolve_sanitizer(global: &GlobalOpts, cfg: Option<&config::Config>) -> Optio
         Some(Arc::new(Sanitizer::new(&demo_config)))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::setup_profile_name;
+    use crate::cli::args::{Cli, GlobalOpts};
+    use crate::config::Config;
+
+    fn global(argv: &[&str]) -> GlobalOpts {
+        Cli::try_parse_from(argv).expect("valid arguments").global
+    }
+
+    #[test]
+    fn onboarding_sets_up_the_profile_the_launch_selected() {
+        let cfg = Config {
+            default_profile: Some("home".into()),
+            ..Config::default()
+        };
+
+        let work = global(&["unifly", "tui", "-p", "work"]);
+        assert_eq!(setup_profile_name(&work, Some(&cfg)), "work");
+        let plain = global(&["unifly", "tui"]);
+        assert_eq!(setup_profile_name(&plain, Some(&cfg)), "home");
+        assert_eq!(setup_profile_name(&plain, None), "default");
     }
 }

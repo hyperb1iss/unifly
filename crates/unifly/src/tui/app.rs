@@ -168,6 +168,21 @@ impl App {
         }
     }
 
+    /// Have the setup wizard, when it is showing, set up `profile_name`: the
+    /// profile this launch asked for, so finishing it never writes over a
+    /// different one.
+    pub fn with_setup_profile(mut self, profile_name: &str) -> Self {
+        if self.screens.contains_key(&ScreenId::Setup) {
+            self.screens.insert(
+                ScreenId::Setup,
+                Box::new(
+                    crate::tui::screens::onboarding::OnboardingScreen::for_profile(profile_name),
+                ),
+            );
+        }
+        self
+    }
+
     /// Initialize all screen components with the action sender.
     fn init_screens(&mut self) -> Result<()> {
         for screen in self.screens.values_mut() {
