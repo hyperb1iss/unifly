@@ -36,9 +36,6 @@ pub enum ConfigError {
     #[error("failed to serialize config: {0}")]
     Serialization(#[from] toml::ser::Error),
 
-    #[error("config loading failed: {0}")]
-    Figment(Box<figment::Error>),
-
     /// The config file is there but could not be read or parsed.
     #[error("could not load {}: {reason}", path.display())]
     Load { path: PathBuf, reason: String },
@@ -82,12 +79,6 @@ fn list_defined_profiles(defined: &[String]) -> String {
         "it defines no profiles yet".into()
     } else {
         format!("defined profiles: {}", defined.join(", "))
-    }
-}
-
-impl From<figment::Error> for ConfigError {
-    fn from(err: figment::Error) -> Self {
-        Self::Figment(Box::new(err))
     }
 }
 

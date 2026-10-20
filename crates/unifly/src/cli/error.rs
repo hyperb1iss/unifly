@@ -219,10 +219,6 @@ pub enum CliError {
     )]
     InvalidConfig { message: String },
 
-    #[error(transparent)]
-    #[diagnostic(code(unifi::config))]
-    Config(Box<figment::Error>),
-
     // ── Interactive ──────────────────────────────────────────────────
     #[error("Destructive operation '{action}' requires confirmation")]
     #[diagnostic(
@@ -272,12 +268,6 @@ pub enum CliError {
     ConfigError(crate::config::ConfigError),
 }
 
-impl From<figment::Error> for CliError {
-    fn from(err: figment::Error) -> Self {
-        Self::Config(Box::new(err))
-    }
-}
-
 /// Config resolution reports the same failures the CLI detects itself, so
 /// those map onto the CLI's own variants: a missing credential or invalid
 /// value then exits and explains itself the same way whether it came from
@@ -298,7 +288,6 @@ impl From<crate::config::ConfigError> for CliError {
             // exits 2 (see `exit_code`); the rest exit 1, as the
             // profile-not-found error did.
             err @ (ConfigError::Serialization(_)
-            | ConfigError::Figment(_)
             | ConfigError::Io(_)
             | ConfigError::Load { .. }
             | ConfigError::ProfileNotDefined { .. }
