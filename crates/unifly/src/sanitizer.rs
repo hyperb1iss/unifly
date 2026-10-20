@@ -43,6 +43,8 @@ pub struct Sanitizer {
     /// Runs of the characters an IPv6 address is written with, where
     /// addresses are looked for.
     ipv6_run: Regex,
+    mac_regex: Regex,
+    quoted_ssid: Regex,
     redact_ssids: bool,
     redact_wan_ips: bool,
     redact_macs: bool,
@@ -88,6 +90,17 @@ impl Sanitizer {
             Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").expect("valid regex");
 
         let ipv6_run = Regex::new(r"[0-9A-Fa-f:.]+").expect("valid regex");
+        // A MAC in colon or dash pairs, dotted quads (aabb.ccdd.eeff), or
+        // twelve bare hex digits; word edges keep longer hex such as hashes
+        // from matching.
+        let mac_regex = Regex::new(
+            r"(?i)\b(?:[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}|[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}|[0-9a-f]{12})\b",
+        )
+        .expect("valid regex");
+        // An SSID quoted after "SSID" or "connected to", the shapes event
+        // messages name one in.
+        let quoted_ssid =
+            Regex::new(r#"(?i)\b(?:ssid|connected to)\s+"([^"\r\n]{1,32})""#).expect("valid regex");
 
         Self {
             redact_patterns,
@@ -95,6 +108,8 @@ impl Sanitizer {
             name_regex,
             ip_regex,
             ipv6_run,
+            mac_regex,
+            quoted_ssid,
             redact_ssids: config.redact_ssids,
             redact_wan_ips: config.redact_wan_ips,
             redact_macs: config.redact_macs,
@@ -212,8 +227,16 @@ impl Sanitizer {
         mac.as_ref().map(|m| self.sanitize_mac(m))
     }
 
+    /// Sanitize free text, such as an event message or an error. SSIDs
+    /// the sanitizer has mapped become their stand-ins first, then names,
+    /// WAN addresses, and MACs are redacted as their settings say.
     pub fn sanitize_text(&self, text: &str) -> String {
-        let mut result = text.to_owned();
+        if self.redact_ssids {
+            for quoted in self.quoted_ssid.captures_iter(text) {
+                self.sanitize_ssid(&quoted[1]);
+            }
+        }
+        let mut result = self.redact_known_ssids(text);
 
         if let Some(ref re) = self.name_regex
             && re.is_match(&result)
@@ -251,7 +274,62 @@ impl Sanitizer {
             result = self.redact_ipv6(&result);
         }
 
+        if self.redact_macs {
+            let text = result;
+            result = self
+                .mac_regex
+                .replace_all(&text, |found: &regex::Captures| {
+                    let mac = &found[0];
+                    let span = found.get(0).map_or(0..0, |whole| whole.range());
+                    if chained(&text, span) {
+                        mac.to_owned()
+                    } else {
+                        self.sanitize_mac(&MacAddress::new(mac)).to_string()
+                    }
+                })
+                .into_owned();
+        }
+
         result
+    }
+
+    /// Replace every SSID already mapped, wherever it stands as a whole
+    /// word in `text`, with its stand-in. Longer SSIDs win, and a stand-in
+    /// once written is not scanned again.
+    fn redact_known_ssids(&self, text: &str) -> String {
+        if self.ssid_map.is_empty() {
+            return text.to_owned();
+        }
+        let mut ssids: Vec<(String, String)> = self
+            .ssid_map
+            .iter()
+            .filter(|entry| !entry.key().is_empty())
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        ssids.sort_by_key(|(real, _)| std::cmp::Reverse(real.len()));
+
+        let word_edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        let mut before = None;
+        'scan: while let Some(next) = rest.chars().next() {
+            if word_edge(before) {
+                for (real, stand_in) in &ssids {
+                    if let Some(after) = rest.strip_prefix(real.as_str())
+                        && word_edge(after.chars().next())
+                    {
+                        out.push_str(stand_in);
+                        before = real.chars().last();
+                        rest = after;
+                        continue 'scan;
+                    }
+                }
+            }
+            out.push(next);
+            before = Some(next);
+            rest = rest.get(next.len_utf8()..).unwrap_or_default();
+        }
+        out
     }
 
     pub fn sanitize_wan_ip_str(&self, ip_str: &str) -> String {
@@ -371,6 +449,9 @@ impl Sanitizer {
         if self.redact_macs {
             c.mac = self.sanitize_mac(&c.mac);
             c.uplink_device_mac = self.sanitize_mac_opt(&c.uplink_device_mac);
+            if let Some(ref mut wi) = c.wireless {
+                wi.bssid = self.sanitize_mac_opt(&wi.bssid);
+            }
         }
         c
     }
@@ -454,21 +535,14 @@ impl Sanitizer {
         if self.redact_ssids {
             r.essid = r.essid.as_ref().map(|s| self.sanitize_ssid(s));
         }
+        // The same MAC mapping as every list, so a neighbor's BSSID that
+        // is also one of ours shows the same stand-in in both.
         if self.redact_macs {
-            let hash = simple_hash(&r.bssid);
-            let bytes = hash.to_le_bytes();
-            r.bssid = format!(
-                "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]
-            );
-            r.ap_mac = r.ap_mac.as_ref().map(|m| {
-                let h = simple_hash(m);
-                let b = h.to_le_bytes();
-                format!(
-                    "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    b[0], b[1], b[2], b[3], b[4]
-                )
-            });
+            r.bssid = self.sanitize_mac(&MacAddress::new(&r.bssid)).to_string();
+            r.ap_mac = r
+                .ap_mac
+                .as_ref()
+                .map(|mac| self.sanitize_mac(&MacAddress::new(mac)).to_string());
         }
         r
     }
@@ -477,16 +551,56 @@ impl Sanitizer {
         v.iter().map(|ap| self.sanitize_rogue_ap(ap)).collect()
     }
 
+    /// Sanitize a JSON payload such as a WiFi detail or a roam history
+    /// row. The SSIDs its fields name are mapped first, so its text fields
+    /// know every SSID the item carries, whatever order they come in.
     pub fn sanitize_json_value(&self, value: &serde_json::Value) -> serde_json::Value {
+        self.map_json_ssids(value, None);
+        self.clean_json(value, None)
+    }
+
+    fn map_json_ssids(&self, value: &serde_json::Value, parent: Option<&str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, field) in map {
+                    if let Some(ssid) = json_ssid(key, parent, field) {
+                        self.sanitize_ssid(ssid);
+                    }
+                    self.map_json_ssids(field, Some(key));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.map_json_ssids(item, parent);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn clean_json(&self, value: &serde_json::Value, parent: Option<&str>) -> serde_json::Value {
         match value {
             serde_json::Value::String(s) => serde_json::Value::String(self.sanitize_text(s)),
             serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.iter().map(|v| self.sanitize_json_value(v)).collect())
+                serde_json::Value::Array(arr.iter().map(|v| self.clean_json(v, parent)).collect())
             }
             serde_json::Value::Object(map) => {
                 let mut out = serde_json::Map::new();
                 for (k, v) in map {
-                    out.insert(k.clone(), self.sanitize_json_value(v));
+                    // Named fields map the way the lists map them; the rest
+                    // is free text.
+                    let clean = if let Some(ssid) = json_ssid(k, parent, v) {
+                        serde_json::Value::String(self.sanitize_ssid(ssid))
+                    } else if let (
+                        "name" | "hostname" | "display_name" | "device_name",
+                        serde_json::Value::String(name),
+                    ) = (k.as_str(), v)
+                    {
+                        serde_json::Value::String(self.sanitize_name(name))
+                    } else {
+                        self.clean_json(v, Some(k))
+                    };
+                    out.insert(k.clone(), clean);
                 }
                 serde_json::Value::Object(out)
             }
@@ -641,6 +755,27 @@ fn is_documentation(ip: Ipv4Addr) -> bool {
         (octets[0], octets[1], octets[2]),
         (192, 0, 2) | (198, 51, 100) | (203, 0, 113)
     )
+}
+
+/// Whether the MAC-shaped text at `span` is only part of a longer chain of
+/// hex groups, such as `aabb.ccdd.eeff.0011`, and so not a MAC at all.
+fn chained(text: &str, span: Range<usize>) -> bool {
+    let joins = |separator: Option<char>, beyond: Option<char>| {
+        matches!(separator, Some('.' | ':' | '-')) && beyond.is_some_and(|c| c.is_ascii_hexdigit())
+    };
+    let mut before = text.get(..span.start).unwrap_or_default().chars().rev();
+    let mut after = text.get(span.end..).unwrap_or_default().chars();
+    joins(before.next(), before.next()) || joins(after.next(), after.next())
+}
+
+/// The SSID a JSON field holds: an `ssid` or `essid` field, or the name of
+/// a `WLAN` object, the shape roam history rows carry it in.
+fn json_ssid<'a>(key: &str, parent: Option<&str>, value: &'a serde_json::Value) -> Option<&'a str> {
+    let wlan_name =
+        key == "name" && parent.is_some_and(|parent| parent.eq_ignore_ascii_case("wlan"));
+    let holds_ssid =
+        wlan_name || key.eq_ignore_ascii_case("ssid") || key.eq_ignore_ascii_case("essid");
+    holds_ssid.then(|| value.as_str()).flatten()
 }
 
 /// The longest written IPv6 address is 45 characters, one with an IPv4
@@ -853,6 +988,118 @@ mod tests {
                 format!("Restart {name}?")
             );
         }
+    }
+
+    #[test]
+    fn ssids_and_bssids_get_the_list_stand_ins_everywhere() {
+        let s = Sanitizer::new(&DemoConfig {
+            redact_ssids: true,
+            redact_macs: true,
+            ..DemoConfig::default()
+        });
+        let ssid = s.sanitize_ssid("NeonHarbor");
+        let bssid = s.sanitize_mac(&MacAddress::new("aa:bb:cc:00:11:22"));
+
+        assert_eq!(
+            s.sanitize_text(r#"Kai connected to "NeonHarbor" via AA:BB:CC:00:11:22"#),
+            format!(r#"Kai connected to "{ssid}" via {bssid}"#)
+        );
+        assert_eq!(
+            s.sanitize_text("NeonHarbor5G"),
+            "NeonHarbor5G",
+            "whole words only"
+        );
+
+        let detail = s.sanitize_json_value(&serde_json::json!({
+            "ssid": "NeonHarbor",
+            "nearest_neighbors": [{ "bssid": "aa:bb:cc:00:11:22", "essid": "CafeGuest" }],
+        }));
+        assert_eq!(detail["ssid"], serde_json::json!(ssid));
+        assert_eq!(detail["nearest_neighbors"][0]["bssid"], bssid.as_str());
+        assert_eq!(
+            detail["nearest_neighbors"][0]["essid"],
+            serde_json::json!(s.sanitize_ssid("CafeGuest"))
+        );
+    }
+
+    #[test]
+    fn bare_and_dotted_macs_are_redacted_but_other_hex_is_not() {
+        let s = Sanitizer::new(&DemoConfig {
+            redact_macs: true,
+            ..DemoConfig::default()
+        });
+        let mac = s.sanitize_mac(&MacAddress::new("aa:bb:cc:dd:ee:ff"));
+        for text in ["client aabbccddeeff joined", "client AABB.CCDD.EEFF joined"] {
+            assert_eq!(
+                s.sanitize_text(text),
+                format!("client {mac} joined"),
+                "{text}"
+            );
+        }
+        for text in [
+            "sha 0123456789abcdef0123456789abcdef",
+            "id 0123456789abc and 0123456789a",
+            "aabb.ccdd.eeff.0011 and aabb.ccdd",
+        ] {
+            assert_eq!(s.sanitize_text(text), text);
+        }
+    }
+
+    fn event(message: &str) -> Event {
+        serde_json::from_value(serde_json::json!({
+            "id": "evt-1", "timestamp": "2026-10-12T09:00:00Z",
+            "category": "Client", "severity": "Info", "event_type": "EVT_WU_Connected",
+            "message": message, "device_mac": null, "client_mac": null,
+            "site_id": null, "raw_key": null
+        }))
+        .expect("event fixture")
+    }
+
+    #[test]
+    fn ssids_an_item_names_are_mapped_before_its_text() {
+        let s = Sanitizer::new(&DemoConfig {
+            redact_ssids: true,
+            ..DemoConfig::default()
+        });
+
+        // An event names its SSID only in its message.
+        let clean = s.sanitize_event(&event(r#"Kai connected to "OtherNet" on ap-edit"#));
+        let other = s.sanitize_ssid("OtherNet");
+        assert_eq!(
+            clean.message,
+            format!(r#"Kai connected to "{other}" on ap-edit"#)
+        );
+        let clean = s.sanitize_event(&event(
+            r#"User[aa:bb:cc:dd:ee:ff] has connected to AP[ap-1] with SSID "Home WiFi" on "channel 36(na)""#,
+        ));
+        assert!(!clean.message.contains("Home WiFi"), "{}", clean.message);
+        assert!(
+            clean.message.contains(r#""channel 36(na)""#),
+            "{}",
+            clean.message
+        );
+
+        // A JSON item's text never runs ahead of the SSIDs its fields name.
+        let roam = s.sanitize_json_value(&serde_json::json!({
+            "msg": "roamed on CafeNet",
+            "parameters": { "WLAN": { "name": "CafeNet" } },
+        }));
+        assert!(!roam.to_string().contains("CafeNet"), "{roam}");
+        let detail = s.sanitize_json_value(&serde_json::json!({
+            "note": "joined LabNet", "ssid": "LabNet",
+        }));
+        assert!(!detail.to_string().contains("LabNet"), "{detail}");
+
+        // A neighbor's SSID is known once its record has been sanitized.
+        let neighbor: RogueAp = serde_json::from_value(serde_json::json!({
+            "bssid": "aa:bb:cc:00:11:22", "essid": "NeighborNet"
+        }))
+        .expect("rogue AP fixture");
+        s.sanitize_rogue_ap(&neighbor);
+        assert!(
+            !s.sanitize_text("NeighborNet is loud")
+                .contains("NeighborNet")
+        );
     }
 
     #[test]

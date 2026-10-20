@@ -1,8 +1,6 @@
-use std::sync::LazyLock;
 use std::time::Instant;
 
 use color_eyre::eyre::Result;
-use regex::Regex;
 use tracing::warn;
 
 use unifly_api::{Command, EntityId, MacAddress};
@@ -149,27 +147,15 @@ impl App {
         )
     }
 
-    /// Text as it may be drawn. With a sanitizer on, names, WAN addresses,
-    /// and MACs inside it become the stand-ins the screens use, so an
-    /// error carrying a real identifier cannot leak one onto the screen.
+    /// Text as it may be drawn. With a sanitizer on, SSIDs, names, WAN
+    /// addresses, and MACs inside it become the stand-ins the screens use,
+    /// so an error carrying a real identifier cannot leak one onto the
+    /// screen.
     pub(super) fn shown_text(&self, text: &str) -> String {
-        static MAC: LazyLock<Option<Regex>> =
-            LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b").ok());
-
-        let Some(sanitizer) = &self.sanitizer else {
-            return text.to_owned();
-        };
-        let text = sanitizer.sanitize_text(text);
-        match &*MAC {
-            Some(mac) => mac
-                .replace_all(&text, |found: &regex::Captures| {
-                    sanitizer
-                        .sanitize_mac(&MacAddress::new(&found[0]))
-                        .to_string()
-                })
-                .into_owned(),
-            None => text,
-        }
+        self.sanitizer.as_ref().map_or_else(
+            || text.to_owned(),
+            |sanitizer| sanitizer.sanitize_text(text),
+        )
     }
 
     pub(super) fn resolve_client_mac(&self, id: &EntityId) -> Option<MacAddress> {
@@ -401,64 +387,100 @@ mod tests {
         assert_eq!(app.shown_text(&toast), toast, "a stand-in was mapped again");
     }
 
+    /// A connected demo fleet, for tests that need real-looking entities.
+    async fn demo_fleet() -> unifly_api::Controller {
+        let demo = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
+        demo.connect().await.expect("demo fleet connects");
+        demo
+    }
+
+    /// A named wireless client with an IP and an SSID, other than `except`.
+    fn wireless_client(
+        store: &unifly_api::DataStore,
+        except: Option<&EntityId>,
+    ) -> std::sync::Arc<unifly_api::Client> {
+        store
+            .clients_snapshot()
+            .iter()
+            .find(|client| {
+                Some(&client.id) != except
+                    && client.name.is_some()
+                    && client.ip.is_some()
+                    && client.wireless.as_ref().is_some_and(|w| w.ssid.is_some())
+            })
+            .cloned()
+            .expect("a named wireless client")
+    }
+
+    /// An App over `demo` that redacts `names`, SSIDs, and MACs, and the
+    /// sanitizer it shares with the data bridge.
+    fn sanitized_app(
+        demo: unifly_api::Controller,
+        names: &[&str],
+    ) -> (App, std::sync::Arc<crate::sanitizer::Sanitizer>) {
+        let sanitizer = std::sync::Arc::new(crate::sanitizer::Sanitizer::new(
+            &crate::config::DemoConfig {
+                enabled: true,
+                redact_names: names.iter().map(ToString::to_string).collect(),
+                redact_ssids: true,
+                redact_macs: true,
+                ..crate::config::DemoConfig::default()
+            },
+        ));
+        let mut app = App::new(
+            Some(demo),
+            Some(std::sync::Arc::clone(&sanitizer)),
+            false,
+            true,
+        );
+        app.active_screen = crate::tui::screen::ScreenId::Dashboard;
+        (app, sanitizer)
+    }
+
+    /// Fail if the frame `app` draws shows any of `secrets`.
+    fn assert_hidden(app: &mut App, secrets: &[&str], what: &str) {
+        let text =
+            crate::tui::table::render_lines(140, 30, |frame, _| app.render(frame)).join("\n");
+        for secret in secrets {
+            assert!(!text.contains(secret), "{what} shows {secret}:\n{text}");
+        }
+    }
+
+    async fn next_action(app: &mut App) -> Action {
+        tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
+            .await
+            .expect("the request reports back")
+            .expect("the action channel stays open")
+    }
+
     #[tokio::test]
     async fn under_a_sanitizer_dialogs_and_toasts_show_no_real_names_or_macs() {
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        use unifly_api::{ClientType, Controller, DemoFleetOptions};
-
-        use crate::config::DemoConfig;
-        use crate::sanitizer::Sanitizer;
-        use crate::tui::screen::ScreenId;
-        use crate::tui::table::render_lines;
-
-        let demo = Controller::demo(DemoFleetOptions::default());
-        demo.connect().await.expect("demo fleet connects");
-        let device = demo
-            .store()
+        let demo = demo_fleet().await;
+        let store = std::sync::Arc::clone(demo.store());
+        let device = store
             .devices_snapshot()
             .iter()
             .find(|device| device.name.is_some())
             .cloned()
             .expect("a named device");
-        let client = demo
-            .store()
-            .clients_snapshot()
-            .iter()
-            .find(|client| client.client_type == ClientType::Wireless && client.name.is_some())
-            .cloned()
-            .expect("a named wireless client");
-        let real = [
-            device.name.clone().unwrap_or_default(),
-            device.mac.to_string(),
-            client.name.clone().unwrap_or_default(),
-            client.mac.to_string(),
+        let client = wireless_client(&store, None);
+        let device_name = device.name.clone().unwrap_or_default();
+        let client_name = client.name.clone().unwrap_or_default();
+        let (device_mac, client_mac) = (device.mac.to_string(), client.mac.to_string());
+        let secrets = [
+            device_name.as_str(),
+            device_mac.as_str(),
+            client_name.as_str(),
+            client_mac.as_str(),
         ];
-        let sanitizer = Sanitizer::new(&DemoConfig {
-            enabled: true,
-            redact_names: real[..1].iter().chain(&real[2..3]).cloned().collect(),
-            redact_macs: true,
-            ..DemoConfig::default()
-        });
-        let mut app = App::new(Some(demo), Some(Arc::new(sanitizer)), false, true);
-        app.active_screen = ScreenId::Dashboard;
-        let assert_private = |app: &mut App, what: &str| {
-            let text = render_lines(140, 30, |frame, _| app.render(frame)).join("\n");
-            for secret in &real {
-                assert!(
-                    !text.contains(secret.as_str()),
-                    "{what} shows {secret}:\n{text}"
-                );
-            }
-        };
+        let (mut app, _) = sanitized_app(demo, &[&device_name, &client_name]);
 
         app.process_action(&Action::RequestRestart(device.id.clone()))
             .expect("restart request");
         let confirm = app.action_rx.try_recv().expect("a confirmation is queued");
         app.process_action(&confirm).expect("show the confirmation");
         assert!(app.pending_confirm.is_some());
-        assert_private(&mut app, "the restart confirmation");
+        assert_hidden(&mut app, &secrets, "the restart confirmation");
         app.process_action(&Action::ConfirmNo).expect("dismiss");
 
         for request in [
@@ -466,22 +488,87 @@ mod tests {
             Action::RequestKickClient(client.id.clone()),
         ] {
             app.process_action(&request).expect("request");
-            let toast = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
-                .await
-                .expect("the command reports back")
-                .expect("the action channel stays open");
+            let toast = next_action(&mut app).await;
             assert!(matches!(toast, Action::Notify(_)), "{toast:?}");
             app.process_action(&toast).expect("show the toast");
-            assert_private(&mut app, &format!("the toast for {request:?}"));
+            assert_hidden(&mut app, &secrets, &format!("the toast for {request:?}"));
         }
 
         // An error from the controller can carry real identifiers too.
         app.process_action(&Action::Notify(Notification::error(format!(
-            "{} ({}) did not answer",
-            real[0], real[1]
+            "{device_name} ({device_mac}) did not answer"
         ))))
         .expect("show the error");
-        assert_private(&mut app, "an error toast");
+        assert_hidden(&mut app, &secrets, "an error toast");
+    }
+
+    #[tokio::test]
+    async fn under_a_sanitizer_wifi_strings_show_no_real_ssids_or_bssids() {
+        let demo = demo_fleet().await;
+        let store = std::sync::Arc::clone(demo.store());
+        let client = wireless_client(&store, None);
+        let client_name = client.name.clone().unwrap_or_default();
+        let ssid = client
+            .wireless
+            .as_ref()
+            .and_then(|wireless| wireless.ssid.clone())
+            .unwrap_or_default();
+        let ap_macs: Vec<String> = store
+            .devices_snapshot()
+            .iter()
+            .filter(|device| device.device_type == unifly_api::DeviceType::AccessPoint)
+            .map(|device| device.mac.to_string())
+            .collect();
+        let client_mac = client.mac.to_string();
+        let secrets: Vec<&str> = [ssid.as_str(), client_mac.as_str(), client_name.as_str()]
+            .into_iter()
+            .chain(ap_macs.iter().map(String::as_str))
+            .collect();
+        let (mut app, sanitizer) = sanitized_app(demo, &[&client_name]);
+
+        // The WiFi detail payload is what the WiFi screen's panel draws.
+        let ip = client.ip.map(|ip| ip.to_string()).unwrap_or_default();
+        app.process_action(&Action::RequestWifiClientDetail(ip))
+            .expect("detail request");
+        let loaded = next_action(&mut app).await;
+        let Action::WifiClientDetailLoaded { data, .. } = loaded else {
+            panic!("expected the detail, got {loaded:?}");
+        };
+        let detail = data.to_string();
+        for secret in &secrets {
+            assert!(
+                !detail.contains(secret),
+                "the WiFi detail carries {secret}: {detail}"
+            );
+        }
+
+        // An event, sanitized as the data bridge passes it on.
+        let event: unifly_api::Event = serde_json::from_value(serde_json::json!({
+            "id": "evt-ssid", "timestamp": "2026-10-12T09:00:00Z",
+            "category": "Client", "severity": "Info", "event_type": "EVT_WU_Connected",
+            "message": format!("{client_name} connected to \"{ssid}\" via {client_mac}"),
+            "device_mac": null, "client_mac": null, "site_id": null, "raw_key": null
+        }))
+        .expect("event fixture");
+        let event = std::sync::Arc::new(sanitizer.sanitize_event(&event));
+        app.process_action(&Action::EventReceived(event))
+            .expect("event");
+        app.switch_screen(crate::tui::screen::ScreenId::Events)
+            .expect("switch to Events");
+        let events =
+            crate::tui::table::render_lines(140, 30, |frame, _| app.render(frame)).join("\n");
+        assert!(
+            events.contains("connected to"),
+            "the event is not drawn:\n{events}"
+        );
+        assert_hidden(&mut app, &secrets, "the Events screen");
+
+        app.process_action(&Action::Notify(Notification::error(format!(
+            "roamed to {ssid} via {}",
+            ap_macs.first().map_or("", String::as_str)
+        ))))
+        .expect("show the toast");
+        assert_hidden(&mut app, &secrets, "a toast");
     }
 
     #[tokio::test]
