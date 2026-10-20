@@ -548,6 +548,7 @@ controller = "https://10.0.0.1"
 auth_mode = "session"
 username = "admin"
 password = "work-secret-password"
+totp_command = ["oathtool", "--totp", "-b", "TOTPSEEDSECRET"]
 
 [demo]
 redact_names = ["Bliss"]
@@ -733,12 +734,18 @@ fn test_config_show_masks_secrets_in_every_format() {
 
         assert!(output.status.success(), "{format}: {text}");
         assert!(
-            !text.contains("home-secret-api-key") && !text.contains("work-secret-password"),
+            !text.contains("home-secret-api-key")
+                && !text.contains("work-secret-password")
+                && !text.contains("TOTPSEEDSECRET"),
             "{format} output leaked a secret:\n{text}"
         );
         assert!(
             text.contains("****") && text.contains("https://192.168.1.1"),
             "{format} output should mask secrets and keep the rest:\n{text}"
+        );
+        assert!(
+            text.contains("oathtool"),
+            "{format} output should still name the TOTP program:\n{text}"
         );
     }
 }

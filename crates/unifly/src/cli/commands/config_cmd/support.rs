@@ -13,7 +13,26 @@ pub(super) fn redact_secrets(cfg: &mut Config) {
                 *secret = Some(MASKED.into());
             }
         }
+        if let Some(argv) = &mut profile.totp_command {
+            *argv = masked_totp_command(argv);
+        }
     }
+}
+
+/// A `totp_command` with its arguments masked: they can carry a TOTP seed
+/// (`oathtool --totp -b SEED`). The program stays, so the output still
+/// says which helper runs.
+fn masked_totp_command(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if index == 0 {
+                arg.clone()
+            } else {
+                MASKED.into()
+            }
+        })
+        .collect()
 }
 
 pub(super) fn format_config_redacted(cfg: &Config) -> String {
@@ -57,6 +76,13 @@ pub(super) fn format_config_redacted(cfg: &Config) -> String {
         }
         if profile.password.is_some() {
             let _ = writeln!(out, "password = \"{MASKED}\"");
+        }
+        if let Some(ref argv) = profile.totp_command {
+            let quoted: Vec<_> = masked_totp_command(argv)
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect();
+            let _ = writeln!(out, "totp_command = [{}]", quoted.join(", "));
         }
         if let Some(ref ca_cert) = profile.ca_cert {
             let _ = writeln!(out, "ca_cert = \"{}\"", ca_cert.display());
@@ -143,7 +169,11 @@ mod tests {
             username: Some("bliss".into()),
             password: Some("super-secret-password".into()),
             totp_env: None,
-            totp_command: None,
+            totp_command: Some(vec![
+                "oathtool".into(),
+                "--totp".into(),
+                "super-secret-seed".into(),
+            ]),
             ca_cert: Some(PathBuf::from("/tmp/unifly.pem")),
             insecure: Some(true),
             timeout: Some(45),
@@ -193,6 +223,10 @@ mod tests {
         let home = &cfg.profiles["home"];
         assert_eq!(home.api_key.as_deref(), Some("****"));
         assert_eq!(home.password.as_deref(), Some("****"));
+        assert_eq!(
+            home.totp_command.as_deref(),
+            Some(&["oathtool".to_owned(), "****".to_owned(), "****".to_owned()][..])
+        );
         assert_eq!(home.username.as_deref(), Some("bliss"));
         assert_eq!(home.api_key_env.as_deref(), Some("UNIFI_API_KEY"));
         let work = &cfg.profiles["work"];
@@ -220,7 +254,9 @@ mod tests {
         assert!(rendered.contains("host_id = \"host-123\""));
         assert!(rendered.contains("host_id_env = \"UNIFI_HOST_ID\""));
         assert!(rendered.contains("username = \"bliss\""));
+        assert!(rendered.contains("totp_command = [\"oathtool\", \"****\", \"****\"]"));
         assert!(!rendered.contains("super-secret-api-key"));
         assert!(!rendered.contains("super-secret-password"));
+        assert!(!rendered.contains("super-secret-seed"));
     }
 }
