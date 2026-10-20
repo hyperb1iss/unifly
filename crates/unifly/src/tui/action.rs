@@ -391,6 +391,10 @@ pub enum Action {
         mac: String,
         events: Arc<Vec<Value>>,
     },
+    WifiRoamHistoryFailed {
+        mac: String,
+        error: String,
+    },
 
     // ── Connection Status ─────────────────────────────────────────
     Connecting,

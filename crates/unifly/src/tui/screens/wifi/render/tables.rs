@@ -295,6 +295,14 @@ impl WifiScreen {
         }
 
         let rows = self.parsed_roam_rows();
+        if rows.is_empty() && self.failed_roam_history() == self.focused_client_mac().as_ref() {
+            frame.render_widget(
+                Paragraph::new(" Roam history unavailable, retrying ")
+                    .style(Style::default().fg(theme::text_muted())),
+                inner,
+            );
+            return;
+        }
         let headers = ["Time", "Event", "From", "To", "Signal", "Band"];
         let columns = [
             Column::fit("Time", rows.iter().map(|r| &r.timestamp), 10),

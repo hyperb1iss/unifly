@@ -103,9 +103,10 @@ impl App {
                     });
                 }
                 Err(error) => {
-                    let _ = tx.send(Action::Notify(crate::tui::action::Notification::error(
-                        format!("WiFi roam history: {error}"),
-                    )));
+                    let _ = tx.send(Action::WifiRoamHistoryFailed {
+                        mac,
+                        error: format!("WiFi roam history: {error}"),
+                    });
                 }
             }
         });

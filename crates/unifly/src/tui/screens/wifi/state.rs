@@ -16,6 +16,7 @@ use crate::tui::table::{TableScroll, reselect};
 pub(super) const NEIGHBOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub(super) const CHANNEL_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 pub(super) const CLIENT_DETAIL_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+pub(super) const ROAM_HISTORY_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Default)]
 pub(super) struct ChannelOccupancy {
@@ -76,6 +77,7 @@ impl WifiScreen {
             roam_history_mac: None,
             roam_history_pending_mac: None,
             roam_history: Arc::new(Vec::new()),
+            roam_history_failure: None,
             last_neighbors_request_at: None,
             last_channels_request_at: None,
         }
@@ -110,34 +112,13 @@ impl WifiScreen {
             Action::WifiChannelsUpdated(channels) => {
                 self.channels = Arc::clone(channels);
             }
-            Action::WifiClientDetailLoaded { ip, data } => {
-                // A response can land after the selection moved on; it
-                // settles only its own request.
-                if self.client_detail_pending_ip.as_ref() == Some(ip) {
-                    self.client_detail_pending_ip = None;
-                }
-                if self.failed_client_detail() == Some(ip) {
-                    self.client_detail_failure = None;
-                }
-                self.client_detail_ip = Some(ip.clone());
-                self.client_detail = Some(Arc::clone(data));
-            }
+            Action::WifiClientDetailLoaded { ip, data } => self.client_detail_loaded(ip, data),
             Action::WifiClientDetailFailed { ip, error } => {
-                if self.client_detail_pending_ip.as_ref() == Some(ip) {
-                    self.client_detail_pending_ip = None;
-                }
-                // Retries of a client that keeps failing stay quiet.
-                let repeated = self.failed_client_detail() == Some(ip);
-                self.client_detail_failure = Some((ip.clone(), Instant::now()));
-                if !repeated {
-                    return Some(Action::Notify(Notification::error(error.clone())));
-                }
+                return self.client_detail_failed(ip, error);
             }
-            Action::WifiRoamHistoryLoaded { mac, events } => {
-                self.roam_history_mac = Some(mac.clone());
-                self.roam_history_pending_mac = None;
-                self.roam_history = Arc::clone(events);
-                self.sync_roam_selection();
+            Action::WifiRoamHistoryLoaded { mac, events } => self.roam_history_loaded(mac, events),
+            Action::WifiRoamHistoryFailed { mac, error } => {
+                return self.roam_history_failed(mac, error);
             }
             Action::WifiSubTab(sub_tab) => {
                 self.sub_tab = *sub_tab;
@@ -239,12 +220,14 @@ impl WifiScreen {
             && let Some(mac) = self.focused_client_mac()
             && self.roam_history_mac.as_deref() != Some(mac.as_str())
             && self.roam_history_pending_mac.as_deref() != Some(mac.as_str())
+            && !self
+                .roam_history_failure
+                .as_ref()
+                .is_some_and(|(failed, at)| {
+                    failed == &mac && now.duration_since(*at) < ROAM_HISTORY_RETRY_INTERVAL
+                })
         {
-            self.roam_history_pending_mac = Some(mac.clone());
-            return Some(Action::RequestWifiRoamHistory {
-                mac,
-                limit: Some(100),
-            });
+            return Some(self.request_roam_history(mac));
         }
 
         None
@@ -254,6 +237,73 @@ impl WifiScreen {
     pub(super) fn request_client_detail(&mut self, ip: String) -> Action {
         self.client_detail_pending_ip = Some(ip.clone());
         Action::RequestWifiClientDetail(ip)
+    }
+
+    /// A response can land after the selection moved on; it settles only
+    /// its own request.
+    fn client_detail_loaded(&mut self, ip: &String, data: &Arc<Value>) {
+        if self.client_detail_pending_ip.as_ref() == Some(ip) {
+            self.client_detail_pending_ip = None;
+        }
+        if self.failed_client_detail() == Some(ip) {
+            self.client_detail_failure = None;
+        }
+        self.client_detail_ip = Some(ip.clone());
+        self.client_detail = Some(Arc::clone(data));
+    }
+
+    /// Retries of a client that keeps failing stay quiet: only its first
+    /// failure raises a toast.
+    fn client_detail_failed(&mut self, ip: &String, error: &str) -> Option<Action> {
+        if self.client_detail_pending_ip.as_ref() == Some(ip) {
+            self.client_detail_pending_ip = None;
+        }
+        let repeated = self.failed_client_detail() == Some(ip);
+        self.client_detail_failure = Some((ip.clone(), Instant::now()));
+        (!repeated).then(|| Action::Notify(Notification::error(error)))
+    }
+
+    /// The focus may have moved on while the fetch ran, and the history
+    /// shown always belongs to the focused client, so a response for
+    /// another client only settles its own request.
+    fn roam_history_loaded(&mut self, mac: &String, events: &Arc<Vec<Value>>) {
+        if self.roam_history_pending_mac.as_ref() == Some(mac) {
+            self.roam_history_pending_mac = None;
+        }
+        if self.focused_client_mac().as_ref() != Some(mac) {
+            return;
+        }
+        if self.failed_roam_history() == Some(mac) {
+            self.roam_history_failure = None;
+        }
+        self.roam_history_mac = Some(mac.clone());
+        self.roam_history = Arc::clone(events);
+        self.sync_roam_selection();
+    }
+
+    /// Like a client detail failure: retried later, toasted once.
+    fn roam_history_failed(&mut self, mac: &String, error: &str) -> Option<Action> {
+        if self.roam_history_pending_mac.as_ref() == Some(mac) {
+            self.roam_history_pending_mac = None;
+        }
+        let repeated = self.failed_roam_history() == Some(mac);
+        self.roam_history_failure = Some((mac.clone(), Instant::now()));
+        (!repeated).then(|| Action::Notify(Notification::error(error)))
+    }
+
+    /// Fetch the roam history of the client with `mac`, marking it in
+    /// flight.
+    pub(super) fn request_roam_history(&mut self, mac: String) -> Action {
+        self.roam_history_pending_mac = Some(mac.clone());
+        Action::RequestWifiRoamHistory {
+            mac,
+            limit: Some(100),
+        }
+    }
+
+    /// The MAC of the client whose roam history fetch failed last.
+    pub(super) fn failed_roam_history(&self) -> Option<&String> {
+        self.roam_history_failure.as_ref().map(|(mac, _)| mac)
     }
 
     /// The IP of the client whose detail fetch failed last.

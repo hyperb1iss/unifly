@@ -78,12 +78,10 @@ impl WifiScreen {
             KeyCode::Char('x') if self.sub_tab == crate::tui::action::WifiSubTab::Clients => self
                 .selected_client()
                 .map(|client| Action::RequestKickClient(client.id.clone())),
-            KeyCode::Char('r') if self.sub_tab == crate::tui::action::WifiSubTab::Roaming => self
-                .focused_client_mac()
-                .map(|mac| Action::RequestWifiRoamHistory {
-                    mac,
-                    limit: Some(100),
-                }),
+            KeyCode::Char('r') if self.sub_tab == crate::tui::action::WifiSubTab::Roaming => {
+                let mac = self.focused_client_mac()?;
+                Some(self.request_roam_history(mac))
+            }
             _ => None,
         }
     }
@@ -172,11 +170,8 @@ impl WifiScreen {
                 }
             }
             crate::tui::action::WifiSubTab::Roaming => {
-                self.focused_client_mac()
-                    .map(|mac| Action::RequestWifiRoamHistory {
-                        mac,
-                        limit: Some(100),
-                    })
+                let mac = self.focused_client_mac()?;
+                Some(self.request_roam_history(mac))
             }
             crate::tui::action::WifiSubTab::Neighbors => None,
         }

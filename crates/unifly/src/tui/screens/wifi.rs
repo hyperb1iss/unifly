@@ -55,6 +55,8 @@ pub struct WifiScreen {
     roam_history_mac: Option<String>,
     roam_history_pending_mac: Option<String>,
     roam_history: Arc<Vec<Value>>,
+    /// The client whose roam history fetch failed last, and when.
+    roam_history_failure: Option<(String, std::time::Instant)>,
     last_neighbors_request_at: Option<std::time::Instant>,
     last_channels_request_at: Option<std::time::Instant>,
 }

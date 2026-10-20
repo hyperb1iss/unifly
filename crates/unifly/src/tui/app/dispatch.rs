@@ -129,6 +129,7 @@ impl App {
             | Action::WifiClientDetailLoaded { .. }
             | Action::WifiClientDetailFailed { .. }
             | Action::WifiRoamHistoryLoaded { .. }
+            | Action::WifiRoamHistoryFailed { .. }
             | Action::StatsUpdated(_)
             | Action::NetworkEditResult(_) => {
                 self.forward_to_all_screens(action)?;

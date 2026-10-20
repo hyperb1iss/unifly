@@ -9,7 +9,7 @@ use unifly_api::{Client, Device};
 use crate::tui::action::{Action, WifiSortField, WifiSubTab};
 use crate::tui::component::Component;
 use crate::tui::screens::wifi::WifiScreen;
-use crate::tui::screens::wifi::state::CLIENT_DETAIL_RETRY_INTERVAL;
+use crate::tui::screens::wifi::state::{CLIENT_DETAIL_RETRY_INTERVAL, ROAM_HISTORY_RETRY_INTERVAL};
 use crate::tui::table::render_lines;
 
 fn access_point(id: &str, name: &str) -> Arc<Device> {
@@ -312,4 +312,94 @@ fn a_kept_search_filter_stays_visible() {
 
     screen.apply_action(&Action::CloseSearch);
     assert!(!rendered(&screen).contains("Filter:"));
+}
+
+const FIRST_MAC: &str = "cc:00:00:00:00:01";
+const SECOND_MAC: &str = "cc:00:00:00:00:02";
+
+/// The Roaming tab focused on the first client, its history requested.
+fn roaming_screen() -> WifiScreen {
+    let mut screen = client_detail_screen();
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Roaming));
+    let request = screen.apply_action(&Action::Tick);
+    assert!(
+        matches!(request, Some(Action::RequestWifiRoamHistory { ref mac, .. }) if mac == FIRST_MAC),
+        "{request:?}"
+    );
+    screen
+}
+
+fn roams_loaded(mac: &str, from_ap: &str) -> Action {
+    Action::WifiRoamHistoryLoaded {
+        mac: mac.to_owned(),
+        events: Arc::new(vec![json!({
+            "timestamp": 1_760_000_000_000_i64,
+            "event_type": "EVT_WU_Roam",
+            "from_ap": from_ap,
+            "to_ap": "ap-a",
+        })]),
+    }
+}
+
+#[test]
+fn a_late_roam_history_for_the_previous_client_is_dropped() {
+    let mut screen = roaming_screen();
+
+    // Focus the second client and ask for its history.
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
+    screen.handle_key_input(key(KeyCode::Char('j')));
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Roaming));
+    let request = screen.apply_action(&Action::Tick);
+    assert!(
+        matches!(request, Some(Action::RequestWifiRoamHistory { ref mac, .. }) if mac == SECOND_MAC),
+        "{request:?}"
+    );
+
+    screen.apply_action(&roams_loaded(FIRST_MAC, "ap-first-client"));
+
+    let shown = rendered(&screen);
+    assert!(!shown.contains("ap-first-client"), "{shown}");
+    let again = screen.apply_action(&Action::Tick);
+    assert!(
+        again.is_none(),
+        "requested the second client twice: {again:?}"
+    );
+}
+
+#[test]
+fn a_failed_roam_history_fetch_is_retried() {
+    let mut screen = roaming_screen();
+    let failed = || Action::WifiRoamHistoryFailed {
+        mac: FIRST_MAC.to_owned(),
+        error: "roam history unavailable".to_owned(),
+    };
+
+    let notice = screen.apply_action(&failed());
+    assert!(matches!(notice, Some(Action::Notify(_))), "{notice:?}");
+    assert!(rendered(&screen).contains("Roam history unavailable"));
+    assert!(
+        screen.apply_action(&Action::Tick).is_none(),
+        "a failure is not retried at once"
+    );
+
+    screen.roam_history_failure = screen.roam_history_failure.take().map(|(mac, at)| {
+        let earlier = at.checked_sub(ROAM_HISTORY_RETRY_INTERVAL);
+        (
+            mac,
+            earlier.expect("the clock reaches back one retry interval"),
+        )
+    });
+    let retry = screen.apply_action(&Action::Tick);
+    assert!(
+        matches!(retry, Some(Action::RequestWifiRoamHistory { ref mac, .. }) if mac == FIRST_MAC),
+        "{retry:?}"
+    );
+
+    let repeat = screen.apply_action(&failed());
+    assert!(
+        repeat.is_none(),
+        "a repeated failure toasts again: {repeat:?}"
+    );
+    screen.apply_action(&roams_loaded(FIRST_MAC, "ap-roof"));
+    assert!(rendered(&screen).contains("ap-roof"));
 }
