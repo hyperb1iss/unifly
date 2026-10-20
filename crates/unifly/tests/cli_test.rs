@@ -507,9 +507,10 @@ fn test_config_set_password_accepts_positional_profile() {
         !text.contains("unexpected argument"),
         "Positional profile should parse:\n{text}"
     );
+    // No config file exists here, so that is what the error reports.
     assert!(
-        text.contains("home") || text.contains("profile"),
-        "Expected output to mention the missing profile:\n{text}"
+        text.contains("Configuration file not found"),
+        "Expected the missing config to be reported:\n{text}"
     );
 }
 
@@ -618,6 +619,73 @@ fn test_writers_leave_a_config_that_fails_to_load_untouched() {
             "{args:?} rewrote the config"
         );
     }
+}
+
+/// Commands that connect read the config without saving it, and used to
+/// fall back to the defaults when it failed to load, then report
+/// "Configuration file not found" for a file that is right there.
+#[cfg(not(windows))]
+#[test]
+fn test_connecting_commands_report_a_config_that_fails_to_load() {
+    let home = TempDir::new().unwrap();
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+    let path = write_config(&home, &broken);
+
+    for args in [&["devices", "list"][..], &["cloud", "hosts"]] {
+        let output = unifly_cmd_in(home.path()).args(args).output().unwrap();
+        let text = combined_output(&output);
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&path.display().to_string())
+                && text.contains("thirty")
+                && !text.contains("Configuration file not found"),
+            "{args:?} should report the load error:\n{text}"
+        );
+    }
+}
+
+/// A profile the config does not define is reported as exactly that, with
+/// the profiles it does define. Without a config file the old message
+/// still holds.
+#[cfg(not(windows))]
+#[test]
+fn test_an_undefined_profile_is_reported_with_the_defined_ones() {
+    let home = TempDir::new().unwrap();
+    let path = write_config(&home, TWO_PROFILE_CONFIG);
+    let gone = TempDir::new().unwrap();
+    write_config(&gone, &TWO_PROFILE_CONFIG.replace("\"home\"", "\"gone\""));
+
+    for (dir, args) in [
+        (&home, &["-p", "typo", "devices", "list"][..]),
+        (&home, &["-p", "typo", "cloud", "hosts"]),
+        (&home, &["-p", "typo", "config", "use", "typo"]),
+        (&gone, &["devices", "list"]),
+    ] {
+        let output = unifly_cmd_in(dir.path()).args(args).output().unwrap();
+        let text = combined_output(&output);
+        let name = if args.contains(&"typo") {
+            "typo"
+        } else {
+            "gone"
+        };
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&format!("profile '{name}' is not defined"))
+                && text.contains("work")
+                && !text.contains("Configuration file not found"),
+            "{args:?} should name the undefined profile and the defined ones:\n{text}"
+        );
+    }
+    assert!(path.exists());
+
+    let empty = TempDir::new().unwrap();
+    unifly_cmd_in(empty.path())
+        .args(["-p", "typo", "devices", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Configuration file not found"));
 }
 
 /// `config show` masks stored secrets in every format, not only the table:

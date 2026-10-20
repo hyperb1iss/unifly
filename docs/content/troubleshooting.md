@@ -80,7 +80,9 @@ unifly config set auth_mode hybrid
 unifly config set-password
 ```
 
-### "Profile not found"
+### "profile 'NAME' is not defined"
+
+**Cause**: The profile named by `-p`, `UNIFI_PROFILE`, or `default_profile` is not in your config file. The error lists the profiles the file does define.
 
 ```bash
 # List available profiles
@@ -88,6 +90,9 @@ unifly config profiles
 
 # Check for typos in profile name
 unifly -p <correct-name> devices list
+
+# Or create the profile
+unifly config init
 ```
 
 ### Keyring Errors (Linux)

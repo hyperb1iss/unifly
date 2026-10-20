@@ -43,8 +43,42 @@ pub enum ConfigError {
     #[error("could not load {}: {reason}", path.display())]
     Load { path: PathBuf, reason: String },
 
+    /// The config file does not define the profile asked for.
+    #[error(
+        "profile '{name}' is not defined in {}; {}. Create one with: unifly config init \
+         (local) or unifly config cloud-setup (Site Manager)",
+        path.display(),
+        list_defined_profiles(defined)
+    )]
+    ProfileNotDefined {
+        name: String,
+        path: PathBuf,
+        defined: Vec<String>,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl ConfigError {
+    /// `cfg`, loaded from the config file, has no profile called `name`.
+    pub fn profile_not_defined(cfg: &Config, name: &str) -> Self {
+        let mut defined: Vec<_> = cfg.profiles.keys().cloned().collect();
+        defined.sort();
+        Self::ProfileNotDefined {
+            name: name.to_owned(),
+            path: config_path(),
+            defined,
+        }
+    }
+}
+
+fn list_defined_profiles(defined: &[String]) -> String {
+    if defined.is_empty() {
+        "it defines no profiles yet".into()
+    } else {
+        format!("defined profiles: {}", defined.join(", "))
+    }
 }
 
 impl From<figment::Error> for ConfigError {
@@ -414,13 +448,6 @@ fn describe_figment_error(error: figment::Error) -> String {
         .join("; ")
 }
 
-/// Load the config for display or connection, falling back to the defaults
-/// when it cannot be loaded. Never save the result: a file that failed to
-/// load would be replaced by the defaults. Writers use [`load_config`].
-pub fn load_config_or_default() -> Config {
-    load_config().unwrap_or_default()
-}
-
 // ── Config saving ───────────────────────────────────────────────────
 
 /// Serialize config to TOML and write to the canonical config path.
@@ -760,7 +787,7 @@ pub fn profile_to_controller_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigError, DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, load_config_from,
+        Config, ConfigError, DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, load_config_from,
         profile_to_controller_config, resolve_api_key, resolve_auth,
     };
     use secrecy::ExposeSecret;
@@ -810,6 +837,35 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("`defaults.timeout`"), "{message}");
         assert!(message.contains("thirty"), "{message}");
+    }
+
+    #[test]
+    fn profile_not_defined_names_the_profiles_that_are() {
+        let mut cfg = Config::default();
+        let empty = ConfigError::profile_not_defined(&cfg, "typo").to_string();
+        assert!(
+            empty.starts_with("profile 'typo' is not defined in "),
+            "{empty}"
+        );
+        assert!(empty.contains("; it defines no profiles yet."), "{empty}");
+
+        cfg.profiles.insert("work".into(), cloud_profile());
+        cfg.profiles.insert("home".into(), cloud_profile());
+        let listed = ConfigError::profile_not_defined(&cfg, "typo").to_string();
+        assert!(
+            listed.contains("; defined profiles: home, work."),
+            "{listed}"
+        );
+
+        for message in [empty, listed] {
+            assert!(
+                message.ends_with(
+                    "Create one with: unifly config init (local) or unifly config \
+                     cloud-setup (Site Manager)"
+                ),
+                "{message}"
+            );
+        }
     }
 
     #[test]

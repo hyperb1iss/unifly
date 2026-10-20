@@ -83,12 +83,14 @@ async fn run(cli: Cli, command_path: &str) -> Result<(), CliError> {
         return Err(demo_fleet::refuse(command_path));
     }
     // Demo mode comes from the flag, UNIFI_DEMO, or `[demo] enabled` in the
-    // config; the config is read only for commands that would refuse it.
+    // config; the config is read only for commands that would refuse it. A
+    // config that fails to load cannot switch it on: the command reports the
+    // load error itself.
     if !demo_fleet::honors_demo(command_path, cli.global.demo_fleet) {
         if cli.global.demo {
             return Err(demo_fleet::refuse_demo(command_path, &DemoSwitch::Flag));
         }
-        if resolve::load_config_or_default().demo.enabled {
+        if resolve::load_config().is_ok_and(|cfg| cfg.demo.enabled) {
             let file = unifly::config::config_path();
             return Err(demo_fleet::refuse_demo(
                 command_path,
@@ -185,7 +187,9 @@ fn explain_credentials(err: CliError, global: &GlobalOpts) -> CliError {
             err.with_credential_source(CredentialSource::ApiKeyFlag)
         }
         CliError::AuthFailed { .. } => {
-            let cfg = resolve::load_config_or_default();
+            let Ok(cfg) = resolve::load_config() else {
+                return err;
+            };
             let name = resolve::active_profile_name(global, &cfg);
             if cfg.profiles.contains_key(&name) {
                 err.with_credential_source(CredentialSource::Profile(&name))
@@ -197,8 +201,8 @@ fn explain_credentials(err: CliError, global: &GlobalOpts) -> CliError {
             profile: Some(name),
             ..
         } => {
-            let cfg = resolve::load_config_or_default();
-            let profile = cfg.profiles.get(&name);
+            let cfg = resolve::load_config().ok();
+            let profile = cfg.as_ref().and_then(|cfg| cfg.profiles.get(&name));
             let has_username = profile.is_some_and(|p| p.username.is_some())
                 || std::env::var_os("UNIFI_USERNAME").is_some();
             CliError::profile_missing_credentials(
@@ -231,7 +235,7 @@ fn controller_points_to_cloud(controller: Option<&str>) -> bool {
 async fn build_controller_config(
     global: &GlobalOpts,
 ) -> Result<unifly_api::ControllerConfig, CliError> {
-    let cfg = resolve::load_config_or_default();
+    let cfg = resolve::load_config()?;
     let profile_name = resolve::active_profile_name(global, &cfg);
 
     if let Some(profile) = cfg.profiles.get(&profile_name) {
@@ -262,9 +266,7 @@ async fn build_controller_config(
             None
         }
     });
-    let url_str = url_str.ok_or_else(|| CliError::NoConfig {
-        path: unifly::config::config_path().display().to_string(),
-    })?;
+    let url_str = url_str.ok_or_else(|| resolve::missing_profile(&cfg, &profile_name))?;
 
     let url: url::Url = url_str.parse().map_err(|_| CliError::Validation {
         field: "controller".into(),

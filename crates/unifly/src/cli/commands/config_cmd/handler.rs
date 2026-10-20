@@ -5,8 +5,7 @@ use crate::config::resolve;
 
 use super::interactive::{run_cloud_setup, run_init, store_profile_secrets};
 use super::support::{
-    empty_profile, format_config_redacted, profile_not_found, redact_secrets, resolve_set_target,
-    save_config,
+    empty_profile, format_config_redacted, redact_secrets, resolve_set_target, save_config,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -115,7 +114,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
             let mut cfg = crate::config::load_config()?;
 
             if !cfg.profiles.contains_key(&name) {
-                return Err(profile_not_found(&cfg, name));
+                return Err(resolve::missing_profile(&cfg, &name));
             }
 
             cfg.default_profile = Some(name.clone());
@@ -173,7 +172,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
             let prof = cfg
                 .profiles
                 .get(&profile_name)
-                .ok_or_else(|| profile_not_found(&cfg, profile_name.clone()))?;
+                .ok_or_else(|| resolve::missing_profile(&cfg, &profile_name))?;
 
             store_profile_secrets(&profile_name, &prof.auth_mode)
         }

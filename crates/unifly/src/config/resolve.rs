@@ -16,7 +16,7 @@ use crate::config::{
 
 // ── Re-exports for convenience ──────────────────────────────────
 
-pub use crate::config::{Defaults, config_path, load_config_or_default, save_config};
+pub use crate::config::{Defaults, config_path, load_config, save_config};
 
 // ── CLI-specific helpers ────────────────────────────────────────
 
@@ -37,6 +37,19 @@ impl GlobalOpts {
             .or(profile_timeout)
             .or(defaults_timeout)
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
+    }
+}
+
+/// Why `cfg` has no profile called `profile_name`: there is no config file
+/// yet, or the file there does not define that profile.
+pub fn missing_profile(cfg: &Config, profile_name: &str) -> CliError {
+    let path = config_path();
+    if path.exists() {
+        ConfigError::profile_not_defined(cfg, profile_name).into()
+    } else {
+        CliError::NoConfig {
+            path: path.display().to_string(),
+        }
     }
 }
 

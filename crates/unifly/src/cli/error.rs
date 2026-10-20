@@ -291,13 +291,17 @@ impl From<crate::config::ConfigError> for CliError {
                 Self::profile_missing_credentials(&profile, None, false)
             }
             ConfigError::Validation { field, reason } => Self::Validation { field, reason },
-            // Reading or writing the file failed: keep the config error's
-            // own message, which names the file. One that fails to load is
-            // invalid input and exits 2 (see `exit_code`); the rest exit 1.
+            // The file could not be read or written, or lacks the profile
+            // asked for: keep the config error's own message, which names
+            // the file (and for a profile, the defined ones and how to
+            // create one). A file that fails to load is invalid input and
+            // exits 2 (see `exit_code`); the rest exit 1, as the
+            // profile-not-found error did.
             err @ (ConfigError::Serialization(_)
             | ConfigError::Figment(_)
             | ConfigError::Io(_)
-            | ConfigError::Load { .. }) => Self::ConfigError(err),
+            | ConfigError::Load { .. }
+            | ConfigError::ProfileNotDefined { .. }) => Self::ConfigError(err),
         }
     }
 }

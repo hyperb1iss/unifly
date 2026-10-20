@@ -123,19 +123,6 @@ pub(super) fn resolve_set_target(
     }
 }
 
-pub(super) fn profile_not_found(cfg: &Config, name: String) -> CliError {
-    let mut available: Vec<_> = cfg.profiles.keys().cloned().collect();
-    available.sort();
-    CliError::ProfileNotFound {
-        name,
-        available: if available.is_empty() {
-            "(none)".into()
-        } else {
-            available.join(", ")
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
