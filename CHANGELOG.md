@@ -48,6 +48,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for the next data refresh to repaint the toggled field.
 - **The TUI Firewall hint bar drops `Enter detail`**, which it advertised
   though Firewall has no detail view and never handled `Enter`.
+- **Commands fail at once when no controller connection is up.** A
+  command issued before connecting, after disconnecting, or after a failed
+  connect waited forever, and one left waiting ran at the next connect,
+  long after its caller gave up. It now fails right away with a
+  disconnected error, and only a live connection runs commands.
+- **Refresh time, data age, and connection state report real values.**
+  `last_full_refresh()`, `last_ws_event()`, and `data_age()` always came
+  back empty, and a subscriber that arrived after connect saw the
+  controller as disconnected. A connect that fails now reports `Failed`
+  instead of staying at `Connecting`.
+- **A non-ASCII response body no longer crashes the client.** When an
+  Integration or Site Manager response could not be decoded, building the
+  error preview panicked if byte 200 fell inside a multi-byte character,
+  which could take down the TUI's refresh task.
+- **Network updates apply subnet and DHCP changes.** The TUI network
+  form's DHCP toggle and the `subnet` and `dhcp_enabled` fields of
+  `networks update --from-file` were dropped while the update reported
+  success. The subnet now sets the gateway address and prefix, and DHCP
+  turns the network's DHCP server on or off. Turning it off keeps the
+  range, lease, and DNS settings, so turning it back on restores the same
+  server. Turning DHCP on needs a DHCP range already set on the network,
+  and is refused with a clear error when there is none.
+- **Timeouts name the configured limit.** A request that timed out said
+  "Request timed out after 0s"; it now reports the `--timeout` value.
+- **Platform detection honors TLS settings and `--timeout`.** The two
+  login probes that open every connection accepted any certificate and
+  had no timeout, so strict or custom-CA verification was skipped for
+  them and an unresponsive host could hang the connect. They now use the
+  configured TLS mode and timeout, and run at the same time.
+- **The session cookie cache is written privately.** The cache was staged
+  under a fixed file name that other users could read until a later
+  chmod, that two processes saving at once could clobber, and that
+  followed a symlink planted in its place. It is now staged under a
+  unique name, created owner-only, and renamed into place.
+- **A NAT rule the controller rejects is no longer reported as created.**
+  UniFi OS can refuse a request with HTTP 200 and an error body. NAT,
+  WireGuard, VPN, and `unifly api` requests passed that body back as a
+  result, so `nat policies create` reported success for a rule that was
+  never made. These requests now surface the controller's error.
+- **Network DHCP ranges show their end address.** The end of a network's
+  DHCP range was read from field names the Integration API never sends,
+  so `networks get` and the TUI network detail always showed a range
+  with no upper bound.
+- **A write after a NAT, WireGuard, or VPN change sends the current CSRF
+  token.** UniFi OS rotates the token on responses, and those requests
+  (and `unifly api`) never picked up the new one, so on a
+  username/password session the next write could carry a retired token.
+- **Connecting a controller again no longer hangs the next disconnect.**
+  A second `connect()` left the first connection's background tasks
+  running with nothing to stop them, so a later `disconnect()` waited on
+  them forever whenever periodic refresh was on. Connecting again now
+  shuts the previous connection down first, and a reconnect that fails
+  leaves no session from the old connection behind.
 
 ## [0.11.0] - 2026-10-12
 
