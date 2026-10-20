@@ -292,24 +292,69 @@ fn render_json<T: serde::Serialize + ?Sized>(data: &T, compact: bool) -> String 
 
 /// YAML output.
 ///
-/// serde_yaml_ng emits YAML 1.2, where a bare `12:34:56` or `off` is a
-/// string, but YAML 1.1 readers such as PyYAML read colon-separated digits
-/// as a base-60 number and words like `off` or `yes` as booleans. Strings
-/// like those therefore come out single-quoted. The emitter picks scalar
-/// styles itself, so they go in as unique plain placeholders and are swapped
-/// for their quoted form afterwards: the choice is made on values, never by
-/// re-parsing lines.
+/// serde_yaml_ng emits YAML 1.2. Readers that still resolve plain scalars
+/// by YAML 1.1 rules, PyYAML among them, would read some strings it leaves
+/// bare as other types, so every string value, key, and sequence item that
+/// a YAML 1.1 resolver would not read back as the same string comes out
+/// single-quoted:
+///
+/// - booleans, including `y`/`n`, `yes`/`no`, and `on`/`off` in each case
+/// - nulls: `~`, `null` in each case, and the empty string
+/// - integers in any base, with underscores, or in base 60 (`1_000`,
+///   `0b101`, `017`, `0x1F`, `190:20:30`)
+/// - floats with underscores, in base 60, or spelled `.inf` and `.nan`
+/// - timestamps such as `2024-01-01` or `2001-12-14 21:59:43.10 -5`
+/// - the merge key `<<` and the value key `=`
+/// - anything else that contains a colon
+///
+/// Real numbers, booleans, and nulls stay bare. Multi-line strings stay
+/// block scalars, which no resolver types, and strings that a single-quoted
+/// scalar cannot carry verbatim (other control characters, U+2028, U+2029,
+/// U+FEFF, U+FFFE, U+FFFF) keep the emitter's own quoting. When the emitted
+/// text cannot be read back, as with a flattened map that repeats a key,
+/// the output is the plain emission without this quoting.
+///
+/// The emitter picks scalar styles itself, so quoted strings go in as
+/// unique plain placeholders and are swapped for their quoted form
+/// afterwards: the choice is made on values, never by re-parsing lines.
 pub(crate) fn render_yaml<T: serde::Serialize + ?Sized>(data: &T) -> String {
     let emitted = serde_yaml_ng::to_string(data).expect("serialization should not fail");
     quote_ambiguous_strings(&emitted).unwrap_or(emitted)
 }
 
 const PLACEHOLDER_END: char = '_';
+const PLACEHOLDER_PAD: char = 'p';
 
-/// Longest key worth quoting. The emitter writes longer keys in the explicit
-/// `? key` form, which a single-quoted replacement must not turn back into
-/// an implicit key past YAML's length limit.
-const MAX_QUOTED_KEY_LEN: usize = 128;
+/// Longest key the emitter writes as an implicit `key: value`. A placeholder
+/// for a longer quoted key is padded past this so the emitter picks the
+/// explicit `? key` form, which has no length limit.
+const MAX_IMPLICIT_KEY_LEN: usize = 128;
+
+/// Plain scalars a YAML 1.1 reader resolves to a boolean or null.
+const YAML_1_1_BOOL_AND_NULL_WORDS: &[&str] = &[
+    "y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "true", "True", "TRUE", "false",
+    "False", "FALSE", "on", "On", "ON", "off", "Off", "OFF", "~", "null", "Null", "NULL", "",
+];
+
+/// PyYAML's YAML 1.1 implicit resolvers for int, float, timestamp, merge,
+/// and value, each anchored to the whole scalar.
+static YAML_1_1_TYPED_PATTERNS: std::sync::LazyLock<Result<regex::RegexSet, regex::Error>> =
+    std::sync::LazyLock::new(|| {
+        regex::RegexSet::new([
+            r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$",
+            r"^(?:[-+]?[0-9][0-9_]*\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$",
+            r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?)$",
+            r"^<<$",
+            r"^=$",
+        ])
+    });
+
+/// A string swapped out of the value tree, with the padding its placeholder
+/// carries.
+struct Stashed {
+    text: String,
+    pad: usize,
+}
 
 /// Re-emit `emitted` with ambiguous strings quoted, working from the text
 /// the emitter wrote: `to_value` would widen an f32 such as 2.4 into
@@ -319,10 +364,10 @@ const MAX_QUOTED_KEY_LEN: usize = 128;
 fn quote_ambiguous_strings(emitted: &str) -> Option<String> {
     let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(emitted).ok()?;
     let marker = placeholder_marker(&value);
-    let mut originals = Vec::new();
-    stash_colon_strings(&mut value, &marker, &mut originals);
+    let mut stashed = Vec::new();
+    stash_ambiguous_strings(&mut value, &marker, &mut stashed, false);
     let yaml = serde_yaml_ng::to_string(&value).ok()?;
-    Some(restore_quoted(&yaml, &marker, &originals))
+    Some(restore_quoted(&yaml, &marker, &stashed))
 }
 
 /// A placeholder prefix that no key or string in `value` contains, so every
@@ -351,74 +396,89 @@ fn contains_text(value: &serde_yaml_ng::Value, needle: &str) -> bool {
     }
 }
 
-/// Plain scalars a YAML 1.1 reader resolves to a boolean or null.
-const YAML_1_1_BOOL_AND_NULL_WORDS: &[&str] = &[
-    "y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "true", "True", "TRUE", "false",
-    "False", "FALSE", "on", "On", "ON", "off", "Off", "OFF", "~", "null", "Null", "NULL", "",
-];
-
-/// Whether `text` should be emitted single-quoted. Multi-line strings stay
-/// with the emitter, which writes them as block scalars that no reader
-/// types, and so do strings a single-quoted scalar cannot carry verbatim.
-fn wants_single_quotes(text: &str) -> bool {
-    if YAML_1_1_BOOL_AND_NULL_WORDS.contains(&text) {
-        return true;
-    }
-    text.contains(':')
-        && text.chars().all(|c| {
-            !c.is_control()
-                && !matches!(
+/// Whether a single-quoted scalar carries `text` verbatim: no line breaks
+/// to fold and no characters a quoted scalar may not hold. Tabs are fine.
+fn single_quotable(text: &str) -> bool {
+    text.chars().all(|c| {
+        c == '\t'
+            || !(c.is_control()
+                || matches!(
                     c,
                     '\u{2028}' | '\u{2029}' | '\u{FEFF}' | '\u{FFFE}' | '\u{FFFF}'
-                )
-        })
+                ))
+    })
 }
 
-fn stash_colon_strings(
+/// Whether a YAML 1.1 resolver would read plain `text` as anything but this
+/// string, or the colon rule asks for quotes anyway.
+fn wants_single_quotes(text: &str) -> bool {
+    single_quotable(text)
+        && (YAML_1_1_BOOL_AND_NULL_WORDS.contains(&text)
+            || text.contains(':')
+            // A set that failed to build quotes everything it would have
+            // checked rather than let a retyped string through.
+            || YAML_1_1_TYPED_PATTERNS
+                .as_ref()
+                .map_or(true, |patterns| patterns.is_match(text)))
+}
+
+fn stash_ambiguous_strings(
     value: &mut serde_yaml_ng::Value,
     marker: &str,
-    originals: &mut Vec<String>,
+    stashed: &mut Vec<Stashed>,
+    is_key: bool,
 ) {
     use serde_yaml_ng::Value;
     match value {
         Value::String(text) if wants_single_quotes(text) => {
-            let placeholder = format!("{marker}{}{PLACEHOLDER_END}", originals.len());
-            originals.push(std::mem::replace(text, placeholder));
+            let mut placeholder = format!("{marker}{}{PLACEHOLDER_END}", stashed.len());
+            let quoted_len = text.len() + 2 + text.matches('\'').count();
+            let pad = if is_key && quoted_len > MAX_IMPLICIT_KEY_LEN {
+                (MAX_IMPLICIT_KEY_LEN + 1).saturating_sub(placeholder.len())
+            } else {
+                0
+            };
+            placeholder.extend(std::iter::repeat_n(PLACEHOLDER_PAD, pad));
+            let text = std::mem::replace(text, placeholder);
+            stashed.push(Stashed { text, pad });
         }
         Value::Sequence(items) => {
             for item in items {
-                stash_colon_strings(item, marker, originals);
+                stash_ambiguous_strings(item, marker, stashed, false);
             }
         }
         Value::Mapping(map) => {
             let entries = std::mem::take(map);
             for (mut key, mut item) in entries {
-                if key
-                    .as_str()
-                    .is_none_or(|text| text.len() <= MAX_QUOTED_KEY_LEN)
-                {
-                    stash_colon_strings(&mut key, marker, originals);
-                }
-                stash_colon_strings(&mut item, marker, originals);
+                stash_ambiguous_strings(&mut key, marker, stashed, true);
+                stash_ambiguous_strings(&mut item, marker, stashed, false);
                 map.insert(key, item);
             }
         }
-        Value::Tagged(tagged) => stash_colon_strings(&mut tagged.value, marker, originals),
+        Value::Tagged(tagged) => stash_ambiguous_strings(&mut tagged.value, marker, stashed, false),
         Value::String(_) | Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
-fn restore_quoted(yaml: &str, marker: &str, originals: &[String]) -> String {
+fn restore_quoted(yaml: &str, marker: &str, stashed: &[Stashed]) -> String {
     let mut out = String::with_capacity(yaml.len());
     let mut rest = yaml;
     while let Some(start) = rest.find(marker) {
         out.push_str(&rest[..start]);
         let after = &rest[start + marker.len()..];
         let (digits, tail) = after.split_at(after.bytes().take_while(u8::is_ascii_digit).count());
-        let original = digits.parse::<usize>().ok().and_then(|i| originals.get(i));
-        if let (Some(original), Some(tail)) = (original, tail.strip_prefix(PLACEHOLDER_END)) {
+        let entry = digits.parse::<usize>().ok().and_then(|i| stashed.get(i));
+        let tail = tail.strip_prefix(PLACEHOLDER_END).and_then(|tail| {
+            let pad = entry.map_or(0, |entry| entry.pad);
+            let padding = tail.get(..pad)?;
+            padding
+                .chars()
+                .all(|c| c == PLACEHOLDER_PAD)
+                .then(|| &tail[pad..])
+        });
+        if let (Some(entry), Some(tail)) = (entry, tail) {
             out.push('\'');
-            out.push_str(&original.replace('\'', "''"));
+            out.push_str(&entry.text.replace('\'', "''"));
             out.push('\'');
             rest = tail;
         } else {
@@ -545,6 +605,81 @@ mod tests {
         };
         let plain = serde_yaml_ng::to_string(&data).expect("emits");
         assert_eq!(render_yaml(&data), plain);
+    }
+
+    #[test]
+    fn yaml_quotes_every_string_a_yaml_1_1_resolver_would_retype() {
+        let retyped = [
+            "1_000",
+            "0b101",
+            "017",
+            "0x1F",
+            "-0x_1f",
+            "+12",
+            "190:20:30",
+            "1_000.5",
+            ".5",
+            "1.",
+            "-1.5e+3",
+            "190:20:30.15",
+            "+.inf",
+            ".NaN",
+            "2024-01-01",
+            "2001-12-14t21:59:43.10-05:00",
+            "2001-12-14 21:59:43.10 -5",
+            "2001-12-14\t21:59:43",
+            "=",
+            "<<",
+            "yes",
+            "Off",
+            "y",
+            "N",
+            "~",
+            "Null",
+        ];
+        let value = json!({ "values": retyped, "keys": { "1_000": 1, "2024-01-01": 2, "<<": 3 } });
+        let yaml = round_trip(&value);
+        for text in retyped {
+            assert!(
+                yaml.contains(&format!("- '{text}'")),
+                "{text:?} bare in:\n{yaml}"
+            );
+        }
+        for key in ["'1_000': 1", "'2024-01-01': 2", "'<<': 3"] {
+            assert!(yaml.contains(key), "{key:?} missing in:\n{yaml}");
+        }
+    }
+
+    #[test]
+    fn yaml_leaves_strings_yaml_1_1_reads_as_strings_bare() {
+        let plain = [
+            "auto", "1a", "1.2.3", "2024-1-1", "==", "<<<", "_1", "0b", "x_1",
+        ];
+        let yaml = round_trip(&json!(plain));
+        for text in plain {
+            assert!(
+                yaml.contains(&format!("- {text}\n")),
+                "{text:?} quoted in:\n{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn yaml_keeps_real_scalars_bare() {
+        let yaml = round_trip(&json!({ "num": 1000, "f": 1.5, "b": true, "z": null, "neg": -3 }));
+        assert_eq!(yaml, "b: true\nf: 1.5\nneg: -3\nnum: 1000\nz: null\n");
+    }
+
+    #[test]
+    fn yaml_quotes_long_keys_in_explicit_form() {
+        let key = format!("1{}", ":30".repeat(60));
+        let yaml = round_trip(&json!({ key.clone(): "v", "after": "x:y" }));
+        assert!(yaml.contains(&format!("? '{key}'")), "{yaml}");
+    }
+
+    #[test]
+    fn yaml_1_1_patterns_compile() {
+        assert!(super::YAML_1_1_TYPED_PATTERNS.is_ok());
     }
 
     #[test]
