@@ -97,7 +97,7 @@ Typing still needs a keyboard: search, the Networks edit form, the Settings fiel
 | **Clients**          | `x`             | Kick client                                                       |
 | **Networks**         | `e`             | Edit selected network (opens overlay)                             |
 | **Firewall**         | `h` / `l`       | Cycle sub-tabs (Policies / Zones / ACL / NAT)                     |
-| **Firewall**         | `K` / `J`       | Move a policy up / down within its zone pair (local preview only) |
+| **Firewall**         | `K` / `J`       | Move a policy up / down in its zone pair, saved to the controller |
 | **Topology**         | Arrows          | Pan canvas                                                        |
 | **Topology**         | `+` / `-`       | Zoom in / out                                                     |
 | **Topology**         | `f`             | Fit to view                                                       |
@@ -126,7 +126,7 @@ Columns size themselves to their content, and wider terminals reveal more of the
 
 Narrower terminals shrink names first and then drop those extra columns, so every table stays readable down to 80x24.
 
-`K` and `J` on the Firewall screen move a policy within its zone pair on screen only; the next refresh shows the controller's order again.
+`K` and `J` on the Firewall screen move the selected policy one step through its zone pair's order on the controller. A toast shows the move as soon as it starts, and further presses wait for it: each step starts from the order the controller has, so one pressed while a move is in flight is ignored with a note. The table shows the new order once the controller has it, and a move the controller refuses raises an error and leaves the table as it was. System-defined policies keep their place, so a policy stepped past them crosses the whole block, and the toast says so.
 
 ## Charts
 

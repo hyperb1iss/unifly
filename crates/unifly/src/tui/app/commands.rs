@@ -89,6 +89,9 @@ impl App {
             Action::ConfirmNo => {
                 self.pending_confirm = None;
             }
+            Action::ReorderPolicy(policy, direction) => {
+                self.reorder_policy(policy, *direction);
+            }
             Action::NetworkSave(id, update) => {
                 self.execute_command(
                     Command::UpdateNetwork {
@@ -253,6 +256,77 @@ mod tests {
             Action::ShowConfirm(ConfirmAction::AdoptDevice { ref mac })
                 if mac == "aa-bb-cc-dd-ee-ff"
         ));
+    }
+
+    #[test]
+    fn moving_a_policy_never_reorders_the_table_on_its_own() {
+        use std::sync::Arc;
+
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        use crate::tui::screen::ScreenId;
+        use crate::tui::table::render_lines;
+
+        let zone = |name: &str| {
+            Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": name, "name": name, "network_ids": [], "origin": null
+                }))
+                .expect("zone fixture"),
+            )
+        };
+        let policy = |name: &str, index: i32| {
+            Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": name, "name": name, "description": null, "enabled": true,
+                    "index": index, "action": "Allow", "ip_version": "Both",
+                    "source": { "zone_id": "lan", "filter": null },
+                    "destination": { "zone_id": "wan", "filter": null },
+                    "source_summary": null, "destination_summary": null,
+                    "protocol_summary": null, "schedule": null, "ipsec_mode": null,
+                    "connection_states": [], "logging_enabled": false,
+                    "origin": "UserDefined"
+                }))
+                .expect("policy fixture"),
+            )
+        };
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        app.process_action(&Action::FirewallZonesUpdated(Arc::new(vec![
+            zone("lan"),
+            zone("wan"),
+        ])))
+        .expect("zones");
+        app.process_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
+            policy("allow-first", 10_000),
+            policy("block-second", 10_001),
+        ])))
+        .expect("policies");
+        app.switch_screen(ScreenId::Firewall).expect("switch");
+        let order = |app: &mut App| {
+            let rows = render_lines(120, 24, |frame, _| app.render(frame));
+            let at = |name: &str| rows.iter().position(|row| row.contains(name));
+            (at("allow-first"), at("block-second"))
+        };
+        let before = order(&mut app);
+
+        for key in ['j', 'K'] {
+            if let Some(action) = app
+                .handle_key_event(KeyEvent::from(KeyCode::Char(key)))
+                .expect("key")
+            {
+                app.process_action(&action).expect("action");
+            }
+        }
+
+        assert_eq!(
+            order(&mut app),
+            before,
+            "the table moved without the controller"
+        );
+        let reported = std::iter::from_fn(|| app.action_rx.try_recv().ok())
+            .any(|action| matches!(action, Action::Notify(ref n) if n.message == "Not connected"));
+        assert!(reported, "the failed move went unreported");
     }
 
     #[test]

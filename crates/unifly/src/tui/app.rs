@@ -2,6 +2,7 @@
 
 mod commands;
 mod dispatch;
+mod firewall;
 mod lifecycle;
 mod navigation;
 mod render;
@@ -105,6 +106,8 @@ pub struct App {
     last_frame: Instant,
     /// Whether the next render tick should draw a frame.
     needs_redraw: bool,
+    /// Set while a firewall policy move is in flight.
+    policy_move: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl App {
@@ -161,6 +164,7 @@ impl App {
             effects_enabled,
             last_frame: Instant::now(),
             needs_redraw: true,
+            policy_move: Arc::default(),
         }
     }
 
