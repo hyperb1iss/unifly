@@ -15,6 +15,7 @@ use super::FirewallScreen;
 
 impl FirewallScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let block = Block::default()
             .title(" Firewall ")
             .title_style(theme::title_style())
@@ -38,8 +39,8 @@ impl FirewallScreen {
 
         let tab_labels = &["Policies", "Zones", "ACL Rules", "NAT"];
         let strip = sub_tabs::sub_tab_strip(tab_labels, self.sub_tab_index());
-        *self.tab_targets.borrow_mut() = strip.targets(layout[0]);
-        frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
+        let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[0]);
 
         match self.sub_tab {
             FirewallSubTab::Policies => self.render_policies(frame, layout[1]),

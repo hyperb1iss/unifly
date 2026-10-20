@@ -3,6 +3,7 @@ use super::DevicesScreen;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, DeviceDetailTab};
+use crate::tui::widgets::click::Click;
 
 impl DevicesScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -93,7 +94,9 @@ impl DevicesScreen {
         if !self.detail_open {
             return None;
         }
-        let index = self.detail_tab_targets.borrow().clicked(mouse)?;
+        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
+            return None;
+        };
         let tab = *DeviceDetailTab::ALL.get(index)?;
         if tab == self.detail_tab {
             return None;

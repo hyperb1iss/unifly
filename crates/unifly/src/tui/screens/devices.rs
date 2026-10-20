@@ -18,7 +18,7 @@ use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Action, DeviceDetailTab};
 use crate::tui::component::Component;
-use crate::tui::widgets::tab_strip::TabTargets;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct DevicesScreen {
     focused: bool,
@@ -30,8 +30,8 @@ pub struct DevicesScreen {
     detail_open: bool,
     detail_device_id: Option<EntityId>,
     detail_tab: DeviceDetailTab,
-    /// Where the detail tabs were last drawn, for clicks.
-    detail_tab_targets: RefCell<TabTargets>,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
     search_query: String,
 }
 

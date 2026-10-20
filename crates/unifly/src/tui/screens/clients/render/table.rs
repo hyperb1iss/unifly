@@ -17,6 +17,7 @@ use crate::tui::theme;
 use crate::tui::widgets::{bytes_fmt, sub_tabs};
 
 pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rect) {
+    screen.hits.borrow_mut().clear();
     let filtered = screen.filtered_clients();
     let total = screen.clients.len();
     let shown = filtered.len();
@@ -57,8 +58,8 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
 
     let filter_labels = &["All", "Wireless", "Wired", "VPN", "Guest"];
     let strip = sub_tabs::sub_tab_strip(filter_labels, screen.filter_index());
-    *screen.filter_targets.borrow_mut() = strip.targets(layout[0]);
-    frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
+    let line = strip.draw(layout[0], &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(line), layout[0]);
 
     let selected_idx = if screen.detail_open {
         screen

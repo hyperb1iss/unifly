@@ -13,13 +13,13 @@ use ratatui::layout::Rect;
 
 use crate::tui::action::{Action, StatsPeriod};
 use crate::tui::component::Component;
-use crate::tui::widgets::tab_strip::TabTargets;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct StatsScreen {
     focused: bool,
     period: StatsPeriod,
-    /// Where the period tabs were last drawn, for clicks.
-    period_targets: RefCell<TabTargets>,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
     bandwidth_tx: Vec<(f64, f64)>,
     bandwidth_rx: Vec<(f64, f64)>,
     bandwidth_tx_y_max: f64,

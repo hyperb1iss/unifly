@@ -54,7 +54,7 @@ impl WifiScreen {
             neighbor_table_state: TableState::default(),
             roam_table_state: TableState::default(),
             sub_tab: WifiSubTab::default(),
-            tab_targets: std::cell::RefCell::default(),
+            hits: std::cell::RefCell::default(),
             sort_field: WifiSortField::default(),
             selected_band: WifiBand::default(),
             detail_open: false,

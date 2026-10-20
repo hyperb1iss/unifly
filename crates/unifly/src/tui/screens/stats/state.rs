@@ -8,7 +8,7 @@ impl StatsScreen {
         Self {
             focused: false,
             period: StatsPeriod::default(),
-            period_targets: std::cell::RefCell::default(),
+            hits: std::cell::RefCell::default(),
             bandwidth_tx: Vec::new(),
             bandwidth_rx: Vec::new(),
             bandwidth_tx_y_max: 0.0,
@@ -22,12 +22,10 @@ impl StatsScreen {
     }
 
     pub(super) fn period_index(&self) -> usize {
-        match self.period {
-            StatsPeriod::OneHour => 0,
-            StatsPeriod::TwentyFourHours => 1,
-            StatsPeriod::SevenDays => 2,
-            StatsPeriod::ThirtyDays => 3,
-        }
+        StatsPeriod::ALL
+            .iter()
+            .position(|period| *period == self.period)
+            .unwrap_or_default()
     }
 
     pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {

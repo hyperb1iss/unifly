@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 
 use super::StatsScreen;
 use crate::tui::action::{Action, StatsPeriod};
+use crate::tui::widgets::click::Click;
 
 impl StatsScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -17,7 +18,9 @@ impl StatsScreen {
 
     /// A click on a period tab loads that period, like its key.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        let index = self.period_targets.borrow().clicked(mouse)?;
+        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
+            return None;
+        };
         let period = *StatsPeriod::ALL.get(index)?;
         (period != self.period).then(|| self.set_period(period))
     }
@@ -34,7 +37,7 @@ mod tests {
     use crate::tui::component::Component;
     use crate::tui::screens::stats::StatsScreen;
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::tab_strip::click_label;
+    use crate::tui::widgets::click::click_label;
 
     #[test]
     fn clicking_a_period_loads_it() {

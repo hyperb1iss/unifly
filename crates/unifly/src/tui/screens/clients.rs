@@ -19,7 +19,7 @@ use unifly_api::{Client, EntityId};
 
 use crate::tui::action::{Action, ClientTypeFilter};
 use crate::tui::component::Component;
-use crate::tui::widgets::tab_strip::TabTargets;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct ClientsScreen {
     focused: bool,
@@ -29,8 +29,8 @@ pub struct ClientsScreen {
     links: labels::LinkIndex,
     table_state: TableState,
     filter: ClientTypeFilter,
-    /// Where the type filters were last drawn, for clicks.
-    filter_targets: RefCell<TabTargets>,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
     search_query: String,
     detail_open: bool,
     detail_client_id: Option<EntityId>,

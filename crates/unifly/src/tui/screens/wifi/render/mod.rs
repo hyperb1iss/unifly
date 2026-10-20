@@ -8,15 +8,16 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use crate::tui::action::{WifiBand, WifiSubTab};
 use crate::tui::theme;
+use crate::tui::widgets::click::{Click, ClickLine};
 use crate::tui::widgets::hyperchart::{HeatmapCell, HyperHeatmap};
 use crate::tui::widgets::signal_bars;
-use crate::tui::widgets::tab_strip::TabStrip;
 
 use super::WifiScreen;
 use super::state::{display_client_name, display_device_name, json_i32, json_string, json_u64};
 
 impl WifiScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let block = Block::default()
             .title(" WiFi ")
             .title_style(theme::title_style())
@@ -39,9 +40,10 @@ impl WifiScreen {
         ])
         .split(inner);
 
-        let strip = self.tab_strip();
-        *self.tab_targets.borrow_mut() = strip.targets(layout[0]);
-        frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
+        let line = self
+            .tab_strip()
+            .draw(layout[0], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[0]);
         frame.render_widget(Paragraph::new(self.health_banner()), layout[1]);
 
         match self.sub_tab {
@@ -360,8 +362,8 @@ impl WifiScreen {
         );
     }
 
-    fn tab_strip(&self) -> TabStrip<'static> {
-        let mut strip = TabStrip::default();
+    fn tab_strip(&self) -> ClickLine<'static, Click> {
+        let mut strip = ClickLine::default();
         for (index, tab) in WifiSubTab::ALL.iter().enumerate() {
             if index > 0 {
                 strip.push_gap(Span::styled("  ", Style::default().fg(theme::text_muted())));
@@ -374,8 +376,8 @@ impl WifiScreen {
             } else {
                 Style::default().fg(theme::text_secondary())
             };
-            strip.push_tab(
-                index,
+            strip.push(
+                Click::Tab(index),
                 Span::styled(
                     if *tab == self.sub_tab {
                         format!("[{label}]")

@@ -19,7 +19,7 @@ use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 
 use crate::tui::action::{Action, FirewallSubTab};
 use crate::tui::component::Component;
-use crate::tui::widgets::tab_strip::TabTargets;
+use crate::tui::widgets::click::{Click, HitMap};
 
 pub struct FirewallScreen {
     focused: bool,
@@ -35,8 +35,8 @@ pub struct FirewallScreen {
     zone_table: TableState,
     acl_table: TableState,
     nat_table: TableState,
-    /// Where the sub-tabs were last drawn, for clicks.
-    tab_targets: RefCell<TabTargets>,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
 }
 
 impl Default for FirewallScreen {

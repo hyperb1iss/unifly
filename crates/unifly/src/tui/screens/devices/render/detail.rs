@@ -64,13 +64,10 @@ pub(super) fn render_detail(
 
 fn render_detail_tabs(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
     let tab_labels = &["Overview", "Performance", "Radios", "Clients", "Ports"];
-    let active_idx = match screen.detail_tab {
-        DeviceDetailTab::Overview => 0,
-        DeviceDetailTab::Performance => 1,
-        DeviceDetailTab::Radios => 2,
-        DeviceDetailTab::Clients => 3,
-        DeviceDetailTab::Ports => 4,
-    };
+    let active_idx = DeviceDetailTab::ALL
+        .iter()
+        .position(|tab| *tab == screen.detail_tab)
+        .unwrap_or_default();
     let strip = sub_tabs::sub_tab_strip(tab_labels, active_idx);
     // The tabs sit on the second row, under a spacer line.
     let tab_row = Rect {
@@ -78,11 +75,8 @@ fn render_detail_tabs(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
         height: area.height.saturating_sub(1),
         ..area
     };
-    *screen.detail_tab_targets.borrow_mut() = strip.targets(tab_row);
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(""), strip.into_line()]),
-        area,
-    );
+    let line = strip.draw(tab_row, &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(vec![Line::from(""), line]), area);
 }
 
 fn render_detail_hints(frame: &mut Frame, area: Rect) {

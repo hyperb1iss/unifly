@@ -10,13 +10,13 @@ use unifly_api::{Device, DeviceState};
 
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
-use crate::tui::widgets::tab_strip::TabTargets;
 use crate::tui::widgets::{bytes_fmt, status_indicator};
 
 use super::detail::render_detail;
 use crate::tui::screens::devices::DevicesScreen;
 
 pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
+    screen.hits.borrow_mut().clear();
     let filtered = screen.filtered_devices();
     let selected_index = screen.selected_row_index(&filtered);
     let total = screen.devices.len();
@@ -60,8 +60,6 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
     render_device_table(screen, frame, header_layout[1], &filtered, selected_index);
     render_table_hints(frame, header_layout[2]);
 
-    // A closed detail leaves no tabs to click.
-    *screen.detail_tab_targets.borrow_mut() = TabTargets::default();
     if let Some(detail_area) = detail_area
         && let Some(device) = screen.detail_device()
     {
@@ -363,7 +361,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         use crate::tui::action::DeviceDetailTab;
-        use crate::tui::widgets::tab_strip::click_label;
+        use crate::tui::widgets::click::click_label;
 
         let mut screen = screen();
         screen.handle_key_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

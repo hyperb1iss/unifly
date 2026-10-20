@@ -28,7 +28,7 @@ use crate::tui::event::{Event, EventReader};
 use crate::tui::screen::ScreenId;
 use crate::tui::screens::create_screens;
 use crate::tui::terminal::Tui;
-use crate::tui::widgets::tab_strip::TabTargets;
+use crate::tui::widgets::click::{Click, HitMap};
 
 /// Connection status as seen by the TUI.
 #[allow(dead_code)]
@@ -68,8 +68,9 @@ pub struct App {
     search_query: String,
     /// Terminal size for responsive layout.
     terminal_size: (u16, u16),
-    /// Where each screen tab was last drawn in the tab bar.
-    tab_targets: TabTargets,
+    /// What the last frame's app chrome (tab bar, status bar, overlays)
+    /// drew where, for clicks.
+    hits: HitMap<Click>,
     /// Action sender — components can dispatch actions through this.
     action_tx: mpsc::UnboundedSender<Action>,
     /// Action receiver — main loop drains this.
@@ -144,7 +145,7 @@ impl App {
             search_active: false,
             search_query: String::new(),
             terminal_size: (0, 0),
-            tab_targets: TabTargets::default(),
+            hits: HitMap::default(),
             action_tx,
             action_rx,
             controller,

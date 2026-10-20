@@ -9,10 +9,10 @@ use ratatui::{
 };
 
 use super::{App, ConnectionStatus};
-use crate::tui::action::{ConfirmAction, Notification, NotificationLevel};
+use crate::tui::action::{Action, ConfirmAction, Notification, NotificationLevel};
 use crate::tui::screen::ScreenId;
 use crate::tui::theme;
-use crate::tui::widgets::tab_strip::TabStrip;
+use crate::tui::widgets::click::{Click, ClickLine};
 
 impl App {
     /// Render the full application frame.
@@ -29,6 +29,7 @@ impl App {
         self.last_frame = now;
 
         let area = frame.area();
+        self.hits.clear();
 
         if self.active_screen == ScreenId::Setup || self.active_screen == ScreenId::Settings {
             if let Some(screen) = self.screens.get(&self.active_screen) {
@@ -82,15 +83,14 @@ impl App {
     /// Render the bottom tab bar showing all primary screens, and keep
     /// where each tab landed so a click can switch to it.
     fn render_tab_bar(&mut self, frame: &mut Frame, area: Rect) {
-        let strip = self.tab_strip(area.width);
-        self.tab_targets = strip.targets(area);
-        frame.render_widget(Paragraph::new(strip.into_line()), area);
+        let line = self.tab_strip(area.width).draw(area, &mut self.hits);
+        frame.render_widget(Paragraph::new(line), area);
     }
 
     /// The tab bar in the roomiest style that fits `width`: full labels
     /// before short ones, padded tabs before tight ones. A clipped tab
     /// could be neither read nor clicked.
-    fn tab_strip(&self, width: u16) -> TabStrip<'static> {
+    fn tab_strip(&self, width: u16) -> ClickLine<'static, Click> {
         [(false, true), (false, false), (true, true)]
             .into_iter()
             .map(|(compact, padded)| self.tab_strip_styled(compact, padded))
@@ -100,8 +100,8 @@ impl App {
 
     /// The tab bar's spans. Each tab owns the padding around its title, so
     /// only the one-column dividers fall between click targets.
-    fn tab_strip_styled(&self, compact: bool, padded: bool) -> TabStrip<'static> {
-        let mut strip = TabStrip::default();
+    fn tab_strip_styled(&self, compact: bool, padded: bool) -> ClickLine<'static, Click> {
+        let mut strip = ClickLine::default();
         for (index, &id) in ScreenId::ALL.iter().enumerate() {
             if index > 0 {
                 strip.push_gap(Span::styled(" ", theme::key_hint()));
@@ -116,15 +116,16 @@ impl App {
             } else {
                 id.label()
             };
+            let target = Click::Action(Action::SwitchScreen(id));
             if padded {
-                strip.push_tab(index, Span::raw(" "));
+                strip.push(target.clone(), Span::raw(" "));
             }
-            strip.push_tab(
-                index,
+            strip.push(
+                target.clone(),
                 Span::styled(format!(" {} {} ", id.number(), label), style),
             );
             if padded {
-                strip.push_tab(index, Span::raw(" "));
+                strip.push(target, Span::raw(" "));
             }
         }
         strip

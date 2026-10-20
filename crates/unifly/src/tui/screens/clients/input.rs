@@ -3,6 +3,7 @@ use super::ClientsScreen;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::tui::action::{Action, ClientTypeFilter};
+use crate::tui::widgets::click::Click;
 
 impl ClientsScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -91,7 +92,9 @@ impl ClientsScreen {
         if self.detail_open {
             return None;
         }
-        let index = self.filter_targets.borrow().clicked(mouse)?;
+        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
+            return None;
+        };
         let filter = *ClientTypeFilter::ALL.get(index)?;
         if filter == self.filter {
             return None;
@@ -127,7 +130,7 @@ mod tests {
     use crate::tui::component::Component;
     use crate::tui::screens::clients::ClientsScreen;
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::tab_strip::click_label;
+    use crate::tui::widgets::click::click_label;
 
     fn render(screen: &ClientsScreen) -> Vec<String> {
         render_lines(100, 12, |frame, area| screen.render(frame, area))

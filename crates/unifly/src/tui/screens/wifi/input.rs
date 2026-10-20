@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::WifiScreen;
 use crate::tui::action::{Action, WifiSortField, WifiSubTab};
+use crate::tui::widgets::click::Click;
 
 impl WifiScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -89,7 +90,9 @@ impl WifiScreen {
 
     /// A click on a sub-tab switches to it, like `Tab`.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        let index = self.tab_targets.borrow().clicked(mouse)?;
+        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
+            return None;
+        };
         let tab = *WifiSubTab::ALL.get(index)?;
         if tab == self.sub_tab {
             return None;
@@ -251,7 +254,7 @@ mod tests {
     use crate::tui::component::Component;
     use crate::tui::screens::wifi::WifiScreen;
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::tab_strip::click_label;
+    use crate::tui::widgets::click::click_label;
 
     #[test]
     fn clicking_a_sub_tab_switches_to_it() {

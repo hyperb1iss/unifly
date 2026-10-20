@@ -167,6 +167,7 @@ impl StatsScreen {
     }
 
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let block = Block::default()
             .title(" Statistics ")
             .title_style(theme::title_style())
@@ -190,8 +191,8 @@ impl StatsScreen {
         .split(inner);
 
         let strip = sub_tabs::sub_tab_strip(&["1h", "24h", "7d", "30d"], self.period_index());
-        *self.period_targets.borrow_mut() = strip.targets(layout[0]);
-        frame.render_widget(Paragraph::new(strip.into_line()), layout[0]);
+        let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[0]);
 
         self.render_bandwidth_chart(frame, layout[1]);
 
