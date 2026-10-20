@@ -58,6 +58,15 @@ impl SettingsField {
 
 // ── Construction & config ───────────────────────────────────────────
 
+/// The profile this TUI session runs on, recorded once at launch. Settings
+/// edits it, so a key typed there never lands in a different profile.
+static SESSION_PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the profile this session runs on; later calls are ignored.
+pub fn set_session_profile(profile_name: &str) {
+    let _ = SESSION_PROFILE.set(profile_name.to_owned());
+}
+
 impl SettingsScreen {
     pub fn new() -> Self {
         let mut screen = Self::blank();
@@ -90,17 +99,33 @@ impl SettingsScreen {
         let Ok(cfg) = crate::config::load_config() else {
             return;
         };
+        self.load(
+            &cfg,
+            SESSION_PROFILE.get().map(String::as_str),
+            &crate::config::OsKeyring,
+        );
+    }
 
+    /// Fill the form from the profile this session uses (`session_profile`,
+    /// else the config's default), which is also the one saving writes.
+    fn load(
+        &mut self,
+        cfg: &crate::config::Config,
+        session_profile: Option<&str>,
+        store: &dyn crate::config::SecretStore,
+    ) {
         self.show_donate = cfg.defaults.show_donate;
 
-        let profile_name = cfg.default_profile.as_deref().unwrap_or("default");
+        let profile_name = session_profile
+            .or(cfg.default_profile.as_deref())
+            .unwrap_or("default");
+        self.profile_name = profile_name.to_string();
         let Some(profile) = cfg.profiles.get(profile_name) else {
             return;
         };
 
-        self.profile_name = profile_name.to_string();
         self.draft = ControllerProfileDraft::from_profile(profile)
-            .with_keyring_origins(profile_name, &crate::config::OsKeyring)
+            .with_keyring_origins(profile_name, store)
             .with_inherited_insecure(&cfg.defaults);
         self.auth_mode_index = AuthMode::ALL
             .iter()
@@ -345,6 +370,84 @@ fn save_profile(
 #[cfg(test)]
 mod tests {
     use super::{AuthMode, SettingsField, SettingsScreen, save_profile};
+
+    /// In-memory stand-in for the OS keyring.
+    #[derive(Default)]
+    struct MemoryStore(std::cell::RefCell<std::collections::HashMap<String, String>>);
+
+    impl crate::config::SecretStore for MemoryStore {
+        fn get(&self, key: &str) -> Result<Option<String>, crate::config::SecretStoreError> {
+            Ok(self.0.borrow().get(key).cloned())
+        }
+
+        fn set(&self, key: &str, secret: &str) -> Result<(), crate::config::SecretStoreError> {
+            self.0
+                .borrow_mut()
+                .insert(key.to_owned(), secret.to_owned());
+            Ok(())
+        }
+
+        fn delete(&self, key: &str) -> Result<(), crate::config::SecretStoreError> {
+            self.0.borrow_mut().remove(key);
+            Ok(())
+        }
+    }
+
+    /// After `unifly tui -p work`, Settings edits `work`. A key typed there
+    /// lands in `work/api-key` and leaves the default profile's secret
+    /// alone.
+    #[test]
+    fn settings_edit_the_profile_the_session_uses() {
+        use crate::config::SecretStore;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_profile = \"home\"\n\n\
+             [profiles.home]\ncontroller = \"https://10.0.0.1\"\n\n\
+             [profiles.work]\ncontroller = \"https://10.0.9.1\"\n",
+        )
+        .expect("write config");
+        let cfg = crate::config::load_config_from(&path).expect("load config");
+        let store = MemoryStore::default();
+        store
+            .set("home/api-key", "home-secret")
+            .expect("seed keyring");
+
+        let mut screen = SettingsScreen::blank();
+        screen.load(&cfg, Some("work"), &store);
+        assert_eq!(screen.profile_name, "work");
+        assert_eq!(screen.draft.url, "https://10.0.9.1");
+
+        screen.draft.api_key = "work-secret".into();
+        screen
+            .draft
+            .plan_save(&screen.profile_name)
+            .commit(&store, |profile| {
+                save_profile(&path, &screen.profile_name, profile).map_err(|e| e.to_string())
+            })
+            .expect("save");
+
+        assert_eq!(store.get("home/api-key"), Ok(Some("home-secret".into())));
+        assert_eq!(store.get("work/api-key"), Ok(Some("work-secret".into())));
+        let cfg = crate::config::load_config_from(&path).expect("reload");
+        assert_eq!(cfg.profiles["home"].controller, "https://10.0.0.1");
+    }
+
+    /// A session profile the config does not hold yet is still the one
+    /// Settings saves to.
+    #[test]
+    fn settings_name_a_session_profile_that_is_not_saved_yet() {
+        let mut screen = SettingsScreen::blank();
+        screen.load(
+            &crate::config::Config::default(),
+            Some("work"),
+            &MemoryStore::default(),
+        );
+
+        assert_eq!(screen.profile_name, "work");
+    }
 
     /// A config that fails to load must fail the save and stay as it was;
     /// saving defaults over it would erase every other profile.

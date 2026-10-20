@@ -85,17 +85,19 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     let effects_enabled = resolve_effects_enabled(global, cfg);
     let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 
+    let session_profile = session_profile_name(global, cfg);
+    screens::settings::set_session_profile(&session_profile);
     let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate)
-        .with_setup_profile(&setup_profile_name(global, cfg), cfg);
+        .with_setup_profile(&session_profile, cfg);
     app.run().await?;
 
     Ok(())
 }
 
-/// The profile onboarding sets up when nothing could connect: the one this
-/// launch selected (`--profile`, else the config's default, else
-/// `default`), so finishing the wizard never writes over another profile.
-fn setup_profile_name(global: &GlobalOpts, cfg: Option<&config::Config>) -> String {
+/// The profile this session runs on (`--profile`, else the config's default,
+/// else `default`). Onboarding sets it up and Settings edits it, so neither
+/// writes over another profile.
+fn session_profile_name(global: &GlobalOpts, cfg: Option<&config::Config>) -> String {
     global
         .profile
         .clone()
@@ -339,7 +341,7 @@ fn resolve_sanitizer(global: &GlobalOpts, cfg: Option<&config::Config>) -> Optio
 mod tests {
     use clap::Parser;
 
-    use super::setup_profile_name;
+    use super::session_profile_name;
     use crate::cli::args::{Cli, GlobalOpts};
     use crate::config::Config;
 
@@ -348,16 +350,16 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_sets_up_the_profile_the_launch_selected() {
+    fn the_session_runs_on_the_profile_the_launch_selected() {
         let cfg = Config {
             default_profile: Some("home".into()),
             ..Config::default()
         };
 
         let work = global(&["unifly", "tui", "-p", "work"]);
-        assert_eq!(setup_profile_name(&work, Some(&cfg)), "work");
+        assert_eq!(session_profile_name(&work, Some(&cfg)), "work");
         let plain = global(&["unifly", "tui"]);
-        assert_eq!(setup_profile_name(&plain, Some(&cfg)), "home");
-        assert_eq!(setup_profile_name(&plain, None), "default");
+        assert_eq!(session_profile_name(&plain, Some(&cfg)), "home");
+        assert_eq!(session_profile_name(&plain, None), "default");
     }
 }
