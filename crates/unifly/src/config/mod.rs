@@ -8,7 +8,7 @@ pub mod resolve;
 pub mod totp_command;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use figment::{
@@ -38,6 +38,10 @@ pub enum ConfigError {
 
     #[error("config loading failed: {0}")]
     Figment(Box<figment::Error>),
+
+    /// The config file is there but could not be read or parsed.
+    #[error("could not load {}: {reason}", path.display())]
+    Load { path: PathBuf, reason: String },
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -364,18 +368,55 @@ fn migrate_macos_config(new_dir: &std::path::Path) {
 /// Environment variables are not read here: the `UNIFI_*` variables belong
 /// to the global flags (clap reads them), and reading them again as config
 /// keys made `UNIFI_DEMO` collide with the `[demo]` table.
+///
+/// A file that exists but cannot be loaded is an error, never the defaults;
+/// see [`load_config_from`].
 pub fn load_config() -> Result<Config, ConfigError> {
-    let path = config_path();
-
-    let figment = Figment::new()
-        .merge(Serialized::defaults(Config::default()))
-        .merge(Toml::file(&path));
-
-    let config: Config = figment.extract()?;
-    Ok(config)
+    load_config_from(&config_path())
 }
 
-/// Load config, returning a default if the file doesn't exist.
+/// Load the Config stored at `path`.
+///
+/// A missing file is a fresh install and yields the defaults. A file that
+/// is there but cannot be read or parsed is an error, never the defaults:
+/// saving defaults over a file with one typo in it would erase every
+/// profile it holds.
+pub fn load_config_from(path: &Path) -> Result<Config, ConfigError> {
+    let load_error = |reason: String| ConfigError::Load {
+        path: path.to_owned(),
+        reason,
+    };
+
+    if !path
+        .try_exists()
+        .map_err(|error| load_error(error.to_string()))?
+    {
+        return Ok(Config::default());
+    }
+
+    Figment::new()
+        .merge(Serialized::defaults(Config::default()))
+        .merge(Toml::file_exact(path))
+        .extract()
+        .map_err(|error| load_error(describe_figment_error(error)))
+}
+
+/// What went wrong and at which key, without figment's trailing "in <file>
+/// TOML file" (the load error names the file already).
+fn describe_figment_error(error: figment::Error) -> String {
+    error
+        .into_iter()
+        .map(|error| match error.path.as_slice() {
+            [] => error.kind.to_string().trim_end().to_owned(),
+            path => format!("{} for key `{}`", error.kind, path.join(".")),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Load the config for display or connection, falling back to the defaults
+/// when it cannot be loaded. Never save the result: a file that failed to
+/// load would be replaced by the defaults. Writers use [`load_config`].
 pub fn load_config_or_default() -> Config {
     load_config().unwrap_or_default()
 }
@@ -384,18 +425,22 @@ pub fn load_config_or_default() -> Config {
 
 /// Serialize config to TOML and write to the canonical config path.
 pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
-    let path = config_path();
+    save_config_to(&config_path(), cfg)
+}
+
+/// Serialize config to TOML and write it to `path`.
+pub fn save_config_to(path: &Path, cfg: &Config) -> Result<(), ConfigError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let toml_str = toml::to_string_pretty(cfg)?;
-    std::fs::write(&path, toml_str)?;
+    std::fs::write(path, toml_str)?;
 
     // Restrict config file to owner-only access (may contain plaintext credentials)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
 
     Ok(())
@@ -715,8 +760,8 @@ pub fn profile_to_controller_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, profile_to_controller_config,
-        resolve_api_key, resolve_auth,
+        ConfigError, DEFAULT_CLOUD_CONTROLLER_URL, Defaults, Profile, load_config_from,
+        profile_to_controller_config, resolve_api_key, resolve_auth,
     };
     use secrecy::ExposeSecret;
     use std::time::Duration;
@@ -741,6 +786,30 @@ mod tests {
             insecure: Some(true),
             timeout: Some(45),
         }
+    }
+
+    #[test]
+    fn load_config_from_starts_a_missing_file_from_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let config = load_config_from(&dir.path().join("config.toml")).expect("defaults");
+
+        assert!(config.profiles.is_empty());
+        assert_eq!(config.default_profile.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn load_config_from_reports_a_file_it_cannot_parse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[defaults]\ntimeout = \"thirty\"\n").expect("write config");
+
+        let error = load_config_from(&path).expect_err("a typo must not load as defaults");
+
+        assert!(matches!(&error, ConfigError::Load { path: at, .. } if *at == path));
+        let message = error.to_string();
+        assert!(message.contains("`defaults.timeout`"), "{message}");
+        assert!(message.contains("thirty"), "{message}");
     }
 
     #[test]

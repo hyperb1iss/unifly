@@ -683,6 +683,9 @@ pub(super) fn run_init(global: &GlobalOpts) -> Result<(), CliError> {
 
 #[allow(clippy::too_many_lines)]
 pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError> {
+    // Load before any prompt or keyring write, so a config file that cannot
+    // be loaded stops the wizard before it asks for anything.
+    let mut cfg = crate::config::load_config()?;
     let ui = WizardUi::new(global);
     let config_path = crate::config::config_path();
     let controller = global
@@ -728,7 +731,6 @@ pub(super) async fn run_cloud_setup(global: &GlobalOpts) -> Result<(), CliError>
         .map_err(cloud_api_error)?;
     let site = select_site_internal_reference(&ui, &sites)?;
 
-    let mut cfg = crate::config::load_config_or_default();
     let suggested_profile = next_available_profile_name(&host.display_name(), &cfg.profiles);
     let profile_name = prompt_profile_name(&ui, &suggested_profile, &cfg.profiles)?;
     let (api_key, api_key_env) = persist_cloud_api_key(&ui, &profile_name, &api_key_setup)?;

@@ -15,7 +15,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         ConfigCommand::CloudSetup => run_cloud_setup(global).await,
 
         ConfigCommand::Show => {
-            let cfg = crate::config::load_config_or_default();
+            let cfg = crate::config::load_config()?;
             let out = output::render_single(&global.output, &cfg, format_config_redacted, |_| {
                 "config".into()
             });
@@ -24,7 +24,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Set { key, value } => {
-            let mut cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
             let active_profile = resolve::active_profile_name(global, &cfg);
             let (profile_name, field) = resolve_set_target(&key, &active_profile)?;
 
@@ -90,7 +90,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Profiles => {
-            let cfg = crate::config::load_config_or_default();
+            let cfg = crate::config::load_config()?;
             let default = cfg.default_profile.as_deref().unwrap_or("default");
 
             if cfg.profiles.is_empty() {
@@ -110,7 +110,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Use { name } => {
-            let mut cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
 
             if !cfg.profiles.contains_key(&name) {
                 return Err(profile_not_found(&cfg, name));
@@ -123,7 +123,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
         }
 
         ConfigCommand::Theme { name } => {
-            let mut cfg = crate::config::load_config_or_default();
+            let mut cfg = crate::config::load_config()?;
             let current = cfg.defaults.theme.as_deref().unwrap_or("silkcircuit-neon");
 
             if let Some(name) = name {
@@ -163,7 +163,7 @@ pub(super) async fn handle(args: ConfigArgs, global: &GlobalOpts) -> Result<(), 
             profile,
             profile_flag,
         } => {
-            let cfg = crate::config::load_config_or_default();
+            let cfg = crate::config::load_config()?;
             let profile_name = profile
                 .or(profile_flag)
                 .unwrap_or_else(|| resolve::active_profile_name(global, &cfg));

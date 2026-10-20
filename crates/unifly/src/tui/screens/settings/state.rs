@@ -277,14 +277,10 @@ impl SettingsScreen {
                             // the keyring changes; the message becomes the
                             // test result.
                             let saved = save.commit(&crate::config::OsKeyring, |profile| {
-                                let mut cfg = crate::config::load_config().unwrap_or_default();
-                                cfg.profiles.insert(profile_name.clone(), profile);
-                                if cfg.default_profile.is_none() {
-                                    cfg.default_profile = Some(profile_name.clone());
-                                }
-                                crate::config::save_config(&cfg).map_err(|error| {
-                                    format!("Connected, but failed to save config: {error}")
-                                })
+                                save_profile(&crate::config::config_path(), &profile_name, profile)
+                                    .map_err(|error| {
+                                        format!("Connected, but failed to save config: {error}")
+                                    })
                             });
                             saved.map(|notices| {
                                 for notice in notices {
@@ -329,11 +325,42 @@ impl SettingsScreen {
     }
 }
 
+/// Write the edited profile into the config file at `path`, keeping every
+/// other profile and setting in it.
+fn save_profile(
+    path: &std::path::Path,
+    profile_name: &str,
+    profile: crate::config::Profile,
+) -> Result<(), crate::config::ConfigError> {
+    let mut cfg = crate::config::load_config_from(path)?;
+    cfg.profiles.insert(profile_name.to_owned(), profile);
+    if cfg.default_profile.is_none() {
+        cfg.default_profile = Some(profile_name.to_owned());
+    }
+    crate::config::save_config_to(path, &cfg)
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthMode, SettingsField, SettingsScreen};
+    use super::{AuthMode, SettingsField, SettingsScreen, save_profile};
+
+    /// A config that fails to load must fail the save and stay as it was;
+    /// saving defaults over it would erase every other profile.
+    #[test]
+    fn save_profile_leaves_a_config_that_fails_to_load_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let broken = "[defaults]\ntimeout = \"thirty\"\n\n\
+                      [profiles.work]\ncontroller = \"https://10.0.0.1\"\n";
+        std::fs::write(&path, broken).expect("write config");
+
+        let result = save_profile(&path, "home", test_screen().build_profile());
+
+        assert!(result.is_err(), "the save should fail");
+        assert_eq!(std::fs::read_to_string(&path).expect("read config"), broken);
+    }
 
     fn test_screen() -> SettingsScreen {
         let mut screen = SettingsScreen::blank();

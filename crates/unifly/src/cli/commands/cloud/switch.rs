@@ -19,7 +19,7 @@ fn available_profiles(cfg: &config::Config) -> String {
 fn require_cloud_profile(
     global: &GlobalOpts,
 ) -> Result<(config::Config, String, Profile), CliError> {
-    let cfg = config::resolve::load_config_or_default();
+    let cfg = config::load_config()?;
     let profile_name = config::resolve::active_profile_name(global, &cfg);
     let Some(profile) = cfg.profiles.get(&profile_name).cloned() else {
         return Err(CliError::ProfileNotFound {

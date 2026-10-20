@@ -300,8 +300,8 @@ fn test_vpn_servers_get_parses_before_config_check() {
 
 #[test]
 fn test_config_show_no_config() {
-    // `config show` uses load_config_or_default() so it succeeds even
-    // when no config file exists — it just renders the default config.
+    // A missing config file loads as the defaults, so `config show`
+    // succeeds and renders them.
     unifly_cmd().args(["config", "show"]).assert().success();
 }
 
@@ -583,6 +583,39 @@ fn test_demo_env_vars_do_not_hide_profiles() {
         assert!(
             text.contains("home *") && text.contains("work"),
             "{var}={value} hid the profiles:\n{text}"
+        );
+    }
+}
+
+/// A config with a typo fails to load. Commands that save the config must
+/// stop there instead of saving defaults over it, which erased every
+/// profile in the file.
+#[cfg(not(windows))]
+#[test]
+fn test_writers_leave_a_config_that_fails_to_load_untouched() {
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+
+    for args in [
+        &["config", "set", "profiles.home.site", "lab"][..],
+        &["config", "use", "work"],
+        &["config", "theme", "nord"],
+        &["cloud", "switch", "lab"],
+    ] {
+        let home = TempDir::new().unwrap();
+        let path = write_config(&home, &broken);
+
+        let output = unifly_cmd_in(home.path()).args(args).output().unwrap();
+        let text = combined_output(&output);
+
+        assert!(!output.status.success(), "{args:?} succeeded:\n{text}");
+        assert!(
+            text.contains(&path.display().to_string()) && text.contains("thirty"),
+            "{args:?} should name the file and the bad value:\n{text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            broken,
+            "{args:?} rewrote the config"
         );
     }
 }

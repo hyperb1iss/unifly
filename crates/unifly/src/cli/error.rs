@@ -292,11 +292,12 @@ impl From<crate::config::ConfigError> for CliError {
             }
             ConfigError::Validation { field, reason } => Self::Validation { field, reason },
             // Reading or writing the file failed: keep the config error's
-            // own message and the general exit code.
-            err
-            @ (ConfigError::Serialization(_) | ConfigError::Figment(_) | ConfigError::Io(_)) => {
-                Self::ConfigError(err)
-            }
+            // own message, which names the file. One that fails to load is
+            // invalid input and exits 2 (see `exit_code`); the rest exit 1.
+            err @ (ConfigError::Serialization(_)
+            | ConfigError::Figment(_)
+            | ConfigError::Io(_)
+            | ConfigError::Load { .. }) => Self::ConfigError(err),
         }
     }
 }
@@ -314,6 +315,7 @@ impl CliError {
             Self::Timeout { .. } => exit_code::TIMEOUT,
             Self::Validation { .. }
             | Self::InvalidConfig { .. }
+            | Self::ConfigError(crate::config::ConfigError::Load { .. })
             | Self::NonInteractiveRequiresYes { .. }
             | Self::SiteAmbiguous { .. }
             | Self::Ambiguous { .. } => exit_code::USAGE,

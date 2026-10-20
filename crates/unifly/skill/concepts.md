@@ -237,7 +237,8 @@ retrying. A write with an uncertain outcome needs a read-back before any
 retry, especially for create commands.
 
 Exit status is `0` on success. CLI errors use `1` for general failure, `2`
-for usage/validation or missing confirmation, `3` for authentication, `4`
+for usage/validation (a config file that fails to load included) or missing
+confirmation, `3` for authentication, `4`
 for a missing resource, `5` for unsupported/unimplemented operations, `6`
 for conflict, `7` for connection/TLS failure, and `8` for timeout. Preserve
 the diagnostic as well as the number: not every controller-side error maps
