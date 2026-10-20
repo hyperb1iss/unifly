@@ -116,6 +116,14 @@ pub struct SessionClient {
     request_timeout: Option<std::time::Duration>,
 }
 
+/// Decode the body of a raw route as JSON.
+fn decode_raw_json(body: &[u8]) -> Result<serde_json::Value, Error> {
+    serde_json::from_slice(body).map_err(|e| Error::Deserialization {
+        message: format!("{e}"),
+        body: String::from_utf8_lossy(body).into_owned(),
+    })
+}
+
 impl SessionClient {
     /// Create a new session client from a `TransportConfig`.
     ///
@@ -625,23 +633,8 @@ impl SessionClient {
             .send()
             .await
             .map_err(|e| self.transport_error(e))?;
-        let status = resp.status();
-
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(self.unauthorized_error());
-        }
-        if !status.is_success() {
-            let body = resp.bytes().await.unwrap_or_default();
-            return Err(Error::SessionApi {
-                message: format!("HTTP {status}: {}", body_preview(&body)),
-            });
-        }
-
-        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
-        serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
-            message: format!("{e}"),
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
+        let body = self.checked_raw_body(resp).await?;
+        decode_raw_json(&body)
     }
 
     /// Send a POST request with JSON body and unwrap the session envelope.
@@ -745,23 +738,8 @@ impl SessionClient {
 
         let builder = self.apply_csrf(self.http.post(url).json(body));
         let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
-        let status = resp.status();
-
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(self.unauthorized_error());
-        }
-        if !status.is_success() {
-            let body = resp.bytes().await.unwrap_or_default();
-            return Err(Error::SessionApi {
-                message: format!("HTTP {status}: {}", body_preview(&body)),
-            });
-        }
-
-        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
-        serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
-            message: format!("{e}"),
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
+        let body = self.checked_raw_body(resp).await?;
+        decode_raw_json(&body)
     }
 
     /// Send a raw PUT to an arbitrary path (no envelope unwrapping).
@@ -788,23 +766,8 @@ impl SessionClient {
 
         let builder = self.apply_csrf(self.http.put(url).json(body));
         let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
-        let status = resp.status();
-
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(self.unauthorized_error());
-        }
-        if !status.is_success() {
-            let body = resp.bytes().await.unwrap_or_default();
-            return Err(Error::SessionApi {
-                message: format!("HTTP {status}: {}", body_preview(&body)),
-            });
-        }
-
-        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
-        serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
-            message: format!("{e}"),
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
+        let body = self.checked_raw_body(resp).await?;
+        decode_raw_json(&body)
     }
 
     /// Send a raw PATCH to an arbitrary path (no envelope unwrapping).
@@ -831,23 +794,8 @@ impl SessionClient {
 
         let builder = self.apply_csrf(self.http.patch(url).json(body));
         let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
-        let status = resp.status();
-
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(self.unauthorized_error());
-        }
-        if !status.is_success() {
-            let body = resp.bytes().await.unwrap_or_default();
-            return Err(Error::SessionApi {
-                message: format!("HTTP {status}: {}", body_preview(&body)),
-            });
-        }
-
-        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
-        serde_json::from_slice(&body).map_err(|e| Error::Deserialization {
-            message: format!("{e}"),
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
+        let body = self.checked_raw_body(resp).await?;
+        decode_raw_json(&body)
     }
 
     /// Send a raw DELETE to an arbitrary path (no envelope unwrapping).
@@ -866,6 +814,14 @@ impl SessionClient {
 
         let builder = self.apply_csrf(self.http.delete(url));
         let resp = builder.send().await.map_err(|e| self.transport_error(e))?;
+        self.checked_raw_body(resp).await?;
+        Ok(())
+    }
+
+    /// Check a response from a raw (envelope-free) route and return its
+    /// body: a 401, a non-2xx status, or a UniFi OS error wrapped in a 200
+    /// is an error here just as it is for enveloped routes.
+    async fn checked_raw_body(&self, resp: reqwest::Response) -> Result<Vec<u8>, Error> {
         let status = resp.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -878,7 +834,38 @@ impl SessionClient {
             });
         }
 
-        Ok(())
+        let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
+        if let Some(error) = self.unifi_os_error(&body) {
+            return Err(error);
+        }
+        Ok(body.into())
+    }
+
+    /// The error in a UniFi OS `{"error":{"code":N,"message":"..."}}` body,
+    /// which UniFi OS sometimes returns with HTTP 200.
+    fn unifi_os_error(&self, body: &[u8]) -> Option<Error> {
+        let err = serde_json::from_slice::<UnifiOsError>(body).ok()?.error?;
+        let msg = err.message.unwrap_or_default();
+        Some(if err.code == 401 {
+            if msg.is_empty() {
+                self.unauthorized_error()
+            } else {
+                match self.unauthorized_error() {
+                    Error::SessionExpired => {
+                        debug!(%msg, "controller reports the session expired");
+                        Error::SessionExpired
+                    }
+                    Error::InvalidApiKey => Error::Authentication {
+                        message: format!("API key rejected: {msg}"),
+                    },
+                    other => other,
+                }
+            }
+        } else {
+            Error::SessionApi {
+                message: format!("UniFi OS error {}: {msg}", err.code),
+            }
+        })
     }
 
     /// Parse the `{ meta, data }` envelope, returning `data` on success
@@ -914,31 +901,8 @@ impl SessionClient {
 
         let body = resp.bytes().await.map_err(|e| self.transport_error(e))?;
 
-        // UniFi OS sometimes returns `{"error":{"code":N,"message":"..."}}` with HTTP 200.
-        if let Ok(wrapper) = serde_json::from_slice::<UnifiOsError>(&body)
-            && let Some(err) = wrapper.error
-        {
-            let msg = err.message.unwrap_or_default();
-            return Err(if err.code == 401 {
-                if msg.is_empty() {
-                    self.unauthorized_error()
-                } else {
-                    match self.unauthorized_error() {
-                        Error::SessionExpired => {
-                            debug!(%msg, "controller reports the session expired");
-                            Error::SessionExpired
-                        }
-                        Error::InvalidApiKey => Error::Authentication {
-                            message: format!("API key rejected: {msg}"),
-                        },
-                        other => other,
-                    }
-                }
-            } else {
-                Error::SessionApi {
-                    message: format!("UniFi OS error {}: {msg}", err.code),
-                }
-            });
+        if let Some(error) = self.unifi_os_error(&body) {
+            return Err(error);
         }
 
         let envelope: SessionResponse<serde_json::Value> =

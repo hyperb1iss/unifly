@@ -617,7 +617,7 @@ async fn test_list_nat_rules_rejects_non_array_body() {
     Mock::given(method("GET"))
         .and(path("/v2/api/site/default/nat"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "error": {"code": 500, "message": "internal error"},
+            "rules": "unexpected",
         })))
         .mount(&server)
         .await;
@@ -626,11 +626,35 @@ async fn test_list_nat_rules_rejects_non_array_body() {
     match result {
         Err(Error::Deserialization { ref body, .. }) => {
             assert!(
-                body.contains("internal error"),
+                body.contains("unexpected"),
                 "expected the raw body in the error, got: {body}"
             );
         }
         other => panic!("expected Deserialization error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_list_nat_rules_surfaces_unifi_os_error_in_200() {
+    let (server, client) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": {"code": 500, "message": "internal error"},
+        })))
+        .mount(&server)
+        .await;
+
+    let result = client.list_nat_rules().await;
+    match result {
+        Err(Error::SessionApi { ref message }) => {
+            assert!(
+                message.contains("internal error"),
+                "expected the controller's message, got: {message}"
+            );
+        }
+        other => panic!("expected SessionApi error, got: {other:?}"),
     }
 }
 
@@ -1266,4 +1290,46 @@ async fn provider_repeating_the_spent_code_sends_no_login() {
     assert!(matches!(error, Error::SessionExpired), "got {error:?}");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     server.verify().await;
+}
+
+// ── UniFi OS errors wrapped in HTTP 200 on raw paths ────────────────
+
+fn unifi_os_error_body() -> serde_json::Value {
+    json!({"error": {"code": 400, "message": "api.err.InvalidPayload"}})
+}
+
+fn assert_unifi_os_error<T: std::fmt::Debug>(result: Result<T, Error>) {
+    match result {
+        Err(Error::SessionApi { message }) => {
+            assert!(
+                message.contains("api.err.InvalidPayload"),
+                "message: {message}"
+            );
+        }
+        other => panic!("expected the wrapped error to surface, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn raw_writes_surface_unifi_os_errors_wrapped_in_200() {
+    let (server, client) = setup().await;
+    Mock::given(path("/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unifi_os_error_body()))
+        .mount(&server)
+        .await;
+    Mock::given(path("/v2/api/site/default/nat/rule-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unifi_os_error_body()))
+        .mount(&server)
+        .await;
+
+    let body = json!({"description": "web"});
+    assert_unifi_os_error(client.create_nat_rule(&body).await);
+    assert_unifi_os_error(client.update_nat_rule("rule-1", &body).await);
+    assert_unifi_os_error(client.delete_nat_rule("rule-1").await);
+    assert_unifi_os_error(
+        client
+            .raw_patch("v2/api/site/default/nat/rule-1", &body)
+            .await,
+    );
+    assert_unifi_os_error(client.raw_get("v2/api/site/default/nat").await);
 }

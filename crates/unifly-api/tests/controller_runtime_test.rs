@@ -2234,3 +2234,42 @@ async fn platform_probes_run_concurrently() {
         "two {probe_delay:?} probes took {elapsed:?}; they should overlap"
     );
 }
+
+#[tokio::test]
+async fn nat_create_rejected_in_a_200_is_an_error() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/proxy/network/v2/api/site/default/nat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": {"code": 400, "message": "api.err.InvalidPayload"}
+        })))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let result = controller
+        .execute(unifly_api::Command::CreateNatPolicy(
+            serde_json::from_value(json!({
+                "name": "web",
+                "type": "destination",
+                "dst_port": "443",
+                "translated_address": "10.0.0.10",
+            }))
+            .unwrap(),
+        ))
+        .await;
+    controller.disconnect().await;
+
+    assert!(
+        matches!(&result, Err(CoreError::Api { message, .. }) if message.contains("InvalidPayload")),
+        "a rejected create must not report success, got {result:?}"
+    );
+}
