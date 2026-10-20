@@ -2050,9 +2050,11 @@ async fn update_network_writes_subnet_and_disables_dhcp() {
     assert_eq!(ipv4["hostIpAddress"], json!("10.0.40.1"));
     assert_eq!(ipv4["prefixLength"], json!(23));
     assert_eq!(ipv4["autoScaleEnabled"], json!(false));
-    assert!(
-        ipv4.get("dhcpConfiguration").is_none(),
-        "turning DHCP off omits the DHCP configuration: {ipv4}"
+    let mut expected_dhcp = serving_dhcp_ipv4()["dhcpConfiguration"].clone();
+    expected_dhcp["mode"] = json!("NONE");
+    assert_eq!(
+        ipv4["dhcpConfiguration"], expected_dhcp,
+        "turning DHCP off sets mode NONE and keeps the rest"
     );
 }
 
@@ -2439,4 +2441,74 @@ async fn connecting_again_retires_the_previous_connection() {
     timeout(Duration::from_secs(5), controller.disconnect())
         .await
         .expect("disconnect must not wait on the first connection's tasks");
+}
+
+/// A network route that serves back whatever was last PUT to it, the way
+/// the controller stores an update.
+struct StoredNetwork(Arc<std::sync::Mutex<serde_json::Value>>);
+
+impl Respond for StoredNetwork {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let mut stored = self.0.lock().unwrap();
+        if request.method == wiremock::http::Method::PUT {
+            let update: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            for (key, value) in update.as_object().unwrap() {
+                stored[key] = value.clone();
+            }
+        }
+        ResponseTemplate::new(200).set_body_json(stored.clone())
+    }
+}
+
+#[tokio::test]
+async fn dhcp_off_then_on_restores_the_same_server() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    detail["ipv4Configuration"] = serving_dhcp_ipv4();
+    detail["ipv4Configuration"]["dhcpConfiguration"]["dnsServerIpAddressesOverride"] =
+        json!(["1.1.1.1"]);
+    detail["ipv4Configuration"]["dhcpConfiguration"]["domainName"] = json!("lan.example");
+    let original_dhcp = detail["ipv4Configuration"]["dhcpConfiguration"].clone();
+    let stored = Arc::new(std::sync::Mutex::new(detail));
+    Mock::given(path(integration_route(&format!(
+        "networks/{LAN_NETWORK_ID}"
+    ))))
+    .respond_with(StoredNetwork(Arc::clone(&stored)))
+    .mount(&server)
+    .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    let set_dhcp = |enabled: bool| {
+        controller.execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
+            update: unifly_api::UpdateNetworkRequest {
+                dhcp_enabled: Some(enabled),
+                ..Default::default()
+            },
+        })
+    };
+
+    set_dhcp(false).await.expect("DHCP turns off");
+    assert_eq!(
+        stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"]["mode"],
+        json!("NONE")
+    );
+    set_dhcp(true)
+        .await
+        .expect("DHCP turned off through unifly turns back on");
+    controller.disconnect().await;
+
+    assert_eq!(
+        stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"],
+        original_dhcp,
+        "the server comes back with its range, lease, DNS, and domain"
+    );
 }

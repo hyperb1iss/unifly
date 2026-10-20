@@ -40,8 +40,9 @@ pub(in super::super) fn parse_ipv4_cidr(cidr: &str) -> Result<(Ipv4Addr, u8), Co
 /// The Integration API replaces the whole network on update, so these are
 /// written into `ipv4Configuration` alongside everything the controller
 /// returned. A DHCP server is `dhcpConfiguration.mode = "SERVER"`, which
-/// the API requires to carry an `ipAddressRange`; turning it off omits
-/// `dhcpConfiguration`, which the API documents as DHCP off.
+/// the API requires to carry an `ipAddressRange`. Turning it off sets
+/// `mode = "NONE"`, as network create does, and keeps the range, lease,
+/// and overrides, so turning it back on restores the same server.
 ///
 /// `dhcp_serving` is the server state as the network reads back, so a
 /// request that restates it (the TUI form always sends one) changes
@@ -86,12 +87,10 @@ pub(in super::super) fn apply_ipv4_update(
             dhcp.entry("pingConflictDetectionEnabled")
                 .or_insert(Value::Bool(false));
             ipv4.insert("dhcpConfiguration".into(), Value::Object(dhcp));
-        } else if current
-            .and_then(|dhcp| dhcp.get("mode"))
-            .and_then(Value::as_str)
-            == Some("SERVER")
+        } else if let Some(Value::Object(dhcp)) = ipv4.get_mut("dhcpConfiguration")
+            && dhcp.get("mode").and_then(Value::as_str) == Some("SERVER")
         {
-            ipv4.remove("dhcpConfiguration");
+            dhcp.insert("mode".into(), Value::String("NONE".into()));
         } else {
             return Err(CoreError::ValidationFailed {
                 message: "this network does not describe its DHCP server in \
