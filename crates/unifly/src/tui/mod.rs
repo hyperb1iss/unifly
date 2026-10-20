@@ -67,8 +67,12 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
             .and_then(|config| config.defaults.chart_quality.as_deref()),
     );
 
+    let url = global.controller.as_deref().map_or_else(
+        || "(not set)".to_owned(),
+        crate::config::redact_url_userinfo,
+    );
     info!(
-        url = global.controller.as_deref().unwrap_or("(not set)"),
+        url = url.as_str(),
         site = global.site.as_deref().unwrap_or("default"),
         "starting unifly tui"
     );
