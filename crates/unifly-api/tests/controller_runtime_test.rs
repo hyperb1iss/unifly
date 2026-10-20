@@ -2175,3 +2175,62 @@ async fn api_key_session_timeout_reports_the_configured_duration() {
         "expected Timeout after 1s, got {err:?}"
     );
 }
+
+/// An API-key controller whose two login probes answer only after `delay`.
+async fn api_key_controller_with_slow_probes(
+    delay: Duration,
+    request_timeout: Duration,
+) -> (MockServer, Controller) {
+    let server = MockServer::start().await;
+    for (route, status) in [("/api/auth/login", 401), ("/api/login", 404)] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(status).set_delay(delay))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    mock_api_key_with_legacy(&server).await;
+
+    let mut config = base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    );
+    config.timeout = request_timeout;
+    (server, Controller::new(config))
+}
+
+#[tokio::test]
+async fn platform_probes_honour_the_configured_timeout() {
+    let (_server, controller) =
+        api_key_controller_with_slow_probes(Duration::from_secs(10), Duration::from_secs(1)).await;
+
+    let err = timeout(Duration::from_secs(4), controller.connect())
+        .await
+        .expect("platform detection must give up at the request timeout")
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::Timeout { timeout_secs: 1 }),
+        "expected Timeout after 1s, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn platform_probes_run_concurrently() {
+    let probe_delay = Duration::from_millis(1500);
+    let (_server, controller) =
+        api_key_controller_with_slow_probes(probe_delay, Duration::from_secs(5)).await;
+
+    let started = std::time::Instant::now();
+    controller.connect().await.unwrap();
+    let elapsed = started.elapsed();
+    controller.disconnect().await;
+
+    // Back to back the probes alone would take 3s.
+    assert!(
+        elapsed < Duration::from_millis(2700),
+        "two {probe_delay:?} probes took {elapsed:?}; they should overlap"
+    );
+}

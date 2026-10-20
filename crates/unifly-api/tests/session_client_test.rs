@@ -180,6 +180,30 @@ async fn detect_platform_treats_dual_401_login_probes_as_unifi_os() {
     assert_eq!(platform, ControllerPlatform::UnifiOs);
 }
 
+#[tokio::test]
+async fn detect_platform_uses_the_transport_tls_mode() {
+    let server = MockServer::start().await;
+    let base_url = Url::parse(&server.uri()).unwrap();
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let transport = TransportConfig {
+        tls: unifly_api::TlsMode::CustomCa("/nonexistent/unifly-test-ca.pem".into()),
+        ..TransportConfig::default()
+    };
+    let err = SessionClient::detect_platform_with_transport(&base_url, &transport)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::Tls(_)),
+        "a CA that cannot be loaded must stop detection, got {err:?}"
+    );
+}
+
 // ── Device tests ────────────────────────────────────────────────────
 
 #[tokio::test]

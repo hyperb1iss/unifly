@@ -79,7 +79,8 @@ impl Controller {
         match &config.auth {
             AuthCredentials::ApiKey(api_key) => {
                 // Detect platform so we use the right URL prefix
-                let platform = SessionClient::detect_platform(&config.url).await?;
+                let platform =
+                    SessionClient::detect_platform_with_transport(&config.url, &transport).await?;
                 debug!(?platform, "detected controller platform");
 
                 // Integration API client (preferred)
@@ -144,7 +145,8 @@ impl Controller {
             }
             AuthCredentials::Credentials { username, password } => {
                 // Session-only auth
-                let platform = SessionClient::detect_platform(&config.url).await?;
+                let platform =
+                    SessionClient::detect_platform_with_transport(&config.url, &transport).await?;
                 debug!(?platform, "detected controller platform");
 
                 let client = SessionClient::new(
@@ -174,7 +176,8 @@ impl Controller {
                 password,
             } => {
                 // Hybrid: both Integration API (API key) and Session API (session auth)
-                let platform = SessionClient::detect_platform(&config.url).await?;
+                let platform =
+                    SessionClient::detect_platform_with_transport(&config.url, &transport).await?;
                 debug!(?platform, "detected controller platform (hybrid)");
 
                 // Integration API client

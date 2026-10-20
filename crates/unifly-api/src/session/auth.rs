@@ -18,6 +18,7 @@ use crate::auth::ControllerPlatform;
 use crate::error::Error;
 use crate::session::client::SessionClient;
 use crate::session::totp::{TotpSource, is_totp_code};
+use crate::transport::TransportConfig;
 
 /// Response body from a 499 MFA challenge.
 #[derive(serde::Deserialize)]
@@ -298,21 +299,36 @@ impl SessionClient {
         Ok(())
     }
 
-    /// Auto-detect the controller platform by probing login endpoints.
+    /// Auto-detect the controller platform with the default transport,
+    /// which accepts any certificate. Prefer
+    /// [`Self::detect_platform_with_transport`], which honors the TLS mode
+    /// and timeout the rest of the session will use.
+    pub async fn detect_platform(base_url: &Url) -> Result<ControllerPlatform, Error> {
+        Self::detect_platform_with_transport(base_url, &TransportConfig::default()).await
+    }
+
+    /// Auto-detect the controller platform by probing login endpoints,
+    /// using `transport`'s TLS mode and request timeout.
     ///
     /// Recent standalone controllers can return a misleading 401 from
-    /// `/api/auth/login`, so we need both probes before deciding.
+    /// `/api/auth/login`, so we need both probes before deciding. They run
+    /// concurrently.
     ///
     /// Observed patterns:
     /// - Classic standalone: `/api/login` responds with 200/400, while
     ///   `/api/auth/login` is usually 404 and may occasionally be 401.
     /// - UniFi OS: both `/api/login` and `/api/auth/login` can return 401.
-    pub async fn detect_platform(base_url: &Url) -> Result<ControllerPlatform, Error> {
-        crate::transport::ensure_crypto_provider();
-        let http = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(Error::Transport)?;
+    pub async fn detect_platform_with_transport(
+        base_url: &Url,
+        transport: &TransportConfig,
+    ) -> Result<ControllerPlatform, Error> {
+        // The probes carry no session, so they get no cookie jar.
+        let probe_transport = TransportConfig {
+            cookie_jar: None,
+            ..transport.clone()
+        };
+        let http = probe_transport.build_client()?;
+        let transport_error = |error| Error::from_transport(error, Some(transport.timeout));
 
         let standalone_url = base_url.join("/api/login").map_err(Error::InvalidUrl)?;
         debug!("probing standalone at {}", standalone_url);
@@ -320,16 +336,20 @@ impl SessionClient {
             .join("/api/auth/login")
             .map_err(Error::InvalidUrl)?;
         debug!("probing UniFi OS at {}", unifi_os_url);
-        let standalone_status = http
-            .get(standalone_url)
-            .send()
-            .await
-            .map(|resp| resp.status());
-        let unifi_os_status = http
-            .get(unifi_os_url)
-            .send()
-            .await
-            .map(|resp| resp.status());
+        let (standalone_status, unifi_os_status) = tokio::join!(
+            async {
+                http.get(standalone_url)
+                    .send()
+                    .await
+                    .map(|resp| resp.status())
+            },
+            async {
+                http.get(unifi_os_url)
+                    .send()
+                    .await
+                    .map(|resp| resp.status())
+            },
+        );
 
         if matches!(
             standalone_status.as_ref(),
@@ -365,11 +385,11 @@ impl SessionClient {
         }
 
         if let Err(e) = standalone_status {
-            return Err(Error::Transport(e));
+            return Err(transport_error(e));
         }
 
         if let Err(e) = unifi_os_status {
-            return Err(Error::Transport(e));
+            return Err(transport_error(e));
         }
 
         Err(Error::Authentication {
