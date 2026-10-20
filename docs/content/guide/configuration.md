@@ -123,7 +123,7 @@ unifly config set timeout 60
 
 ## Environment Variables
 
-All settings can be overridden via environment variables. Useful for CI/CD, scripting, and ephemeral environments.
+These variables stand in for the matching global flags and session credentials, which makes them handy for CI/CD, scripting, and ephemeral environments. Settings without a variable here come only from the config file.
 
 | Variable           | Description                           |
 | ------------------ | ------------------------------------- |

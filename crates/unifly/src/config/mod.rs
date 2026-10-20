@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use figment::{
     Figment,
-    providers::{Env, Format, Serialized, Toml},
+    providers::{Format, Serialized, Toml},
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -359,14 +359,17 @@ fn migrate_macos_config(new_dir: &std::path::Path) {
 
 // ── Config loading ──────────────────────────────────────────────────
 
-/// Load the full Config from file + environment.
+/// Load the full Config from the config file.
+///
+/// Environment variables are not read here: the `UNIFI_*` variables belong
+/// to the global flags (clap reads them), and reading them again as config
+/// keys made `UNIFI_DEMO` collide with the `[demo]` table.
 pub fn load_config() -> Result<Config, ConfigError> {
     let path = config_path();
 
     let figment = Figment::new()
         .merge(Serialized::defaults(Config::default()))
-        .merge(Toml::file(&path))
-        .merge(Env::prefixed("UNIFI_").split("_"));
+        .merge(Toml::file(&path));
 
     let config: Config = figment.extract()?;
     Ok(config)

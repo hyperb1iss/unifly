@@ -525,6 +525,68 @@ fn test_config_set_password_help_mentions_positional_and_flag_profile() {
         );
 }
 
+// ── Config file safety ──────────────────────────────────────────────
+//
+// These write a real config.toml under a temp XDG_CONFIG_HOME. Windows
+// resolves the config dir through the known-folder API, which ignores the
+// environment, so they stay off Windows rather than risk the real file.
+
+#[cfg(not(windows))]
+const TWO_PROFILE_CONFIG: &str = r#"default_profile = "home"
+
+[defaults]
+timeout = 45
+theme = "nord"
+
+[profiles.home]
+controller = "https://192.168.1.1"
+api_key = "home-secret-api-key"
+
+[profiles.work]
+controller = "https://10.0.0.1"
+auth_mode = "session"
+username = "admin"
+password = "work-secret-password"
+
+[demo]
+redact_names = ["Bliss"]
+"#;
+
+/// Write `contents` as the config file under `home` and return its path.
+#[cfg(not(windows))]
+fn write_config(home: &TempDir, contents: &str) -> std::path::PathBuf {
+    let dir = home.path().join("unifly");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, contents).unwrap();
+    path
+}
+
+/// Clap already reads the `UNIFI_*` variables for global flags. The config
+/// loader must not read them again as config keys: `UNIFI_DEMO` and
+/// `UNIFI_DEMO_SEED` land on the `[demo]` table, fail extraction, and hide
+/// every profile.
+#[cfg(not(windows))]
+#[test]
+fn test_demo_env_vars_do_not_hide_profiles() {
+    let home = TempDir::new().unwrap();
+    write_config(&home, TWO_PROFILE_CONFIG);
+
+    for (var, value) in [("UNIFI_DEMO", "1"), ("UNIFI_DEMO_SEED", "42")] {
+        let output = unifly_cmd_in(home.path())
+            .env(var, value)
+            .args(["config", "profiles"])
+            .output()
+            .unwrap();
+        let text = combined_output(&output);
+        assert!(output.status.success(), "{var}: {text}");
+        assert!(
+            text.contains("home *") && text.contains("work"),
+            "{var}={value} hid the profiles:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn test_invalid_output_format() {
     let output = unifly_cmd()
