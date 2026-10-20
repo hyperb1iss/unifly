@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -17,6 +18,9 @@ const CUTE_NAMES: &[&str] = &[
     "Quasar", "Clover", "Ember", "Tinker", "Velvet", "Cricket", "Biscuit", "Phantom", "Stardust",
     "Marble", "Glimmer", "Waffle", "Pebble", "Fizz", "Comet",
 ];
+
+/// What every IPv6 address is replaced with, from the documentation range.
+const IPV6_STAND_IN: &str = "2001:db8::cafe";
 
 const CUTE_SSIDS: &[&str] = &[
     "SilkNet",
@@ -36,7 +40,9 @@ pub struct Sanitizer {
     keep_patterns: HashSet<String>,
     name_regex: Option<Regex>,
     ip_regex: Regex,
-    ipv6_regex: Regex,
+    /// Runs of the characters an IPv6 address is written with, where
+    /// addresses are looked for.
+    ipv6_run: Regex,
     redact_ssids: bool,
     redact_wan_ips: bool,
     redact_macs: bool,
@@ -45,6 +51,11 @@ pub struct Sanitizer {
     ssid_map: DashMap<String, String>,
     ip_map: DashMap<IpAddr, IpAddr>,
     mac_map: DashMap<String, String>,
+    /// Every stand-in handed out, so text or values that already carry
+    /// one are never mapped a second time.
+    name_stand_ins: DashMap<String, ()>,
+    ssid_stand_ins: DashMap<String, ()>,
+    mac_stand_ins: DashMap<String, ()>,
     name_counter: AtomicUsize,
     ssid_counter: AtomicUsize,
     wan_ip_counter: AtomicU8,
@@ -76,17 +87,14 @@ impl Sanitizer {
         let ip_regex =
             Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").expect("valid regex");
 
-        let ipv6_regex = Regex::new(
-            r"(?i)\b([0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b|(?i)\b([0-9a-f]{1,4}:)*::[0-9a-f:]*\b",
-        )
-        .expect("valid regex");
+        let ipv6_run = Regex::new(r"[0-9A-Fa-f:.]+").expect("valid regex");
 
         Self {
             redact_patterns,
             keep_patterns,
             name_regex,
             ip_regex,
-            ipv6_regex,
+            ipv6_run,
             redact_ssids: config.redact_ssids,
             redact_wan_ips: config.redact_wan_ips,
             redact_macs: config.redact_macs,
@@ -95,6 +103,9 @@ impl Sanitizer {
             ssid_map: DashMap::new(),
             ip_map: DashMap::new(),
             mac_map: DashMap::new(),
+            name_stand_ins: DashMap::new(),
+            ssid_stand_ins: DashMap::new(),
+            mac_stand_ins: DashMap::new(),
             name_counter: AtomicUsize::new(1),
             ssid_counter: AtomicUsize::new(1),
             wan_ip_counter: AtomicU8::new(1),
@@ -153,7 +164,7 @@ impl Sanitizer {
     }
 
     pub fn sanitize_ssid(&self, ssid: &str) -> String {
-        if !self.redact_ssids {
+        if !self.redact_ssids || self.ssid_stand_ins.contains_key(ssid) {
             return ssid.to_owned();
         }
 
@@ -169,6 +180,7 @@ impl Sanitizer {
             format!("{cute} {}", idx / CUTE_SSIDS.len() + 1)
         };
         self.ssid_map.insert(ssid.to_owned(), replacement.clone());
+        self.ssid_stand_ins.insert(replacement.clone(), ());
         replacement
     }
 
@@ -178,6 +190,9 @@ impl Sanitizer {
         }
 
         let key = mac.as_str().to_owned();
+        if self.mac_stand_ins.contains_key(&key) {
+            return mac.clone();
+        }
         if let Some(mapped) = self.mac_map.get(&key) {
             return MacAddress::new(mapped.value());
         }
@@ -189,6 +204,7 @@ impl Sanitizer {
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]
         );
         self.mac_map.insert(key, replacement.clone());
+        self.mac_stand_ins.insert(replacement.clone(), ());
         MacAddress::new(replacement)
     }
 
@@ -199,10 +215,21 @@ impl Sanitizer {
     pub fn sanitize_text(&self, text: &str) -> String {
         let mut result = text.to_owned();
 
-        if let Some(ref re) = self.name_regex {
+        if let Some(ref re) = self.name_regex
+            && re.is_match(&result)
+        {
+            let stand_ins = self.stand_in_spans(&result);
             result = re
                 .replace_all(&result, |caps: &regex::Captures| {
-                    self.deterministic_name(&caps[0])
+                    let found = caps.get(0).map_or(0..0, |found| found.range());
+                    let inside = stand_ins
+                        .iter()
+                        .any(|span| span.start <= found.start && found.end <= span.end);
+                    if inside {
+                        caps[0].to_owned()
+                    } else {
+                        self.deterministic_name(&caps[0])
+                    }
                 })
                 .into_owned();
         }
@@ -221,10 +248,7 @@ impl Sanitizer {
                 })
                 .into_owned();
 
-            result = self
-                .ipv6_regex
-                .replace_all(&result, "2001:db8::cafe")
-                .into_owned();
+            result = self.redact_ipv6(&result);
         }
 
         result
@@ -239,13 +263,16 @@ impl Sanitizer {
         {
             return self.sanitize_wan_ip(ip).to_string();
         }
-        if self.ipv6_regex.is_match(ip_str) {
-            return "2001:db8::cafe".to_owned();
+        if ip_str.trim().parse::<Ipv6Addr>().is_ok() {
+            return IPV6_STAND_IN.to_owned();
         }
         ip_str.to_owned()
     }
 
     fn deterministic_name(&self, original: &str) -> String {
+        if self.name_stand_ins.contains_key(original) {
+            return original.to_owned();
+        }
         let key = original.to_lowercase();
         if let Some(mapped) = self.name_map.get(&key) {
             return mapped.clone();
@@ -259,7 +286,59 @@ impl Sanitizer {
             format!("{cute}-{}", idx / CUTE_NAMES.len() + 1)
         };
         self.name_map.insert(key, replacement.clone());
+        self.name_stand_ins.insert(replacement.clone(), ());
         replacement
+    }
+
+    /// Where stand-ins already sit in `text`. A redacted word found inside
+    /// one is part of the stand-in, not a real name.
+    fn stand_in_spans(&self, text: &str) -> Vec<Range<usize>> {
+        self.name_stand_ins
+            .iter()
+            .chain(self.ssid_stand_ins.iter())
+            .flat_map(|stand_in| {
+                let len = stand_in.key().len();
+                text.match_indices(stand_in.key().as_str())
+                    .map(move |(start, _)| start..start + len)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Replace each IPv6 address in `text` with the documentation stand-in.
+    ///
+    /// An address is the longest stretch of a hex, colon, and dot run that
+    /// parses as one and touches no letter or digit outside it, so it is
+    /// found glued to a label (`addr:2001:db8::1`), before a colon or a
+    /// prefix length, or at the end of a sentence. MACs and clock times
+    /// never parse, and the letters around `::` in a Rust path keep it from
+    /// counting. Loopback and the unspecified address identify nothing and
+    /// stay.
+    fn redact_ipv6(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut copied = 0;
+        for run in self.ipv6_run.find_iter(text) {
+            if run.as_str().matches(':').count() < 2 {
+                continue;
+            }
+            let mut start = run.start();
+            while start < run.end() {
+                let Some((end, ip)) = ipv6_at(text, start, run.end()) else {
+                    start += 1;
+                    continue;
+                };
+                out.push_str(text.get(copied..start).unwrap_or_default());
+                if ip.is_loopback() || ip.is_unspecified() {
+                    out.push_str(text.get(start..end).unwrap_or_default());
+                } else {
+                    out.push_str(IPV6_STAND_IN);
+                }
+                copied = end;
+                start = end;
+            }
+        }
+        out.push_str(text.get(copied..).unwrap_or_default());
+        out
     }
 
     // ── Entity-level sanitizers ────────────────────────────────────
@@ -269,7 +348,7 @@ impl Sanitizer {
         d.name = self.sanitize_name_opt(&d.name);
         d.ip = self.sanitize_ip_opt(&d.ip);
         if self.redact_wan_ips {
-            d.wan_ipv6 = d.wan_ipv6.as_ref().map(|_| "2001:db8::cafe".to_owned());
+            d.wan_ipv6 = d.wan_ipv6.as_ref().map(|_| IPV6_STAND_IN.to_owned());
         }
         if self.redact_macs {
             d.mac = self.sanitize_mac(&d.mac);
@@ -564,6 +643,28 @@ fn is_documentation(ip: Ipv4Addr) -> bool {
     )
 }
 
+/// The longest written IPv6 address is 45 characters, one with an IPv4
+/// tail.
+const MAX_IPV6_LEN: usize = 45;
+
+/// The longest IPv6 address in `text` from `start` up to `limit` that no
+/// letter or digit touches on either side, and where it ends. `start` and
+/// `limit` fall inside a run of ASCII hex digits, colons, and dots.
+fn ipv6_at(text: &str, start: usize, limit: usize) -> Option<(usize, Ipv6Addr)> {
+    let glued = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    if glued(text.get(..start)?.chars().next_back()) {
+        return None;
+    }
+    let longest = limit.min(start + MAX_IPV6_LEN);
+    (start + 2..=longest).rev().find_map(|end| {
+        if glued(text.get(end..)?.chars().next()) {
+            return None;
+        }
+        let ip = text.get(start..end)?.parse::<Ipv6Addr>().ok()?;
+        Some((end, ip))
+    })
+}
+
 fn simple_hash(input: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in input.bytes() {
@@ -666,6 +767,92 @@ mod tests {
         let text = "Client at 192.168.1.50";
         let result = s.sanitize_text(text);
         assert!(result.contains("192.168.1.50"));
+    }
+
+    #[test]
+    fn default_text_keeps_macs_times_and_paths() {
+        let s = Sanitizer::new(&DemoConfig::default());
+        for text in [
+            "Device not found: aa:bb:cc:dd:ee:ff at 12:34:56 via unifly::tui",
+            "AA-BB-CC-DD-EE-FF roamed at 09:41",
+            "error in unifly_api::controller::refresh: timed out",
+            "ratio 10:20:30, std::io::Error, a :: b",
+        ] {
+            assert_eq!(s.sanitize_text(text), text);
+        }
+    }
+
+    #[test]
+    fn default_text_redacts_real_ipv6_addresses() {
+        let s = Sanitizer::new(&DemoConfig::default());
+        assert_eq!(
+            s.sanitize_text("WAN up on 2001:470:1f0b:5c::2, gateway fe80::1."),
+            "WAN up on 2001:db8::cafe, gateway 2001:db8::cafe."
+        );
+        assert_eq!(
+            s.sanitize_text("listening on [2600:1700:abcd::7]:443"),
+            "listening on [2001:db8::cafe]:443"
+        );
+        // Loopback and the unspecified address identify nothing.
+        assert_eq!(
+            s.sanitize_text("bound to :: and ::1"),
+            "bound to :: and ::1"
+        );
+    }
+
+    #[test]
+    fn default_text_redacts_ipv6_glued_to_its_neighbours() {
+        let s = Sanitizer::new(&DemoConfig::default());
+        for (text, expected) in [
+            ("addr:2001:470::1", "addr:2001:db8::cafe"),
+            ("IPv6:2001:470:1f0b::2/64", "IPv6:2001:db8::cafe/64"),
+            ("2001:470::1_x", "2001:db8::cafe_x"),
+            ("WAN 2001:470::1: down", "WAN 2001:db8::cafe: down"),
+            ("fe80::1%eth0 is up", "2001:db8::cafe%eth0 is up"),
+            ("2001:db8::cafe stays", "2001:db8::cafe stays"),
+            (
+                "EUI-64 0011:2233:4455:6677:8899:aabb:ccdd:eeff",
+                "EUI-64 2001:db8::cafe",
+            ),
+        ] {
+            assert_eq!(s.sanitize_text(text), expected, "{text}");
+        }
+        for text in [
+            "Vec::new()",
+            "Self::DEFAULT",
+            "std::io::Error",
+            "unifly::tui::app",
+        ] {
+            assert_eq!(s.sanitize_text(text), text);
+        }
+    }
+
+    #[test]
+    fn stand_ins_are_not_mapped_again() {
+        let s = Sanitizer::new(&DemoConfig {
+            redact_names: vec!["alice".into(), "pixel".into()],
+            redact_ssids: true,
+            redact_macs: true,
+            ..DemoConfig::default()
+        });
+
+        let mac = s.sanitize_mac(&MacAddress::new("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(s.sanitize_mac(&mac), mac);
+
+        let ssid = s.sanitize_ssid("AliceNet");
+        assert_eq!(s.sanitize_ssid(&ssid), ssid);
+
+        // Enough names that a stand-in is itself a redacted word.
+        let names: Vec<String> = (0..30)
+            .map(|n| s.sanitize_name(&format!("alice-{n}")))
+            .collect();
+        for name in &names {
+            assert_eq!(s.sanitize_name(name), *name, "{names:?}");
+            assert_eq!(
+                s.sanitize_text(&format!("Restart {name}?")),
+                format!("Restart {name}?")
+            );
+        }
     }
 
     #[test]

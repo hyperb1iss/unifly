@@ -375,6 +375,32 @@ mod tests {
         assert!(reported, "the failed move went unreported");
     }
 
+    #[test]
+    fn drawn_text_keeps_macs_times_paths_and_stand_ins() {
+        use std::sync::Arc;
+
+        use crate::config::DemoConfig;
+        use crate::sanitizer::Sanitizer;
+
+        let app = App::new(
+            None,
+            Some(Arc::new(Sanitizer::new(&DemoConfig::default()))),
+            false,
+            true,
+        );
+        let text = "Device not found: aa:bb:cc:dd:ee:ff at 12:34:56 via unifly::tui";
+        assert_eq!(app.shown_text(text), text);
+
+        let sanitizer = Arc::new(Sanitizer::new(&DemoConfig {
+            redact_macs: true,
+            ..DemoConfig::default()
+        }));
+        let stand_in = sanitizer.sanitize_mac(&MacAddress::new("aa:bb:cc:dd:ee:ff"));
+        let app = App::new(None, Some(sanitizer), false, true);
+        let toast = format!("WiFi roam history: no client {stand_in}");
+        assert_eq!(app.shown_text(&toast), toast, "a stand-in was mapped again");
+    }
+
     #[tokio::test]
     async fn under_a_sanitizer_dialogs_and_toasts_show_no_real_names_or_macs() {
         use std::sync::Arc;
