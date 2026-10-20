@@ -85,12 +85,17 @@ pub(super) fn render_edit_overlay(
     }
 
     lines.push(Line::from(""));
-    let bar = click::key_hints(&[
-        Hint::button("Tab", "next", KeyCode::Tab),
-        Hint::button("Space", "toggle", click::char_key(' ')),
+    // Space only toggles a yes/no field; on a text field it types a space,
+    // so the toggle button shows only where it toggles.
+    let mut buttons = vec![Hint::button("Tab", "next", KeyCode::Tab)];
+    if NetworkEditState::is_bool_field(edit.field_idx) {
+        buttons.push(Hint::button("Space", "toggle", click::char_key(' ')));
+    }
+    buttons.extend([
         Hint::button("Enter", "save", KeyCode::Enter),
         Hint::button("Esc", "cancel", KeyCode::Esc),
     ]);
+    let bar = click::key_hints(&buttons);
     let hint_row = click::paragraph_row(inner, lines.len());
     lines.push(bar.draw(hint_row, hits));
 

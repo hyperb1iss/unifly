@@ -31,8 +31,11 @@ impl TopologyScreen {
                 self.drag_from = Some((mouse.column, mouse.row));
                 None
             }
+            // Only a drag that began on the map pans it; one that began on a
+            // hint button never armed a drag.
             MouseEventKind::Drag(MouseButton::Left) => {
-                let (column, row) = self.drag_from.replace((mouse.column, mouse.row))?;
+                let (column, row) = self.drag_from?;
+                self.drag_from = Some((mouse.column, mouse.row));
                 self.drag_by(
                     f64::from(mouse.column) - f64::from(column),
                     f64::from(mouse.row) - f64::from(row),
@@ -133,6 +136,21 @@ mod tests {
             "{}",
             screen.pan_x
         );
+    }
+
+    #[test]
+    fn a_drag_that_starts_on_a_hint_never_pans() {
+        let mut screen = TopologyScreen::new();
+        let rows = render_lines(120, 20, |frame, area| screen.render(frame, area));
+        let press = click_label(&rows, "zoom out", "zoom out");
+        screen.handle_mouse_input(press);
+
+        for column in [press.column + 3, press.column + 9] {
+            screen.handle_mouse_input(mouse(MouseEventKind::Drag(MouseButton::Left), column, 2));
+        }
+
+        assert!(screen.pan_x.abs() < f64::EPSILON, "{}", screen.pan_x);
+        assert!(screen.pan_y.abs() < f64::EPSILON, "{}", screen.pan_y);
     }
 
     #[test]
