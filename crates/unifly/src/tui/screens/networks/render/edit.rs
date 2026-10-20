@@ -90,14 +90,7 @@ pub(super) fn render_edit_overlay(
         Hint::button("Enter", "save", KeyCode::Enter),
         Hint::button("Esc", "cancel", KeyCode::Esc),
     ]);
-    let hint_row = Rect {
-        y: inner
-            .y
-            .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX)),
-        height: 1,
-        ..inner
-    }
-    .intersection(inner);
+    let hint_row = click::paragraph_row(inner, lines.len());
     lines.push(bar.draw(hint_row, hits));
 
     frame.render_widget(Paragraph::new(lines), inner);

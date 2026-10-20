@@ -162,6 +162,25 @@ impl<'a, T: Clone> ClickLine<'a, T> {
         columns
     }
 
+    /// Register the columns each target lands on when a paragraph centers
+    /// the line in the first row of `area`, using the same offset ratatui
+    /// does.
+    pub fn register_centered(&self, area: Rect, hits: &mut HitMap<T>) {
+        let width = u16::try_from(self.width()).unwrap_or(u16::MAX);
+        let offset = (area.width / 2).saturating_sub(width / 2);
+        let shifted = Rect {
+            x: area.x.saturating_add(offset),
+            width: area.width.saturating_sub(offset),
+            ..area
+        };
+        self.register(shifted, hits);
+    }
+
+    /// Append another line's spans and targets.
+    pub fn append(&mut self, other: ClickLine<'a, T>) {
+        self.spans.extend(other.spans);
+    }
+
     /// Register the targets in `area` and return the line to draw there.
     pub fn draw(self, area: Rect, hits: &mut HitMap<T>) -> Line<'a> {
         self.register(area, hits);
@@ -226,17 +245,37 @@ pub fn key_hints_styled(
 ) -> ClickLine<'static, Click> {
     let mut line = ClickLine::default();
     line.push_gap(Span::raw("  "));
-    for (index, hint) in hints.iter().enumerate() {
-        if index > 0 {
-            line.push_gap(Span::raw("  "));
-        }
-        let key = Span::styled(format!("{} ", hint.key), key_style);
-        let label = Span::styled(hint.label, label_style);
-        let target = hint.press.map(Click::Key);
-        line.push_span(key, target.clone());
-        line.push_span(label, target);
-    }
+    line.push_hints(hints, key_style, label_style);
     line
+}
+
+impl ClickLine<'static, Click> {
+    /// Append key hints two spaces apart, with no leading gap.
+    pub fn push_hints(&mut self, hints: &[Hint], key_style: Style, label_style: Style) {
+        for (index, hint) in hints.iter().enumerate() {
+            if index > 0 {
+                self.push_gap(Span::raw("  "));
+            }
+            let key = Span::styled(format!("{} ", hint.key), key_style);
+            let label = Span::styled(hint.label, label_style);
+            let target = hint.press.map(Click::Key);
+            self.push_span(key, target.clone());
+            self.push_span(label, target);
+        }
+    }
+}
+
+/// The row that line `index` of a paragraph drawn in `area` lands on,
+/// clipped to `area` (empty once the paragraph runs out of room).
+pub fn paragraph_row(area: Rect, index: usize) -> Rect {
+    Rect {
+        y: area
+            .y
+            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX)),
+        height: 1,
+        ..area
+    }
+    .intersection(area)
 }
 
 pub fn is_left_press(mouse: MouseEvent) -> bool {

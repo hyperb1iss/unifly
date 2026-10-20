@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use super::{App, ConnectionStatus};
 use crate::tui::action::Action;
@@ -81,8 +81,8 @@ impl App {
         Ok(None)
     }
 
-    /// Handle mouse events: the sponsor button and the screen tabs first,
-    /// then the active screen.
+    /// Handle mouse events: the App's own targets first, then the active
+    /// screen.
     pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
         // Presses, drags, and wheel turns can change screen state without
         // dispatching an invalidating action (a selection, a settings
@@ -90,13 +90,17 @@ impl App {
         if !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Up(_)) {
             self.needs_redraw = true;
         }
-        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some(action) = self.check_donate_click(mouse.column, mouse.row)
-        {
-            return Ok(Some(action));
+        // App chrome sits on top: the tab and status bars, and any overlay,
+        // whose backdrop covers the screen beneath it.
+        if let Some(target) = self.hits.clicked(mouse) {
+            return match target {
+                Click::Key(key) => self.handle_key_event(key),
+                Click::Action(action) => Ok(Some(action)),
+                Click::Tab(_) | Click::Row(_) | Click::Absorb => Ok(None),
+            };
         }
 
-        // Overlays hold the input while they are up, as they do for keys.
+        // Overlays hold wheel turns and drags too, as they do for keys.
         if self.pending_confirm.is_some()
             || self.search_active
             || self.help_visible
@@ -105,39 +109,10 @@ impl App {
             return Ok(None);
         }
 
-        if let Some(Click::Action(action)) = self.hits.clicked(mouse) {
-            return Ok(Some(action));
-        }
-
         if let Some(screen) = self.screens.get_mut(&self.active_screen) {
             return screen.handle_mouse_event(mouse);
         }
         Ok(None)
-    }
-
-    /// Check if a click landed on the sponsor button in the status bar.
-    fn check_donate_click(&self, col: u16, row: u16) -> Option<Action> {
-        if !self.show_donate || self.search_active {
-            return None;
-        }
-        if matches!(self.active_screen, ScreenId::Setup | ScreenId::Settings) {
-            return None;
-        }
-
-        let (w, h) = self.terminal_size;
-        if h == 0 || w == 0 {
-            return None;
-        }
-
-        let button_width = 12u16;
-        let donate_x = w.saturating_sub(button_width);
-        let status_y = h.saturating_sub(1);
-
-        if row == status_y && col >= donate_x {
-            Some(Action::OpenDonate)
-        } else {
-            None
-        }
     }
 
     fn handle_special_screen_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
@@ -287,11 +262,15 @@ mod tests {
         let rows = render(&mut app, 120);
         let devices = click_label(&rows, "6 Topo", "2 Devices");
 
+        // A tap outside the help overlay closes it rather than switching.
         app.help_visible = true;
-        assert!(app.handle_mouse_event(devices).expect("click").is_none());
+        render(&mut app, 120);
+        let action = app.handle_mouse_event(devices).expect("click");
+        assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
         app.help_visible = false;
 
         app.search_active = true;
+        render(&mut app, 120);
         assert!(app.handle_mouse_event(devices).expect("click").is_none());
         app.search_active = false;
 
@@ -418,6 +397,84 @@ mod tests {
             .expect("key press handling");
         let queued = app.action_rx.try_recv().expect("the press dispatches");
         assert!(matches!(queued, Action::OpenSearch), "{queued:?}");
+    }
+
+    #[test]
+    fn overlays_close_on_an_outside_tap_and_take_taps_on_their_buttons() {
+        // Tall enough for the whole help overlay, close hint included.
+        let draw = |app: &mut App| render_lines(120, 34, |frame, _| app.render(frame));
+        let mut app = dashboard_app();
+        let tap = |app: &mut App, marker: &str, label: &str| {
+            let rows = draw(app);
+            app.handle_mouse_event(click_label(&rows, marker, label))
+                .expect("click handling")
+        };
+
+        app.help_visible = true;
+        let rows = draw(&mut app);
+        assert!(
+            app.handle_mouse_event(click_label(&rows, "Navigation", "Navigation"))
+                .expect("click")
+                .is_none(),
+            "a tap inside the overlay does nothing"
+        );
+        let action = tap(&mut app, "to close", "Esc or ? to close");
+        assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
+        app.help_visible = false;
+
+        app.about_visible = true;
+        let action = tap(&mut app, "onate", "onate");
+        assert!(matches!(action, Some(Action::OpenDonate)), "{action:?}");
+        let action = tap(&mut app, "to close", "Esc or a to close");
+        assert!(matches!(action, Some(Action::ToggleAbout)), "{action:?}");
+        app.about_visible = false;
+
+        app.pending_confirm = Some(crate::tui::action::ConfirmAction::RestartDevice {
+            id: unifly_api::EntityId::Legacy("device-1".into()),
+            name: "sw-core".into(),
+        });
+        let action = tap(&mut app, "confirm", "confirm");
+        assert!(matches!(action, Some(Action::ConfirmYes)), "{action:?}");
+        let action = tap(&mut app, "6 Topo", "2 Devices");
+        assert!(
+            matches!(action, Some(Action::ConfirmNo)),
+            "a tap outside answers no: {action:?}"
+        );
+    }
+
+    #[test]
+    fn the_status_bar_and_toasts_take_taps() {
+        let mut app = dashboard_app();
+        let rows = render(&mut app, 120);
+        let action = app
+            .handle_mouse_event(click_label(&rows, "settings", "help"))
+            .expect("click");
+        assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
+        let action = app
+            .handle_mouse_event(click_label(&rows, "settings", "Sponsor"))
+            .expect("click");
+        assert!(matches!(action, Some(Action::OpenDonate)), "{action:?}");
+
+        app.show_notification(crate::tui::action::Notification::info(
+            "restart requested for sw-core",
+        ));
+        let rows = render(&mut app, 120);
+        let action = app
+            .handle_mouse_event(click_label(&rows, "restart requested", "restart"))
+            .expect("click");
+        assert!(
+            matches!(action, Some(Action::DismissNotification)),
+            "{action:?}"
+        );
+
+        app.notification = None;
+        app.search_active = true;
+        app.search_query = "ap".into();
+        let rows = render(&mut app, 120);
+        let action = app
+            .handle_mouse_event(click_label(&rows, "submit", "cancel"))
+            .expect("click");
+        assert!(matches!(action, Some(Action::CloseSearch)), "{action:?}");
     }
 
     #[test]
