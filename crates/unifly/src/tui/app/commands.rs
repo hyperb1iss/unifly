@@ -572,6 +572,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn under_a_sanitizer_roam_history_loads_by_the_real_mac() {
+        let demo = demo_fleet().await;
+        let client = wireless_client(demo.store(), None);
+        let real_mac = client.mac.to_string();
+        let (mut app, sanitizer) = sanitized_app(demo, &[]);
+        let shown = sanitizer.sanitize_mac(&client.mac).to_string();
+        assert_ne!(shown, real_mac);
+
+        app.process_action(&Action::RequestWifiRoamHistory {
+            mac: shown.clone(),
+            limit: Some(100),
+        })
+        .expect("roam history request");
+
+        let loaded = next_action(&mut app).await;
+        let Action::WifiRoamHistoryLoaded { mac, events } = loaded else {
+            panic!("expected the roam history, got {loaded:?}");
+        };
+        assert_eq!(mac, shown, "the screen knows the client by its stand-in");
+        assert!(!events.is_empty());
+        let drawn = serde_json::to_string(&*events).unwrap_or_default();
+        assert!(!drawn.contains(&real_mac), "{drawn}");
+    }
+
+    #[tokio::test]
     async fn restart_goes_through_the_cloud_connector() {
         use std::time::Duration;
 

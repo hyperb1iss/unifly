@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use unifly_api::MacAddress;
+
 use super::App;
 use crate::tui::action::Action;
 
@@ -81,16 +83,35 @@ impl App {
         });
     }
 
+    /// The real MAC of the client a screen knows as `shown`. Under
+    /// `--demo` with MAC redaction the screens only hold stand-ins, which
+    /// the controller has never seen.
+    fn real_client_mac(&self, shown: &str) -> String {
+        let (Some(sanitizer), Some(controller)) = (&self.sanitizer, &self.controller) else {
+            return shown.to_owned();
+        };
+        let shown_mac = MacAddress::new(shown);
+        controller
+            .store()
+            .clients_snapshot()
+            .iter()
+            .find(|client| sanitizer.sanitize_mac(&client.mac) == shown_mac)
+            .map_or_else(|| shown.to_owned(), |client| client.mac.to_string())
+    }
+
+    /// Fetch a client's roam history from the controller by its real MAC,
+    /// and report back under `mac`, the MAC the screen asked with.
     pub(super) fn fetch_wifi_roam_history(&self, mac: &str, limit: Option<u32>) {
         let Some(controller) = self.controller.clone() else {
             return;
         };
         let tx = self.action_tx.clone();
+        let real_mac = self.real_client_mac(mac);
         let mac = mac.to_owned();
         let sanitizer = self.sanitizer.clone();
 
         tokio::spawn(async move {
-            match controller.get_client_roams(&mac, limit).await {
+            match controller.get_client_roams(&real_mac, limit).await {
                 Ok(events) => {
                     let clean = if let Some(ref san) = sanitizer {
                         events.iter().map(|e| san.sanitize_json_value(e)).collect()
