@@ -300,7 +300,8 @@ fn render_json<T: serde::Serialize + ?Sized>(data: &T, compact: bool) -> String 
 /// for their quoted form afterwards: the choice is made on values, never by
 /// re-parsing lines.
 pub(crate) fn render_yaml<T: serde::Serialize + ?Sized>(data: &T) -> String {
-    yaml_with_quoted_colons(data).expect("serialization should not fail")
+    let emitted = serde_yaml_ng::to_string(data).expect("serialization should not fail");
+    quote_ambiguous_strings(&emitted).unwrap_or(emitted)
 }
 
 const PLACEHOLDER_END: char = '_';
@@ -310,18 +311,18 @@ const PLACEHOLDER_END: char = '_';
 /// an implicit key past YAML's length limit.
 const MAX_QUOTED_KEY_LEN: usize = 128;
 
-fn yaml_with_quoted_colons<T: serde::Serialize + ?Sized>(
-    data: &T,
-) -> Result<String, serde_yaml_ng::Error> {
-    // Emit first and read the text back: `to_value` would widen an f32 such
-    // as 2.4 into 2.4000000953674316, while the emitter writes it short.
-    let mut value: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&serde_yaml_ng::to_string(data)?)?;
+/// Re-emit `emitted` with ambiguous strings quoted, working from the text
+/// the emitter wrote: `to_value` would widen an f32 such as 2.4 into
+/// 2.4000000953674316, while the emitter writes it short. Returns `None`
+/// when the text cannot be read back, as with a flattened map that repeats
+/// a typed field's key, and the caller keeps the plain emission.
+fn quote_ambiguous_strings(emitted: &str) -> Option<String> {
+    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(emitted).ok()?;
     let marker = placeholder_marker(&value);
     let mut originals = Vec::new();
     stash_colon_strings(&mut value, &marker, &mut originals);
-    let yaml = serde_yaml_ng::to_string(&value)?;
-    Ok(restore_quoted(&yaml, &marker, &originals))
+    let yaml = serde_yaml_ng::to_string(&value).ok()?;
+    Some(restore_quoted(&yaml, &marker, &originals))
 }
 
 /// A placeholder prefix that no key or string in `value` contains, so every
@@ -526,6 +527,24 @@ mod tests {
         ] {
             assert!(yaml.contains(expected), "missing {expected:?} in:\n{yaml}");
         }
+    }
+
+    #[test]
+    fn yaml_falls_back_to_plain_emission_when_it_cannot_reread_itself() {
+        // A flattened map can repeat a typed field's key; the emitter writes
+        // that, but the parser rejects it, so quoting must step aside.
+        #[derive(serde::Serialize)]
+        struct Repeats {
+            id: u8,
+            #[serde(flatten)]
+            extra: serde_json::Map<String, serde_json::Value>,
+        }
+        let data = Repeats {
+            id: 1,
+            extra: serde_json::from_value(json!({ "id": 2, "when": "12:30" })).expect("object"),
+        };
+        let plain = serde_yaml_ng::to_string(&data).expect("emits");
+        assert_eq!(render_yaml(&data), plain);
     }
 
     #[test]
