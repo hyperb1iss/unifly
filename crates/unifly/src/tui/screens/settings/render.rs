@@ -4,6 +4,8 @@ mod form;
 use super::{SettingsScreen, SettingsState};
 
 use crate::tui::theme;
+use crate::tui::widgets::click::Click;
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -17,6 +19,7 @@ pub(super) fn panel_rect(area: Rect) -> Rect {
 impl SettingsScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
         self.last_area.set(area);
+        self.hits.borrow_mut().clear();
 
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::bg_base())),
@@ -53,6 +56,10 @@ impl SettingsScreen {
         let mut selector = self.theme_selector.borrow_mut();
         if let Some(ref mut theme_selector) = *selector {
             let overlay = chrome::centered_rect(area, 80, 28);
+            // A tap outside the picker cancels it, as Esc does.
+            let mut hits = self.hits.borrow_mut();
+            hits.push(area, Click::Key(KeyCode::Esc.into()));
+            hits.push(overlay, Click::Absorb);
             frame.render_widget(Clear, overlay);
             frame.render_stateful_widget(opaline::ThemeSelector::new(), overlay, theme_selector);
         }

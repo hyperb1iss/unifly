@@ -18,6 +18,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::tui::widgets::click::{Click, HitMap};
+
 use crate::tui::action::Action;
 use crate::tui::component::Component;
 pub(super) use crate::tui::forms::controller_profile::{AuthMode, ControllerProfileDraft};
@@ -69,6 +71,8 @@ pub struct SettingsScreen {
     throbber_state: throbber_widgets_tui::ThrobberState,
     last_area: Cell<Rect>,
     theme_selector: RefCell<Option<opaline::ThemeSelectorState>>,
+    /// What the last frame drew where, for clicks on the key hints.
+    hits: RefCell<HitMap<Click>>,
     show_donate: bool,
 }
 

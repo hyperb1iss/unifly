@@ -1,6 +1,8 @@
 use super::super::{SettingsField, SettingsScreen, SettingsState};
 
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, ClickLine, Hint};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
@@ -55,28 +57,50 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_key_hints(&self, frame: &mut Frame, area: Rect) {
+        let next = Hint::button("Tab", "next", KeyCode::Tab);
+        let save = Hint::button("Enter", "test & save", KeyCode::Enter);
+        let close = Hint::button("Esc", "close", KeyCode::Esc);
         let hints = match self.state {
-            SettingsState::Testing => "Esc cancel",
-            SettingsState::Editing => {
-                if self.active_field == SettingsField::AuthMode {
-                    "\u{25C2}/\u{25B8} select  Tab next  Enter test & save  Esc close"
-                } else if matches!(
-                    self.active_field,
-                    SettingsField::Insecure | SettingsField::ShowDonate
-                ) {
-                    "Space toggle  Tab next  Enter test & save  Esc close"
-                } else if self.active_field == SettingsField::Password {
-                    "Ctrl+U reveal  Tab next  Enter test & save  Esc close"
-                } else if self.active_field == SettingsField::Theme {
-                    "Enter choose theme  Tab next  Esc close"
-                } else {
-                    "Tab next  Shift+Tab prev  Enter test & save  Esc close"
+            SettingsState::Testing => vec![Hint::button("Esc", "cancel", KeyCode::Esc)],
+            SettingsState::Editing => match self.active_field {
+                SettingsField::AuthMode => {
+                    vec![Hint::info("\u{25C2}/\u{25B8}", "select"), next, save, close]
                 }
-            }
+                SettingsField::Insecure | SettingsField::ShowDonate => vec![
+                    Hint::button("Space", "toggle", click::char_key(' ')),
+                    next,
+                    save,
+                    close,
+                ],
+                SettingsField::Password => vec![
+                    Hint::button(
+                        "Ctrl+U",
+                        "reveal",
+                        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                    ),
+                    next,
+                    save,
+                    close,
+                ],
+                SettingsField::Theme => vec![
+                    Hint::button("Enter", "choose theme", KeyCode::Enter),
+                    next,
+                    close,
+                ],
+                _ => vec![
+                    next,
+                    Hint::button("Shift+Tab", "prev", KeyCode::BackTab),
+                    save,
+                    close,
+                ],
+            },
         };
 
+        let mut line = ClickLine::default();
+        line.push_hints(&hints, theme::key_hint_key(), theme::key_hint());
+        line.register_centered(area, &mut self.hits.borrow_mut());
         frame.render_widget(
-            Paragraph::new(Span::styled(hints, theme::key_hint())).alignment(Alignment::Center),
+            Paragraph::new(line.into_line()).alignment(Alignment::Center),
             area,
         );
     }

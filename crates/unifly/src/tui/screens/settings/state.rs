@@ -81,6 +81,7 @@ impl SettingsScreen {
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             last_area: std::cell::Cell::new(ratatui::layout::Rect::default()),
             theme_selector: std::cell::RefCell::new(None),
+            hits: std::cell::RefCell::default(),
             show_donate: true,
         }
     }
@@ -347,6 +348,25 @@ mod tests {
         screen.active_field = SettingsField::Url;
         screen.test_error = None;
         screen
+    }
+
+    #[test]
+    fn the_close_hint_presses_esc_so_touch_can_leave_settings() {
+        use crossterm::event::KeyCode;
+
+        use crate::tui::action::Action;
+        use crate::tui::component::Component;
+        use crate::tui::table::render_lines;
+        use crate::tui::widgets::click::click_label;
+
+        let mut screen = test_screen();
+        let rows = render_lines(120, 40, |frame, area| screen.render(frame, area));
+        let action = screen.handle_mouse_input(click_label(&rows, "test & save", "close"));
+
+        assert!(
+            matches!(action, Some(Action::PressKey(key)) if key.code == KeyCode::Esc),
+            "{action:?}"
+        );
     }
 
     #[test]
