@@ -162,8 +162,9 @@ impl SessionClient {
     /// Create a session client with a pre-built `reqwest::Client`.
     ///
     /// The session client keeps no handle on the jar behind `http`, so it
-    /// cannot clear or inspect cookies: [`Self::clear_session_cookies`] and
-    /// the re-login path are inert. Use this for [`SessionAuth::ApiKey`]
+    /// cannot clear or inspect cookies: [`Self::cookie_header`] returns
+    /// `None`, and clearing an expired session's cookies and the re-login
+    /// path are inert. Use this for [`SessionAuth::ApiKey`]
     /// clients, whose credential is a header and which carry no cookie
     /// state, and for tests. A cookie-authenticated client must come from
     /// [`Self::new`], which always attaches a jar.
