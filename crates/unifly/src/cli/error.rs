@@ -188,16 +188,6 @@ pub enum CliError {
     Validation { field: String, reason: String },
 
     // ── Configuration ────────────────────────────────────────────────
-    #[error("Profile '{name}' not found in configuration")]
-    #[diagnostic(
-        code(unifi::profile_not_found),
-        help(
-            "Available profiles: {available}\n\
-             Create one with: unifly config init or unifly config cloud-setup"
-        )
-    )]
-    ProfileNotFound { name: String, available: String },
-
     #[error("Configuration file not found")]
     #[diagnostic(
         code(unifi::no_config),
