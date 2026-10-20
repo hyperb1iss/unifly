@@ -1965,3 +1965,148 @@ async fn failed_connect_publishes_failed_state() {
         "a failed connect must not leave the state at Connecting"
     );
 }
+
+/// Connect in API-key mode against a controller whose LAN network has the
+/// given IPv4 configuration, run `update` on it, and return the body the
+/// controller received on the network PUT.
+async fn update_lan_network(
+    ipv4_configuration: serde_json::Value,
+    update: unifly_api::UpdateNetworkRequest,
+) -> Result<serde_json::Value, CoreError> {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    detail["isolationEnabled"] = json!(false);
+    detail["ipv4Configuration"] = ipv4_configuration;
+    let route = integration_route(&format!("networks/{LAN_NETWORK_ID}"));
+    Mock::given(method("GET"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    let result = controller
+        .execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
+            update,
+        })
+        .await;
+    controller.disconnect().await;
+    result?;
+
+    let put = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::PUT && request.url.path() == route
+        })
+        .expect("the update must PUT the network");
+    Ok(serde_json::from_slice(&put.body).unwrap())
+}
+
+fn serving_dhcp_ipv4() -> serde_json::Value {
+    json!({
+        "autoScaleEnabled": false,
+        "hostIpAddress": "10.0.30.1",
+        "prefixLength": 24,
+        "dhcpConfiguration": {
+            "mode": "SERVER",
+            "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            "leaseTimeSeconds": 3600,
+            "pingConflictDetectionEnabled": true,
+        },
+    })
+}
+
+#[tokio::test]
+async fn update_network_writes_subnet_and_disables_dhcp() {
+    let body = update_lan_network(
+        serving_dhcp_ipv4(),
+        unifly_api::UpdateNetworkRequest {
+            subnet: Some("10.0.40.1/23".into()),
+            dhcp_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let ipv4 = &body["ipv4Configuration"];
+    assert_eq!(ipv4["hostIpAddress"], json!("10.0.40.1"));
+    assert_eq!(ipv4["prefixLength"], json!(23));
+    assert_eq!(ipv4["autoScaleEnabled"], json!(false));
+    assert!(
+        ipv4.get("dhcpConfiguration").is_none(),
+        "turning DHCP off omits the DHCP configuration: {ipv4}"
+    );
+}
+
+#[tokio::test]
+async fn update_network_enables_dhcp_as_a_server() {
+    let body = update_lan_network(
+        json!({"autoScaleEnabled": false, "hostIpAddress": "10.0.30.1", "prefixLength": 24}),
+        unifly_api::UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        body["ipv4Configuration"]["dhcpConfiguration"],
+        json!({
+            "mode": "SERVER",
+            "leaseTimeSeconds": 86400,
+            "pingConflictDetectionEnabled": false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn update_network_keeps_a_running_dhcp_server_as_is() {
+    let body = update_lan_network(
+        serving_dhcp_ipv4(),
+        unifly_api::UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body["ipv4Configuration"], serving_dhcp_ipv4());
+}
+
+#[tokio::test]
+async fn update_network_rejects_subnet_without_ipv4_configuration() {
+    let err = update_lan_network(
+        serde_json::Value::Null,
+        unifly_api::UpdateNetworkRequest {
+            subnet: Some("10.0.40.1/24".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::ValidationFailed { .. }),
+        "expected ValidationFailed, got {err:?}"
+    );
+}

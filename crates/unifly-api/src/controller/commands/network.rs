@@ -5,8 +5,9 @@ use crate::core_error::CoreError;
 use crate::model::{NetworkManagement, NetworkPurpose};
 
 use super::{
-    CommandContext, build_create_wifi_broadcast_payload, build_update_wifi_broadcast_payload,
-    parse_ipv4_cidr, require_integration, require_uuid,
+    CommandContext, DEFAULT_DHCP_LEASE_SECS, apply_ipv4_update,
+    build_create_wifi_broadcast_payload, build_update_wifi_broadcast_payload, parse_ipv4_cidr,
+    require_integration, require_uuid,
 };
 
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
@@ -72,7 +73,7 @@ pub(super) async fn route(
 
                 if let Some(cidr) = subnet {
                     let (host_ip, prefix_len) = parse_ipv4_cidr(&cidr)?;
-                    let lease_secs = dhcp_lease_time.unwrap_or(86400);
+                    let lease_secs = dhcp_lease_time.unwrap_or(DEFAULT_DHCP_LEASE_SECS);
                     let mut dhcp_cfg = serde_json::Map::new();
                     dhcp_cfg.insert(
                         "mode".into(),
@@ -157,13 +158,7 @@ pub(super) async fn route(
                     extra.remove("ipv6Configuration");
                 }
             }
-            if let Some(ref dhcp_update) = update.dhcp
-                && let Some(ref servers) = dhcp_update.dns_servers
-                && let Some(ipv4_cfg) = extra.get_mut("ipv4Configuration")
-                && let Some(dhcp_cfg) = ipv4_cfg.get_mut("dhcpConfiguration")
-            {
-                dhcp_cfg["dnsServerIpAddressesOverride"] = serde_json::json!(servers);
-            }
+            apply_ipv4_update(&mut extra, &update)?;
             let body = crate::integration_types::NetworkCreateUpdate {
                 name: update.name.unwrap_or(existing.name),
                 enabled: update.enabled.unwrap_or(existing.enabled),
