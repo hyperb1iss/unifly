@@ -942,15 +942,48 @@ pub fn resolve_totp_provider(profile: &Profile) -> Result<Option<TotpProvider>, 
 
 /// `url` with its userinfo (`user:password@`) masked as `****@`, for
 /// errors, logs, and displays. It works on the text, so a URL that does not
-/// parse is covered too.
+/// parse is covered too, as is one without a scheme (`admin:pw@host`,
+/// `//admin:pw@host`) or with a password holding an unencoded `/`, `?`, or
+/// `#`. An `@` after the host, in a path or query, is left alone.
 pub fn redact_url_userinfo(url: &str) -> String {
-    let authority_start = url.find("://").map_or(0, |index| index + 3);
-    let rest = &url[authority_start..];
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    match rest[..authority_end].rfind('@') {
-        Some(at) => format!("{}****{}", &url[..authority_start], &rest[at..]),
+    let start = match url.find("://") {
+        Some(index) => index + 3,
+        None if url.starts_with("//") => 2,
+        None => 0,
+    };
+    let rest = &url[start..];
+    match userinfo_end(rest) {
+        Some(at) => format!("{}****{}", &url[..start], &rest[at..]),
         None => url.to_owned(),
     }
+}
+
+/// Where the userinfo of `rest`, a URL after its `scheme://`, ends: the `@`
+/// before the host, when there is userinfo at all.
+fn userinfo_end(rest: &str) -> Option<usize> {
+    const DELIMITERS: [char; 3] = ['/', '?', '#'];
+
+    let authority_end = rest.find(DELIMITERS).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if let Some(at) = authority.rfind('@') {
+        return Some(at);
+    }
+
+    // No `@` before the first delimiter. A password holding one unencoded
+    // runs past it, leaving `user:pass` in front of it, which a host
+    // (`host`, `host:8443`, `[::1]:8443`) never is.
+    if authority.starts_with('[') {
+        return None;
+    }
+    let (_, after_colon) = authority.split_once(':')?;
+    if !after_colon.is_empty() && after_colon.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let first_at = authority_end + rest[authority_end..].find('@')?;
+    let host_end = rest[first_at..]
+        .find(DELIMITERS)
+        .map_or(rest.len(), |offset| first_at + offset);
+    rest[..host_end].rfind('@')
 }
 
 /// Build a `ControllerConfig` from a profile — no CLI flag overrides.
@@ -1418,15 +1451,48 @@ mod tests {
         use super::redact_url_userinfo;
 
         for (url, redacted) in [
-            ("ftp://admin:hunter2@host/x", "ftp://****@host/x"),
-            ("https://token@host", "https://****@host"),
-            ("admin:pw@host:8443", "****@host:8443"),
-            ("https://a:b@c@host?q=1", "https://****@host?q=1"),
+            // Ordinary userinfo, with and without a password.
             (
-                "https://host/path@not-userinfo",
-                "https://host/path@not-userinfo",
+                "https://admin:hunter2@10.0.0.1:8443/x",
+                "https://****@10.0.0.1:8443/x",
             ),
+            ("ftp://admin:hunter2@host/x", "ftp://****@host/x"),
+            ("http://admin@host", "http://****@host"),
+            ("https://token@host", "https://****@host"),
+            ("https://a:b@c@host?q=1", "https://****@host?q=1"),
+            // Hosts that do not parse are still masked.
+            ("http://a:b@[::1", "http://****@[::1"),
+            ("https://admin:pw@[::1]:8443", "https://****@[::1]:8443"),
+            // Without a scheme.
+            ("admin:pw@host:8443", "****@host:8443"),
+            ("//admin:pw@host", "//****@host"),
+            // A password holding an unencoded `/`, `?`, or `#` (or `@`).
+            ("https://admin:p/ss@host/x", "https://****@host/x"),
+            ("https://admin:p?ss@host", "https://****@host"),
+            (
+                "https://admin:p#ss@host:8443/a@b",
+                "https://****@host:8443/a@b",
+            ),
+            (
+                "https://admin:p/w@x@host/path@y",
+                "https://****@host/path@y",
+            ),
+            ("https://admin:/secret@host", "https://****@host"),
+            // An `@` after the host is not userinfo.
+            (
+                "https://10.0.0.1/path@not-userinfo",
+                "https://10.0.0.1/path@not-userinfo",
+            ),
+            ("https://host:8443/path@x", "https://host:8443/path@x"),
+            ("https://host?q=a@b", "https://host?q=a@b"),
+            ("https://host#frag@x", "https://host#frag@x"),
+            ("https://[::1]:8443/a@b", "https://[::1]:8443/a@b"),
+            ("https://a/b@host", "https://a/b@host"),
+            // Nothing to mask.
             ("https://192.168.1.1", "https://192.168.1.1"),
+            ("https://unifi.local", "https://unifi.local"),
+            ("not a url", "not a url"),
+            ("", ""),
         ] {
             assert_eq!(redact_url_userinfo(url), redacted, "{url}");
         }
