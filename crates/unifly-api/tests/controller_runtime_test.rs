@@ -2322,3 +2322,91 @@ async fn nat_create_rejected_in_a_200_is_an_error() {
         "a rejected create must not report success, got {result:?}"
     );
 }
+
+#[tokio::test]
+async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+
+    Mock::given(method("GET"))
+        .and(path(integration_route("networks")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "offset": 0,
+            "limit": 200,
+            "count": 1,
+            "totalCount": 1,
+            "data": [network_summary(LAN_NETWORK_ID, "LAN", 1)],
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // Shaped as the 10.1.84 spec's IPv4 DHCP configuration describes it.
+    let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
+    detail["ipv4Configuration"] = json!({
+        "autoScaleEnabled": false,
+        "hostIpAddress": "10.0.30.1",
+        "prefixLength": 24,
+        "dhcpConfiguration": {
+            "mode": "NONE",
+            "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            "leaseTimeSeconds": 3600,
+        },
+    });
+    let route = integration_route(&format!("networks/{LAN_NETWORK_ID}"));
+    Mock::given(method("GET"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(route.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .mount(&server)
+        .await;
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+
+    let dhcp = network_by_name(&controller, "LAN")
+        .dhcp
+        .clone()
+        .expect("the network reads its DHCP configuration");
+    assert!(!dhcp.enabled);
+    assert_eq!(dhcp.range_start, Some("10.0.30.100".parse().unwrap()));
+    assert_eq!(dhcp.range_stop, Some("10.0.30.254".parse().unwrap()));
+
+    controller
+        .execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
+            update: unifly_api::UpdateNetworkRequest {
+                dhcp_enabled: Some(true),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("a network with a spec-shaped range can turn DHCP on");
+    controller.disconnect().await;
+
+    let put = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::PUT && request.url.path() == route
+        })
+        .expect("the update must PUT the network");
+    let body: serde_json::Value = serde_json::from_slice(&put.body).unwrap();
+    let dhcp_body = &body["ipv4Configuration"]["dhcpConfiguration"];
+    assert_eq!(dhcp_body["mode"], json!("SERVER"));
+    assert_eq!(
+        dhcp_body["ipAddressRange"],
+        json!({"start": "10.0.30.100", "stop": "10.0.30.254"})
+    );
+    assert_eq!(dhcp_body["leaseTimeSeconds"], json!(3600));
+}

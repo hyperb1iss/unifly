@@ -71,13 +71,14 @@ fn parse_network_fields(
         if let Some(dhcp_cfg) = v.get("dhcpConfiguration") {
             let mode = dhcp_cfg.get("mode").and_then(Value::as_str).unwrap_or("");
             let dhcp_enabled = mode == "SERVER";
+            // The spec's `IP address range` has exactly `start` and `stop`.
             let range = dhcp_cfg.get("ipAddressRange");
             let range_start = range
-                .and_then(|r| r.get("start").or_else(|| r.get("rangeStart")))
+                .and_then(|r| r.get("start"))
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse().ok());
             let range_stop = range
-                .and_then(|r| r.get("end").or_else(|| r.get("rangeStop")))
+                .and_then(|r| r.get("stop"))
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse().ok());
             let lease_time_secs = dhcp_cfg.get("leaseTimeSeconds").and_then(Value::as_u64);
