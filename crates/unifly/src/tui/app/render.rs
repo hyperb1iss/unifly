@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::{App, ConnectionStatus};
-use crate::tui::action::{Action, ConfirmAction, Notification, NotificationLevel};
+use crate::tui::action::{Action, Notification, NotificationLevel};
 use crate::tui::screen::ScreenId;
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, ClickLine, Hint, HitMap};
@@ -79,7 +79,8 @@ impl App {
         }
 
         if let Some(confirm) = &self.pending_confirm {
-            Self::render_confirm_dialog(frame, area, confirm, &mut self.hits);
+            let prompt = self.shown_text(&confirm.to_string());
+            Self::render_confirm_dialog(frame, area, &prompt, &mut self.hits);
         }
 
         if self.about_visible {
@@ -358,7 +359,7 @@ impl App {
     fn render_confirm_dialog(
         frame: &mut Frame,
         area: Rect,
-        confirm: &ConfirmAction,
+        prompt: &str,
         hits: &mut HitMap<Click>,
     ) {
         let width = 50u16.min(area.width.saturating_sub(4));
@@ -396,7 +397,7 @@ impl App {
         .intersection(inner);
         let text = vec![
             Line::from(Span::styled(
-                format!("  {confirm}"),
+                format!("  {prompt}"),
                 Style::default().fg(theme::text_secondary()),
             )),
             Line::from(""),

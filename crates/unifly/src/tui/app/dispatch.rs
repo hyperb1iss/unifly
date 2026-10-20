@@ -71,6 +71,8 @@ impl App {
             }
             Action::Disconnected(reason) => {
                 self.connection_status = ConnectionStatus::Disconnected;
+                // The status bar draws the reason, so it is sanitized too.
+                let reason = &self.shown_text(reason);
                 // Auto-reconnect resends this action after every failed
                 // attempt; only toast when the failure reason is news.
                 if self.connection_error.as_ref() != Some(reason) {

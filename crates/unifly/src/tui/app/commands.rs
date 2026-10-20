@@ -1,6 +1,8 @@
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use color_eyre::eyre::Result;
+use regex::Regex;
 use tracing::warn;
 
 use unifly_api::{Command, EntityId, MacAddress};
@@ -30,12 +32,10 @@ impl App {
             }
             Action::RequestLocate(id) => {
                 if let Some(mac) = self.resolve_device_mac(id) {
+                    let name = self.resolve_device_name(id);
                     self.execute_command(
-                        Command::LocateDevice {
-                            mac: mac.clone(),
-                            enable: true,
-                        },
-                        format!("Locating {mac}"),
+                        Command::LocateDevice { mac, enable: true },
+                        format!("Locating {name}"),
                     );
                 }
             }
@@ -107,12 +107,17 @@ impl App {
         Ok(true)
     }
 
+    /// A device's name for a dialog or toast, sanitized like the screens'
+    /// copy of it, since the store holds the real one.
     pub(super) fn resolve_device_name(&self, id: &EntityId) -> String {
         self.controller
             .as_ref()
             .and_then(|c| c.store().device_by_id(id))
             .and_then(|d| d.name.clone())
-            .unwrap_or_else(|| id.to_string())
+            .map_or_else(
+                || self.shown_text(&id.to_string()),
+                |name| self.shown_name(&name),
+            )
     }
 
     pub(super) fn resolve_device_mac(&self, id: &EntityId) -> Option<MacAddress> {
@@ -122,12 +127,49 @@ impl App {
             .map(|d| d.mac.clone())
     }
 
+    /// A client's name for a dialog or toast, sanitized like the screens'
+    /// copy of it.
     pub(super) fn resolve_client_name(&self, id: &EntityId) -> String {
         self.controller
             .as_ref()
             .and_then(|c| c.store().client_by_id(id))
             .and_then(|c| c.name.clone().or(c.hostname.clone()))
-            .unwrap_or_else(|| id.to_string())
+            .map_or_else(
+                || self.shown_text(&id.to_string()),
+                |name| self.shown_name(&name),
+            )
+    }
+
+    /// An entity name as the screens show it: the sanitizer, when one is
+    /// on, maps a whole name to the same stand-in it gives the lists.
+    fn shown_name(&self, name: &str) -> String {
+        self.sanitizer.as_ref().map_or_else(
+            || name.to_owned(),
+            |sanitizer| sanitizer.sanitize_name(name),
+        )
+    }
+
+    /// Text as it may be drawn. With a sanitizer on, names, WAN addresses,
+    /// and MACs inside it become the stand-ins the screens use, so an
+    /// error carrying a real identifier cannot leak one onto the screen.
+    pub(super) fn shown_text(&self, text: &str) -> String {
+        static MAC: LazyLock<Option<Regex>> =
+            LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b").ok());
+
+        let Some(sanitizer) = &self.sanitizer else {
+            return text.to_owned();
+        };
+        let text = sanitizer.sanitize_text(text);
+        match &*MAC {
+            Some(mac) => mac
+                .replace_all(&text, |found: &regex::Captures| {
+                    sanitizer
+                        .sanitize_mac(&MacAddress::new(&found[0]))
+                        .to_string()
+                })
+                .into_owned(),
+            None => text,
+        }
     }
 
     pub(super) fn resolve_client_mac(&self, id: &EntityId) -> Option<MacAddress> {
@@ -226,8 +268,12 @@ impl App {
         }
     }
 
+    /// Show a toast. Every toast passes through here, so its text is
+    /// sanitized once for all of them.
     pub(super) fn show_notification(&mut self, notification: Notification) {
-        self.notification = Some((notification, Instant::now()));
+        let Notification { message, level } = notification;
+        let message = self.shown_text(&message);
+        self.notification = Some((Notification { message, level }, Instant::now()));
     }
 
     fn queue_confirm(&self, confirm: ConfirmAction) -> Result<()> {
@@ -327,6 +373,89 @@ mod tests {
         let reported = std::iter::from_fn(|| app.action_rx.try_recv().ok())
             .any(|action| matches!(action, Action::Notify(ref n) if n.message == "Not connected"));
         assert!(reported, "the failed move went unreported");
+    }
+
+    #[tokio::test]
+    async fn under_a_sanitizer_dialogs_and_toasts_show_no_real_names_or_macs() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use unifly_api::{ClientType, Controller, DemoFleetOptions};
+
+        use crate::config::DemoConfig;
+        use crate::sanitizer::Sanitizer;
+        use crate::tui::screen::ScreenId;
+        use crate::tui::table::render_lines;
+
+        let demo = Controller::demo(DemoFleetOptions::default());
+        demo.connect().await.expect("demo fleet connects");
+        let device = demo
+            .store()
+            .devices_snapshot()
+            .iter()
+            .find(|device| device.name.is_some())
+            .cloned()
+            .expect("a named device");
+        let client = demo
+            .store()
+            .clients_snapshot()
+            .iter()
+            .find(|client| client.client_type == ClientType::Wireless && client.name.is_some())
+            .cloned()
+            .expect("a named wireless client");
+        let real = [
+            device.name.clone().unwrap_or_default(),
+            device.mac.to_string(),
+            client.name.clone().unwrap_or_default(),
+            client.mac.to_string(),
+        ];
+        let sanitizer = Sanitizer::new(&DemoConfig {
+            enabled: true,
+            redact_names: real[..1].iter().chain(&real[2..3]).cloned().collect(),
+            redact_macs: true,
+            ..DemoConfig::default()
+        });
+        let mut app = App::new(Some(demo), Some(Arc::new(sanitizer)), false, true);
+        app.active_screen = ScreenId::Dashboard;
+        let assert_private = |app: &mut App, what: &str| {
+            let text = render_lines(140, 30, |frame, _| app.render(frame)).join("\n");
+            for secret in &real {
+                assert!(
+                    !text.contains(secret.as_str()),
+                    "{what} shows {secret}:\n{text}"
+                );
+            }
+        };
+
+        app.process_action(&Action::RequestRestart(device.id.clone()))
+            .expect("restart request");
+        let confirm = app.action_rx.try_recv().expect("a confirmation is queued");
+        app.process_action(&confirm).expect("show the confirmation");
+        assert!(app.pending_confirm.is_some());
+        assert_private(&mut app, "the restart confirmation");
+        app.process_action(&Action::ConfirmNo).expect("dismiss");
+
+        for request in [
+            Action::RequestLocate(device.id.clone()),
+            Action::RequestKickClient(client.id.clone()),
+        ] {
+            app.process_action(&request).expect("request");
+            let toast = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
+                .await
+                .expect("the command reports back")
+                .expect("the action channel stays open");
+            assert!(matches!(toast, Action::Notify(_)), "{toast:?}");
+            app.process_action(&toast).expect("show the toast");
+            assert_private(&mut app, &format!("the toast for {request:?}"));
+        }
+
+        // An error from the controller can carry real identifiers too.
+        app.process_action(&Action::Notify(Notification::error(format!(
+            "{} ({}) did not answer",
+            real[0], real[1]
+        ))))
+        .expect("show the error");
+        assert_private(&mut app, "an error toast");
     }
 
     #[test]
