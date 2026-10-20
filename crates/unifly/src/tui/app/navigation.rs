@@ -60,17 +60,15 @@ impl App {
             return Ok(Some(Action::RetryConnect));
         }
 
+        // Read before forwarding: a key that closes the form (Esc) must not
+        // go on to a global shortcut either.
+        let typing = self.active_screen_captures_input();
         if let Ok(Some(action)) = self.forward_key_to_active_screen(key) {
             return Ok(Some(action));
         }
 
         let quit = key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c');
-        if !quit
-            && self
-                .screens
-                .get(&self.active_screen)
-                .is_some_and(|screen| screen.captures_input())
-        {
+        if typing && !quit {
             return Ok(None);
         }
 
@@ -113,6 +111,13 @@ impl App {
             return screen.handle_mouse_event(mouse);
         }
         Ok(None)
+    }
+
+    /// Whether the active screen is taking typed input, such as a form.
+    pub(super) fn active_screen_captures_input(&self) -> bool {
+        self.screens
+            .get(&self.active_screen)
+            .is_some_and(|screen| screen.captures_input())
     }
 
     fn handle_special_screen_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
@@ -475,6 +480,74 @@ mod tests {
             .handle_mouse_event(click_label(&rows, "submit", "cancel"))
             .expect("click");
         assert!(matches!(action, Some(Action::CloseSearch)), "{action:?}");
+    }
+
+    fn networks_app() -> App {
+        let mut app = dashboard_app();
+        app.process_action(&Action::NetworksUpdated(std::sync::Arc::new(vec![
+            std::sync::Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": "11111111-1111-1111-1111-111111111111", "name": "Studio",
+                    "vlan_id": 10, "enabled": true, "management": "Gateway",
+                    "purpose": "Corporate", "is_default": false, "subnet": null,
+                    "gateway_ip": null, "isolation_enabled": false,
+                    "internet_access_enabled": true, "mdns_forwarding_enabled": false,
+                    "ipv6_enabled": false, "ipv6_mode": null, "ipv6_prefix": null,
+                    "dhcpv6_enabled": false, "slaac_enabled": false, "ntp_server": null,
+                    "pxe_enabled": false, "tftp_server": null, "firewall_zone_id": null,
+                    "cellular_backup_enabled": false, "origin": null, "dhcp": null
+                }))
+                .expect("network fixture"),
+            ),
+        ])))
+        .expect("networks update");
+        app.switch_screen(ScreenId::Networks).expect("switch");
+        app
+    }
+
+    #[test]
+    fn an_esc_a_screen_uses_does_not_also_go_back() {
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // Collapsing a network detail.
+        let mut app = networks_app();
+        app.handle_key_event(press(KeyCode::Enter)).expect("expand");
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("collapse");
+        assert!(!matches!(action, Some(Action::GoBack)), "{action:?}");
+
+        // Cancelling the edit form.
+        let mut app = networks_app();
+        app.handle_key_event(press(KeyCode::Char('e')))
+            .expect("edit");
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("cancel");
+        assert!(action.is_none(), "{action:?}");
+
+        // Editing opened the detail too; the next Esc collapses it, and with
+        // nothing left to close, Esc goes back as before.
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("collapse");
+        assert!(matches!(action, Some(Action::Invalidate)), "{action:?}");
+        let action = app.handle_key_event(press(KeyCode::Esc)).expect("back");
+        assert!(matches!(action, Some(Action::GoBack)), "{action:?}");
+    }
+
+    #[test]
+    fn the_chrome_holds_still_while_a_form_takes_typed_input() {
+        let mut app = networks_app();
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+            .expect("edit");
+        let rows = render(&mut app, 120);
+
+        for (marker, label) in [
+            ("settings", "quit"),
+            ("settings", "help"),
+            ("6 Topo", "2 Devices"),
+        ] {
+            let action = app
+                .handle_mouse_event(click_label(&rows, marker, label))
+                .expect("click");
+            assert!(action.is_none(), "{label}: {action:?}");
+        }
+        assert!(app.running);
     }
 
     #[test]

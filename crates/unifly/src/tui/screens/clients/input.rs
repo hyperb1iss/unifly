@@ -107,10 +107,14 @@ impl ClientsScreen {
         if filter == self.filter {
             return None;
         }
+        Some(self.apply_filter(filter))
+    }
+
+    fn apply_filter(&mut self, filter: ClientTypeFilter) -> Action {
         self.detail_open = false;
         self.detail_client_id = None;
         self.set_filter(filter);
-        Some(Action::FilterClientType(filter))
+        Action::FilterClientType(filter)
     }
 
     /// A row selects its client, and a second tap opens it, like `Enter`.
@@ -132,6 +136,11 @@ impl ClientsScreen {
 
     fn handle_detail_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
+            // The filter changes what the list holds, so the detail closes.
+            KeyCode::Tab => {
+                self.cycle_filter();
+                Some(self.apply_filter(self.filter))
+            }
             KeyCode::Esc => {
                 self.detail_open = false;
                 self.detail_client_id = None;
@@ -181,6 +190,22 @@ mod tests {
             );
             assert_eq!(screen.filter, filter);
         }
+    }
+
+    #[test]
+    fn tab_in_a_detail_cycles_the_filter_and_closes_the_detail() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut screen = ClientsScreen::new();
+        screen.detail_open = true;
+
+        let action = screen.handle_key_input(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert!(matches!(
+            action,
+            Some(Action::FilterClientType(ClientTypeFilter::Wireless))
+        ));
+        assert!(!screen.detail_open);
     }
 
     #[test]

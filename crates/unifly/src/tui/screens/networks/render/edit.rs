@@ -19,7 +19,8 @@ pub(super) fn render_edit_overlay(
     // the rows behind it.
     hits.push(area, Click::Absorb);
 
-    let overlay_w = 44u16.min(area.width.saturating_sub(4));
+    // Wide enough for the hint bar (48 columns) inside the border.
+    let overlay_w = 52u16.min(area.width.saturating_sub(4));
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     let overlay_h = (NetworkEditState::FIELD_COUNT as u16 + 6).min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;

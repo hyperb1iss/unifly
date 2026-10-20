@@ -82,11 +82,15 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         .borrow_mut()
         .push_table_rows(layout[0], &state, len);
 
+    let toggle = if screen.detail_open {
+        Hint::button("Esc", "collapse", KeyCode::Esc)
+    } else {
+        Hint::button("Enter", "expand", KeyCode::Enter)
+    };
     let hints = click::key_hints(&[
         Hint::info("j/k", "navigate"),
-        Hint::button("Enter", "expand", KeyCode::Enter),
+        toggle,
         Hint::button("e", "edit", click::char_key('e')),
-        Hint::button("Esc", "collapse", KeyCode::Esc),
     ]);
     let line = hints.draw(layout[1], &mut screen.hits.borrow_mut());
     frame.render_widget(Paragraph::new(line), layout[1]);

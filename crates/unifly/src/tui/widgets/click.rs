@@ -197,14 +197,14 @@ impl<'a, T: Clone> ClickLine<'a, T> {
     }
 }
 
-/// One key hint: the key as shown, what it does, and the key a click on it
-/// presses. Hints for keys a click cannot stand in for (`j/k navigate`)
-/// press nothing.
-#[derive(Debug, Clone, Copy)]
+/// One key hint: the key as shown, what it does, and what a click on it
+/// does. Hints for keys a click cannot stand in for (`j/k navigate`) do
+/// nothing.
+#[derive(Debug, Clone)]
 pub struct Hint {
     key: &'static str,
     label: &'static str,
-    press: Option<KeyEvent>,
+    target: Option<Click>,
 }
 
 impl Hint {
@@ -213,7 +213,17 @@ impl Hint {
         Self {
             key,
             label,
-            press: Some(press.into()),
+            target: Some(Click::Key(press.into())),
+        }
+    }
+
+    /// A hint whose click dispatches `action` directly, for app-wide
+    /// buttons that must not depend on what the screen does with the key.
+    pub fn action(key: &'static str, label: &'static str, action: Action) -> Self {
+        Self {
+            key,
+            label,
+            target: Some(Click::Action(action)),
         }
     }
 
@@ -222,7 +232,7 @@ impl Hint {
         Self {
             key,
             label,
-            press: None,
+            target: None,
         }
     }
 }
@@ -258,9 +268,8 @@ impl ClickLine<'static, Click> {
             }
             let key = Span::styled(format!("{} ", hint.key), key_style);
             let label = Span::styled(hint.label, label_style);
-            let target = hint.press.map(Click::Key);
-            self.push_span(key, target.clone());
-            self.push_span(label, target);
+            self.push_span(key, hint.target.clone());
+            self.push_span(label, hint.target.clone());
         }
     }
 }

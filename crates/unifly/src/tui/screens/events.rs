@@ -117,7 +117,7 @@ impl Component for EventsScreen {
                 _ => None,
             });
         };
-        let paused = (delta < 0 && !self.paused).then(|| {
+        let paused = (delta < 0 && !self.paused && !self.events.is_empty()).then(|| {
             self.paused = true;
             Action::ToggleEventPause
         });
@@ -318,6 +318,21 @@ mod tests {
             }))
             .expect("event fixture should deserialize"),
         )
+    }
+
+    #[test]
+    fn the_wheel_leaves_an_empty_live_feed_running() {
+        use crossterm::event::MouseEventKind;
+
+        use crate::tui::widgets::click::mouse;
+
+        let mut screen = EventsScreen::new();
+        let action = screen
+            .handle_mouse_event(mouse(MouseEventKind::ScrollUp, 5, 5))
+            .expect("wheel handling");
+
+        assert!(action.is_none(), "{action:?}");
+        assert!(!screen.paused);
     }
 
     #[test]

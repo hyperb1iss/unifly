@@ -44,9 +44,11 @@ impl NetworksScreen {
                 self.detail_open = !self.detail_open;
                 None
             }
+            // A consumed Esc still returns an action, or the App would go on
+            // to its global Esc and jump back to the previous screen.
             KeyCode::Esc if self.detail_open => {
                 self.detail_open = false;
-                None
+                Some(Action::Invalidate)
             }
             KeyCode::Char('e') => {
                 if let Some(network) = self.selected_network().cloned() {

@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Mouse and touch input across the TUI** (#67). Every tab, table row,
-  and key hint takes a click or a tap, so `unifly tui` runs on a
-  touchscreen kiosk without a keyboard. Tabs switch screens and sub-tabs.
+- **Mouse and touch input across the TUI** (#67). Tabs, list rows, key
+  hints, dialogs, and dashboard panels take a click or a tap, so `unifly
+  tui` runs on a touchscreen kiosk without a keyboard. Tabs switch screens and sub-tabs.
   A tap selects a row and a second tap opens it, and an open device detail
   follows a tap on another device while keeping its tab, so stepping from
   switch to switch stays on their ports. Key hints are buttons that press
@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   form's next-field key, also switched to the next screen, a digit typed
   into a field jumped to that screen, and `q` quit. Keys now stop at a
   screen that is taking typed input, and `Ctrl+C` still quits.
+- **An Esc that closes part of a TUI screen stays on that screen.**
+  Collapsing a network detail, closing the WiFi channel map, or clearing
+  the WiFi roaming focus also ran the global Esc and jumped back to the
+  previous screen.
+- **`Tab` in a TUI client detail switches the type filter**, closing the
+  detail, instead of jumping to the next screen.
 - **The TUI Stats screen reloads the period it shows.** Returning to Stats
   always fetched one hour, while the period strip kept highlighting the
   period picked last.

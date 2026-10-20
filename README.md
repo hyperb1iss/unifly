@@ -372,7 +372,7 @@ still outside the TUI surface today.
 | **Settings**   | Profile switching, theme selector, display preferences                                           |
 | **Onboarding** | First-run setup wizard                                                                           |
 
-Every tab, table row, and key hint also takes a click or a tap, so the TUI runs on a touchscreen kiosk without a keyboard: tap a switch to open it, tap Ports, and tap the next switch to see its ports. The wheel scrolls lists and zooms the topology, and a drag pans the map.
+Tabs, list rows, key hints, dialogs, and dashboard panels also take a click or a tap, so the TUI runs on a touchscreen kiosk without a keyboard: tap a switch twice to open it, tap Ports, then tap the next switch to see its ports. The wheel scrolls lists and zooms the topology, and a drag pans the map.
 
 ### ✦ Gallery
 

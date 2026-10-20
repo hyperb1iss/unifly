@@ -114,18 +114,13 @@ impl WifiScreen {
     }
 
     /// A row selects it, and a second tap acts like `Enter`. An open client
-    /// detail follows a tap on another client.
+    /// detail follows the selection on the next tick, as it does for keys.
     fn click_row(&mut self, index: usize) -> Option<Action> {
         if self.active_table_state().selected() == Some(index) {
             return self.handle_enter();
         }
         self.active_table_state().select(Some(index));
         self.update_focus_from_selection();
-        if self.detail_open && self.sub_tab == WifiSubTab::Clients {
-            return self
-                .selected_client_ip()
-                .map(Action::RequestWifiClientDetail);
-        }
         None
     }
 
@@ -193,9 +188,11 @@ impl WifiScreen {
             return Some(Action::CloseDetail);
         }
 
+        // A consumed Esc still returns an action, or the App would go on to
+        // its global Esc and jump back to the previous screen.
         if self.channel_map_open {
             self.channel_map_open = false;
-            return None;
+            return Some(Action::Invalidate);
         }
 
         if self.focused_client_id.is_some() {
@@ -203,7 +200,7 @@ impl WifiScreen {
             self.roam_history = std::sync::Arc::new(Vec::new());
             self.roam_history_mac = None;
             self.roam_history_pending_mac = None;
-            return None;
+            return Some(Action::Invalidate);
         }
 
         if self.focused_ap_id.is_some() {

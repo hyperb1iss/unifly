@@ -78,6 +78,8 @@ impl WifiScreen {
             }
         } else if show_side_panel {
             let overlay = centered_rect(area, 82, 78);
+            // The overlay covers rows registered beneath it.
+            self.hits.borrow_mut().push(overlay, Click::Absorb);
             frame.render_widget(Clear, overlay);
             if self.detail_open {
                 self.render_ap_detail(frame, overlay);
@@ -100,6 +102,7 @@ impl WifiScreen {
             self.render_client_detail(frame, detail_area);
         } else if self.detail_open {
             let overlay = centered_rect(area, 86, 74);
+            self.hits.borrow_mut().push(overlay, Click::Absorb);
             frame.render_widget(Clear, overlay);
             self.render_client_detail(frame, overlay);
         }

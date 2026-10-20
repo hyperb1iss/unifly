@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -61,9 +61,13 @@ impl App {
         self.render_status_bar(frame, status_area);
 
         // Search holds the input, as it does for keys: only its own
-        // status-bar buttons stay live.
+        // status-bar buttons stay live. A screen taking typed input holds
+        // the chrome the same way, so a tap cannot switch screens or type
+        // a status-bar key into a form field.
         if self.search_active {
             self.hits.push(content_area.union(tab_area), Click::Absorb);
+        } else if self.active_screen_captures_input() {
+            self.hits.push(tab_area.union(status_area), Click::Absorb);
         }
 
         if self.effects_enabled && self.effects.is_active() {
@@ -198,17 +202,15 @@ impl App {
 
         let mut hints = ClickLine::default();
         hints.push_gap(Span::styled(" │ ", theme::key_hint()));
-        let retry = Hint::button(
-            "^r",
-            "retry",
-            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-        );
+        // App-wide buttons dispatch their action directly: as keys they
+        // would reach the screen first, which may use the same letter.
+        let retry = Hint::action("^r", "retry", Action::RetryConnect);
         let global = [
-            Hint::button("?", "help", click::char_key('?')),
-            Hint::button("a", "about", click::char_key('a')),
-            Hint::button("/", "search", click::char_key('/')),
-            Hint::button(",", "settings", click::char_key(',')),
-            Hint::button("q", "quit", click::char_key('q')),
+            Hint::action("?", "help", Action::ToggleHelp),
+            Hint::action("a", "about", Action::ToggleAbout),
+            Hint::action("/", "search", Action::OpenSearch),
+            Hint::action(",", "settings", Action::OpenSettings),
+            Hint::action("q", "quit", Action::Quit),
         ];
         let shown: Vec<Hint> = if self.connection_status == ConnectionStatus::Disconnected {
             std::iter::once(retry).chain(global).collect()
