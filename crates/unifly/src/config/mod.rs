@@ -437,12 +437,103 @@ pub fn load_config_from(path: &Path) -> Result<Config, ConfigError> {
 
 /// What went wrong and at which key, without figment's trailing "in <file>
 /// TOML file" (the load error names the file already).
+///
+/// The message never repeats what the file holds unless the key is a plain
+/// setting: these errors get pasted into issues, and the line at fault may
+/// be a password or a TOTP seed. A parse error keeps its line and column but
+/// drops the source excerpt under them, and any other invalid value is
+/// described by its key alone.
 fn describe_figment_error(error: figment::Error) -> String {
     error
         .into_iter()
         .map(|error| match error.path.as_slice() {
-            [] => error.kind.to_string().trim_end().to_owned(),
-            path => format!("{} for key `{}`", error.kind, path.join(".")),
+            [] => without_source_excerpt(&error.kind.to_string()),
+            path if value_is_safe_to_show(path) => {
+                format!("{} for key `{}`", error.kind, path.join("."))
+            }
+            _ => hidden_value_problem(&error),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Whether the value at `path` may appear in an error. This is an allowlist
+/// of plain settings: anything else, including a field added later, is
+/// hidden, so a new secret cannot leak by default.
+fn value_is_safe_to_show(path: &[String]) -> bool {
+    const DEFAULTS: [&str; 8] = [
+        "output",
+        "color",
+        "insecure",
+        "timeout",
+        "theme",
+        "show_donate",
+        "effects",
+        "chart_quality",
+    ];
+    const PROFILE: [&str; 11] = [
+        "controller",
+        "site",
+        "auth_mode",
+        "api_key_env",
+        "host_id",
+        "host_id_env",
+        "username",
+        "totp_env",
+        "ca_cert",
+        "insecure",
+        "timeout",
+    ];
+    const DEMO: [&str; 5] = [
+        "enabled",
+        "redact_ssids",
+        "redact_wan_ips",
+        "redact_macs",
+        "redact_isp",
+    ];
+
+    match path {
+        [key] => key == "default_profile",
+        [section, key] if section == "defaults" => DEFAULTS.contains(&key.as_str()),
+        [section, _, key] if section == "profiles" => PROFILE.contains(&key.as_str()),
+        [section, key] if section == "demo" => DEMO.contains(&key.as_str()),
+        _ => false,
+    }
+}
+
+/// Describe `error` by its key and what was expected, leaving out the value.
+fn hidden_value_problem(error: &figment::Error) -> String {
+    use figment::error::Kind;
+
+    let problem = match &error.kind {
+        Kind::InvalidType(_, expected) | Kind::InvalidValue(_, expected) => {
+            format!("invalid value, expected {expected}")
+        }
+        // These name a field or a length, never the value.
+        Kind::MissingField(_)
+        | Kind::DuplicateField(_)
+        | Kind::UnknownField(..)
+        | Kind::InvalidLength(..) => error.kind.to_string(),
+        _ => "invalid value".to_owned(),
+    };
+    format!(
+        "{problem} for key `{}` (the value is not shown)",
+        error.path.join(".")
+    )
+}
+
+/// `message` without the TOML source excerpt (`  |` and `2 | ...` lines)
+/// that parse errors quote, one line per remaining part.
+fn without_source_excerpt(message: &str) -> String {
+    message
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start()
+                    .starts_with('|')
         })
         .collect::<Vec<_>>()
         .join("; ")
@@ -837,6 +928,88 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("`defaults.timeout`"), "{message}");
         assert!(message.contains("thirty"), "{message}");
+    }
+
+    /// Load errors end up in issues and agent transcripts, so they point at
+    /// the line and key without echoing what the file holds there.
+    #[test]
+    fn load_errors_never_echo_a_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        for (contents, secret, locator) in [
+            (
+                "[profiles.work]\npassword = hunter2secret\n",
+                "hunter2secret",
+                "line 2",
+            ),
+            (
+                "[profiles.work]\npassword = 98765432\n",
+                "98765432",
+                "`profiles.work.password`",
+            ),
+            (
+                "[profiles.work]\napi_key = 1234567890\n",
+                "1234567890",
+                "`profiles.work.api_key`",
+            ),
+            (
+                "[profiles]\nwork = \"SECRETAAA\"\n",
+                "SECRETAAA",
+                "`profiles.work`",
+            ),
+            (
+                "profiles = \"PROFILESECRET\"\n",
+                "PROFILESECRET",
+                "`profiles`",
+            ),
+            (
+                "[profiles.work]\ntotp_command = \"oathtool --totp -b SEEDSECRET1\"\n",
+                "SEEDSECRET1",
+                "`profiles.work.totp_command`",
+            ),
+            (
+                "[profiles.work]\ntotp_command = [\"oathtool\", 424242]\n",
+                "424242",
+                "`profiles.work.totp_command.1`",
+            ),
+            (
+                "[demo]\nredact_names = \"Bliss Secretname\"\n",
+                "Secretname",
+                "`demo.redact_names`",
+            ),
+        ] {
+            std::fs::write(&path, contents).expect("write config");
+
+            let message = load_config_from(&path)
+                .expect_err("a malformed config must not load")
+                .to_string();
+
+            assert!(!message.contains(secret), "{message}");
+            assert!(message.contains(locator), "{message}");
+        }
+    }
+
+    /// Keys whose values are plain settings still show the value at fault,
+    /// which is what makes a typo easy to spot.
+    #[test]
+    fn load_errors_still_show_plain_setting_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        for (contents, value) in [
+            ("[defaults]\ntimeout = \"thirty\"\n", "thirty"),
+            ("[profiles.work]\ninsecure = \"yes\"\n", "yes"),
+            ("default_profile = 42\n", "42"),
+        ] {
+            std::fs::write(&path, contents).expect("write config");
+
+            let message = load_config_from(&path)
+                .expect_err("a malformed config must not load")
+                .to_string();
+
+            assert!(message.contains(value), "{message}");
+        }
     }
 
     #[test]
