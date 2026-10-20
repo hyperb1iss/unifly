@@ -3,6 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crossterm::event::KeyEvent;
 use serde_json::Value;
 use unifly_api::model::{
     AclRule, EventCategory, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast,
@@ -358,6 +359,8 @@ pub enum Action {
 
     // ── Navigation ────────────────────────────────────────────────
     SwitchScreen(ScreenId),
+    /// Press a key as if it were typed, for a tapped key hint.
+    PressKey(KeyEvent),
     GoBack,
     FocusNext,
     FocusPrev,

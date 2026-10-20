@@ -11,6 +11,7 @@ impl TopologyScreen {
             pan_x: 0.0,
             pan_y: 0.0,
             zoom: 1.0,
+            hits: std::cell::RefCell::default(),
         }
     }
 

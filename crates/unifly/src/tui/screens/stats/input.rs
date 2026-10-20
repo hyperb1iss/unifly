@@ -16,13 +16,18 @@ impl StatsScreen {
         }
     }
 
-    /// A click on a period tab loads that period, like its key.
+    /// A click on a period tab loads that period, like its key, and a key
+    /// hint presses its key.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        let Click::Tab(index) = self.hits.borrow().clicked(mouse)? else {
-            return None;
-        };
-        let period = *StatsPeriod::ALL.get(index)?;
-        (period != self.period).then(|| self.set_period(period))
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Tab(index) => {
+                let period = *StatsPeriod::ALL.get(index)?;
+                (period != self.period).then(|| self.set_period(period))
+            }
+            Click::Key(key) => Some(Action::PressKey(key)),
+            _ => None,
+        }
     }
 
     fn set_period(&mut self, period: StatsPeriod) -> Action {

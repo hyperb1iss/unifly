@@ -291,6 +291,12 @@ mod tests {
         let rows = draw(&screen);
         screen.handle_mouse_input(click_label(&rows, "Primary LAN", "Primary LAN"));
         assert_eq!(screen.selected_index(), 1, "the edit form holds the input");
+
+        let save = screen.handle_mouse_input(click_label(&rows, "save", "save"));
+        assert!(
+            matches!(save, Some(Action::PressKey(key)) if key.code == crossterm::event::KeyCode::Enter),
+            "{save:?}"
+        );
     }
 
     #[test]

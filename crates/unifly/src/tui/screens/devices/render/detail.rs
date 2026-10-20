@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -10,6 +11,7 @@ use unifly_api::{Client, Device};
 
 use crate::tui::action::DeviceDetailTab;
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::hyperchart::SwitchFaceplate;
 use crate::tui::widgets::{bytes_fmt, status_indicator, sub_tabs};
 
@@ -59,7 +61,7 @@ pub(super) fn render_detail(
         DeviceDetailTab::Ports => render_ports_tab(frame, tabs_layout[1], device),
     }
 
-    render_detail_hints(frame, tabs_layout[2]);
+    render_detail_hints(screen, frame, tabs_layout[2]);
 }
 
 fn render_detail_tabs(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
@@ -79,20 +81,16 @@ fn render_detail_tabs(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(vec![Line::from(""), line]), area);
 }
 
-fn render_detail_hints(frame: &mut Frame, area: Rect) {
-    let hints = Line::from(vec![
-        Span::styled("  h/l ", theme::key_hint_key()),
-        Span::styled("tabs  ", theme::key_hint()),
-        Span::styled("R ", theme::key_hint_key()),
-        Span::styled("restart  ", theme::key_hint()),
-        Span::styled("L ", theme::key_hint_key()),
-        Span::styled("locate  ", theme::key_hint()),
-        Span::styled("U ", theme::key_hint_key()),
-        Span::styled("upgrade  ", theme::key_hint()),
-        Span::styled("Esc ", theme::key_hint_key()),
-        Span::styled("back", theme::key_hint()),
+fn render_detail_hints(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
+    let hints = click::key_hints(&[
+        Hint::info("h/l", "tabs"),
+        Hint::button("R", "restart", click::char_key('R')),
+        Hint::button("L", "locate", click::char_key('L')),
+        Hint::button("U", "upgrade", click::char_key('U')),
+        Hint::button("Esc", "back", KeyCode::Esc),
     ]);
-    frame.render_widget(Paragraph::new(hints), area);
+    let line = hints.draw(area, &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_overview_tab(frame: &mut Frame, area: Rect, device: &Device) {

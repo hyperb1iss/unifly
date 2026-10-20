@@ -2,6 +2,7 @@
 
 mod punchcard;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
@@ -19,7 +20,7 @@ use unifly_api::model::EventSeverity;
 use crate::tui::action::Action;
 use crate::tui::component::Component;
 use crate::tui::theme;
-use crate::tui::widgets::click;
+use crate::tui::widgets::click::{self, Click, Hint, HitMap};
 
 use punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
 
@@ -30,6 +31,8 @@ pub struct EventsScreen {
     scroll_offset: usize,
     /// Max events to keep in memory.
     capacity: usize,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
 }
 
 impl Default for EventsScreen {
@@ -46,6 +49,7 @@ impl EventsScreen {
             paused: false,
             scroll_offset: 0,
             capacity: 10_000,
+            hits: RefCell::default(),
         }
     }
 
@@ -102,11 +106,16 @@ impl Component for EventsScreen {
         }
     }
 
-    /// The wheel scrolls the feed. Scrolling back through a live feed
-    /// pauses it first, so the rows hold still under the wheel.
+    /// Key hints press their key, and the wheel scrolls the feed.
+    /// Scrolling back through a live feed pauses it first, so the rows
+    /// hold still under the wheel.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
         let Some(delta) = click::wheel_delta(mouse) else {
-            return Ok(None);
+            let target = self.hits.borrow().clicked(mouse);
+            return Ok(match target {
+                Some(Click::Key(key)) => Some(Action::PressKey(key)),
+                _ => None,
+            });
         };
         let paused = (delta < 0 && !self.paused).then(|| {
             self.paused = true;
@@ -132,6 +141,7 @@ impl Component for EventsScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
+        self.hits.borrow_mut().clear();
         let count = self.events.len();
         let title = format!(" Events ({count}) ");
         let block = Block::default()
@@ -176,7 +186,7 @@ impl Component for EventsScreen {
         };
 
         self.render_event_list(frame, events_area);
-        Self::render_hints(frame, hints_area);
+        self.render_hints(frame, hints_area);
     }
 
     fn focused(&self) -> bool {
@@ -269,16 +279,14 @@ impl EventsScreen {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
-    fn render_hints(frame: &mut Frame, area: Rect) {
-        let hints = Line::from(vec![
-            Span::styled("  Space ", theme::key_hint_key()),
-            Span::styled("pause/resume  ", theme::key_hint()),
-            Span::styled("j/k ", theme::key_hint_key()),
-            Span::styled("scroll (paused)  ", theme::key_hint()),
-            Span::styled("/ ", theme::key_hint_key()),
-            Span::styled("search", theme::key_hint()),
+    fn render_hints(&self, frame: &mut Frame, area: Rect) {
+        let bar = click::key_hints(&[
+            Hint::button("Space", "pause/resume", click::char_key(' ')),
+            Hint::info("j/k", "scroll (paused)"),
+            Hint::button("/", "search", click::char_key('/')),
         ]);
-        frame.render_widget(Paragraph::new(hints), area);
+        let line = bar.draw(area, &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 

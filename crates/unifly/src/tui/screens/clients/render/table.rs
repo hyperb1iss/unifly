@@ -4,16 +4,17 @@ use super::super::ClientsScreen;
 use super::super::labels::LinkIndex;
 use super::detail::render_detail;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use unifly_api::{Client, ClientType};
 
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::{bytes_fmt, sub_tabs};
 
 pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rect) {
@@ -70,24 +71,20 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
     };
     render_client_table(screen, frame, layout[1], &filtered, selected_idx);
 
-    let hints = Line::from(vec![
-        Span::styled("  j/k ", theme::key_hint_key()),
-        Span::styled("navigate  ", theme::key_hint()),
-        Span::styled("Enter ", theme::key_hint_key()),
-        Span::styled("detail  ", theme::key_hint()),
-        Span::styled("Tab ", theme::key_hint_key()),
-        Span::styled("filter  ", theme::key_hint()),
-        Span::styled("b ", theme::key_hint_key()),
-        Span::styled("block  ", theme::key_hint()),
-        Span::styled("x ", theme::key_hint_key()),
-        Span::styled("kick", theme::key_hint()),
+    let hints = click::key_hints(&[
+        Hint::info("j/k", "navigate"),
+        Hint::button("Enter", "detail", KeyCode::Enter),
+        Hint::button("Tab", "filter", KeyCode::Tab),
+        Hint::button("b", "block", click::char_key('b')),
+        Hint::button("x", "kick", click::char_key('x')),
     ]);
-    frame.render_widget(Paragraph::new(hints), layout[2]);
+    let line = hints.draw(layout[2], &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(line), layout[2]);
 
     if let Some(detail_area) = detail_area
         && let Some(client) = screen.detail_client(&filtered)
     {
-        render_detail(frame, detail_area, client);
+        render_detail(frame, detail_area, client, &mut screen.hits.borrow_mut());
     }
 }
 

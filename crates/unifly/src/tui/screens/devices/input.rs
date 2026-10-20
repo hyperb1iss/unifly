@@ -98,6 +98,7 @@ impl DevicesScreen {
         match target {
             Click::Tab(index) => self.click_detail_tab(index),
             Click::Row(index) => self.click_row(index),
+            Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
     }

@@ -1,3 +1,4 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -8,9 +9,15 @@ use unifly_api::Client;
 
 use crate::tui::theme;
 use crate::tui::widgets::bytes_fmt;
+use crate::tui::widgets::click::{self, Click, Hint, HitMap};
 
 #[allow(clippy::too_many_lines, clippy::as_conversions)]
-pub(super) fn render_detail(frame: &mut Frame, area: Rect, client: &Client) {
+pub(super) fn render_detail(
+    frame: &mut Frame,
+    area: Rect,
+    client: &Client,
+    hits: &mut HitMap<Click>,
+) {
     let name = client
         .name
         .as_deref()
@@ -139,15 +146,12 @@ pub(super) fn render_detail(frame: &mut Frame, area: Rect, client: &Client) {
     ];
     frame.render_widget(Paragraph::new(lines), detail_layout[0]);
 
-    let hints = Line::from(vec![
-        Span::styled("  b ", theme::key_hint_key()),
-        Span::styled("block  ", theme::key_hint()),
-        Span::styled("B ", theme::key_hint_key()),
-        Span::styled("unblock  ", theme::key_hint()),
-        Span::styled("x ", theme::key_hint_key()),
-        Span::styled("kick  ", theme::key_hint()),
-        Span::styled("Esc ", theme::key_hint_key()),
-        Span::styled("back", theme::key_hint()),
+    let bar = click::key_hints(&[
+        Hint::button("b", "block", click::char_key('b')),
+        Hint::button("B", "unblock", click::char_key('B')),
+        Hint::button("x", "kick", click::char_key('x')),
+        Hint::button("Esc", "back", KeyCode::Esc),
     ]);
-    frame.render_widget(Paragraph::new(hints), detail_layout[1]);
+    let line = bar.draw(detail_layout[1], hits);
+    frame.render_widget(Paragraph::new(line), detail_layout[1]);
 }

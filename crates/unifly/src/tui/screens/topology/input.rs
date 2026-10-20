@@ -1,7 +1,8 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 
 use super::TopologyScreen;
 use crate::tui::action::Action;
+use crate::tui::widgets::click::Click;
 
 impl TopologyScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
@@ -14,6 +15,15 @@ impl TopologyScreen {
             KeyCode::Char('-') => Some(self.zoom_out()),
             KeyCode::Char('f') => Some(self.reset_view(Action::TopologyFit)),
             KeyCode::Char('r') => Some(self.reset_view(Action::TopologyReset)),
+            _ => None,
+        }
+    }
+
+    /// Mouse and touch input: key hints press their key.
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
     }

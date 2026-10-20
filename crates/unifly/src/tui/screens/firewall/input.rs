@@ -76,6 +76,7 @@ impl FirewallScreen {
                 self.select(index);
                 None
             }
+            Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
     }

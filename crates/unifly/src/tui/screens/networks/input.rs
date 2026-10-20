@@ -59,26 +59,29 @@ impl NetworksScreen {
         }
     }
 
-    /// Mouse and touch input: rows by click, the list by wheel. The edit
-    /// form holds the input while it is open.
+    /// Mouse and touch input: rows and key hints by click, the list by
+    /// wheel. The edit form holds the input while it is open.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
-        if self.edit_state.is_some() {
-            return None;
-        }
         if let Some(delta) = click::wheel_delta(mouse) {
-            self.move_selection(delta);
+            if self.edit_state.is_none() {
+                self.move_selection(delta);
+            }
             return None;
         }
-        let Click::Row(index) = self.hits.borrow().clicked(mouse)? else {
-            return None;
-        };
-        // A second tap on the selected row toggles its detail, like `Enter`.
-        if self.selected_index() == index {
-            self.detail_open = !self.detail_open;
-        } else {
-            self.select(index);
+        let target = self.hits.borrow().clicked(mouse)?;
+        match target {
+            Click::Row(index) => {
+                // A second tap on the selected row toggles its detail, like `Enter`.
+                if self.selected_index() == index {
+                    self.detail_open = !self.detail_open;
+                } else {
+                    self.select(index);
+                }
+                None
+            }
+            Click::Key(key) => Some(Action::PressKey(key)),
+            _ => None,
         }
-        None
     }
 
     fn handle_edit_key(&mut self, key: KeyEvent) -> Option<Action> {

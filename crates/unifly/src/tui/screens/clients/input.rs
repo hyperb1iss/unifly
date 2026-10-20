@@ -95,6 +95,7 @@ impl ClientsScreen {
         match target {
             Click::Tab(index) => self.click_filter(index),
             Click::Row(index) => self.click_row(index),
+            Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
     }

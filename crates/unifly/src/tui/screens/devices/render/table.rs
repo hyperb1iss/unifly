@@ -8,8 +8,11 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use unifly_api::{Device, DeviceState};
 
+use crossterm::event::KeyCode;
+
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::{bytes_fmt, status_indicator};
 
 use super::detail::render_detail;
@@ -58,7 +61,7 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
 
     render_filter_bar(screen, frame, header_layout[0], shown);
     render_device_table(screen, frame, header_layout[1], &filtered, selected_index);
-    render_table_hints(frame, header_layout[2]);
+    render_table_hints(screen, frame, header_layout[2]);
 
     if let Some(detail_area) = detail_area
         && let Some(device) = screen.detail_device()
@@ -291,18 +294,15 @@ fn render_table_row(
     })
 }
 
-fn render_table_hints(frame: &mut Frame, area: Rect) {
-    let hints = Line::from(vec![
-        Span::styled("  j/k ", theme::key_hint_key()),
-        Span::styled("navigate  ", theme::key_hint()),
-        Span::styled("Enter ", theme::key_hint_key()),
-        Span::styled("detail  ", theme::key_hint()),
-        Span::styled("R ", theme::key_hint_key()),
-        Span::styled("restart  ", theme::key_hint()),
-        Span::styled("L ", theme::key_hint_key()),
-        Span::styled("locate", theme::key_hint()),
+fn render_table_hints(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
+    let hints = click::key_hints(&[
+        Hint::info("j/k", "navigate"),
+        Hint::button("Enter", "detail", KeyCode::Enter),
+        Hint::button("R", "restart", click::char_key('R')),
+        Hint::button("L", "locate", click::char_key('L')),
     ]);
-    frame.render_widget(Paragraph::new(hints), area);
+    let line = hints.draw(area, &mut screen.hits.borrow_mut());
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 #[cfg(test)]

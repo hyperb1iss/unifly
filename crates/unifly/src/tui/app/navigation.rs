@@ -387,6 +387,40 @@ mod tests {
     }
 
     #[test]
+    fn a_tapped_key_hint_presses_its_key_through_the_key_path() {
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Events;
+        let rows = render(&mut app, 120);
+
+        let action = app
+            .handle_mouse_event(click_label(&rows, "pause/resume", "pause/resume"))
+            .expect("click handling");
+        let Some(Action::PressKey(key)) = action else {
+            panic!("expected a key press, got {action:?}");
+        };
+        assert_eq!(key, crate::tui::widgets::click::char_key(' '));
+
+        app.process_action(&Action::PressKey(key))
+            .expect("key press handling");
+        let queued = app.action_rx.try_recv().expect("the press dispatches");
+        assert!(matches!(queued, Action::ToggleEventPause), "{queued:?}");
+
+        // Global keys work from a screen's hints too: Events leaves `/` to
+        // the App, which opens search.
+        let rows = render(&mut app, 120);
+        let Some(Action::PressKey(slash)) = app
+            .handle_mouse_event(click_label(&rows, "pause/resume", "search"))
+            .expect("click handling")
+        else {
+            panic!("expected a key press");
+        };
+        app.process_action(&Action::PressKey(slash))
+            .expect("key press handling");
+        let queued = app.action_rx.try_recv().expect("the press dispatches");
+        assert!(matches!(queued, Action::OpenSearch), "{queued:?}");
+    }
+
+    #[test]
     fn search_input_updates_query_and_can_close() {
         let mut app = App::new(None, None, false, true);
         app.active_screen = ScreenId::Dashboard;
