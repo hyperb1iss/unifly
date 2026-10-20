@@ -145,6 +145,7 @@ async fn run_command(command: Command, global: &GlobalOpts) -> Result<(), CliErr
                 demo_fleet::controller(global)
             } else {
                 let mut controller_config = build_controller_config(global).await?;
+                commands::util::require_http_url(controller_config.url.as_str())?;
                 controller_config.websocket_enabled = command_uses_websocket(&cmd);
                 Controller::new(controller_config)
             };

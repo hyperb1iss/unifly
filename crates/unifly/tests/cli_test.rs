@@ -2281,3 +2281,44 @@ async fn test_wifi_channels_renders_every_country_as_one_document() {
         combined_output(&plain)
     );
 }
+
+#[test]
+fn test_unsupported_controller_scheme_is_an_invalid_configuration() {
+    for command in [
+        &["devices", "list"][..],
+        &["system", "info"][..],
+        &["cloud", "hosts"][..],
+    ] {
+        let output = unifly_cmd()
+            .args(["-c", "ftp://192.0.2.1", "--api-key", "k"])
+            .args(command)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            combined_output(&output)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("'ftp'"), "{stderr}");
+        assert!(!stderr.contains("builder error"), "{stderr}");
+    }
+
+    let tempdir = tempfile::tempdir().unwrap();
+    unifly_cmd_in(tempdir.path())
+        .args([
+            "config",
+            "set",
+            "profiles.lab.controller",
+            "gopher://192.0.2.1",
+        ])
+        .assert()
+        .success();
+    unifly_cmd_in(tempdir.path())
+        .args(["-p", "lab", "--api-key", "k", "devices", "list"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("'gopher'"));
+}
