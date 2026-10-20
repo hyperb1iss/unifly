@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn clicking_a_tab_switches_to_its_screen() {
-        for width in [120, 95] {
+        for width in [130, 110, 95, 80] {
             let mut app = dashboard_app();
             let rows = render(&mut app, width);
 
@@ -260,6 +260,20 @@ mod tests {
                     "{width} cols, left edge of {label}: {action:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_tab_is_drawn_from_74_columns_up() {
+        for width in 74..=130 {
+            let mut app = dashboard_app();
+            let rows = render(&mut app, width);
+            let row = tab_row(&rows);
+            for id in ScreenId::ALL {
+                shown_label(row, id);
+            }
+            let full = row.contains("1 Dashboard");
+            assert_eq!(full, width >= 102, "{width} cols: {row:?}");
         }
     }
 

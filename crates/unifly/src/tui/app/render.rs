@@ -82,14 +82,25 @@ impl App {
     /// Render the bottom tab bar showing all primary screens, and keep
     /// where each tab landed so a click can switch to it.
     fn render_tab_bar(&mut self, frame: &mut Frame, area: Rect) {
-        let strip = self.tab_strip(area.width < 100);
+        let strip = self.tab_strip(area.width);
         self.tab_targets = strip.targets(area);
         frame.render_widget(Paragraph::new(strip.into_line()), area);
     }
 
+    /// The tab bar in the roomiest style that fits `width`: full labels
+    /// before short ones, padded tabs before tight ones. A clipped tab
+    /// could be neither read nor clicked.
+    fn tab_strip(&self, width: u16) -> TabStrip<'static> {
+        [(false, true), (false, false), (true, true)]
+            .into_iter()
+            .map(|(compact, padded)| self.tab_strip_styled(compact, padded))
+            .find(|strip| strip.width() <= usize::from(width))
+            .unwrap_or_else(|| self.tab_strip_styled(true, false))
+    }
+
     /// The tab bar's spans. Each tab owns the padding around its title, so
     /// only the one-column dividers fall between click targets.
-    fn tab_strip(&self, compact: bool) -> TabStrip<'static> {
+    fn tab_strip_styled(&self, compact: bool, padded: bool) -> TabStrip<'static> {
         let mut strip = TabStrip::default();
         for (index, &id) in ScreenId::ALL.iter().enumerate() {
             if index > 0 {
@@ -105,12 +116,16 @@ impl App {
             } else {
                 id.label()
             };
-            strip.push_tab(index, Span::raw(" "));
+            if padded {
+                strip.push_tab(index, Span::raw(" "));
+            }
             strip.push_tab(
                 index,
                 Span::styled(format!(" {} {} ", id.number(), label), style),
             );
-            strip.push_tab(index, Span::raw(" "));
+            if padded {
+                strip.push_tab(index, Span::raw(" "));
+            }
         }
         strip
     }

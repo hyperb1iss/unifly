@@ -28,6 +28,11 @@ impl<'a> TabStrip<'a> {
         self.spans.push((span, None));
     }
 
+    /// Columns the strip takes when drawn.
+    pub fn width(&self) -> usize {
+        self.spans.iter().map(|(span, _)| span.width()).sum()
+    }
+
     /// Where each tab lands when the strip is drawn left-aligned on the
     /// first row of `area`. Columns past the right edge are clipped, as
     /// the drawn line is.

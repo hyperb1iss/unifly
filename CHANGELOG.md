@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The TUI tab bar draws all nine tabs.** Full labels switched on at 100
+  columns but need 120, and short labels need 92 columns but were used
+  down to 80, so the WiFi tab (and at some widths Stats) was cut off on
+  common terminal sizes. The bar now takes the roomiest style that fits,
+  trading padding before it shortens labels, and shows every tab from 74
+  columns up.
 - **Clicks in the TUI Settings form redraw right away** instead of waiting
   for the next data refresh to repaint the toggled field.
 
