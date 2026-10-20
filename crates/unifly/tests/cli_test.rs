@@ -717,6 +717,81 @@ fn test_an_undefined_profile_is_reported_with_the_defined_ones() {
         .stderr(predicate::str::contains("Configuration file not found"));
 }
 
+/// A config that fails to load is invalid input, so it exits 2 like any
+/// other usage error, from config commands and connecting commands alike.
+#[cfg(not(windows))]
+#[test]
+fn test_a_config_that_fails_to_load_exits_2() {
+    let home = TempDir::new().unwrap();
+    let broken = TWO_PROFILE_CONFIG.replace("timeout = 45", "timeout = \"thirty\"");
+    write_config(&home, &broken);
+
+    for args in [&["config", "show"][..], &["devices", "list"]] {
+        let output = unifly_cmd_in(home.path()).args(args).output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            combined_output(&output)
+        );
+    }
+}
+
+/// An undefined profile exits 1, as the old profile-not-found error did,
+/// and says how to create one.
+#[cfg(not(windows))]
+#[test]
+fn test_an_undefined_profile_exits_1_and_says_how_to_create_it() {
+    let home = TempDir::new().unwrap();
+    write_config(&home, TWO_PROFILE_CONFIG);
+
+    let output = unifly_cmd_in(home.path())
+        .args(["-p", "typo", "devices", "list"])
+        .output()
+        .unwrap();
+    let text = combined_output(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("Create one with: unifly config init"),
+        "{text}"
+    );
+}
+
+/// A config that loads but cannot be written back exits 1 and names the
+/// file. The directory is made read-only, which root ignores, so the test
+/// stands down when it runs as root.
+#[cfg(unix)]
+#[test]
+fn test_a_failed_save_exits_1() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = TempDir::new().unwrap();
+    let path = write_config(&home, TWO_PROFILE_CONFIG);
+    let dir = path.parent().unwrap().to_owned();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = dir.join(".probe");
+    if std::fs::write(&probe, "").is_ok() {
+        std::fs::remove_file(probe).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+
+    let output = unifly_cmd_in(home.path())
+        .args(["config", "use", "work"])
+        .output()
+        .unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let text = combined_output(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("could not save") && text.contains(&path.display().to_string()),
+        "{text}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO_PROFILE_CONFIG);
+}
+
 /// `config show` masks stored secrets in every format, not only the table:
 /// JSON and YAML output get pasted into issues and agent transcripts.
 #[cfg(not(windows))]
