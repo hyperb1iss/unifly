@@ -16,6 +16,7 @@ impl StatsScreen {
             client_counts: Vec::new(),
             client_y_max: 0.0,
             bandwidth_peak: 0.0,
+            fresh_scale: false,
             dpi_apps: Vec::new(),
             dpi_categories: Vec::new(),
         }
@@ -29,59 +30,58 @@ impl StatsScreen {
     }
 
     pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {
-        match action {
-            Action::SetStatsPeriod(period) => {
-                self.period = *period;
-                self.bandwidth_tx_y_max = 0.0;
-                self.bandwidth_rx_y_max = 0.0;
-                self.bandwidth_peak = 0.0;
-                self.client_y_max = 0.0;
-            }
-            Action::StatsUpdated(data) => {
-                self.bandwidth_tx.clone_from(&data.bandwidth_tx);
-                self.bandwidth_rx.clone_from(&data.bandwidth_rx);
-                self.client_counts.clone_from(&data.client_counts);
-                self.dpi_apps.clone_from(&data.dpi_apps);
-                self.dpi_categories.clone_from(&data.dpi_categories);
+        let Action::StatsUpdated(data) = action else {
+            return None;
+        };
 
-                let tx_max = self
-                    .bandwidth_tx
-                    .iter()
-                    .map(|&(_, value)| value)
-                    .fold(0.0_f64, f64::max);
-                let rx_max = self
-                    .bandwidth_rx
-                    .iter()
-                    .map(|&(_, value)| value)
-                    .fold(0.0_f64, f64::max);
-                let previous_peak = self.bandwidth_peak;
-                self.bandwidth_peak = tx_max.max(rx_max);
-                self.bandwidth_tx_y_max = axis::stable_upper_bound(
-                    self.bandwidth_tx_y_max,
-                    tx_max,
-                    BANDWIDTH_TICK_COUNT,
-                    MIN_BANDWIDTH_SCALE,
-                );
-                self.bandwidth_rx_y_max = axis::stable_upper_bound(
-                    self.bandwidth_rx_y_max,
-                    rx_max,
-                    BANDWIDTH_TICK_COUNT,
-                    MIN_BANDWIDTH_SCALE,
-                );
+        if std::mem::take(&mut self.fresh_scale) {
+            self.bandwidth_tx_y_max = 0.0;
+            self.bandwidth_rx_y_max = 0.0;
+            self.bandwidth_peak = 0.0;
+            self.client_y_max = 0.0;
+        }
 
-                let client_max = self
-                    .client_counts
-                    .iter()
-                    .map(|&(_, value)| value)
-                    .fold(0.0_f64, f64::max);
-                self.client_y_max =
-                    axis::stable_upper_bound(self.client_y_max, client_max, CLIENT_TICK_COUNT, 1.0);
+        self.bandwidth_tx.clone_from(&data.bandwidth_tx);
+        self.bandwidth_rx.clone_from(&data.bandwidth_rx);
+        self.client_counts.clone_from(&data.client_counts);
+        self.dpi_apps.clone_from(&data.dpi_apps);
+        self.dpi_categories.clone_from(&data.dpi_categories);
 
-                if self.focused && previous_peak > 0.0 && self.bandwidth_peak > previous_peak {
-                    return Some(Action::ChartPeak);
-                }
-            }
-            _ => {}
+        let tx_max = self
+            .bandwidth_tx
+            .iter()
+            .map(|&(_, value)| value)
+            .fold(0.0_f64, f64::max);
+        let rx_max = self
+            .bandwidth_rx
+            .iter()
+            .map(|&(_, value)| value)
+            .fold(0.0_f64, f64::max);
+        let previous_peak = self.bandwidth_peak;
+        self.bandwidth_peak = tx_max.max(rx_max);
+        self.bandwidth_tx_y_max = axis::stable_upper_bound(
+            self.bandwidth_tx_y_max,
+            tx_max,
+            BANDWIDTH_TICK_COUNT,
+            MIN_BANDWIDTH_SCALE,
+        );
+        self.bandwidth_rx_y_max = axis::stable_upper_bound(
+            self.bandwidth_rx_y_max,
+            rx_max,
+            BANDWIDTH_TICK_COUNT,
+            MIN_BANDWIDTH_SCALE,
+        );
+
+        let client_max = self
+            .client_counts
+            .iter()
+            .map(|&(_, value)| value)
+            .fold(0.0_f64, f64::max);
+        self.client_y_max =
+            axis::stable_upper_bound(self.client_y_max, client_max, CLIENT_TICK_COUNT, 1.0);
+
+        if self.focused && previous_peak > 0.0 && self.bandwidth_peak > previous_peak {
+            return Some(Action::ChartPeak);
         }
 
         None
@@ -101,23 +101,6 @@ mod tests {
             dpi_apps: vec![("Video".into(), 1024)],
             dpi_categories: vec![("Streaming".into(), 2048)],
         }
-    }
-
-    #[test]
-    fn set_stats_period_resets_axis_bounds() {
-        let mut screen = StatsScreen::new();
-        screen.bandwidth_tx_y_max = 42_000.0;
-        screen.bandwidth_rx_y_max = 84_000.0;
-        screen.bandwidth_peak = 84_000.0;
-        screen.client_y_max = 99.0;
-
-        screen.apply_action(&Action::SetStatsPeriod(StatsPeriod::SevenDays));
-
-        assert_eq!(screen.period, StatsPeriod::SevenDays);
-        assert_eq!(screen.bandwidth_tx_y_max, 0.0);
-        assert_eq!(screen.bandwidth_rx_y_max, 0.0);
-        assert_eq!(screen.bandwidth_peak, 0.0);
-        assert_eq!(screen.client_y_max, 0.0);
     }
 
     #[test]
@@ -187,6 +170,53 @@ mod tests {
         let action = screen.apply_action(&Action::StatsUpdated(sample_stats_data(200_000.0, 8.0)));
 
         assert!(action.is_none());
+    }
+
+    #[test]
+    fn a_new_period_starts_its_charts_on_a_fresh_scale() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut screen = StatsScreen::new();
+        screen.focused = true;
+        screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 650.0)));
+
+        let request = screen.handle_key_input(KeyEvent::from(KeyCode::Char('w')));
+        assert!(matches!(
+            request,
+            Some(Action::RequestStats(StatsPeriod::SevenDays))
+        ));
+
+        let carried = axis::stable_upper_bound(screen.client_y_max, 420.0, CLIENT_TICK_COUNT, 1.0);
+        let pulse =
+            screen.apply_action(&Action::StatsUpdated(sample_stats_data(8_000_000.0, 420.0)));
+
+        assert!(pulse.is_none(), "the first snapshot of a period is no peak");
+        let fresh = axis::stable_upper_bound(0.0, 420.0, CLIENT_TICK_COUNT, 1.0);
+        assert_ne!(fresh, carried, "the fixture must tell the two scales apart");
+        assert_eq!(screen.client_y_max, fresh);
+        assert_eq!(
+            screen.bandwidth_tx_y_max,
+            axis::stable_upper_bound(0.0, 8_000_000.0, BANDWIDTH_TICK_COUNT, MIN_BANDWIDTH_SCALE)
+        );
+    }
+
+    #[test]
+    fn refreshing_the_same_period_keeps_its_scale() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut screen = StatsScreen::new();
+        screen.focused = true;
+        screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 120.0)));
+        let carried = axis::stable_upper_bound(screen.client_y_max, 100.0, CLIENT_TICK_COUNT, 1.0);
+
+        for key in ['r', 'h'] {
+            screen.handle_key_input(KeyEvent::from(KeyCode::Char(key)));
+        }
+        let pulse =
+            screen.apply_action(&Action::StatsUpdated(sample_stats_data(8_000_000.0, 100.0)));
+
+        assert!(matches!(pulse, Some(Action::ChartPeak)));
+        assert_eq!(screen.client_y_max, carried);
     }
 
     #[test]

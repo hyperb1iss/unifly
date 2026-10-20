@@ -466,7 +466,6 @@ pub enum Action {
     DismissNotification,
 
     // ── Stats ─────────────────────────────────────────────────────
-    SetStatsPeriod(StatsPeriod),
     RequestStats(StatsPeriod),
     StatsUpdated(StatsData),
 
