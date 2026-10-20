@@ -3,11 +3,12 @@
 //! The heavy lifting lives in the `dashboard/` submodules so this file stays
 //! focused on the public screen type and the `Component` glue.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
@@ -16,6 +17,7 @@ use unifly_api::{Client, Device, Event, HealthSummary, Network};
 
 use crate::tui::action::Action;
 use crate::tui::component::Component;
+use crate::tui::widgets::click::{Click, HitMap};
 mod helpers;
 mod render;
 mod state;
@@ -70,6 +72,8 @@ pub struct DashboardScreen {
     last_chart_sample_at: Option<Instant>,
     /// Tracks when we last received a data update (for refresh indicator).
     last_data_update: Option<Instant>,
+    /// What the last frame drew where, for clicks.
+    hits: RefCell<HitMap<Click>>,
 }
 
 impl Default for DashboardScreen {
@@ -98,6 +102,7 @@ impl DashboardScreen {
             chart_rx_y_max: 0.0,
             last_chart_sample_at: None,
             last_data_update: None,
+            hits: RefCell::default(),
         }
     }
 }
@@ -109,6 +114,14 @@ impl Component for DashboardScreen {
 
     fn handle_key_event(&mut self, _key: KeyEvent) -> Result<Option<Action>> {
         Ok(None)
+    }
+
+    /// A tap on a panel opens the screen with its full story.
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        Ok(match self.hits.borrow().clicked(mouse) {
+            Some(Click::Action(action)) => Some(action),
+            _ => None,
+        })
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

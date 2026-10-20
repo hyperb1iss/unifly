@@ -28,6 +28,8 @@ pub struct TopologyScreen {
     zoom: f64,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
+    /// The cell a left-button drag last reached, while one is under way.
+    drag_from: Option<(u16, u16)>,
 }
 
 impl Default for TopologyScreen {
