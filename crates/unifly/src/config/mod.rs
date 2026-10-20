@@ -43,6 +43,10 @@ pub enum ConfigError {
     #[error("could not load {}: {reason}", path.display())]
     Load { path: PathBuf, reason: String },
 
+    /// The config file could not be written.
+    #[error("could not save {}: {reason}", path.display())]
+    Save { path: PathBuf, reason: String },
+
     /// The config file does not define the profile asked for.
     #[error(
         "profile '{name}' is not defined in {}; {}. Create one with: unifly config init \
@@ -547,21 +551,144 @@ pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
 }
 
 /// Serialize config to TOML and write it to `path`.
+///
+/// The TOML goes to a new file beside the target, owner-only from the moment
+/// it exists (it may hold plaintext secrets), and is renamed over the
+/// target, so the config is replaced whole or not at all. A symlinked config
+/// stays a link: the save lands in the file it points at.
 pub fn save_config_to(path: &Path, cfg: &Config) -> Result<(), ConfigError> {
+    let toml_str = toml::to_string_pretty(cfg)?;
+    write_atomically(&save_target(path), toml_str.as_bytes()).map_err(|error| ConfigError::Save {
+        path: path.to_owned(),
+        reason: error.to_string(),
+    })
+}
+
+/// Where a save to `path` lands: through a symlink to the file it names, so
+/// a config kept in a dotfiles checkout stays a link.
+fn save_target(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    match std::fs::read_link(path) {
+        Ok(target) => match path.parent() {
+            Some(parent) => parent.join(target),
+            None => target,
+        },
+        Err(_) => path.to_owned(),
+    }
+}
+
+/// Stage `data` in a new file beside `path`, then rename it over `path`.
+/// The staged file is removed when any step fails. A target the rename
+/// cannot replace is written in place instead.
+fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_atomically_with(path, data, |from, to| std::fs::rename(from, to))
+}
+
+/// [`write_atomically`] with the final `rename` step supplied by the caller.
+fn write_atomically_with(
+    path: &Path,
+    data: &[u8],
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let toml_str = toml::to_string_pretty(cfg)?;
-    std::fs::write(path, toml_str)?;
 
-    // Restrict config file to owner-only access (may contain plaintext credentials)
+    let (staged, mut file) = create_staging_file(path)?;
+    let written = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error);
+    }
+
+    // `rename` replaces an existing file on every platform (Windows uses
+    // MOVEFILE_REPLACE_EXISTING), so the old config is never removed first.
+    let Err(error) = rename(&staged, path) else {
+        return Ok(());
+    };
+    let _ = std::fs::remove_file(&staged);
+    if !rename_cannot_replace(&error) {
+        return Err(error);
+    }
+    tracing::debug!(
+        %error,
+        path = %path.display(),
+        "cannot rename over the config; writing it in place"
+    );
+    write_in_place(path, data)
+}
+
+/// Whether a failed rename means only that the target cannot be replaced
+/// that way: a file bind-mounted on its own, as in a container (EBUSY), or
+/// one on another filesystem than its directory (EXDEV).
+fn rename_cannot_replace(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ResourceBusy | std::io::ErrorKind::CrossesDevices
+    )
+}
+
+/// Write `data` over `path` in place, the save for a target a rename cannot
+/// replace. The file is made owner-only before it is emptied and written,
+/// so a refused chmod leaves the old config whole.
+fn write_in_place(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    file.set_len(0)?;
+    file.write_all(data)?;
+    file.sync_all()
+}
 
-    Ok(())
+/// Create the staging file for a write to `path`.
+///
+/// The name is unique to this process and call, so concurrent saves never
+/// share one, and `create_new` refuses any existing entry (a planted symlink
+/// included) instead of following it. On Unix the file is owner-only from
+/// the moment it exists.
+fn create_staging_file(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let name = path
+        .file_name()
+        .map_or_else(|| "config.toml".into(), |name| name.to_string_lossy());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let staged = path.with_file_name(format!(
+        ".{name}.{}.{}.{nanos}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&staged)?;
+    Ok((staged, file))
 }
 
 // ── Secret storage ──────────────────────────────────────────────────
@@ -928,6 +1055,149 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("`defaults.timeout`"), "{message}");
         assert!(message.contains("thirty"), "{message}");
+    }
+
+    fn stage_files(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+            })
+            .collect()
+    }
+
+    /// A save that cannot land says where it was going and leaves no
+    /// staged copy behind.
+    #[test]
+    fn save_config_to_names_the_path_it_could_not_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::create_dir(&path).expect("a directory where the file goes");
+
+        let message = super::save_config_to(&path, &Config::default())
+            .expect_err("a directory cannot be replaced by the config")
+            .to_string();
+
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+    }
+
+    /// The new contents are staged in a separate owner-only file and renamed
+    /// over the old one, so a reader or a crash never sees a half-written
+    /// config, and plaintext secrets are never readable by others.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_to_replaces_the_file_in_one_step() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_profile = \"home\"\n").expect("write config");
+        let before = std::fs::metadata(&path).expect("metadata").ino();
+
+        super::save_config_to(&path, &Config::default()).expect("save");
+
+        let after = std::fs::metadata(&path).expect("metadata");
+        assert_ne!(after.ino(), before, "the file was rewritten in place");
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+        assert!(load_config_from(&path).expect("reload").profiles.is_empty());
+    }
+
+    /// A config.toml kept as a symlink (a dotfiles checkout, say) stays a
+    /// link; the save lands in the file it points at.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_to_writes_through_a_symlinked_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("dotfiles").join("unifly.toml");
+        std::fs::create_dir_all(real.parent().expect("parent")).expect("dotfiles dir");
+        std::fs::write(&real, "").expect("write real config");
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let mut cfg = Config::default();
+        cfg.profiles.insert("home".into(), cloud_profile());
+
+        super::save_config_to(&link, &cfg).expect("save");
+
+        assert!(link.symlink_metadata().expect("link").is_symlink());
+        assert!(
+            load_config_from(&real)
+                .expect("reload")
+                .profiles
+                .contains_key("home")
+        );
+    }
+
+    /// A config.toml bind-mounted into a container as a single file cannot
+    /// be replaced by a rename (EBUSY), and one on another filesystem than
+    /// its directory gets EXDEV. Those saves fall back to writing in place,
+    /// as saves did before they were atomic.
+    #[test]
+    fn a_target_rename_cannot_replace_is_written_in_place() {
+        for kind in [
+            std::io::ErrorKind::ResourceBusy,
+            std::io::ErrorKind::CrossesDevices,
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, "old").expect("write config");
+
+            super::write_atomically_with(&path, b"new", |_, _| Err(kind.into()))
+                .expect("the in-place fallback saves");
+
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), "new");
+            assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path)
+                    .expect("metadata")
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+        }
+    }
+
+    /// Any other rename failure still fails the save and leaves the config
+    /// as it was.
+    #[test]
+    fn other_rename_failures_fail_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "old").expect("write config");
+
+        let result = super::write_atomically_with(&path, b"new", |_, _| {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "old");
+        assert_eq!(stage_files(dir.path()), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_file_is_owner_only_before_any_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (staged, file) =
+            super::create_staging_file(&dir.path().join("config.toml")).expect("staged");
+
+        let mode = file.metadata().expect("metadata").permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "staging file mode {mode:o} is open to others"
+        );
+        drop(file);
+        std::fs::remove_file(staged).expect("cleanup");
     }
 
     /// Load errors end up in issues and agent transcripts, so they point at

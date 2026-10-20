@@ -301,7 +301,8 @@ impl From<crate::config::ConfigError> for CliError {
             | ConfigError::Figment(_)
             | ConfigError::Io(_)
             | ConfigError::Load { .. }
-            | ConfigError::ProfileNotDefined { .. }) => Self::ConfigError(err),
+            | ConfigError::ProfileNotDefined { .. }
+            | ConfigError::Save { .. }) => Self::ConfigError(err),
         }
     }
 }
