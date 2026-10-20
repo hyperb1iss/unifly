@@ -2217,6 +2217,9 @@ async fn test_demo_flag_never_prints_unsanitized_cli_output() {
         .success()
         .stdout(predicate::str::contains("Bob's iPhone"));
 
+    let before = request_count(&server).await;
+    // The allowed run above was recorded, so a zero delta means something.
+    assert!(before > 0, "the mock controller is not recording requests");
     for demo in [["--demo"].as_slice(), [].as_slice()] {
         let mut cmd = mock_cmd(&server);
         if demo.is_empty() {
@@ -2231,6 +2234,19 @@ async fn test_demo_flag_never_prints_unsanitized_cli_output() {
             .stderr(predicate::str::contains("demo mode"))
             .stderr(predicate::str::contains("Bob").not());
     }
+    assert_eq!(
+        request_count(&server).await,
+        before,
+        "a refused demo run reached the controller"
+    );
+}
+
+/// Requests the mock controller has received so far.
+async fn request_count(server: &wiremock::MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .map_or(0, |requests| requests.len())
 }
 
 #[test]
@@ -2273,11 +2289,17 @@ async fn test_demo_mode_from_the_config_file_is_refused_too() {
     )
     .unwrap();
 
-    // The refusal names the file and key that turn demo mode off.
+    // The refusal names the file and key that turn demo mode off, and
+    // nothing reaches the controller.
     let output = unifly_cmd_in(tempdir.path())
         .args(["-p", "lab", "--api-key", MOCK_API_KEY, "clients", "list"])
         .output()
         .unwrap();
+    assert_eq!(
+        request_count(&server).await,
+        0,
+        "refused run reached the controller"
+    );
     assert_eq!(
         output.status.code(),
         Some(5),
