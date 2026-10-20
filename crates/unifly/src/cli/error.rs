@@ -281,7 +281,8 @@ impl From<figment::Error> for CliError {
 /// Config resolution reports the same failures the CLI detects itself, so
 /// those map onto the CLI's own variants: a missing credential or invalid
 /// value then exits and explains itself the same way whether it came from
-/// a profile or from flags.
+/// a profile or from flags. The match names every variant, so a new one
+/// needs its own mapping decision.
 impl From<crate::config::ConfigError> for CliError {
     fn from(err: crate::config::ConfigError) -> Self {
         use crate::config::ConfigError;
@@ -290,7 +291,12 @@ impl From<crate::config::ConfigError> for CliError {
                 Self::profile_missing_credentials(&profile, None, false)
             }
             ConfigError::Validation { field, reason } => Self::Validation { field, reason },
-            other => Self::ConfigError(other),
+            // Reading or writing the file failed: keep the config error's
+            // own message and the general exit code.
+            err
+            @ (ConfigError::Serialization(_) | ConfigError::Figment(_) | ConfigError::Io(_)) => {
+                Self::ConfigError(err)
+            }
         }
     }
 }
