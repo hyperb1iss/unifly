@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-25
+
 ### Added
 
 - **Mouse and touch input across the TUI** (#67). Tabs, list rows, key
@@ -1032,7 +1034,8 @@ same running notes. Each of those releases has its own notes on the
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/hyperb1iss/unifly/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/hyperb1iss/unifly/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/hyperb1iss/unifly/compare/v0.8.0...v0.10.0
 [0.8.0]: https://github.com/hyperb1iss/unifly/compare/v0.7.0...v0.8.0
