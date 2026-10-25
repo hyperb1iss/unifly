@@ -1,6 +1,6 @@
 {
   "name": "unifly",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "UniFi network management CLI, TUI, and AI agent skill for full infrastructure control",
   "author": {
     "name": "Stefanie Jane",

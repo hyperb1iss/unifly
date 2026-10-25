@@ -4740,7 +4740,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unifly"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -4792,7 +4792,7 @@ dependencies = [
 
 [[package]]
 name = "unifly-api"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
