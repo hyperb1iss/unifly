@@ -185,7 +185,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   was missing `U` (upgrade firmware), and cloud mode was said to block
   restart and locate, which go through the connector; only upgrade and
   provisioning need a direct connection.
-||||||| parent of bf89d71 (docs(changelog): note the CLI correctness fixes)
 - **Demo mode no longer lets CLI commands print real data.** `--demo`,
   `UNIFI_DEMO`, and `[demo] enabled = true` promise PII sanitizing, but
   only the TUI sanitizes, so `unifly --demo clients list` printed real
