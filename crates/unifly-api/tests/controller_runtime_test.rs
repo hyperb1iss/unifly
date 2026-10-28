@@ -1514,6 +1514,46 @@ async fn session_only_refresh_keeps_nat_and_groups_when_fetch_fails() {
     controller.disconnect().await;
 }
 
+#[tokio::test]
+async fn session_only_refresh_survives_a_missing_event_endpoint() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let phase = mount_switchable_routes(
+        &server,
+        vec![(
+            "/api/s/default/stat/event".to_owned(),
+            api_key_event_envelope(),
+            empty_legacy_envelope(),
+        )],
+    )
+    .await;
+    // Network 10.x answers stat/event with 404 for a username/password login.
+    set_phase(&phase, RoutePhase::Failing(404));
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    assert_eq!(controller.sites_snapshot().len(), 1);
+    assert_eq!(controller.events_snapshot().len(), 0);
+
+    set_phase(&phase, RoutePhase::Populated);
+    controller.full_refresh().await.unwrap();
+    assert_eq!(controller.events_snapshot().len(), 1);
+
+    set_phase(&phase, RoutePhase::Failing(404));
+    controller.full_refresh().await.unwrap();
+    assert_eq!(controller.events_snapshot().len(), 1);
+
+    controller.disconnect().await;
+}
+
 struct WsProbeServer {
     base_url: Url,
     probe: Arc<Notify>,
