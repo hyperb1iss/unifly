@@ -116,7 +116,8 @@ impl Controller {
             .clone()
             .ok_or(CoreError::ControllerDisconnected)?;
         let session = session::fetch_required(session_client).await?;
-        let fresh_events = unseen_events(self.store(), &session.events);
+        let fresh_events =
+            unseen_events(self.store(), session.events.as_deref().unwrap_or_default());
 
         // Without the Integration API this connection has no source for the
         // Integration-only collections, so they are authoritatively empty.
@@ -134,7 +135,7 @@ impl Controller {
                 dns: Some(Vec::new()),
                 vouchers: Some(Vec::new()),
                 sites: session.sites,
-                events: Some(session.events),
+                events: session.events,
                 traffic_matching_lists: Vec::new(),
                 firewall_groups: session.firewall_groups,
             });

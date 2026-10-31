@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session-only auth works on controllers without `stat/event`.** Network
+  10.x answers `stat/event` with 404, and a username/password profile
+  treated that as fatal, so every command that loads the controller failed
+  with `api.err.NotFound`, raw `api` included. Recent events are now
+  optional in the session-only refresh, as they already were with an API
+  key: a missing endpoint leaves the event list as it was and the other
+  collections load.
+
 ## [0.12.0] - 2026-10-25
 
 ### Added

@@ -1514,6 +1514,77 @@ async fn session_only_refresh_keeps_nat_and_groups_when_fetch_fails() {
     controller.disconnect().await;
 }
 
+#[tokio::test]
+async fn session_only_refresh_survives_a_missing_event_endpoint() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    // Required collections with one record each, ahead of the empty defaults,
+    // so a refresh that drops them fails the assertions below.
+    for (route, record) in [
+        (
+            "/api/s/default/stat/device",
+            json!({"_id": "device-1", "mac": "11:22:33:44:55:66", "type": "uap"}),
+        ),
+        (
+            "/api/s/default/stat/sta",
+            json!({"_id": "client-1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.50"}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(legacy_envelope(&json!([record]))),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    let phase = mount_switchable_routes(
+        &server,
+        vec![(
+            "/api/s/default/stat/event".to_owned(),
+            api_key_event_envelope(),
+            empty_legacy_envelope(),
+        )],
+    )
+    .await;
+    // Network 10.x answers stat/event with 404 for a username/password login.
+    set_phase(&phase, RoutePhase::Failing(404));
+
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    let required = |controller: &Controller| {
+        (
+            controller.devices_snapshot().len(),
+            controller.clients_snapshot().len(),
+            controller.sites_snapshot().len(),
+        )
+    };
+
+    controller.connect().await.unwrap();
+    assert_eq!(required(&controller), (1, 1, 1));
+    assert_eq!(controller.events_snapshot().len(), 0);
+
+    set_phase(&phase, RoutePhase::Populated);
+    controller.full_refresh().await.unwrap();
+    assert_eq!(required(&controller), (1, 1, 1));
+    assert_eq!(controller.events_snapshot().len(), 1);
+
+    set_phase(&phase, RoutePhase::Failing(404));
+    controller.full_refresh().await.unwrap();
+    assert_eq!(required(&controller), (1, 1, 1));
+    assert_eq!(controller.events_snapshot().len(), 1);
+
+    controller.disconnect().await;
+}
+
 struct WsProbeServer {
     base_url: Url,
     probe: Arc<Notify>,
