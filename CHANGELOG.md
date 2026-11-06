@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-06
+
+### Security
+
+- Update `ctutils`, `rustls-webpki`, `tokio`, `webpki-root-certs`, and
+  `webpki-roots` to patched releases, addressing RUSTSEC-2026-0381,
+  RUSTSEC-2026-0382, RUSTSEC-2026-0383, RUSTSEC-2026-0385, and
+  RUSTSEC-2026-0386. Restore the `cargo-deny` CI gate so dependency
+  advisories block builds and releases.
+- Library consumers must update the affected dependencies in their own
+  lockfiles. Updating `unifly-api` alone may retain vulnerable versions of
+  the verifier, root certificates, or other affected dependencies.
+
 ### Fixed
 
 - **Session-only auth works on controllers without `stat/event`.** Network
@@ -1044,7 +1057,8 @@ same running notes. Each of those releases has its own notes on the
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/hyperb1iss/unifly/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/hyperb1iss/unifly/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/hyperb1iss/unifly/compare/v0.8.0...v0.10.0

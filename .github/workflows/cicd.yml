@@ -24,7 +24,7 @@ jobs:
       all-features: false
       all-targets: false
       nextest: false
-      cargo-deny: false
+      cargo-deny: true
       nightly-fmt: true
     permissions:
       contents: read
