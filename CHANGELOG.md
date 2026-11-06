@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   RUSTSEC-2026-0382, RUSTSEC-2026-0383, RUSTSEC-2026-0385, and
   RUSTSEC-2026-0386. Restore the `cargo-deny` CI gate so dependency
   advisories block builds and releases.
+- Library consumers must update the affected dependencies in their own
+  lockfiles. Updating `unifly-api` alone may retain vulnerable versions of
+  the verifier, root certificates, or other affected dependencies.
 
 ### Fixed
 
