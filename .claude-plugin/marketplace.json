@@ -9,7 +9,7 @@
       "name": "unifly",
       "source": "./",
       "description": "UniFi network management CLI, TUI, and AI agent skill for full infrastructure control",
-      "version": "0.12.1",
+      "version": "0.13.0",
       "author": {
         "name": "Stefanie Jane",
         "url": "https://hyperbliss.tech"
