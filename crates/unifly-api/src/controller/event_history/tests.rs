@@ -267,11 +267,11 @@ async fn later_page_error_does_not_return_partial_success_or_fallback() {
 #[tokio::test]
 async fn repeated_page_metadata_and_incomplete_totals_fail() {
     for response in [
-        json!({"page_number": 0, "total_page_count": 2, "total_element_count": 2, "data": [event("again", "CLIENT_CONNECTION")]}),
+        json!({"page_number": 0, "total_page_count": 2, "total_element_count": 3, "data": [event("again", "CLIENT_CONNECTION")]}),
         json!({"page_number": 1, "total_page_count": 2, "total_element_count": 3, "data": [event("last", "CLIENT_CONNECTION")]}),
     ] {
         let (server, client) = setup().await;
-        page(&server, 0, 2, 2, vec![event("first", "CLIENT_CONNECTION")]).await;
+        page(&server, 0, 2, 3, vec![event("first", "CLIENT_CONNECTION")]).await;
         Mock::given(method("POST"))
             .and(path(MODERN))
             .and(body_partial_json(json!({"pageNumber": 1})))

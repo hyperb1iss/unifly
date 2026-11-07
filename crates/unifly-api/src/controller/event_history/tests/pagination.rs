@@ -78,6 +78,39 @@ async fn partially_overlapping_pages_remain_valid() {
 }
 
 #[tokio::test]
+async fn totals_may_grow_or_shrink_during_history_walk() {
+    for (first_total, final_total) in [(3, 4), (4, 3)] {
+        let (server, client) = setup().await;
+        page(
+            &server,
+            0,
+            2,
+            first_total,
+            vec![
+                event("one", "CLIENT_CONNECTION"),
+                event("two", "CLIENT_CONNECTION"),
+            ],
+        )
+        .await;
+        page(
+            &server,
+            1,
+            2,
+            final_total,
+            vec![
+                event("two", "CLIENT_CONNECTION"),
+                event("three", "CLIENT_CONNECTION"),
+            ],
+        )
+        .await;
+        let result = fetch_events(&client, EventHistoryQuery::default())
+            .await
+            .expect("history counted at query start remains complete");
+        assert_eq!(result.len(), 3);
+    }
+}
+
+#[tokio::test]
 async fn overlapping_rows_cannot_mask_missing_history() {
     let (server, client) = setup().await;
     page(

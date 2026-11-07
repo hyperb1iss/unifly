@@ -73,6 +73,7 @@ pub(crate) async fn fetch_events(
         page_size: PAGE_SIZE,
     };
     let mut progress = RawProgress::default();
+    let mut initial_total = None;
     let mut crossed_short_page = false;
     loop {
         let page = match session.list_system_log(&page_query).await {
@@ -83,7 +84,8 @@ pub(crate) async fn fetch_events(
             Err(error) => return Err(error),
         };
         let new_records = progress.check(&page.data, |entry| entry.id.as_deref())?;
-        let done = validate_page(&page, &page_query, progress.len())?;
+        let total_at_start = *initial_total.get_or_insert(page.total_element_count);
+        let done = validate_page(&page, &page_query, progress.len(), total_at_start)?;
         let short_page =
             u32::try_from(page.data.len()).is_ok_and(|count| count < page_query.page_size);
         for (entry, is_new) in page.data.into_iter().zip(new_records) {
@@ -141,6 +143,7 @@ fn validate_page(
     page: &SystemLogPage,
     query: &SystemLogQuery,
     distinct_records: usize,
+    initial_total: u64,
 ) -> Result<bool, Error> {
     if page.page_number != query.page_number {
         return Err(invalid_history(
@@ -180,7 +183,10 @@ fn validate_page(
             "system-log reports additional history beyond its declared final page",
         ));
     }
-    if (done && distinct_records < page.total_element_count) || (!done && count == 0) {
+    // Fixed time bounds do not prevent late arrivals or retention deletes.
+    // Require the initial inventory, reduced only if the final total shrank.
+    let expected_records = initial_total.min(page.total_element_count);
+    if (done && distinct_records < expected_records) || (!done && count == 0) {
         return Err(invalid_history(
             "system-log history is incomplete for its page totals",
         ));
