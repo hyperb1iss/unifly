@@ -140,7 +140,7 @@ impl Error {
             Self::Transport(e) => e.status() == Some(reqwest::StatusCode::NOT_FOUND),
             Self::Integration { status: 404, .. } => true,
             Self::SessionApi { message } => {
-                message.starts_with("HTTP 404") || message.contains("api.err.NotFound")
+                message == "api.err.NotFound" || message.starts_with("HTTP 404 ")
             }
             _ => false,
         }
@@ -175,5 +175,22 @@ mod tests {
         };
 
         assert!(error.is_not_found());
+    }
+
+    #[test]
+    fn unrelated_failures_containing_not_found_are_not_missing_endpoints() {
+        for message in [
+            "HTTP 403 Forbidden: api.err.NotFound",
+            "HTTP 500 Internal Server Error: api.err.NotFound",
+            "HTTP 4040 Invalid: api.err.NotFound",
+            "unexpected api.err.NotFound response",
+        ] {
+            assert!(
+                !Error::SessionApi {
+                    message: message.into()
+                }
+                .is_not_found()
+            );
+        }
     }
 }

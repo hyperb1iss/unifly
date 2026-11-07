@@ -41,7 +41,7 @@ async fn idless_records_use_full_contents_including_unknown_fields() {
         } else {
             let events = result.expect("distinct ID-less records");
             assert_eq!(events.len(), 2);
-            assert!(events.iter().all(|event| event.id.is_none()));
+            assert_ne!(events[0].id, events[1].id);
         }
     }
 }

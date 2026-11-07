@@ -84,6 +84,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "cloc
 
 # ── Encoding ──
 base64 = "0.23"
+sha2 = "0.11"
 
 # ── Filesystem ──
 directories = "6"

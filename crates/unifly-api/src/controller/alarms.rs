@@ -2,14 +2,12 @@ use crate::model::Alarm;
 use crate::session::system_log::SystemLogEntry;
 use crate::{Error, SessionClient};
 
-use super::event_history::endpoint_missing;
-
 /// An unsupported collection selects the legacy API. An empty collection is
 /// still a supported modern endpoint, and a failed mutation is never replayed.
 async fn critical_alerts(session: &SessionClient) -> Result<Option<Vec<SystemLogEntry>>, Error> {
     match session.list_critical_alerts().await {
         Ok(alerts) => Ok(Some(alerts)),
-        Err(error) if endpoint_missing(&error) => Ok(None),
+        Err(error) if error.is_not_found() => Ok(None),
         Err(error) => Err(error),
     }
 }

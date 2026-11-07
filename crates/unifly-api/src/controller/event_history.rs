@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use chrono::Utc;
@@ -14,8 +13,10 @@ use super::support::require_session;
 const PAGE_SIZE: u32 = 1_000;
 
 mod progress;
+mod retained;
 
 use progress::RawProgress;
+use retained::RetainedEvents;
 
 /// Bounds and visibility for a newest-first event history query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub(crate) async fn fetch_events(
     loop {
         let page = match session.list_system_log(&page_query).await {
             Ok(page) => page,
-            Err(error) if page_query.page_number == 0 && endpoint_missing(&error) => {
+            Err(error) if page_query.page_number == 0 && error.is_not_found() => {
                 return legacy_events(session, history).await;
             }
             Err(error) => return Err(error),
@@ -194,24 +195,11 @@ fn validate_page(
     Ok(done)
 }
 
-/// Only an absent endpoint permits a protocol fallback, never an error body
-/// mentioning NotFound inside an unrelated HTTP failure.
-pub(crate) fn endpoint_missing(error: &Error) -> bool {
-    match error {
-        Error::Transport(error) => error.status() == Some(reqwest::StatusCode::NOT_FOUND),
-        Error::Integration { status: 404, .. } => true,
-        Error::SessionApi { message } => {
-            message == "api.err.NotFound" || message.starts_with("HTTP 404 ")
-        }
-        _ => false,
-    }
-}
-
 struct History {
     query: EventHistoryQuery,
     start: i64,
     end: i64,
-    events: Vec<Event>,
+    events: RetainedEvents,
     ids: HashSet<EntityId>,
 }
 
@@ -222,7 +210,7 @@ impl History {
             query,
             start: (end - i64::from(query.within_hours) * 3_600_000).max(0),
             end,
-            events: Vec::new(),
+            events: RetainedEvents::new(query.limit),
             ids: HashSet::new(),
         }
     }
@@ -247,25 +235,8 @@ impl History {
         self.events.len() >= usize::try_from(self.query.limit).unwrap_or(usize::MAX)
     }
 
-    fn finish(mut self) -> Vec<Event> {
-        self.events.sort_by_cached_key(|event| {
-            (
-                Reverse(event.timestamp),
-                (
-                    event.id.is_none(),
-                    event.id.as_ref().map(ToString::to_string),
-                ),
-                event.event_type.clone(),
-                event.message.clone(),
-                event.raw_key.clone(),
-                event.device_mac.as_ref().map(|mac| mac.as_str().to_owned()),
-                event.client_mac.as_ref().map(|mac| mac.as_str().to_owned()),
-                event.site_id.as_ref().map(ToString::to_string),
-            )
-        });
-        self.events
-            .truncate(usize::try_from(self.query.limit).unwrap_or(usize::MAX));
-        self.events
+    fn finish(self) -> Vec<Event> {
+        self.events.finish()
     }
 }
 

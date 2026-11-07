@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 use crate::Error;
-use crate::convert::system_log::invalid_history;
+use crate::convert::system_log::{content_identity, invalid_history};
 
 #[derive(Default)]
 pub(super) struct RawProgress {
@@ -13,7 +13,7 @@ pub(super) struct RawProgress {
 #[derive(PartialEq, Eq, Hash)]
 enum Identity {
     Id(String),
-    Contents(Vec<u8>),
+    Contents(String),
 }
 
 impl RawProgress {
@@ -33,10 +33,7 @@ impl RawProgress {
         for entry in entries {
             let identity = match id(entry).filter(|value| !value.is_empty()) {
                 Some(id) => Identity::Id(id.to_owned()),
-                None => Identity::Contents(
-                    serde_json::to_vec(entry)
-                        .map_err(|_| invalid_history("event identity could not be encoded"))?,
-                ),
+                None => Identity::Contents(content_identity(entry)?),
             };
             new_records.push(self.seen.insert(identity));
         }
