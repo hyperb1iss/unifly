@@ -137,3 +137,50 @@ async fn failed_integration_mutation_is_never_replayed_through_session() {
     assert!(error.to_string().contains("Invalid API key"));
     assert_eq!(server.received_requests().await.expect("requests").len(), 1);
 }
+
+#[tokio::test]
+async fn raw_integration_empty_success_is_distinct_from_invalid_json_and_failure() {
+    let server = MockServer::start().await;
+    let controller = hybrid(&server).await;
+    for (route, status, body) in [
+        ("empty", 200, ""),
+        ("json", 200, r#"{"accepted":true}"#),
+        ("invalid", 200, "not JSON"),
+        ("failed", 500, ""),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(format!("/proxy/network/integration/v1/{route}")))
+            .and(header("X-API-KEY", "test-key"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    assert_eq!(
+        controller
+            .raw_post("integration/v1/empty", &json!({}))
+            .await
+            .expect("empty success"),
+        Value::Null
+    );
+    assert_eq!(
+        controller
+            .raw_post("integration/v1/json", &json!({}))
+            .await
+            .expect("JSON success"),
+        json!({"accepted": true})
+    );
+    assert!(
+        controller
+            .raw_post("integration/v1/invalid", &json!({}))
+            .await
+            .is_err()
+    );
+    assert!(
+        controller
+            .raw_post("integration/v1/failed", &json!({}))
+            .await
+            .is_err()
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 4);
+}

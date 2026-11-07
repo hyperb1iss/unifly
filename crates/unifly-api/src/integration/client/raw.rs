@@ -1,9 +1,10 @@
-use reqwest::{Method, StatusCode};
+use reqwest::Method;
 use serde_json::Value;
 use url::Url;
 
 use super::IntegrationClient;
 use crate::Error;
+use crate::error::body_preview;
 
 impl IntegrationClient {
     /// Raw requests retain the Integration client's API-key authentication and
@@ -21,11 +22,27 @@ impl IntegrationClient {
             request = request.json(body);
         }
         let response = self.send(request).await?;
-        if deleting || response.status() == StatusCode::NO_CONTENT {
+        if deleting {
             self.handle_empty(response).await?;
-            Ok(Value::Null)
-        } else {
-            self.handle_response(response).await
+            return Ok(Value::Null);
         }
+        let status = response.status();
+        if !status.is_success() {
+            return Err(self.parse_error(status, response).await);
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::from_transport(error, self.timeout))?;
+        if body.is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&body).map_err(|error| Error::Deserialization {
+            message: format!(
+                "{error} (body preview: {:?})",
+                body_preview(body.as_bytes())
+            ),
+            body,
+        })
     }
 }
