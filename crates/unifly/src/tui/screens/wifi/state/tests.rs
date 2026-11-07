@@ -403,3 +403,29 @@ fn a_failed_roam_history_fetch_is_retried() {
     screen.apply_action(&roams_loaded(FIRST_MAC, "ap-roof"));
     assert!(rendered(&screen).contains("ap-roof"));
 }
+
+#[test]
+fn client_index_deduplicates_associations_and_replaces_each_snapshot() {
+    let mut screen = WifiScreen::new();
+    let first = access_point("01", "ap-a");
+    let second = access_point("02", "ap-b");
+    screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![
+        first.clone(),
+        second.clone(),
+    ])));
+    let mut client = Arc::unwrap_or_clone(wireless_client(1, first.mac.as_str(), 75));
+    client.wireless.as_mut().expect("wireless").bssid = Some(first.mac.clone());
+    screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![Arc::new(
+        client.clone(),
+    )])));
+    assert_eq!(screen.ap_clients(&first).len(), 1);
+    assert_eq!(screen.ap_health(&first), Some(75));
+    client.uplink_device_mac = Some(second.mac.clone());
+    client.wireless.as_mut().expect("wireless").bssid = None;
+    screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![Arc::new(client)])));
+    assert!(screen.ap_clients(&first).is_empty());
+    assert_eq!(screen.ap_clients(&second).len(), 1);
+    assert_eq!(ap_names(&screen), vec!["ap-b", "ap-a"]);
+    screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![])));
+    assert!(screen.ap_clients(&second).is_empty());
+}

@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -51,6 +51,7 @@ impl WifiScreen {
             action_tx: None,
             devices: Arc::new(Vec::new()),
             clients: Arc::new(Vec::new()),
+            ap_clients: super::client_index::ApClients::default(),
             ap_table_state: TableState::default(),
             client_table_state: TableState::default(),
             neighbor_table_state: TableState::default(),
@@ -100,6 +101,7 @@ impl WifiScreen {
                 // including the first; restart and locate act on it.
                 let selected = self.selected_rows();
                 self.clients = Arc::new(order::clients(clients));
+                self.ap_clients = super::client_index::ApClients::new(&self.clients);
                 self.follow_rows(&selected);
                 self.sync_client_selection();
             }
@@ -321,23 +323,16 @@ impl WifiScreen {
 
         // `self.devices` is already in name order and the sort is stable, so
         // ties (and the Name sort) keep that order.
-        aps.sort_by(|left, right| match self.sort_field {
-            WifiSortField::Health => self.ap_health(right).cmp(&self.ap_health(left)),
-            WifiSortField::Clients => self
-                .ap_clients(right)
-                .len()
-                .cmp(&self.ap_clients(left).len()),
-            WifiSortField::Channel => self
-                .ap_channel_profile(left)
-                .map(|(channel, _)| channel)
-                .unwrap_or_default()
-                .cmp(
-                    &self
-                        .ap_channel_profile(right)
-                        .map(|(channel, _)| channel)
-                        .unwrap_or_default(),
-                ),
-            _ => Ordering::Equal,
+        aps.sort_by_cached_key(|ap| match self.sort_field {
+            WifiSortField::Health => (Reverse(self.ap_health(ap)), Reverse(0), 0),
+            WifiSortField::Clients => (Reverse(None), Reverse(self.ap_clients(ap).len()), 0),
+            WifiSortField::Channel => (
+                Reverse(None),
+                Reverse(0),
+                self.ap_channel_profile(ap)
+                    .map_or(0, |(channel, _)| channel),
+            ),
+            _ => (Reverse(None), Reverse(0), 0),
         });
 
         aps
@@ -492,22 +487,8 @@ impl WifiScreen {
             .map(|client| client.mac.to_string())
     }
 
-    pub(super) fn ap_clients(&self, ap: &Device) -> Vec<&Arc<Client>> {
-        self.clients
-            .iter()
-            .filter(|client| client.client_type == ClientType::Wireless)
-            .filter(|client| {
-                client
-                    .uplink_device_mac
-                    .as_ref()
-                    .is_some_and(|mac| mac == &ap.mac)
-                    || client
-                        .wireless
-                        .as_ref()
-                        .and_then(|wireless| wireless.bssid.as_ref())
-                        .is_some_and(|bssid| bssid == &ap.mac)
-            })
-            .collect()
+    pub(super) fn ap_clients(&self, ap: &Device) -> &[Arc<Client>] {
+        self.ap_clients.get(&ap.mac)
     }
 
     pub(super) fn ap_health(&self, ap: &Device) -> Option<u8> {

@@ -1,3 +1,4 @@
+mod client_index;
 mod input;
 mod render;
 mod state;
@@ -26,6 +27,7 @@ pub struct WifiScreen {
     action_tx: Option<UnboundedSender<Action>>,
     devices: Arc<Vec<Arc<Device>>>,
     clients: Arc<Vec<Arc<Client>>>,
+    ap_clients: client_index::ApClients,
     ap_table_state: TableState,
     client_table_state: TableState,
     neighbor_table_state: TableState,
