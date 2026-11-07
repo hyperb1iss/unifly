@@ -4,136 +4,13 @@ use super::NetworksScreen;
 
 use ratatui::widgets::TableState;
 
-use unifly_api::{EntityId, Network, UpdateNetworkRequest};
+use unifly_api::Network;
 
 use crate::cli::commands::util::order;
 use crate::tui::action::Action;
 use crate::tui::table::{TableScroll, reselect};
 
-/// Editable fields for a network. Initialized from the selected `Network`.
-#[allow(clippy::struct_excessive_bools)]
-pub(super) struct NetworkEditState {
-    /// The network being edited; the save goes to this ID.
-    pub(super) network_id: EntityId,
-    name: String,
-    vlan_id: String,
-    dhcp_enabled: bool,
-    isolation_enabled: bool,
-    internet_access_enabled: bool,
-    mdns_forwarding_enabled: bool,
-    ipv6_enabled: bool,
-    enabled: bool,
-    /// Which field is currently focused (0-indexed).
-    pub(super) field_idx: usize,
-}
-
-impl NetworkEditState {
-    pub(super) const FIELD_COUNT: usize = 8;
-
-    pub(super) fn from_network(network: &Network) -> Self {
-        Self {
-            network_id: network.id.clone(),
-            name: network.name.clone(),
-            vlan_id: network
-                .vlan_id
-                .map_or_else(String::new, |value| value.to_string()),
-            dhcp_enabled: network.dhcp.as_ref().is_some_and(|dhcp| dhcp.enabled),
-            isolation_enabled: network.isolation_enabled,
-            internet_access_enabled: network.internet_access_enabled,
-            mdns_forwarding_enabled: network.mdns_forwarding_enabled,
-            ipv6_enabled: network.ipv6_enabled,
-            enabled: network.enabled,
-            field_idx: 0,
-        }
-    }
-
-    pub(super) fn field_label(index: usize) -> &'static str {
-        match index {
-            0 => "Name",
-            1 => "VLAN ID",
-            2 => "Enabled",
-            3 => "DHCP",
-            4 => "Isolation",
-            5 => "Internet",
-            6 => "mDNS Fwd",
-            7 => "IPv6",
-            _ => "",
-        }
-    }
-
-    pub(super) fn field_value(&self, index: usize) -> String {
-        match index {
-            0 => self.name.clone(),
-            1 => self.vlan_id.clone(),
-            2 => bool_label(self.enabled),
-            3 => bool_label(self.dhcp_enabled),
-            4 => bool_label(self.isolation_enabled),
-            5 => bool_label(self.internet_access_enabled),
-            6 => bool_label(self.mdns_forwarding_enabled),
-            7 => bool_label(self.ipv6_enabled),
-            _ => String::new(),
-        }
-    }
-
-    pub(super) fn is_bool_field(index: usize) -> bool {
-        index >= 2
-    }
-
-    pub(super) fn toggle_bool(&mut self) {
-        match self.field_idx {
-            2 => self.enabled = !self.enabled,
-            3 => self.dhcp_enabled = !self.dhcp_enabled,
-            4 => self.isolation_enabled = !self.isolation_enabled,
-            5 => self.internet_access_enabled = !self.internet_access_enabled,
-            6 => self.mdns_forwarding_enabled = !self.mdns_forwarding_enabled,
-            7 => self.ipv6_enabled = !self.ipv6_enabled,
-            _ => {}
-        }
-    }
-
-    pub(super) fn handle_text_input(&mut self, ch: char) {
-        match self.field_idx {
-            0 => self.name.push(ch),
-            1 if ch.is_ascii_digit() => self.vlan_id.push(ch),
-            _ => {}
-        }
-    }
-
-    pub(super) fn handle_backspace(&mut self) {
-        match self.field_idx {
-            0 => {
-                self.name.pop();
-            }
-            1 => {
-                self.vlan_id.pop();
-            }
-            _ => {}
-        }
-    }
-
-    pub(super) fn build_request(&self) -> UpdateNetworkRequest {
-        UpdateNetworkRequest {
-            name: Some(self.name.clone()),
-            vlan_id: self.vlan_id.parse().ok(),
-            enabled: Some(self.enabled),
-            dhcp_enabled: Some(self.dhcp_enabled),
-            isolation_enabled: Some(self.isolation_enabled),
-            internet_access_enabled: Some(self.internet_access_enabled),
-            mdns_forwarding_enabled: Some(self.mdns_forwarding_enabled),
-            ipv6_enabled: Some(self.ipv6_enabled),
-            subnet: None,
-            dhcp: None,
-        }
-    }
-}
-
-fn bool_label(value: bool) -> String {
-    if value {
-        "Enabled".into()
-    } else {
-        "Disabled".into()
-    }
-}
+pub(super) use super::edit::NetworkEditState;
 
 pub(super) fn format_lease_time(secs: u64) -> String {
     if secs >= 86400 && secs.is_multiple_of(86400) {
@@ -215,11 +92,12 @@ impl NetworksScreen {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use unifly_api::EntityId;
 
     use super::{NetworkEditState, NetworksScreen, format_lease_time};
 
     use serde_json::json;
-    use unifly_api::{EntityId, Network};
+    use unifly_api::Network;
     use uuid::Uuid;
 
     use crate::tui::action::Action;
@@ -311,13 +189,101 @@ mod tests {
         edit.field_idx = 2;
         edit.toggle_bool();
 
-        let request = edit.build_request();
+        let request = edit
+            .build_request()
+            .expect("valid form")
+            .expect("changed field");
 
-        assert_eq!(request.name.as_deref(), Some("Primary LAN"));
-        assert_eq!(request.vlan_id, Some(100));
+        assert_eq!(request.name, None);
+        assert_eq!(request.vlan_id, None);
         assert_eq!(request.enabled, Some(false));
-        assert_eq!(request.dhcp_enabled, Some(true));
-        assert_eq!(request.ipv6_enabled, Some(true));
+        assert_eq!(request.dhcp_enabled, None);
+        assert_eq!(request.ipv6_enabled, None);
+        assert_eq!(
+            serde_json::to_value(request).expect("request JSON"),
+            json!({"enabled": false})
+        );
+    }
+
+    #[test]
+    fn network_form_keeps_partial_edits_and_validates_dhcp_ranges() {
+        let mut edit = NetworkEditState::from_network(&test_network());
+        assert!(edit.build_request().expect("unchanged").is_none());
+        edit.field_idx = 8;
+        for _ in 0.."192.168.100.10".len() {
+            edit.handle_backspace();
+        }
+        for ch in "192.168.100.20".chars() {
+            edit.handle_text_input(ch);
+        }
+        let request = edit.build_request().expect("valid range").expect("change");
+        let dhcp = request.dhcp.expect("DHCP update");
+        assert_eq!(dhcp.range_start.as_deref(), Some("192.168.100.20"));
+        assert_eq!(dhcp.range_stop, None);
+        assert_eq!(request.dhcp_enabled, None);
+        assert_eq!(request.name, None);
+        for _ in 0.."192.168.100.20".len() {
+            edit.handle_backspace();
+        }
+        for ch in "192.168.100.251".chars() {
+            edit.handle_text_input(ch);
+        }
+        assert!(edit.build_request().is_err());
+    }
+
+    #[test]
+    fn enabling_dhcp_can_supply_a_new_range_without_resending_other_fields() {
+        let mut network = test_network();
+        network.dhcp = None;
+        let mut edit = NetworkEditState::from_network(&network);
+        edit.field_idx = 3;
+        edit.toggle_bool();
+        assert!(edit.build_request().is_err());
+        for (index, address) in [(8, "192.168.100.10"), (9, "192.168.100.200")] {
+            edit.field_idx = index;
+            for ch in address.chars() {
+                edit.handle_text_input(ch);
+            }
+        }
+        let request = edit.build_request().expect("valid range").expect("changed");
+        assert_eq!(
+            serde_json::to_value(request).expect("request JSON"),
+            json!({
+                "dhcp_enabled": true,
+                "dhcp": { "range_start": "192.168.100.10", "range_stop": "192.168.100.200" }
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_network_edit_stays_open_and_short_form_keeps_focus_visible() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut screen = NetworksScreen::new();
+        screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![Arc::new(
+            test_network(),
+        )])));
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('e')));
+        let edit = screen.edit_state.as_mut().expect("form");
+        edit.field_idx = 9;
+        edit.handle_text_input('9');
+        assert!(matches!(
+            screen.handle_key_input(KeyEvent::from(KeyCode::Enter)),
+            Some(Action::Notify(_))
+        ));
+        assert!(screen.edit_state.is_some());
+        let rows = crate::tui::table::render_lines(60, 12, |frame, area| {
+            screen.render_screen(frame, area);
+        });
+        assert!(
+            rows.iter().any(|row| row.contains("DHCP stop")),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("save")),
+            "{}",
+            rows.join("\n")
+        );
     }
 
     #[test]
@@ -388,6 +354,7 @@ mod tests {
         ])));
         screen.select(0);
         let _ = screen.handle_key_input(key(KeyCode::Char('e')));
+        let _ = screen.handle_key_input(key(KeyCode::Char('!')));
         screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![
             network(4, "Admin", 5),
             network(1, "Guest", 30),

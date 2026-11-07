@@ -3,7 +3,7 @@ use super::state::NetworkEditState;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
-use crate::tui::action::Action;
+use crate::tui::action::{Action, Notification};
 use crate::tui::widgets::click::{self, Click};
 
 impl NetworksScreen {
@@ -95,16 +95,25 @@ impl NetworksScreen {
             KeyCode::Enter => {
                 // Save to the network the form was opened on, never to
                 // whatever row the selection sits on after a refresh.
-                if let Some(edit) = self.edit_state.take()
-                    && self
-                        .networks
-                        .iter()
-                        .any(|network| network.id == edit.network_id)
+                let edit = self.edit_state.as_ref()?;
+                if !self
+                    .networks
+                    .iter()
+                    .any(|network| network.id == edit.network_id)
                 {
-                    let request = edit.build_request();
-                    return Some(Action::NetworkSave(edit.network_id, Box::new(request)));
+                    self.edit_state = None;
+                    return None;
                 }
-                return None;
+                match edit.build_request() {
+                    Ok(request) => {
+                        let id = edit.network_id.clone();
+                        self.edit_state = None;
+                        return Some(request.map_or(Action::Invalidate, |request| {
+                            Action::NetworkSave(id, Box::new(request))
+                        }));
+                    }
+                    Err(error) => return Some(Action::Notify(Notification::error(error))),
+                }
             }
             _ => {}
         }

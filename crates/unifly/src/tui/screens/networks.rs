@@ -1,5 +1,6 @@
 //! Networks screen - network table with inline detail expansion and editing overlay.
 
+mod edit;
 mod input;
 mod render;
 mod state;
