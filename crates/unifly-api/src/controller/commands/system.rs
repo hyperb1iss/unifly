@@ -65,9 +65,9 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             ic.purge_vouchers(&sid, &filter).await?;
             Ok(CommandResult::Ok)
         }
-        Command::CreateSite { name, description } => {
+        Command::CreateSite { name } => {
             let session = require_session(session)?;
-            session.create_site(&name, &description).await?;
+            session.create_site(&name).await?;
             Ok(CommandResult::Ok)
         }
         Command::DeleteSite { name } => {

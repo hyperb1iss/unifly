@@ -7,6 +7,9 @@
 #[path = "cli/refresh_warnings.rs"]
 mod refresh_warnings;
 
+#[path = "cli/site_creation.rs"]
+mod site_creation;
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use tempfile::TempDir;

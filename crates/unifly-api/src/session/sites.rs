@@ -31,8 +31,10 @@ impl SessionClient {
 
     /// Create a new site.
     ///
-    /// `POST /api/s/{site}/cmd/sitemgr` with `{"cmd": "add-site", "name": "...", "desc": "..."}`
-    pub async fn create_site(&self, name: &str, description: &str) -> Result<(), Error> {
+    /// The controller generates the internal site reference. `name` is the display name.
+    ///
+    /// `POST /api/s/{site}/cmd/sitemgr` with `{"cmd": "add-site", "desc": "..."}`
+    pub async fn create_site(&self, name: &str) -> Result<(), Error> {
         let url = self.site_url("cmd/sitemgr");
         debug!(name, "creating site");
         let _: Vec<serde_json::Value> = self
@@ -40,8 +42,7 @@ impl SessionClient {
                 url,
                 &json!({
                     "cmd": "add-site",
-                    "name": name,
-                    "desc": description,
+                    "desc": name,
                 }),
             )
             .await?;

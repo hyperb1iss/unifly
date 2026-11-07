@@ -60,10 +60,8 @@ pub async fn handle(
             Ok(())
         }
 
-        SitesCommand::Create { name, description } => {
-            controller
-                .execute(CoreCommand::CreateSite { name, description })
-                .await?;
+        SitesCommand::Create { name } => {
+            controller.execute(CoreCommand::CreateSite { name }).await?;
             if !global.quiet {
                 eprintln!("Site created");
             }

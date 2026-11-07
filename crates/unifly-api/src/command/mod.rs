@@ -263,7 +263,6 @@ pub enum Command {
     ArchiveAllAlarms,
     CreateSite {
         name: String,
-        description: String,
     },
     DeleteSite {
         name: String,
