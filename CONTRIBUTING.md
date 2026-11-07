@@ -143,6 +143,11 @@ just e2e-test       # run the suite against a running controller
 just e2e-down       # stop and remove the container
 ```
 
+`just e2e` with its default URL and the Docker CI job set
+`UNIFLY_E2E_SIMULATION=1` to identify the seeded simulation fixture. Its
+pending-device test requires a nonempty result. External-controller runs leave this unset and compare the pending
+list against inventory without assuming any device needs adoption.
+
 Connection defaults are overridable via `UNIFLY_E2E_URL`, `UNIFLY_E2E_USERNAME`, `UNIFLY_E2E_PASSWORD`, `UNIFLY_E2E_SITE`, and `UNIFLY_E2E_TIMEOUT_SECS`. CI runs the same lifecycle in `.github/workflows/e2e.yml`.
 
 The suite has two lanes. The session lane authenticates with username and password and runs on every e2e invocation against the simulation controller. The Integration lane (tests named `integration_profile_*`) exercises the modern Integration API (REST, `X-API-KEY`). It lists DNS policies, firewall policies and zones, networks (plus one `networks get`), Wi-Fi broadcasts, ACL rules, and traffic lists, and runs create/delete round trips for a DNS A record and a firewall policy with a destination port range. It runs only when `UNIFLY_E2E_API_KEY` carries a key and skips otherwise (the key reaches the CLI through the profile's `api_key_env`, so it never lands on disk).
