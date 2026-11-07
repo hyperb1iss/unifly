@@ -14,8 +14,8 @@ const VPN_SETTING_KEYS: &[&str] = &[
 
 impl Controller {
     pub async fn list_vpn_settings(&self) -> Result<Vec<VpnSetting>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.get_site_settings().await?;
         let mut settings = raw
             .iter()
@@ -48,17 +48,16 @@ impl Controller {
             });
         }
 
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         session.set_site_setting(key, body).await?;
-        drop(guard);
 
         self.get_vpn_setting(key).await
     }
 
     pub async fn get_all_site_settings(&self) -> Result<Vec<serde_json::Value>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         Ok(session.get_site_settings().await?)
     }
 
@@ -78,8 +77,8 @@ impl Controller {
         key: &str,
         body: &serde_json::Value,
     ) -> Result<(), CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         session.set_site_setting(key, body).await?;
         Ok(())
     }

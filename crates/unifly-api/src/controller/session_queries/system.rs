@@ -5,8 +5,8 @@ use crate::model::{Alarm, HealthSummary, SysInfo, SystemInfo};
 
 impl Controller {
     pub async fn is_dpi_enabled(&self) -> Result<bool, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let settings = session.get_site_settings().await?;
         let enabled = settings
             .iter()
@@ -33,8 +33,8 @@ impl Controller {
             return Ok(demo.with(|sim| sim.system_info()));
         }
         {
-            let guard = self.inner.integration_client.lock().await;
-            if let Some(ic) = guard.as_ref() {
+            let integration = self.inner.integration_client.lock().await.clone();
+            if let Some(ic) = integration.as_ref() {
                 let info = ic.get_info().await?;
                 let fields = &info.fields;
                 return Ok(SystemInfo {
@@ -67,8 +67,8 @@ impl Controller {
             }
         }
 
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.get_sysinfo().await?;
         Ok(SystemInfo {
             controller_name: raw
@@ -107,15 +107,15 @@ impl Controller {
         if let Some(demo) = self.demo_runtime() {
             return Ok(demo.with(|sim| sim.health()));
         }
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.get_health().await?;
         Ok(convert_health_summaries(raw))
     }
 
     pub async fn get_sysinfo(&self) -> Result<SysInfo, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.get_sysinfo().await?;
         Ok(SysInfo {
             timezone: raw

@@ -10,8 +10,8 @@ use super::common::redact_sensitive_value;
 
 impl Controller {
     pub async fn list_site_to_site_vpns(&self) -> Result<Vec<SiteToSiteVpn>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.list_network_conf().await?;
         Ok(raw
             .iter()
@@ -33,8 +33,8 @@ impl Controller {
     pub async fn list_remote_access_vpn_servers(
         &self,
     ) -> Result<Vec<RemoteAccessVpnServer>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.list_network_conf().await?;
         Ok(raw
             .iter()
@@ -60,8 +60,8 @@ impl Controller {
         &self,
         server_id: Option<&str>,
     ) -> Result<Vec<WireGuardPeer>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = match server_id {
             Some(server_id) => session.list_wireguard_peers(server_id).await?,
             None => session.list_all_wireguard_peers().await?,
@@ -94,8 +94,8 @@ impl Controller {
     }
 
     pub async fn list_wireguard_peer_existing_subnets(&self) -> Result<Vec<String>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.get_wireguard_peer_existing_subnets().await?;
         Ok(raw
             .get("subnets")
@@ -111,8 +111,8 @@ impl Controller {
     }
 
     pub async fn list_openvpn_port_suggestions(&self) -> Result<Vec<u16>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.get_openvpn_port_suggestions().await?;
         Ok(raw
             .get("available_ports")
@@ -128,14 +128,14 @@ impl Controller {
     }
 
     pub async fn download_openvpn_configuration(&self, id: &str) -> Result<Vec<u8>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         Ok(session.download_openvpn_configuration(id).await?)
     }
 
     pub async fn list_vpn_client_profiles(&self) -> Result<Vec<VpnClientProfile>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let mut clients = session
             .list_network_conf()
             .await?
@@ -162,8 +162,8 @@ impl Controller {
     }
 
     pub async fn list_vpn_client_connections(&self) -> Result<Vec<VpnClientConnection>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let mut connections = session
             .list_vpn_client_connections()
             .await?
@@ -195,8 +195,8 @@ impl Controller {
     pub async fn list_magic_site_to_site_vpn_configs(
         &self,
     ) -> Result<Vec<MagicSiteToSiteVpnConfig>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let mut configs = session
             .list_magic_site_to_site_vpn_configs()
             .await?
@@ -226,8 +226,8 @@ impl Controller {
     }
 
     pub async fn list_ipsec_sa(&self) -> Result<Vec<IpsecSa>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         Ok(session.list_ipsec_sa().await?)
     }
 

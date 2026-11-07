@@ -7,3 +7,6 @@ mod stats;
 mod system;
 mod vpn;
 mod wifi;
+
+#[cfg(test)]
+mod concurrency;

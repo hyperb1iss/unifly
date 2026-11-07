@@ -22,6 +22,7 @@ mod devices;
 mod firewall;
 mod networks;
 mod policy;
+mod raw;
 mod reference;
 mod switching;
 mod system;
