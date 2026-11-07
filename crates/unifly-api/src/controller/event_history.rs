@@ -160,30 +160,24 @@ fn validate_page(
     }
     let distinct_records = u64::try_from(distinct_records)
         .map_err(|_| invalid_history("system-log record count overflow"))?;
-    if page.total_page_count == 0 {
-        if page.page_number == 0
-            && page.total_element_count == 0
-            && count == 0
-            && !page.has_next
-            && !page.or_more
-        {
+    let continuation = page.has_next || page.or_more;
+    if !continuation && count > page.total_element_count {
+        return Err(invalid_history(
+            "system-log returned inconsistent page totals",
+        ));
+    }
+    if page.total_page_count == 0 && !continuation {
+        if page.total_element_count == 0 && count == 0 {
             return Ok(true);
         }
         return Err(invalid_history(
             "system-log reports no pages for nonempty history",
         ));
     }
-    if page.page_number >= page.total_page_count || count > page.total_element_count {
-        return Err(invalid_history(
-            "system-log returned inconsistent page totals",
-        ));
-    }
-    let done = page.page_number == page.total_page_count - 1;
-    if done && (page.has_next || page.or_more) {
-        return Err(invalid_history(
-            "system-log reports additional history beyond its declared final page",
-        ));
-    }
+    // Continuation flags make reported totals a lower bound. A later page can
+    // exceed that bound, or the total may shrink while the request is in flight.
+    // Stop only after continuation clears and all declared pages are covered.
+    let done = !continuation && page.page_number >= page.total_page_count.saturating_sub(1);
     // Fixed time bounds do not prevent late arrivals or retention deletes.
     // Require the initial inventory, reduced only if the final total shrank.
     let expected_records = initial_total.min(page.total_element_count);

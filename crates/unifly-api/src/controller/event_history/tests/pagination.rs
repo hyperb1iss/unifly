@@ -174,11 +174,12 @@ async fn repeated_legacy_firewall_pages_stop_after_two_reads() {
 }
 
 #[tokio::test]
-async fn continuation_flags_prevent_false_end_of_history() {
+async fn continuation_flags_walk_past_lower_bound_totals() {
     for (has_next, or_more) in [(true, false), (false, true), (true, true)] {
         let (server, client) = setup().await;
         Mock::given(method("POST"))
             .and(path(MODERN))
+            .and(body_partial_json(json!({"pageNumber": 0})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "page_number": 0, "total_page_count": 1, "total_element_count": 1,
                 "has_next": has_next, "or_more": or_more,
@@ -187,10 +188,37 @@ async fn continuation_flags_prevent_false_end_of_history() {
             .expect(1)
             .mount(&server)
             .await;
-        let error = fetch_events(&client, EventHistoryQuery::default())
+        page(&server, 1, 1, 2, vec![event("two", "CLIENT_CONNECTION")]).await;
+        let result = fetch_events(&client, EventHistoryQuery::default())
             .await
-            .expect_err("incomplete history");
-        assert!(error.to_string().contains("additional history"));
+            .expect("lower-bound history");
+        assert_eq!(result.len(), 2);
+        assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn lower_bound_continuation_requires_new_records() {
+    for rows in [vec![], vec![event("same", "CLIENT_CONNECTION")]] {
+        let (server, client) = setup().await;
+        for (number, data) in [(0, vec![event("same", "CLIENT_CONNECTION")]), (1, rows)] {
+            Mock::given(method("POST"))
+                .and(path(MODERN))
+                .and(body_partial_json(json!({"pageNumber": number})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "page_number": number, "total_page_count": 1, "total_element_count": 1,
+                    "or_more": true, "has_next": true, "data": data
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        assert!(
+            fetch_events(&client, EventHistoryQuery::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(server.received_requests().await.expect("requests").len(), 2);
     }
 }
 
