@@ -69,13 +69,16 @@ pub async fn handle(
         }
 
         SitesCommand::Delete { name } => {
+            let id = controller.resolve_session_site_id(&name).await?;
             if !util::confirm(
                 &format!("Delete site '{name}'? This is destructive."),
                 global.yes,
             )? {
                 return Ok(());
             }
-            controller.execute(CoreCommand::DeleteSite { name }).await?;
+            controller
+                .execute(CoreCommand::DeleteSite { name: id })
+                .await?;
             if !global.quiet {
                 eprintln!("Site deleted");
             }

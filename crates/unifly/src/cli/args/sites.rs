@@ -23,7 +23,7 @@ pub enum SitesCommand {
 
     /// Delete a site (session API)
     Delete {
-        /// Site name
+        /// Internal reference or Session API ID (not the Integration API ID)
         name: String,
     },
 }

@@ -4,6 +4,13 @@ use crate::core_error::CoreError;
 use crate::model::{Alarm, HealthSummary, SysInfo, SystemInfo};
 
 impl Controller {
+    /// Resolve a site before confirming a Session API management operation.
+    pub async fn resolve_session_site_id(&self, name: &str) -> Result<String, CoreError> {
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
+        Ok(session.resolve_site_id(name).await?)
+    }
+
     pub async fn is_dpi_enabled(&self) -> Result<bool, CoreError> {
         let session = self.inner.session_client.lock().await.clone();
         let session = require_session(session.as_ref())?;
