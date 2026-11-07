@@ -178,7 +178,7 @@ fn convert_source_traffic_filter(f: &integration_types::SourceTrafficFilter) -> 
             match_opposite: network_filter.match_opposite,
             mac_addresses: mac_address_filter
                 .as_ref()
-                .map(|m| m.mac_addresses.clone())
+                .map(|mac| vec![mac.clone()])
                 .unwrap_or_default(),
             ports: port_filter.as_ref().map(convert_port_filter),
         },
@@ -191,7 +191,7 @@ fn convert_source_traffic_filter(f: &integration_types::SourceTrafficFilter) -> 
             match_opposite: ip_filter_match_opposite(ip_address_filter),
             mac_addresses: mac_address_filter
                 .as_ref()
-                .map(|m| m.mac_addresses.clone())
+                .map(|mac| vec![mac.clone()])
                 .unwrap_or_default(),
             ports: port_filter.as_ref().map(convert_port_filter),
         },
@@ -211,6 +211,15 @@ fn convert_source_traffic_filter(f: &integration_types::SourceTrafficFilter) -> 
         } => TrafficFilter::Region {
             regions: region_filter.regions.clone(),
             ports: port_filter.as_ref().map(convert_port_filter),
+        },
+        S::VpnServer { .. } => TrafficFilter::Other {
+            raw_type: "VPN_SERVER".into(),
+        },
+        S::SiteToSiteVpnTunnel { .. } => TrafficFilter::Other {
+            raw_type: "SITE_TO_SITE_VPN_TUNNEL".into(),
+        },
+        S::Ipv6Iid { .. } => TrafficFilter::Other {
+            raw_type: "IPV6_IID".into(),
         },
         S::Unknown => TrafficFilter::Other {
             raw_type: "UNKNOWN".into(),
@@ -281,6 +290,15 @@ fn convert_dest_traffic_filter(f: &integration_types::DestTrafficFilter) -> Traf
                 ports: port_filter.as_ref().map(convert_port_filter),
             }
         }
+        D::VpnServer { .. } => TrafficFilter::Other {
+            raw_type: "VPN_SERVER".into(),
+        },
+        D::SiteToSiteVpnTunnel { .. } => TrafficFilter::Other {
+            raw_type: "SITE_TO_SITE_VPN_TUNNEL".into(),
+        },
+        D::Ipv6Iid { .. } => TrafficFilter::Other {
+            raw_type: "IPV6_IID".into(),
+        },
         D::Unknown => TrafficFilter::Other {
             raw_type: "UNKNOWN".into(),
         },

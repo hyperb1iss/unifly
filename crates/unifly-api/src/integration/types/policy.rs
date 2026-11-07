@@ -36,7 +36,7 @@ pub enum SourceTrafficFilter {
             default,
             skip_serializing_if = "Option::is_none"
         )]
-        mac_address_filter: Option<MacAddressFilter>,
+        mac_address_filter: Option<String>,
         #[serde(
             rename = "portFilter",
             default,
@@ -53,7 +53,7 @@ pub enum SourceTrafficFilter {
             default,
             skip_serializing_if = "Option::is_none"
         )]
-        mac_address_filter: Option<MacAddressFilter>,
+        mac_address_filter: Option<String>,
         #[serde(
             rename = "portFilter",
             default,
@@ -81,6 +81,45 @@ pub enum SourceTrafficFilter {
     Region {
         #[serde(rename = "regionFilter")]
         region_filter: RegionFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "VPN_SERVER")]
+    VpnServer {
+        #[serde(rename = "vpnServerFilter")]
+        vpn_server_filter: VpnServerFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "SITE_TO_SITE_VPN_TUNNEL")]
+    SiteToSiteVpnTunnel {
+        #[serde(rename = "siteToSiteVpnTunnelFilter")]
+        site_to_site_vpn_tunnel_filter: SiteToSiteVpnTunnelFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "IPV6_IID")]
+    Ipv6Iid {
+        #[serde(rename = "ipv6IidFilter")]
+        ipv6_iid_filter: Ipv6IidFilter,
+        #[serde(
+            rename = "macAddressFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        mac_address_filter: Option<String>,
         #[serde(
             rename = "portFilter",
             default,
@@ -166,8 +205,61 @@ pub enum DestTrafficFilter {
         )]
         port_filter: Option<PortFilter>,
     },
+    #[serde(rename = "VPN_SERVER")]
+    VpnServer {
+        #[serde(rename = "vpnServerFilter")]
+        vpn_server_filter: VpnServerFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "SITE_TO_SITE_VPN_TUNNEL")]
+    SiteToSiteVpnTunnel {
+        #[serde(rename = "siteToSiteVpnTunnelFilter")]
+        site_to_site_vpn_tunnel_filter: SiteToSiteVpnTunnelFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "IPV6_IID")]
+    Ipv6Iid {
+        #[serde(rename = "ipv6IidFilter")]
+        ipv6_iid_filter: Ipv6IidFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnServerFilter {
+    pub vpn_server_ids: Vec<Uuid>,
+    pub match_opposite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteToSiteVpnTunnelFilter {
+    pub site_to_site_vpn_tunnel_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ipv6IidFilter {
+    pub ipv6_iid: String,
+    pub match_opposite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -204,7 +296,7 @@ pub enum IpAddressFilter {
 pub enum IpAddressItem {
     #[serde(rename = "IP_ADDRESS")]
     Address { value: String },
-    #[serde(rename = "RANGE")]
+    #[serde(rename = "IP_ADDRESS_RANGE", alias = "RANGE")]
     Range { start: String, stop: String },
     #[serde(rename = "SUBNET")]
     Subnet { value: String },
@@ -329,7 +421,7 @@ pub struct RegionFilter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DomainFilter {
-    #[serde(rename = "SPECIFIC")]
+    #[serde(rename = "DOMAINS", alias = "SPECIFIC")]
     Specific { domains: Vec<String> },
     #[serde(other)]
     Unknown,

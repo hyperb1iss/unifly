@@ -1,3 +1,5 @@
+mod identifiers;
+
 use serde::Deserialize;
 use unifly_api::model::{FirewallAction as ModelFirewallAction, FirewallGroupType};
 use unifly_api::{

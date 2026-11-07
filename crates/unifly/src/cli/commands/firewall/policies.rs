@@ -526,7 +526,7 @@ async fn build_create_request(
     if let Some(path) = from_file.as_ref() {
         let mut input: CreatePolicyInput = serde_json::from_value(util::read_json_file(path)?)?;
         input.filters.resolve_inline_filters()?;
-        resolve_policy_group_refs(controller, &mut input.filters).await?;
+        resolve_policy_refs(controller, &mut input.filters).await?;
         Ok(input.into_request())
     } else {
         let mut filters = PolicyFilterInput::from_cli(
@@ -541,7 +541,7 @@ async fn build_create_request(
             src_address_group,
             dst_address_group,
         )?;
-        resolve_policy_group_refs(controller, &mut filters).await?;
+        resolve_policy_refs(controller, &mut filters).await?;
         let (source_filter, destination_filter) = filters.into_filters();
         Ok(CreateFirewallPolicyRequest {
             name: name.unwrap_or_default(),
@@ -563,10 +563,11 @@ async fn build_create_request(
     }
 }
 
-async fn resolve_policy_group_refs(
+async fn resolve_policy_refs(
     controller: &Controller,
     filters: &mut PolicyFilterInput,
 ) -> Result<(), CliError> {
+    filters.resolve_network_refs(controller)?;
     if filters.has_group_refs() {
         util::ensure_session_access(controller, "firewall policy with group references").await?;
         filters.resolve_group_refs(controller)?;
@@ -646,7 +647,7 @@ async fn handle_update(
     let update = if let Some(path) = from_file.as_ref() {
         let mut input: UpdatePolicyInput = serde_json::from_value(util::read_json_file(path)?)?;
         input.filters.resolve_inline_filters()?;
-        resolve_policy_group_refs(controller, &mut input.filters).await?;
+        resolve_policy_refs(controller, &mut input.filters).await?;
         input.into_request()
     } else {
         let mut filters = PolicyFilterInput::from_cli(
@@ -661,7 +662,7 @@ async fn handle_update(
             src_address_group,
             dst_address_group,
         )?;
-        resolve_policy_group_refs(controller, &mut filters).await?;
+        resolve_policy_refs(controller, &mut filters).await?;
         let (source_filter, destination_filter) = filters.into_filters();
         UpdateFirewallPolicyRequest {
             allow_return_traffic,

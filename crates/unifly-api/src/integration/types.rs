@@ -26,9 +26,10 @@ pub use policy::{
     FirewallPolicyCreateUpdate, FirewallPolicyDestination, FirewallPolicyOrdering,
     FirewallPolicyOrderingEnvelope, FirewallPolicyPatch, FirewallPolicyResponse,
     FirewallPolicySource, FirewallZoneCreateUpdate, FirewallZoneResponse, IpAddressFilter,
-    IpAddressItem, MacAddressFilter, NatPolicyCreateUpdate, NatPolicyResponse, NetworkFilter,
-    PortFilter, PortItem, RegionFilter, SourceTrafficFilter, TrafficMatchingListCreateUpdate,
-    TrafficMatchingListResponse, VoucherCreateRequest, VoucherDeletionResults, VoucherResponse,
+    IpAddressItem, Ipv6IidFilter, MacAddressFilter, NatPolicyCreateUpdate, NatPolicyResponse,
+    NetworkFilter, PortFilter, PortItem, RegionFilter, SiteToSiteVpnTunnelFilter,
+    SourceTrafficFilter, TrafficMatchingListCreateUpdate, TrafficMatchingListResponse,
+    VoucherCreateRequest, VoucherDeletionResults, VoucherResponse, VpnServerFilter,
 };
 pub use reference::{
     CountryResponse, DpiApplicationResponse, DpiCategoryResponse, RadiusProfileResponse,

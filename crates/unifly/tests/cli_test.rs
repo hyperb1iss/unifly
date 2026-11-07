@@ -13,6 +13,9 @@ mod site_creation;
 #[path = "cli/wifi_native.rs"]
 mod wifi_native;
 
+#[path = "cli/firewall_identifiers.rs"]
+mod firewall_identifiers;
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use tempfile::TempDir;
