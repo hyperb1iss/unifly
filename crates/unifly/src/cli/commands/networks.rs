@@ -127,6 +127,7 @@ pub async fn handle(
             from_file,
             name,
             management,
+            device_id,
             vlan,
             enabled,
             ipv4_host,
@@ -147,6 +148,16 @@ pub async fn handle(
                     vlan_id: vlan,
                     subnet: ipv4_host,
                     management: management.as_ref().map(map_network_management),
+                    device_id: device_id
+                        .map(|id| {
+                            id.parse().map(unifly_api::EntityId::Uuid).map_err(|_| {
+                                CliError::Validation {
+                                    field: "device-id".into(),
+                                    reason: "expected an L3 switch Integration device UUID".into(),
+                                }
+                            })
+                        })
+                        .transpose()?,
                     purpose: None,
                     dhcp_enabled: dhcp,
                     enabled,

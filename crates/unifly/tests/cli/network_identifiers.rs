@@ -11,6 +11,10 @@ fn network(id: &str) -> Value {
 }
 
 async fn inventory(server: &MockServer, records: Vec<Value>) {
+    let detail = records
+        .first()
+        .cloned()
+        .unwrap_or_else(|| network(NETWORK_ID));
     Mock::given(method("GET"))
         .and(path(format!(
             "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/networks"
@@ -26,7 +30,7 @@ async fn inventory(server: &MockServer, records: Vec<Value>) {
         .and(path(format!(
             "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/networks/{NETWORK_ID}"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(network(NETWORK_ID)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
         .with_priority(1)
         .mount(server)
         .await;
@@ -165,7 +169,12 @@ async fn dhcp_options_without_an_enabled_server_fail_without_a_write() {
             .failure()
             .stderr(predicate::str::contains("DHCP server settings require"));
     }
-    inventory(&server, vec![network(NETWORK_ID)]).await;
+    let gateway = json!({
+        "id": NETWORK_ID, "name": "Guest", "enabled": true,
+        "management": "GATEWAY", "vlanId": 20, "metadata": {},
+        "ipv4Configuration": {"hostIpAddress": "10.0.50.1", "prefixLength": 24}
+    });
+    inventory(&server, vec![gateway]).await;
     let input = tempfile::NamedTempFile::new().expect("input");
     std::fs::write(input.path(), r#"{"dhcp":{"dns_servers":["1.1.1.1"]}}"#).expect("write input");
     mock_cmd(&server)
@@ -178,4 +187,60 @@ async fn dhcp_options_without_an_enabled_server_fail_without_a_write() {
         ));
     let requests = server.received_requests().await.expect("requests");
     assert!(requests.iter().all(|request| request.method == "GET"));
+}
+
+#[tokio::test]
+async fn switch_network_creation_sends_its_owner_and_valid_dhcp_configuration() {
+    let server = mock_api_key_controller().await;
+    let owner = "00000000-0000-0000-0000-000000000099";
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/proxy/network/integration/v1/sites/{MOCK_SITE_ID}/networks"
+        )))
+        .and(body_partial_json(json!({
+            "management": "SWITCH", "deviceId": owner,
+            "cellularBackupEnabled": false, "isolationEnabled": false,
+            "ipv4Configuration": {"hostIpAddress": "10.0.50.1", "prefixLength": 24,
+                "dhcpConfiguration": {"mode": "SERVER", "ipAddressRange": {
+                    "start": "10.0.50.100", "stop": "10.0.50.200"
+                }}}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(network(NETWORK_ID)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mock_cmd(&server)
+        .args([
+            "networks",
+            "create",
+            "--name",
+            "Guest",
+            "--management",
+            "switch",
+            "--device-id",
+            owner,
+            "--vlan",
+            "20",
+            "--ipv4-host",
+            "10.0.50.1/24",
+            "--dhcp",
+            "--dhcp-start",
+            "10.0.50.100",
+            "--dhcp-stop",
+            "10.0.50.200",
+        ])
+        .assert()
+        .success();
+    let requests = server.received_requests().await.expect("requests");
+    let request = requests
+        .iter()
+        .find(|request| request.method == "POST")
+        .expect("create");
+    let body: Value = request.body_json().expect("JSON");
+    assert!(
+        body["ipv4Configuration"]["dhcpConfiguration"]
+            .get("pingConflictDetectionEnabled")
+            .is_none()
+    );
+    server.verify().await;
 }

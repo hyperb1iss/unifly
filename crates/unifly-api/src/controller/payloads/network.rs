@@ -1,3 +1,8 @@
+mod create;
+#[cfg(test)]
+mod dhcp_tests;
+pub(in super::super) use create::build_create_network_payload;
+
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
@@ -49,9 +54,18 @@ pub(in super::super) fn parse_ipv4_cidr(cidr: &str) -> Result<(Ipv4Addr, u8), Co
 /// nothing, whatever shape the controller described it in.
 pub(in super::super) fn apply_ipv4_update(
     extra: &mut HashMap<String, Value>,
+    management: &str,
     dhcp_serving: bool,
     update: &UpdateNetworkRequest,
 ) -> Result<(), CoreError> {
+    if !matches!(management, "GATEWAY" | "SWITCH")
+        && (update.subnet.is_some() || update.dhcp_enabled == Some(true) || update.dhcp.is_some())
+    {
+        return Err(CoreError::ValidationFailed {
+            message: "IPv4 and DHCP server settings require a gateway- or switch-managed network"
+                .into(),
+        });
+    }
     if let Some(cidr) = update.subnet.as_deref() {
         let (host_ip, prefix_len) = parse_ipv4_cidr(cidr)?;
         let ipv4 = ipv4_configuration(extra, "subnet")?;
@@ -98,25 +112,22 @@ pub(in super::super) fn apply_ipv4_update(
         if enable {
             let mut dhcp = current.cloned().unwrap_or_default();
             let range = dhcp.get("ipAddressRange");
-            let bound = |key| {
+            let bound = |name| {
                 range
-                    .and_then(|range| range.get(key))
-                    .is_some_and(Value::is_string)
+                    .and_then(|range| range.get(name))
+                    .and_then(Value::as_str)
             };
-            if !(bound("start") && bound("stop")) {
-                return Err(CoreError::ValidationFailed {
-                    message: "turning DHCP on needs an address range, and this network has \
-                              none; supply dhcp.range_start and dhcp.range_stop"
-                        .into(),
-                });
-            }
+            let range = validated_dhcp_range(bound("start"), bound("stop"))?;
+            dhcp.insert("ipAddressRange".into(), range);
             dhcp.insert("mode".into(), Value::String("SERVER".into()));
             // Relay targets do not belong to a server configuration.
             dhcp.remove("dhcpServerIpAddresses");
             dhcp.entry("leaseTimeSeconds")
                 .or_insert_with(|| Value::from(DEFAULT_DHCP_LEASE_SECS));
-            dhcp.entry("pingConflictDetectionEnabled")
-                .or_insert(Value::Bool(false));
+            if management == "GATEWAY" {
+                dhcp.entry("pingConflictDetectionEnabled")
+                    .or_insert(Value::Bool(false));
+            }
             ipv4.insert("dhcpConfiguration".into(), Value::Object(dhcp));
         } else if let Some(Value::Object(dhcp)) = ipv4.get_mut("dhcpConfiguration")
             && dhcp.get("mode").and_then(Value::as_str) == Some("SERVER")
@@ -160,31 +171,41 @@ fn apply_dhcp_range(
         .cloned()
         .unwrap_or_default();
     let current = dhcp.get("ipAddressRange");
-    let bound = |name, supplied: Option<&str>| {
-        supplied
-            .or_else(|| {
-                current
-                    .and_then(|range| range.get(name))
-                    .and_then(Value::as_str)
-            })
-            .and_then(|value| value.parse::<Ipv4Addr>().ok())
-            .ok_or_else(|| CoreError::ValidationFailed {
+    let bound = |name| {
+        current
+            .and_then(|range| range.get(name))
+            .and_then(Value::as_str)
+    };
+    let range = validated_dhcp_range(
+        update.range_start.as_deref().or_else(|| bound("start")),
+        update.range_stop.as_deref().or_else(|| bound("stop")),
+    )?;
+    dhcp.insert("ipAddressRange".into(), range);
+    ipv4.insert("dhcpConfiguration".into(), Value::Object(dhcp));
+    Ok(())
+}
+
+fn validated_dhcp_range(start: Option<&str>, stop: Option<&str>) -> Result<Value, CoreError> {
+    let (Some(start), Some(stop)) = (start, stop) else {
+        return Err(CoreError::ValidationFailed {
+            message: "enabling DHCP requires both range start and stop addresses".into(),
+        });
+    };
+    let parse = |name, value: &str| {
+        value
+            .parse::<Ipv4Addr>()
+            .map_err(|_| CoreError::ValidationFailed {
                 message: format!("DHCP range {name} must be an IPv4 address"),
             })
     };
-    let start = bound("start", update.range_start.as_deref())?;
-    let stop = bound("stop", update.range_stop.as_deref())?;
+    let start = parse("start", start)?;
+    let stop = parse("stop", stop)?;
     if start > stop {
         return Err(CoreError::ValidationFailed {
             message: "DHCP range start must not exceed stop".into(),
         });
     }
-    dhcp.insert(
-        "ipAddressRange".into(),
-        serde_json::json!({"start": start.to_string(), "stop": stop.to_string()}),
-    );
-    ipv4.insert("dhcpConfiguration".into(), Value::Object(dhcp));
-    Ok(())
+    Ok(serde_json::json!({"start": start.to_string(), "stop": stop.to_string()}))
 }
 
 /// The network's `ipv4Configuration`, which only gateway- and
@@ -439,7 +460,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_ipv4_update(&mut extra, false, &update).expect("update applies");
+        apply_ipv4_update(&mut extra, "GATEWAY", false, &update).expect("update applies");
 
         assert_eq!(extra, relay_network());
     }
@@ -454,18 +475,18 @@ mod tests {
             dhcp_enabled: Some(false),
             ..Default::default()
         };
-        apply_ipv4_update(&mut extra, true, &disable).expect("disable server");
+        apply_ipv4_update(&mut extra, "GATEWAY", true, &disable).expect("disable server");
         assert!(extra["ipv4Configuration"]["dhcpConfiguration"].is_null());
         assert_eq!(extra["ipv4Configuration"]["hostIpAddress"], "10.0.50.1");
         let enable = UpdateNetworkRequest {
             dhcp_enabled: Some(true),
             ..Default::default()
         };
-        assert!(apply_ipv4_update(&mut extra, false, &enable).is_err());
+        assert!(apply_ipv4_update(&mut extra, "GATEWAY", false, &enable).is_err());
         let enable: UpdateNetworkRequest = serde_json::from_value(json!({
             "dhcp_enabled": true, "dhcp": {"range_start": "10.0.50.110", "range_stop": "10.0.50.210"}
         })).expect("enable request");
-        apply_ipv4_update(&mut extra, false, &enable).expect("enable with range");
+        apply_ipv4_update(&mut extra, "GATEWAY", false, &enable).expect("enable with range");
         assert_eq!(
             extra["ipv4Configuration"]["dhcpConfiguration"]["mode"],
             "SERVER"
@@ -489,7 +510,7 @@ mod tests {
                 "dhcp": {"range_start": "10.0.50.100", "range_stop": "10.0.50.200"}
             }))
             .expect("range request");
-            assert!(apply_ipv4_update(&mut extra, false, &update).is_err());
+            assert!(apply_ipv4_update(&mut extra, "GATEWAY", false, &update).is_err());
             assert_eq!(extra, before);
         }
     }
@@ -505,7 +526,7 @@ mod tests {
         }))
         .expect("update deserializes");
 
-        apply_ipv4_update(&mut extra, false, &update).expect("update applies");
+        apply_ipv4_update(&mut extra, "GATEWAY", false, &update).expect("update applies");
 
         assert_eq!(
             extra["ipv4Configuration"]["dhcpConfiguration"],
@@ -527,7 +548,7 @@ mod tests {
             "dhcp": {"range_start": "10.0.50.100", "range_stop": "10.0.50.200"}
         }))
         .expect("request");
-        apply_ipv4_update(&mut extra, false, &update).expect("update");
+        apply_ipv4_update(&mut extra, "GATEWAY", false, &update).expect("update");
         let ipv4 = &extra["ipv4Configuration"];
         assert_eq!(ipv4["hostIpAddress"], "10.0.50.1");
         assert_eq!(ipv4["dhcpConfiguration"]["mode"], "SERVER");
@@ -553,7 +574,7 @@ mod tests {
             "dhcp": {"range_stop": "10.0.50.250"}
         }))
         .expect("request");
-        apply_ipv4_update(&mut extra, true, &update).expect("update");
+        apply_ipv4_update(&mut extra, "GATEWAY", true, &update).expect("update");
         assert_eq!(
             extra["ipv4Configuration"]["dhcpConfiguration"]["ipAddressRange"],
             json!({"start": "10.0.50.100", "stop": "10.0.50.250"})
@@ -564,7 +585,7 @@ mod tests {
                 "dhcp": {"range_start": start}
             }))
             .expect("request");
-            assert!(apply_ipv4_update(&mut extra, true, &update).is_err());
+            assert!(apply_ipv4_update(&mut extra, "GATEWAY", true, &update).is_err());
             assert_eq!(extra, unchanged);
         }
     }
@@ -577,7 +598,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(apply_ipv4_update(&mut extra, false, &update).is_err());
+        assert!(apply_ipv4_update(&mut extra, "GATEWAY", false, &update).is_err());
         assert_eq!(extra, relay_network());
     }
 
@@ -593,7 +614,7 @@ mod tests {
             };
 
             assert!(
-                apply_ipv4_update(&mut extra, false, &update).is_err(),
+                apply_ipv4_update(&mut extra, "GATEWAY", false, &update).is_err(),
                 "range {range} was accepted"
             );
         }
@@ -610,7 +631,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(apply_ipv4_update(&mut extra, true, &update).is_err());
+        assert!(apply_ipv4_update(&mut extra, "GATEWAY", true, &update).is_err());
     }
 
     #[test]
@@ -621,7 +642,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(apply_ipv4_update(&mut extra, false, &update).is_err());
+        assert!(apply_ipv4_update(&mut extra, "GATEWAY", false, &update).is_err());
         assert!(extra.is_empty());
     }
 

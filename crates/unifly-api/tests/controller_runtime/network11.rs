@@ -486,3 +486,131 @@ async fn gateway_create_emits_complete_dhcp_server_or_explicitly_disabled_dhcp()
         server.verify().await;
     }
 }
+
+#[tokio::test]
+async fn network_create_rejects_invalid_ranges_and_unsupported_settings_without_posting() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    Mock::given(method("POST"))
+        .and(path(integration_route("networks")))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("fixture")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect_lightweight().await.unwrap();
+    let mut invalid = Vec::new();
+    for management in ["Gateway", "Switch"] {
+        for (start, stop) in [
+            ("invalid", "10.0.30.200"),
+            ("::1", "10.0.30.200"),
+            ("10.0.30.100", "::1"),
+            ("10.0.30.201", "10.0.30.200"),
+        ] {
+            let mut request = dhcp_network_create_request();
+            request["management"] = json!(management);
+            if management == "Switch" {
+                request["device_id"] = json!(uuid::Uuid::nil());
+            }
+            request["dhcp_range_start"] = json!(start);
+            request["dhcp_range_stop"] = json!(stop);
+            invalid.push(request);
+        }
+    }
+    for settings in [
+        json!({"management": "Unmanaged"}),
+        json!({"management": "Switch"}),
+        json!({"management": "Switch", "device_id": "legacy-switch"}),
+    ] {
+        let mut request = dhcp_network_create_request();
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(settings.as_object().unwrap().clone());
+        invalid.push(request);
+    }
+    let mut unmanaged_subnet = dhcp_network_create_request();
+    unmanaged_subnet["management"] = json!("Unmanaged");
+    unmanaged_subnet["dhcp_enabled"] = json!(false);
+    unmanaged_subnet
+        .as_object_mut()
+        .unwrap()
+        .remove("dhcp_range_start");
+    unmanaged_subnet
+        .as_object_mut()
+        .unwrap()
+        .remove("dhcp_range_stop");
+    invalid.push(unmanaged_subnet);
+    for request in invalid {
+        let error = controller
+            .execute(unifly_api::Command::CreateNetwork(
+                serde_json::from_value(request).unwrap(),
+            ))
+            .await
+            .expect_err("invalid configuration must fail before POST");
+        assert!(
+            matches!(error, CoreError::ValidationFailed { .. }),
+            "{error}"
+        );
+    }
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn switch_dhcp_update_preserves_owner_and_omits_gateway_only_fields() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let id = uuid::Uuid::nil();
+    let route = integration_route(&format!("networks/{id}"));
+    let network = json!({"id": id, "name": "Switch VLAN", "enabled": true,
+        "management": "SWITCH", "vlanId": 30, "metadata": {}, "deviceId": id,
+        "isolationEnabled": false, "cellularBackupEnabled": false,
+        "ipv4Configuration": {"hostIpAddress": "10.0.30.1", "prefixLength": 24,
+            "autoScaleEnabled": false, "dhcpConfiguration": null}});
+    Mock::given(method("GET"))
+        .and(path(&route))
+        .respond_with(ResponseTemplate::new(200).set_body_json(network.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(&route))
+        .and(move |request: &Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let dhcp = &body["ipv4Configuration"]["dhcpConfiguration"];
+            body["deviceId"] == json!(id)
+                && body["management"] == "SWITCH"
+                && dhcp["mode"] == "SERVER"
+                && dhcp["leaseTimeSeconds"] == 86400
+                && dhcp.get("pingConflictDetectionEnabled").is_none()
+                && dhcp["ipAddressRange"] == json!({"start": "10.0.30.100", "stop": "10.0.30.200"})
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(network))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("fixture")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect_lightweight().await.unwrap();
+    controller
+        .execute(unifly_api::Command::UpdateNetwork {
+            id: unifly_api::EntityId::Uuid(id),
+            update: serde_json::from_value(json!({"dhcp_enabled": true, "dhcp": {
+                "range_start": "10.0.30.100", "range_stop": "10.0.30.200"
+            }}))
+            .unwrap(),
+        })
+        .await
+        .unwrap();
+    controller.disconnect().await;
+    server.verify().await;
+}

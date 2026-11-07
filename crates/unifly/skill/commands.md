@@ -161,6 +161,10 @@ commands require Integration. WiFi neighbors/channels are Session exceptions.
 Network VLAN values are 1 through 4009. Network DNS flags are repeatable.
 Use network refs before deleting to inspect dependencies. Network and WiFi
 delete expose `--force`; inspect its help before bypassing reference checks.
+Switch-managed network creation requires the owning Integration switch UUID
+via `--device-id` (or `device_id` in a file), plus an IPv4 host/prefix.
+Gateway and switch DHCP creation require both valid IPv4 range bounds;
+unmanaged VLANs reject DHCP and IPv4 settings.
 DHCP updates accept `dhcp.range_start` and `dhcp.range_stop` in file payloads.
 An omitted bound preserves the active server's value. Turning DHCP off clears
 the server configuration, so enabling it again requires both bounds together

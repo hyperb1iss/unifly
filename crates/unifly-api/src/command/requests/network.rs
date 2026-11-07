@@ -12,6 +12,9 @@ pub struct CreateNetworkRequest {
     pub subnet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub management: Option<NetworkManagement>,
+    /// Integration UUID of the L3 switch that manages a switch network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<EntityId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<NetworkPurpose>,
     pub dhcp_enabled: bool,

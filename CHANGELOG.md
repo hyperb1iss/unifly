@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Create switch-managed networks with their owning device UUID and IPv4
+  settings. Gateway and switch DHCP creation share range validation with
+  updates; unmanaged VLANs reject DHCP and IPv4 settings.
 - Resolve network names consistently for update, delete, and dependency
   queries. Missing and ambiguous names fail before confirmation or writes.
 - Resolve firewall network names before writes, preserve Network 11 VPN

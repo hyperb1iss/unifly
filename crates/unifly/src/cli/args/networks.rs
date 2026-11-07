@@ -32,6 +32,10 @@ pub enum NetworksCommand {
         #[arg(long, required_unless_present = "from_file", value_enum)]
         management: Option<NetworkManagement>,
 
+        /// L3 switch Integration device UUID (required for switch management)
+        #[arg(long)]
+        device_id: Option<String>,
+
         /// VLAN ID (1-4009)
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..=4009))]
         vlan: Option<u16>,
