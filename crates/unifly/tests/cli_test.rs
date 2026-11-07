@@ -4,6 +4,9 @@
 //! and error handling — all without requiring a live UniFi controller.
 #![allow(clippy::unwrap_used)]
 
+#[path = "cli/refresh_warnings.rs"]
+mod refresh_warnings;
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use tempfile::TempDir;

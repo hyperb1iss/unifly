@@ -1,4 +1,4 @@
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// Turn an optional endpoint's fetch result into its refresh snapshot field.
 ///
@@ -15,14 +15,6 @@ use tracing::{debug, warn};
 pub(super) fn keep_on_failure<T>(endpoint: &str, result: Result<T, crate::Error>) -> Option<T> {
     match result {
         Ok(value) => Some(value),
-        Err(error) if error.is_not_found() => {
-            debug!(
-                endpoint,
-                error = %error,
-                "endpoint not available (404); keeping last known data"
-            );
-            None
-        }
         Err(error) => {
             warn!(
                 endpoint,
