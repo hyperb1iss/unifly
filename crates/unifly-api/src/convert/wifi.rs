@@ -46,6 +46,14 @@ impl From<integration_types::WifiBroadcastResponse> for WifiBroadcast {
             band_steering: extra_bool(&w.extra, "bandSteeringEnabled"),
             mlo_enabled: extra_bool(&w.extra, "mloEnabled"),
             fast_roaming: extra_bool(&w.extra, "bssTransitionEnabled"),
+            channel2g_locked_to6: w
+                .extra
+                .get("channel2gLockedTo6")
+                .and_then(serde_json::Value::as_bool),
+            dtim_period2g_locked_to3: w
+                .extra
+                .get("dtimPeriod2gLockedTo3")
+                .and_then(serde_json::Value::as_bool),
             hotspot_enabled: w.extra.contains_key("hotspotConfiguration"),
             origin: origin_from_metadata(&w.metadata),
             source: DataSource::IntegrationApi,
@@ -54,7 +62,13 @@ impl From<integration_types::WifiBroadcastResponse> for WifiBroadcast {
 }
 
 impl From<integration_types::WifiBroadcastDetailsResponse> for WifiBroadcast {
-    fn from(w: integration_types::WifiBroadcastDetailsResponse) -> Self {
+    fn from(mut w: integration_types::WifiBroadcastDetailsResponse) -> Self {
+        w.extra
+            .insert("channel2gLockedTo6".into(), w.channel2g_locked_to6.into());
+        w.extra.insert(
+            "dtimPeriod2gLockedTo3".into(),
+            w.dtim_period2g_locked_to3.into(),
+        );
         let overview = integration_types::WifiBroadcastResponse {
             id: w.id,
             name: w.name,

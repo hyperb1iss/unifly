@@ -339,6 +339,8 @@ pub struct FirewallPolicyResponse {
     pub ip_protocol_scope: Option<Value>,
     #[serde(default)]
     pub logging_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
     pub metadata: Option<Value>,
     #[serde(default)]
     pub source: Option<FirewallPolicySource>,
@@ -359,6 +361,8 @@ pub struct FirewallPolicyCreateUpdate {
     pub destination: Value,
     pub ip_protocol_scope: Value,
     pub logging_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
     pub ipsec_filter: Option<String>,
     pub schedule: Option<Value>,
     pub connection_state_filter: Option<Vec<String>>,
@@ -371,6 +375,8 @@ pub struct FirewallPolicyPatch {
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

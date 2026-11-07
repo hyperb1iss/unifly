@@ -39,6 +39,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 destination,
                 ip_protocol_scope: serde_json::json!({ "ipVersion": ip_version }),
                 logging_enabled: req.logging_enabled,
+                report_flow_enabled: None,
                 ipsec_filter: None,
                 schedule: None,
                 connection_state_filter: req.connection_states,
@@ -153,6 +154,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 destination,
                 ip_protocol_scope,
                 logging_enabled: update.logging_enabled.unwrap_or(existing.logging_enabled),
+                report_flow_enabled: existing.report_flow_enabled,
                 ipsec_filter: existing
                     .extra
                     .get("ipsecFilter")
@@ -181,6 +183,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             let body = crate::integration_types::FirewallPolicyPatch {
                 enabled,
                 logging_enabled: logging,
+                report_flow_enabled: None,
             };
             ic.patch_firewall_policy(&sid, &uuid, &body).await?;
             Ok(CommandResult::Ok)

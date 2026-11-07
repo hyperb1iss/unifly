@@ -183,8 +183,6 @@ fn ensure_wifi_payload_defaults(
     if broadcast_type == "STANDARD" {
         body.entry("broadcastingFrequenciesGHz")
             .or_insert_with(|| serde_json::Value::Array(wifi_frequency_values(&[2.4, 5.0])));
-        body.entry("mloEnabled")
-            .or_insert(serde_json::Value::Bool(false));
         body.entry("bandSteeringEnabled")
             .or_insert(serde_json::Value::Bool(false));
         body.entry("arpProxyEnabled")
@@ -266,6 +264,8 @@ pub(in super::super) fn build_create_wifi_broadcast_payload(
     ensure_wifi_payload_defaults(&mut body, &broadcast_type);
 
     crate::integration_types::WifiBroadcastCreateUpdate {
+        channel2g_locked_to6: false,
+        dtim_period2g_locked_to3: false,
         name: wifi_payload_name(&req.name, &req.ssid),
         broadcast_type,
         enabled: req.enabled,
@@ -317,6 +317,8 @@ pub(in super::super) fn build_update_wifi_broadcast_payload(
     ensure_wifi_payload_defaults(&mut body, &existing.broadcast_type);
 
     crate::integration_types::WifiBroadcastCreateUpdate {
+        channel2g_locked_to6: existing.channel2g_locked_to6,
+        dtim_period2g_locked_to3: existing.dtim_period2g_locked_to3,
         name: update
             .name
             .clone()
@@ -511,5 +513,41 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("wifi payload should serialize");
         assert!(json.contains("2.4"), "expected 2.4 not f64 artifact");
         assert!(!json.contains("2.400000"), "f32→f64 precision artifact");
+    }
+
+    #[test]
+    fn open_wifi_creation_omits_inapplicable_mlo_setting() {
+        let request = serde_json::from_value(json!({
+            "name": "Guest", "security_mode": "Open"
+        }))
+        .expect("create request");
+        let payload = build_create_wifi_broadcast_payload(&request);
+        let body = serde_json::to_value(payload).expect("wire payload");
+        assert!(body.get("mloEnabled").is_none());
+        assert_eq!(body["channel2gLockedTo6"], false);
+        assert_eq!(body["dtimPeriod2gLockedTo3"], false);
+    }
+
+    #[test]
+    fn wifi_rename_preserves_network11_radio_locks_and_existing_mlo() {
+        let existing = serde_json::from_value(json!({
+            "id": "00000000-0000-0000-0000-000000000000", "name": "Before",
+            "type": "STANDARD", "enabled": true,
+            "securityConfiguration": {"type": "WPA3_PERSONAL"}, "metadata": {},
+            "channel2gLockedTo6": true, "dtimPeriod2gLockedTo3": true,
+            "mloEnabled": true, "broadcastingFrequenciesGHz": [5,6]
+        }))
+        .expect("controller detail");
+        let update = crate::command::UpdateWifiBroadcastRequest {
+            name: Some("After".into()),
+            ..Default::default()
+        };
+        let payload = super::build_update_wifi_broadcast_payload(&existing, &update);
+        let body = serde_json::to_value(payload).expect("wire payload");
+        assert_eq!(body["name"], "After");
+        assert_eq!(body["channel2gLockedTo6"], true);
+        assert_eq!(body["dtimPeriod2gLockedTo3"], true);
+        assert_eq!(body["mloEnabled"], true);
+        assert_eq!(body["broadcastingFrequenciesGHz"], json!([5, 6]));
     }
 }

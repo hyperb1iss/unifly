@@ -91,6 +91,7 @@ impl From<integration_types::FirewallPolicyResponse> for FirewallPolicy {
             ipsec_mode,
             connection_states,
             logging_enabled: p.logging_enabled,
+            report_flow_enabled: p.report_flow_enabled,
             origin: p.metadata.as_ref().and_then(origin_from_metadata),
             data_source: DataSource::IntegrationApi,
         }

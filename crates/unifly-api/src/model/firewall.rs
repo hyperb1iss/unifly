@@ -241,6 +241,8 @@ pub struct FirewallPolicy {
 
     pub connection_states: Vec<String>,
     pub logging_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
 
     pub origin: Option<EntityOrigin>,
 

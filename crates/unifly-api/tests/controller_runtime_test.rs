@@ -2640,3 +2640,6 @@ mod modern_system_log;
 
 #[path = "controller_runtime/inventory.rs"]
 mod inventory_refresh;
+
+#[path = "controller_runtime/network11.rs"]
+mod network11;

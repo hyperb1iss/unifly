@@ -1,4 +1,4 @@
-// Hand-crafted async HTTP client for the UniFi Network Integration API (v10.1.84).
+// Hand-crafted async HTTP client for the UniFi Network Integration API (v11.0.97).
 //
 // Base path: /integration/v1/
 // Auth: X-API-KEY header
@@ -23,6 +23,7 @@ mod firewall;
 mod networks;
 mod policy;
 mod reference;
+mod switching;
 mod system;
 mod wifi;
 
@@ -384,8 +385,9 @@ impl IntegrationClient {
             // non-positive limit and servers that return empty pages with a
             // positive totalCount, either of which would otherwise loop
             // forever refetching offset 0.
-            let limit_usize = usize::try_from(limit).unwrap_or(0);
-            if wire_received == 0 || wire_received < limit_usize || fetched >= page.total_count {
+            // Controllers can clamp a requested page size. A short page is
+            // not completion when totalCount still advertises more rows.
+            if wire_received == 0 || fetched >= page.total_count {
                 break;
             }
 

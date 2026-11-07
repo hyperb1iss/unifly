@@ -84,6 +84,10 @@ pub struct WifiBroadcastDetailsResponse {
     #[serde(rename = "type")]
     pub broadcast_type: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub channel2g_locked_to6: bool,
+    #[serde(default)]
+    pub dtim_period2g_locked_to3: bool,
     pub security_configuration: Value,
     pub metadata: Value,
     pub network: Option<Value>,
@@ -96,6 +100,10 @@ pub struct WifiBroadcastDetailsResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WifiBroadcastCreateUpdate {
+    #[serde(default)]
+    pub channel2g_locked_to6: bool,
+    #[serde(default)]
+    pub dtim_period2g_locked_to3: bool,
     pub name: String,
     #[serde(rename = "type")]
     pub broadcast_type: String,
