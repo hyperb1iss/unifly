@@ -22,10 +22,9 @@ impl Controller {
         if let Some(demo) = self.demo_runtime() {
             return Ok(demo.with(|sim| sim.alarms()));
         }
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
-        let raw = session.list_alarms().await?;
-        Ok(raw.into_iter().map(Alarm::from).collect())
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
+        Ok(crate::controller::alarms::list(session).await?)
     }
 
     pub async fn get_system_info(&self) -> Result<SystemInfo, CoreError> {

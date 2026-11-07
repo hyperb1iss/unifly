@@ -2891,3 +2891,6 @@ fn test_insecure_accepts_the_documented_boolean_spellings() {
         .failure()
         .code(2);
 }
+
+#[path = "cli/events_history.rs"]
+mod events_history;

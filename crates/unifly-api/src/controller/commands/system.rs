@@ -20,12 +20,12 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         }
         Command::ArchiveAlarm { id } => {
             let session = require_session(session)?;
-            session.archive_alarm(&id.to_string()).await?;
+            crate::controller::alarms::archive(session, &id.to_string()).await?;
             Ok(CommandResult::Ok)
         }
         Command::ArchiveAllAlarms => {
             let session = require_session(session)?;
-            session.archive_all_alarms().await?;
+            crate::controller::alarms::archive_all(session).await?;
             Ok(CommandResult::Ok)
         }
         Command::CreateBackup => {

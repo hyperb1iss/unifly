@@ -10,6 +10,7 @@ mod nat;
 mod network;
 mod site;
 mod supporting;
+pub(crate) mod system_log;
 mod wifi;
 
 pub(crate) use device::device_stats_from_integration;

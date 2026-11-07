@@ -18,6 +18,7 @@ use crate::websocket::DeviceSync;
 use crate::websocket::{CookieProvider, ReconnectConfig, WebSocketHandle};
 use crate::{IntegrationClient, SessionClient};
 
+use super::refresh::RefreshScope;
 use super::support::{build_transport, resolve_site, tls_to_transport};
 use super::{COMMAND_CHANNEL_SIZE, ConnectionState, Controller, refresh};
 
@@ -34,7 +35,16 @@ impl Controller {
     /// processor).
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     pub async fn connect(&self) -> Result<(), CoreError> {
-        self.connect_with_refresh(true).await
+        self.connect_with_refresh(Some(RefreshScope::All)).await
+    }
+
+    /// Connect and load inventory without querying event history in the initial refresh.
+    ///
+    /// Useful for commands that read devices, clients, or configuration from the store.
+    /// Existing events remain unchanged; explicit and periodic full refreshes still load history.
+    pub async fn connect_inventory(&self) -> Result<(), CoreError> {
+        self.connect_with_refresh(Some(RefreshScope::Inventory))
+            .await
     }
 
     /// Connect to the controller without eagerly loading snapshot data.
@@ -42,10 +52,13 @@ impl Controller {
     /// Useful for one-shot commands that issue a direct API call and do
     /// not read from the reactive `DataStore`.
     pub async fn connect_lightweight(&self) -> Result<(), CoreError> {
-        self.connect_with_refresh(false).await
+        self.connect_with_refresh(None).await
     }
 
-    async fn connect_with_refresh(&self, initial_refresh: bool) -> Result<(), CoreError> {
+    async fn connect_with_refresh(
+        &self,
+        initial_refresh: Option<RefreshScope>,
+    ) -> Result<(), CoreError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
 
         #[cfg(feature = "demo")]
@@ -88,7 +101,10 @@ impl Controller {
     /// Authenticate, load the initial snapshot, and start the background
     /// tasks. Runs under the lifecycle lock held by the caller.
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-    async fn establish_connection(&self, initial_refresh: bool) -> Result<(), CoreError> {
+    async fn establish_connection(
+        &self,
+        initial_refresh: Option<RefreshScope>,
+    ) -> Result<(), CoreError> {
         // Fresh child token for this connection (supports reconnect). A
         // connection still running is retired first: its tasks hold the
         // old token, and left running they would outlive it, and make the
@@ -307,8 +323,8 @@ impl Controller {
             }
         }
 
-        if initial_refresh {
-            self.full_refresh().await?;
+        if let Some(scope) = initial_refresh {
+            self.refresh_with_scope(scope).await?;
         }
 
         // Spawn background tasks

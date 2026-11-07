@@ -129,7 +129,7 @@ async fn mock_legacy_connect_with_events(
             .await;
     }
 
-    Mock::given(method("GET"))
+    Mock::given(method("POST"))
         .and(path("/api/s/default/stat/event"))
         .respond_with(ResponseTemplate::new(200).set_body_json(event_envelope))
         .mount(server)
@@ -285,7 +285,7 @@ fn api_key_event_envelope() -> serde_json::Value {
         "_id": "evt-api-key-1",
         "key": "EVT_GW_Connected",
         "msg": "Gateway connected",
-        "datetime": "2025-01-01T00:00:00Z",
+        "datetime": chrono::Utc::now().to_rfc3339(),
         "subsystem": "device",
         "site_id": LEGACY_SITE_ID,
     }]))
@@ -321,7 +321,7 @@ async fn mount_api_key_legacy_routes_with_event_response(
         .mount(server)
         .await;
 
-    Mock::given(method("GET"))
+    Mock::given(method("POST"))
         .and(path("/proxy/network/api/s/default/stat/event"))
         .and(header("X-API-KEY", "the-key"))
         .respond_with(event_response)
@@ -962,7 +962,7 @@ async fn full_refresh_does_not_rebroadcast_duplicate_legacy_events() {
             "_id": "evt-1",
             "key": "EVT_TEST",
             "msg": "Switch lost contact",
-            "datetime": "2025-01-01T00:00:00Z",
+            "datetime": chrono::Utc::now().to_rfc3339(),
             "subsystem": "device",
             "site_id": LEGACY_SITE_ID,
         }])),
@@ -1078,7 +1078,12 @@ async fn mount_switchable_routes(
 ) -> Arc<std::sync::Mutex<RoutePhase>> {
     let phase = Arc::new(std::sync::Mutex::new(RoutePhase::Populated));
     for (route, populated, empty) in routes {
-        Mock::given(method("GET"))
+        let verb = if route.ends_with("/stat/event") {
+            "POST"
+        } else {
+            "GET"
+        };
+        Mock::given(method(verb))
             .and(path(route))
             .respond_with(SwitchableRoute {
                 phase: Arc::clone(&phase),
@@ -1688,7 +1693,7 @@ async fn handle_connection(
         return Ok(());
     }
 
-    if request.method == "GET" && request.path.starts_with("/api/s/default/stat/event") {
+    if request.method == "POST" && request.path.starts_with("/api/s/default/stat/event") {
         write_http_response(
             &mut stream,
             200,
@@ -2629,3 +2634,9 @@ async fn failed_reconnect_leaves_no_stale_clients() {
     .await
     .expect("the retired session is logged out");
 }
+
+#[path = "controller_runtime/system_log.rs"]
+mod modern_system_log;
+
+#[path = "controller_runtime/inventory.rs"]
+mod inventory_refresh;

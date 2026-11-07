@@ -18,6 +18,10 @@ pub enum EventsCommand {
         /// Hours of history to include
         #[arg(long, default_value = "24")]
         within: u32,
+
+        /// Include firewall-block events (intrusion-prevention events are always included)
+        #[arg(long)]
+        include_firewall: bool,
     },
 
     /// Stream real-time events via WebSocket (session API)

@@ -20,6 +20,12 @@ mod session;
 
 pub(super) use poll::stats_poll_task;
 
+#[derive(Clone, Copy)]
+pub(super) enum RefreshScope {
+    All,
+    Inventory,
+}
+
 impl Controller {
     /// Fetch all data from the controller and update the DataStore.
     ///
@@ -27,14 +33,18 @@ impl Controller {
     /// them to domain types, and applies them to the store. Events are
     /// broadcast through the event channel after snapshot application.
     pub async fn full_refresh(&self) -> Result<(), CoreError> {
+        self.refresh_with_scope(RefreshScope::All).await
+    }
+
+    pub(super) async fn refresh_with_scope(&self, scope: RefreshScope) -> Result<(), CoreError> {
         let integration = self.inner.integration_client.lock().await.clone();
         let site_id = *self.inner.site_id.lock().await;
 
         if let (Some(integration), Some(site_id)) = (integration, site_id) {
-            self.refresh_integration_snapshot(integration, site_id)
+            self.refresh_integration_snapshot(integration, site_id, scope)
                 .await?;
         } else {
-            self.refresh_session_snapshot().await?;
+            self.refresh_session_snapshot(scope).await?;
         }
 
         debug!(
@@ -50,10 +60,11 @@ impl Controller {
         &self,
         integration: Arc<crate::IntegrationClient>,
         site_id: uuid::Uuid,
+        scope: RefreshScope,
     ) -> Result<(), CoreError> {
         let mut integration = integration::fetch(integration, site_id, self.store()).await?;
         let session_client = self.inner.session_client.lock().await.clone();
-        let session = session::fetch_optional(session_client).await;
+        let session = session::fetch_optional(session_client, scope).await;
 
         merge::merge_session_clients(
             &mut integration.clients,
@@ -107,7 +118,7 @@ impl Controller {
         Ok(())
     }
 
-    async fn refresh_session_snapshot(&self) -> Result<(), CoreError> {
+    async fn refresh_session_snapshot(&self, scope: RefreshScope) -> Result<(), CoreError> {
         let session_client = self
             .inner
             .session_client
@@ -115,7 +126,7 @@ impl Controller {
             .await
             .clone()
             .ok_or(CoreError::ControllerDisconnected)?;
-        let session = session::fetch_required(session_client).await?;
+        let session = session::fetch_required(session_client, scope).await?;
         let fresh_events =
             unseen_events(self.store(), session.events.as_deref().unwrap_or_default());
 
@@ -158,6 +169,7 @@ pub(super) async fn refresh_task(
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval.tick().await;
 
     loop {
@@ -165,8 +177,14 @@ pub(super) async fn refresh_task(
             biased;
             () = cancel.cancelled() => break,
             _ = interval.tick() => {
-                if let Err(error) = controller.full_refresh().await {
-                    warn!(error = %error, "periodic refresh failed");
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => break,
+                    result = controller.full_refresh() => {
+                        if let Err(error) = result {
+                            warn!(error = %error, "periodic refresh failed");
+                        }
+                    }
                 }
             }
         }

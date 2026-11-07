@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
 use crate::SessionClient;
+use crate::controller::event_history::{EventHistoryQuery, fetch_events};
 use crate::core_error::CoreError;
 use crate::model::{Client, Device, Event, FirewallGroup, HealthSummary, NatPolicy, Site};
-use crate::session::models::{SessionClientEntry, SessionDevice, SessionEvent, SessionUserEntry};
+use crate::session::models::{SessionClientEntry, SessionDevice, SessionUserEntry};
 
 use super::super::support::convert_health_summaries;
+use super::RefreshScope;
 use super::optional::keep_on_failure;
 
 /// Session data that supplements an Integration refresh. Every field is
 /// optional: `None` means the fetch failed (see [`keep_on_failure`]) or
-/// there is no session client, and either way the store keeps what it has.
+/// there is no session client, or the scope excludes it. The store keeps what it has.
 #[derive(Default)]
 pub(super) struct OptionalSessionRefresh {
     pub(super) events: Option<Vec<Event>>,
@@ -33,13 +35,16 @@ pub(super) struct SessionOnlyRefresh {
     pub(super) nat: Option<Vec<NatPolicy>>,
 }
 
-pub(super) async fn fetch_optional(session: Option<Arc<SessionClient>>) -> OptionalSessionRefresh {
+pub(super) async fn fetch_optional(
+    session: Option<Arc<SessionClient>>,
+    scope: RefreshScope,
+) -> OptionalSessionRefresh {
     let Some(session) = session else {
         return OptionalSessionRefresh::default();
     };
 
     let (events_res, health_res, clients_res, devices_res, users_res, nat_res, fwg_res) = tokio::join!(
-        session.list_events(Some(100)),
+        fetch_event_history(&session, scope),
         session.get_health(),
         session.list_clients(),
         session.list_devices(),
@@ -49,7 +54,7 @@ pub(super) async fn fetch_optional(session: Option<Arc<SessionClient>>) -> Optio
     );
 
     OptionalSessionRefresh {
-        events: events(&session, events_res),
+        events: events_res,
         health: keep_on_failure("stat/health", health_res).map(convert_health_summaries),
         clients: keep_on_failure("stat/sta", clients_res),
         devices: keep_on_failure("stat/device", devices_res),
@@ -61,11 +66,12 @@ pub(super) async fn fetch_optional(session: Option<Arc<SessionClient>>) -> Optio
 
 pub(super) async fn fetch_required(
     session: Arc<SessionClient>,
+    scope: RefreshScope,
 ) -> Result<SessionOnlyRefresh, CoreError> {
     let (devices_res, clients_res, events_res, sites_res, fwg_res, nat_res) = tokio::join!(
         session.list_devices(),
         session.list_clients(),
-        session.list_events(Some(100)),
+        fetch_event_history(&session, scope),
         session.list_sites(),
         session.list_firewall_groups(),
         session.list_nat_rules(),
@@ -74,22 +80,22 @@ pub(super) async fn fetch_required(
     Ok(SessionOnlyRefresh {
         devices: devices_res?.into_iter().map(Device::from).collect(),
         clients: clients_res?.into_iter().map(Client::from).collect(),
-        events: events(&session, events_res),
+        events: events_res,
         sites: sites_res?.into_iter().map(Site::from).collect(),
         firewall_groups: firewall_groups(fwg_res),
         nat: nat_policies(nat_res),
     })
 }
 
-/// Recent events are optional under every auth mode: some controllers answer
-/// `stat/event` with 404 (Network 10.x does, for API keys and logins alike).
-fn events(
-    session: &SessionClient,
-    result: Result<Vec<SessionEvent>, crate::Error>,
-) -> Option<Vec<Event>> {
+/// Preserve history under every auth mode when the event endpoint is unavailable.
+async fn fetch_event_history(session: &SessionClient, scope: RefreshScope) -> Option<Vec<Event>> {
+    if matches!(scope, RefreshScope::Inventory) {
+        return None;
+    }
+    let result = fetch_events(session, EventHistoryQuery::default()).await;
     // The auth mode goes into the label for diagnosing a missing endpoint.
-    let endpoint = format!("stat/event ({:?} auth)", session.auth());
-    keep_on_failure(&endpoint, result).map(|raw| raw.into_iter().map(Event::from).collect())
+    let endpoint = format!("event history ({:?} auth)", session.auth());
+    keep_on_failure(&endpoint, result)
 }
 
 fn nat_policies(result: Result<Vec<serde_json::Value>, crate::Error>) -> Option<Vec<NatPolicy>> {

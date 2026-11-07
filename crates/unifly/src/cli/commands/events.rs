@@ -1,11 +1,9 @@
 //! Event command handlers.
 
 use std::io::{self, Write};
-use std::sync::Arc;
 
-use chrono::Utc;
 use tabled::Tabled;
-use unifly_api::{Controller, Event};
+use unifly_api::{Controller, Event, EventHistoryQuery};
 
 use crate::cli::args::{EventsArgs, EventsCommand, GlobalOpts, OutputFormat};
 use crate::cli::error::CliError;
@@ -27,7 +25,7 @@ struct EventRow {
     message: String,
 }
 
-fn event_row(e: &Arc<Event>, p: &output::Painter) -> EventRow {
+fn event_row(e: &Event, p: &output::Painter) -> EventRow {
     EventRow {
         id: p.id(&e.id.as_ref().map(ToString::to_string).unwrap_or_default()),
         time: p.muted(&e.timestamp.format("%Y-%m-%d %H:%M:%S").to_string()),
@@ -47,18 +45,22 @@ pub async fn handle(
     let p = output::Painter::new(global);
 
     match args.command {
-        EventsCommand::List { limit, within } => {
+        EventsCommand::List {
+            limit,
+            within,
+            include_firewall,
+        } => {
             util::ensure_session_access(controller, "events list").await?;
-            let snap = util::order::events(&controller.events_snapshot());
-            let cutoff = Utc::now() - chrono::TimeDelta::hours(i64::from(within));
-            let filtered: Vec<_> = snap
-                .into_iter()
-                .filter(|e| e.timestamp >= cutoff)
-                .take(usize::try_from(limit).unwrap_or(usize::MAX))
-                .collect();
+            let events = controller
+                .list_events(EventHistoryQuery {
+                    within_hours: within,
+                    limit,
+                    include_firewall,
+                })
+                .await?;
             let out = output::render_list(
                 &global.output,
-                &filtered,
+                &events,
                 |e| event_row(e, &p),
                 |e| e.id.as_ref().map(ToString::to_string).unwrap_or_default(),
             );

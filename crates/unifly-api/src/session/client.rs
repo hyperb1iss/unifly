@@ -19,6 +19,8 @@ use crate::session::models::SessionResponse;
 use crate::session::totp::{TotpProvider, is_totp_code};
 use crate::transport::TransportConfig;
 
+mod read_queries;
+
 /// UniFi OS wraps some errors as `{"error":{"code":N,"message":"..."}}` with HTTP 200.
 #[derive(serde::Deserialize)]
 struct UnifiOsError {
@@ -524,7 +526,7 @@ impl SessionClient {
     }
 
     /// Update CSRF token if the response contains a rotated value.
-    fn update_csrf_from_response(&self, headers: &reqwest::header::HeaderMap) {
+    pub(super) fn update_csrf_from_response(&self, headers: &reqwest::header::HeaderMap) {
         // UniFi OS may rotate tokens — prefer the updated one.
         let new_token = headers
             .get("X-Updated-CSRF-Token")

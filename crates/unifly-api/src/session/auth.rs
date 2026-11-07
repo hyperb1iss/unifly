@@ -263,7 +263,10 @@ impl SessionClient {
         };
 
         match self.http().get(url).send().await {
-            Ok(resp) => resp.status().is_success(),
+            Ok(resp) => {
+                self.update_csrf_from_response(resp.headers());
+                resp.status().is_success()
+            }
             Err(_) => false,
         }
     }

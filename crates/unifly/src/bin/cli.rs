@@ -153,7 +153,10 @@ async fn run_command(command: Command, global: &GlobalOpts) -> Result<(), CliErr
                 Controller::new(controller_config)
             };
             if command_needs_initial_refresh(&cmd) {
-                controller.connect().await.map_err(CliError::from)?;
+                controller
+                    .connect_inventory()
+                    .await
+                    .map_err(CliError::from)?;
             } else {
                 controller
                     .connect_lightweight()
@@ -224,7 +227,11 @@ fn command_uses_websocket(command: &Command) -> bool {
 }
 
 fn command_needs_initial_refresh(command: &Command) -> bool {
-    !matches!(command, Command::System(_))
+    match command {
+        Command::System(_) | Command::Alarms(_) => false,
+        Command::Events(args) => !matches!(args.command, EventsCommand::List { .. }),
+        _ => true,
+    }
 }
 
 fn controller_points_to_cloud(controller: Option<&str>) -> bool {
@@ -344,11 +351,13 @@ mod tests {
             command: EventsCommand::List {
                 limit: 100,
                 within: 24,
+                include_firewall: false,
             },
         });
 
         assert!(command_uses_websocket(&watch));
         assert!(!command_uses_websocket(&list));
+        assert!(!command_needs_initial_refresh(&list));
     }
 
     #[test]

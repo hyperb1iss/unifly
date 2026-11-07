@@ -273,6 +273,20 @@ mode need a console host ID (automatically resolved when unambiguous).
 Cloud device host filters can be repeated. ISP query reports partial-success
 warnings when Site Manager returns incomplete results.
 
+## Event history and alarms
+
+`events list --within 168 --limit 500` queries up to 500 events from the last
+week, newest first. Modern controllers use the system log; older controllers
+use the legacy event endpoint. Firewall blocks are hidden unless
+`--include-firewall` is set. Intrusion-prevention events remain visible.
+The limit counts visible events across controller pages.
+
+`alarms list` reads dashboard alert groups on modern controllers. These are
+separate from event history: an empty alarm list does not mean there are no
+security events. `alarms archive <ID>` marks the entire selected group as read,
+including its aggregated occurrences. `archive-all` acknowledges all groups.
+Neither operation deletes event history. Older controllers use legacy alarms.
+
 ## Demo fleet
 
 `--demo-fleet` (or `UNIFI_DEMO_FLEET=true`) answers from a synthetic,

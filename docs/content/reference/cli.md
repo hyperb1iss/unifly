@@ -243,11 +243,18 @@ List types: `ports`, `ipv4`, `ipv6`. Referenced by firewall policies, NAT, and A
 ```bash
 unifly events list                              # Recent events (last 24h)
 unifly events list --within 4                   # Events from last 4 hours
-unifly events list --limit 100                  # More results
+unifly events list --within 168 --limit 500      # Up to 500 events from the last week
+unifly events list --include-firewall           # Include firewall-block events
 unifly events watch                             # Live event feed (WebSocket)
 unifly events watch --types Device              # Filter by category
 unifly events watch --types Device,Client       # Multiple categories
 ```
+
+Event history uses the system log on modern controllers and the legacy event
+endpoint on older controllers. Firewall-block events are hidden by default;
+intrusion-prevention events remain visible. The limit counts visible results,
+including when the controller returns several pages of firewall blocks first.
+The TUI uses the same history source and default filtering.
 
 The `--types` flag accepts `EventCategory` values (case-insensitive): `Device`, `Client`, `Network`, `System`, `Admin`, `Firewall`, `Vpn`, `Unknown`.
 
@@ -294,11 +301,16 @@ Gotcha: `revoke` takes a positional admin ID, not an email flag.
 ## Alarms
 
 ```bash
-unifly alarms list                              # All alarms
+unifly alarms list                              # Dashboard alert groups
 unifly alarms list --unarchived                 # Active alarms only
-unifly alarms archive <ID>                      # Archive one alarm
-unifly alarms archive-all                       # Archive everything
+unifly alarms archive <ID>                      # Acknowledge an alert group
+unifly alarms archive-all                       # Acknowledge all alert groups
 ```
+
+On modern controllers, alarms are the dashboard's critical alert groups.
+An archive command marks the selected group as read; it does not delete event
+history. A group can represent multiple occurrences of the same alert.
+Older controllers retain their legacy alarm archive behavior.
 
 ## DPI
 
