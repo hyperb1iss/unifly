@@ -322,6 +322,7 @@ pub enum ConfirmAction {
     BlockClient { id: EntityId, name: String },
     UnblockClient { id: EntityId, name: String },
     ForgetClient { id: EntityId, name: String },
+    KickClient { id: EntityId, name: String },
     DeleteFirewallPolicy { id: EntityId, name: String },
 }
 
@@ -337,6 +338,9 @@ impl fmt::Display for ConfirmAction {
             Self::PowerCyclePort { port_idx, .. } => write!(f, "Power cycle port {port_idx}?"),
             Self::BlockClient { name, .. } => write!(f, "Block {name}?"),
             Self::UnblockClient { name, .. } => write!(f, "Unblock {name}?"),
+            Self::KickClient { name, .. } => {
+                write!(f, "Disconnect {name}?")
+            }
             Self::ForgetClient { name, .. } => {
                 write!(f, "Forget {name}? History will be lost.")
             }

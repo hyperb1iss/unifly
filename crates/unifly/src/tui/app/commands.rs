@@ -71,10 +71,10 @@ impl App {
                 })?;
             }
             Action::RequestKickClient(id) => {
-                if let Some(mac) = self.resolve_client_mac(id) {
-                    let name = self.resolve_client_name(id);
-                    self.execute_command(Command::KickClient { mac }, format!("Kicked {name}"));
-                }
+                self.queue_confirm(ConfirmAction::KickClient {
+                    id: id.clone(),
+                    name: self.resolve_client_name(id),
+                })?;
             }
             Action::ShowConfirm(confirm) => {
                 self.pending_confirm = Some(confirm.clone());
@@ -227,6 +227,14 @@ impl App {
                     format!("Power cycling port {port_idx}"),
                 );
             }
+            ConfirmAction::KickClient { id, name } => {
+                if let Some(mac) = self.resolve_client_mac(&id) {
+                    self.execute_command(
+                        Command::KickClient { mac },
+                        format!("Disconnected {name}"),
+                    );
+                }
+            }
             ConfirmAction::BlockClient { id, name } => {
                 if let Some(mac) = self.resolve_client_mac(&id) {
                     self.execute_command(Command::BlockClient { mac }, format!("Blocked {name}"));
@@ -271,6 +279,24 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kick_waits_for_confirmation_and_cancel_clears_it() {
+        let mut app = App::new(None, None, false, true);
+        let id = EntityId::Legacy("client-1".into());
+        app.process_action(&Action::RequestKickClient(id.clone()))
+            .expect("request");
+        let queued = app.action_rx.try_recv().expect("confirmation queued");
+        assert!(
+            matches!(&queued, Action::ShowConfirm(ConfirmAction::KickClient { id: target, .. }) if target == &id)
+        );
+        assert!(app.action_rx.try_recv().is_err());
+        app.process_action(&queued).expect("show confirmation");
+        assert!(app.pending_confirm.is_some());
+        app.process_action(&Action::ConfirmNo).expect("cancel");
+        assert!(app.pending_confirm.is_none());
+        assert!(app.action_rx.try_recv().is_err());
+    }
 
     #[test]
     fn request_adopt_queues_confirmation() {
@@ -488,7 +514,14 @@ mod tests {
             Action::RequestKickClient(client.id.clone()),
         ] {
             app.process_action(&request).expect("request");
-            let toast = next_action(&mut app).await;
+            let mut toast = next_action(&mut app).await;
+            if matches!(toast, Action::ShowConfirm(_)) {
+                app.process_action(&toast).expect("show confirmation");
+                assert_hidden(&mut app, &secrets, "the kick confirmation");
+                app.process_action(&Action::ConfirmYes)
+                    .expect("confirm kick");
+                toast = next_action(&mut app).await;
+            }
             assert!(matches!(toast, Action::Notify(_)), "{toast:?}");
             app.process_action(&toast).expect("show the toast");
             assert_hidden(&mut app, &secrets, &format!("the toast for {request:?}"));
