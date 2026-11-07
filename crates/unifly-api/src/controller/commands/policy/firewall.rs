@@ -25,7 +25,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             )?;
             let ip_version = req.ip_version.as_deref().unwrap_or("IPV4_AND_IPV6");
             let action = if req.action == FirewallAction::Allow {
-                let allow_return = req.allow_return_traffic.unwrap_or(true);
+                let allow_return = req.allow_return_traffic.unwrap_or(false);
                 serde_json::json!({ "type": action_str, "allowReturnTraffic": allow_return })
             } else {
                 serde_json::json!({ "type": action_str })
@@ -39,7 +39,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 destination,
                 ip_protocol_scope: serde_json::json!({ "ipVersion": ip_version }),
                 logging_enabled: req.logging_enabled,
-                report_flow_enabled: None,
+                report_flow_enabled: req.report_flow_enabled,
                 ipsec_filter: None,
                 schedule: None,
                 connection_state_filter: req.connection_states,
@@ -66,7 +66,11 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                     .unwrap_or_default();
                 build_endpoint_json(&zone_id, Some(spec))?
             } else {
-                serde_json::to_value(&existing.source).unwrap_or_default()
+                serde_json::to_value(&existing.source).map_err(|error| {
+                    CoreError::ValidationFailed {
+                        message: format!("invalid existing firewall source: {error}"),
+                    }
+                })?
             };
 
             let destination = if let Some(ref spec) = update.destination_filter {
@@ -78,7 +82,11 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                     .unwrap_or_default();
                 build_endpoint_json(&zone_id, Some(spec))?
             } else {
-                serde_json::to_value(&existing.destination).unwrap_or_default()
+                serde_json::to_value(&existing.destination).map_err(|error| {
+                    CoreError::ValidationFailed {
+                        message: format!("invalid existing firewall destination: {error}"),
+                    }
+                })?
             };
 
             // Always reconstruct the action payload so that legacy `DROP`
@@ -154,7 +162,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                 destination,
                 ip_protocol_scope,
                 logging_enabled: update.logging_enabled.unwrap_or(existing.logging_enabled),
-                report_flow_enabled: existing.report_flow_enabled,
+                report_flow_enabled: update.report_flow_enabled.or(existing.report_flow_enabled),
                 ipsec_filter: existing
                     .extra
                     .get("ipsecFilter")
@@ -177,13 +185,14 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             id,
             enabled,
             logging,
+            report_flow_enabled,
         } => {
             let (ic, sid) = require_integration(integration, site_id, "PatchFirewallPolicy")?;
             let uuid = require_uuid(&id)?;
             let body = crate::integration_types::FirewallPolicyPatch {
                 enabled,
                 logging_enabled: logging,
-                report_flow_enabled: None,
+                report_flow_enabled,
             };
             ic.patch_firewall_policy(&sid, &uuid, &body).await?;
             Ok(CommandResult::Ok)

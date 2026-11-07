@@ -79,6 +79,14 @@ pub enum WifiCommand {
         #[arg(long)]
         fast_roaming: bool,
 
+        /// Lock the 2.4 GHz channel to 6 on broadcasting devices
+        #[arg(long = "channel-2g-locked-to-6", action = clap::ArgAction::Set, conflicts_with = "from_file")]
+        channel2g_locked_to6: Option<bool>,
+
+        /// Lock the 2.4 GHz DTIM period to 3
+        #[arg(long = "dtim-period-2g-locked-to-3", action = clap::ArgAction::Set, conflicts_with = "from_file")]
+        dtim_period2g_locked_to3: Option<bool>,
+
         /// Create from JSON file
         #[arg(long, short = 'F', conflicts_with_all = &["name", "network"])]
         from_file: Option<PathBuf>,
@@ -88,6 +96,14 @@ pub enum WifiCommand {
     Update {
         /// WiFi broadcast ID (UUID)
         id: String,
+
+        /// Lock the 2.4 GHz channel to 6 on broadcasting devices
+        #[arg(long = "channel-2g-locked-to-6", action = clap::ArgAction::Set, conflicts_with = "from_file")]
+        channel2g_locked_to6: Option<bool>,
+
+        /// Lock the 2.4 GHz DTIM period to 3
+        #[arg(long = "dtim-period-2g-locked-to-3", action = clap::ArgAction::Set, conflicts_with = "from_file")]
+        dtim_period2g_locked_to3: Option<bool>,
 
         /// Load full payload from JSON file
         #[arg(long, short = 'F')]

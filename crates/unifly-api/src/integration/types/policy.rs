@@ -238,29 +238,40 @@ pub enum PortFilter {
 pub enum PortItem {
     #[serde(rename = "PORT_NUMBER")]
     Number {
-        #[serde(deserialize_with = "deserialize_port_value")]
+        #[serde(
+            deserialize_with = "deserialize_port_value",
+            serialize_with = "serialize_port_value"
+        )]
         value: String,
     },
     #[serde(rename = "PORT_NUMBER_RANGE", alias = "PORT_RANGE")]
     Range {
-        // The controller sends `start`/`stop` (per the OpenAPI schema
-        // `Number range port matching`); `startPort`/`endPort` is kept as
-        // the serialization shape the write path has been tested with.
+        // Writes follow the OpenAPI shape; reads also accept older field spellings.
         #[serde(
-            rename = "startPort",
-            alias = "start",
-            deserialize_with = "deserialize_port_value"
+            rename = "start",
+            alias = "startPort",
+            deserialize_with = "deserialize_port_value",
+            serialize_with = "serialize_port_value"
         )]
         start_port: String,
         #[serde(
-            rename = "endPort",
-            alias = "stop",
-            deserialize_with = "deserialize_port_value"
+            rename = "stop",
+            alias = "endPort",
+            deserialize_with = "deserialize_port_value",
+            serialize_with = "serialize_port_value"
         )]
         end_port: String,
     },
     #[serde(other)]
     Unknown,
+}
+
+fn serialize_port_value<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let port = value.parse::<u16>().map_err(serde::ser::Error::custom)?;
+    serializer.serialize_u16(port)
 }
 
 fn deserialize_port_value<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -638,17 +649,23 @@ mod tests {
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(
-            json.get("type").and_then(serde_json::Value::as_str),
-            Some("PORT_NUMBER_RANGE"),
-            "Range must serialize as PORT_NUMBER_RANGE, not PORT_RANGE"
+            json,
+            serde_json::json!({
+                "type": "PORT_NUMBER_RANGE", "start": 49152, "stop": 65535
+            })
         );
+    }
+
+    #[test]
+    fn port_numbers_serialize_as_integers() {
+        let item = PortItem::Number {
+            value: "443".into(),
+        };
         assert_eq!(
-            json.get("startPort").and_then(serde_json::Value::as_str),
-            Some("49152")
-        );
-        assert_eq!(
-            json.get("endPort").and_then(serde_json::Value::as_str),
-            Some("65535")
+            serde_json::to_value(item).unwrap(),
+            serde_json::json!({
+                "type": "PORT_NUMBER", "value": 443
+            })
         );
     }
 

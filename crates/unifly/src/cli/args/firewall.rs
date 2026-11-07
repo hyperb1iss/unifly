@@ -73,7 +73,11 @@ pub enum FirewallPoliciesCommand {
         #[arg(long)]
         logging: bool,
 
-        /// Allow return traffic (defaults to true for Allow actions; ignored for Block/Reject)
+        /// Report matched traffic in Insights Flows
+        #[arg(long = "report-flow", action = clap::ArgAction::Set, conflicts_with = "from_file")]
+        report_flow_enabled: Option<bool>,
+
+        /// Create a mirrored return-traffic policy (default: false; Allow actions only)
         #[arg(long, action = clap::ArgAction::Set)]
         allow_return_traffic: Option<bool>,
 
@@ -139,6 +143,10 @@ pub enum FirewallPoliciesCommand {
         /// Firewall policy ID (UUID)
         id: String,
 
+        /// Report matched traffic in Insights Flows
+        #[arg(long = "report-flow", action = clap::ArgAction::Set, conflicts_with = "from_file")]
+        report_flow_enabled: Option<bool>,
+
         /// Allow return traffic
         #[arg(long, action = clap::ArgAction::Set)]
         allow_return_traffic: Option<bool>,
@@ -196,7 +204,7 @@ pub enum FirewallPoliciesCommand {
         from_file: Option<PathBuf>,
     },
 
-    /// Patch a firewall policy (quick toggle enabled/logging)
+    /// Patch a firewall policy (enabled, logging, or flow reporting)
     Patch {
         /// Firewall policy ID (UUID)
         id: String,
@@ -208,6 +216,10 @@ pub enum FirewallPoliciesCommand {
         /// Enable or disable logging for matched traffic
         #[arg(long, action = clap::ArgAction::Set)]
         logging: Option<bool>,
+
+        /// Report matched traffic in Insights Flows
+        #[arg(long = "report-flow", action = clap::ArgAction::Set)]
+        report_flow_enabled: Option<bool>,
     },
 
     /// Delete a firewall policy

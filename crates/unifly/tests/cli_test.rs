@@ -2894,3 +2894,6 @@ fn test_insecure_accepts_the_documented_boolean_spellings() {
 
 #[path = "cli/events_history.rs"]
 mod events_history;
+
+#[path = "cli/network11_fields.rs"]
+mod network11_fields;

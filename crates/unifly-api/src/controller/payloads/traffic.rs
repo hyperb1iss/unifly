@@ -18,8 +18,8 @@ fn build_port_item_json(p: &str) -> Result<serde_json::Value, CoreError> {
         let end = parse_port(end_str)?;
         Ok(serde_json::json!({
             "type": "PORT_NUMBER_RANGE",
-            "startPort": start,
-            "endPort": end,
+            "start": start,
+            "stop": end,
         }))
     } else {
         let port = parse_port(p)?;
@@ -169,6 +169,23 @@ mod tests {
     use crate::command::requests::{PortSpec, TrafficFilterSpec};
     use crate::core_error::CoreError;
     use serde_json::json;
+
+    #[test]
+    fn port_ranges_use_integer_start_stop_fields() {
+        let spec = TrafficFilterSpec::Port {
+            ports: PortSpec::Values {
+                items: vec!["8000-9000".into()],
+                match_opposite: false,
+            },
+        };
+        let body = build_endpoint_json("zone", Some(&spec)).expect("port range");
+        assert_eq!(
+            body["trafficFilter"]["portFilter"]["items"],
+            json!([
+                {"type": "PORT_NUMBER_RANGE", "start": 8000, "stop": 9000}
+            ])
+        );
+    }
 
     #[test]
     fn traffic_matching_list_items_prefer_raw_payloads() {

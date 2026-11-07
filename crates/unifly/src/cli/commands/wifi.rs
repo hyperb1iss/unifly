@@ -155,7 +155,7 @@ fn channel_rows(record: &ChannelAvailability, p: &output::Painter) -> Vec<Channe
 }
 
 fn detail(w: &Arc<WifiBroadcast>) -> String {
-    [
+    let mut lines = vec![
         format!("ID:         {}", w.id),
         format!("SSID:       {}", w.name),
         format!("Enabled:    {}", w.enabled),
@@ -172,8 +172,14 @@ fn detail(w: &Arc<WifiBroadcast>) -> String {
                 .as_ref()
                 .map_or_else(|| "-".into(), ToString::to_string)
         ),
-    ]
-    .join("\n")
+    ];
+    if let Some(locked) = w.channel2g_locked_to6 {
+        lines.push(format!("2.4 GHz channel locked to 6: {locked}"));
+    }
+    if let Some(locked) = w.dtim_period2g_locked_to3 {
+        lines.push(format!("2.4 GHz DTIM locked to 3: {locked}"));
+    }
+    lines.join("\n")
 }
 
 // ── Handler ─────────────────────────────────────────────────────────
@@ -270,6 +276,8 @@ pub async fn handle(
             hidden,
             band_steering,
             fast_roaming,
+            channel2g_locked_to6,
+            dtim_period2g_locked_to3,
         } => {
             util::ensure_integration_access(controller, "wifi").await?;
 
@@ -288,6 +296,8 @@ pub async fn handle(
                     frequencies_ghz: frequencies,
                     band_steering,
                     fast_roaming: if fast_roaming { Some(true) } else { None },
+                    channel2g_locked_to6,
+                    dtim_period2g_locked_to3,
                 }
             };
 
@@ -314,10 +324,18 @@ pub async fn handle(
             name,
             passphrase,
             enabled,
+            channel2g_locked_to6,
+            dtim_period2g_locked_to3,
         } => {
             util::ensure_integration_access(controller, "wifi").await?;
 
-            if from_file.is_none() && name.is_none() && passphrase.is_none() && enabled.is_none() {
+            if from_file.is_none()
+                && name.is_none()
+                && passphrase.is_none()
+                && enabled.is_none()
+                && channel2g_locked_to6.is_none()
+                && dtim_period2g_locked_to3.is_none()
+            {
                 return Err(CliError::Validation {
                     field: "update".into(),
                     reason: "at least one update flag or --from-file is required".into(),
@@ -333,6 +351,8 @@ pub async fn handle(
                     passphrase,
                     enabled,
                     hide_ssid: None,
+                    channel2g_locked_to6,
+                    dtim_period2g_locked_to3,
                 }
             };
 

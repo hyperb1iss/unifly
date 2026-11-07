@@ -1336,13 +1336,9 @@ fn integration_profile_firewall_policy_port_range_round_trip() {
     let get = ctx.run(&["firewall", "policies", "get", &id, "-o", "json"]);
     assert_success(&get, "firewall policies get");
     let detail = stdout_json(&get);
-    // The create path serializes the range as `startPort`/`endPort`, while
-    // the controller returns `start`/`stop` (the read-side fix for #26), so
-    // this round trip is the live check on both halves: the controller has
-    // to accept the write shape, and the decoder has to map the response
-    // back to the same range. Every port-bearing filter variant nests its
-    // ports under `ports`, so the pointer holds whatever filter kind the
-    // controller reports.
+    // The controller must accept the numeric start/stop write shape and
+    // return the same range. Port-bearing filter variants all nest their
+    // normalized values under ports.
     assert_eq!(
         detail.pointer("/destination/filter/ports/items"),
         Some(&serde_json::json!([port_range])),

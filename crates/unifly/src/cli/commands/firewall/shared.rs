@@ -28,6 +28,8 @@ pub(super) struct CreatePolicyInput {
     pub enabled: bool,
     #[serde(default, alias = "logging")]
     pub logging_enabled: bool,
+    #[serde(alias = "reportFlowEnabled")]
+    pub report_flow_enabled: Option<bool>,
     #[serde(default)]
     pub allow_return_traffic: Option<bool>,
     #[serde(default)]
@@ -51,6 +53,7 @@ impl CreatePolicyInput {
             destination_zone_id: self.destination_zone_id,
             enabled: self.enabled,
             logging_enabled: self.logging_enabled,
+            report_flow_enabled: self.report_flow_enabled,
             allow_return_traffic: self.allow_return_traffic,
             description: self.description,
             ip_version: self.ip_version,
@@ -79,6 +82,8 @@ pub(super) struct UpdatePolicyInput {
     pub connection_states: Option<Vec<String>>,
     #[serde(default, alias = "logging")]
     pub logging_enabled: Option<bool>,
+    #[serde(alias = "reportFlowEnabled")]
+    pub report_flow_enabled: Option<bool>,
     #[serde(flatten)]
     pub filters: PolicyFilterInput,
 }
@@ -98,6 +103,7 @@ impl UpdatePolicyInput {
             source_filter,
             destination_filter,
             logging_enabled: self.logging_enabled,
+            report_flow_enabled: self.report_flow_enabled,
         }
     }
 }

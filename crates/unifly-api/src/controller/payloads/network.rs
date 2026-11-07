@@ -264,8 +264,8 @@ pub(in super::super) fn build_create_wifi_broadcast_payload(
     ensure_wifi_payload_defaults(&mut body, &broadcast_type);
 
     crate::integration_types::WifiBroadcastCreateUpdate {
-        channel2g_locked_to6: false,
-        dtim_period2g_locked_to3: false,
+        channel2g_locked_to6: req.channel2g_locked_to6.unwrap_or(false),
+        dtim_period2g_locked_to3: req.dtim_period2g_locked_to3.unwrap_or(false),
         name: wifi_payload_name(&req.name, &req.ssid),
         broadcast_type,
         enabled: req.enabled,
@@ -317,8 +317,12 @@ pub(in super::super) fn build_update_wifi_broadcast_payload(
     ensure_wifi_payload_defaults(&mut body, &existing.broadcast_type);
 
     crate::integration_types::WifiBroadcastCreateUpdate {
-        channel2g_locked_to6: existing.channel2g_locked_to6,
-        dtim_period2g_locked_to3: existing.dtim_period2g_locked_to3,
+        channel2g_locked_to6: update
+            .channel2g_locked_to6
+            .unwrap_or(existing.channel2g_locked_to6),
+        dtim_period2g_locked_to3: update
+            .dtim_period2g_locked_to3
+            .unwrap_or(existing.dtim_period2g_locked_to3),
         name: update
             .name
             .clone()
@@ -478,6 +482,8 @@ mod tests {
             frequencies_ghz: Some(vec![2.4, 5.0]),
             band_steering: true,
             fast_roaming: Some(true),
+            channel2g_locked_to6: None,
+            dtim_period2g_locked_to3: None,
         });
 
         assert_eq!(payload.name, "Main");
@@ -508,6 +514,8 @@ mod tests {
             frequencies_ghz: Some(vec![2.4, 5.0, 6.0]),
             band_steering: false,
             fast_roaming: None,
+            channel2g_locked_to6: None,
+            dtim_period2g_locked_to3: None,
         });
 
         let json = serde_json::to_string(&payload).expect("wifi payload should serialize");

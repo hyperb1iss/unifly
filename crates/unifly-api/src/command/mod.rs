@@ -131,6 +131,7 @@ pub enum Command {
         id: EntityId,
         enabled: Option<bool>,
         logging: Option<bool>,
+        report_flow_enabled: Option<bool>,
     },
     ReorderFirewallPolicies {
         zone_pair: (EntityId, EntityId),

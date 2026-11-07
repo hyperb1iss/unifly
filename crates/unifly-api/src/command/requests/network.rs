@@ -91,6 +91,15 @@ pub struct CreateWifiBroadcastRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub fast_roaming: Option<bool>,
+    /// Lock the 2.4 GHz channel to 6 on broadcasting devices.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "channel2gLockedTo6")]
+    pub channel2g_locked_to6: Option<bool>,
+    /// Lock the 2.4 GHz DTIM period to 3.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "dtimPeriod2gLockedTo3"
+    )]
+    pub dtim_period2g_locked_to3: Option<bool>,
 }
 
 fn default_enabled() -> bool {
@@ -112,6 +121,15 @@ pub struct UpdateWifiBroadcastRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "hideName")]
     pub hide_ssid: Option<bool>,
+    /// Lock the 2.4 GHz channel to 6 on broadcasting devices.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "channel2gLockedTo6")]
+    pub channel2g_locked_to6: Option<bool>,
+    /// Lock the 2.4 GHz DTIM period to 3.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "dtimPeriod2gLockedTo3"
+    )]
+    pub dtim_period2g_locked_to3: Option<bool>,
 }
 
 #[cfg(test)]
