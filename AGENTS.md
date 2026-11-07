@@ -519,6 +519,26 @@ licenses require a deliberate policy update.
 
 ---
 
+## Pull Request Reviews
+
+**Always handle and respond to CodeRabbit reviews.** Read the review summary
+and inline threads after each push, including findings on an earlier head
+that remain relevant. A green check alone does not establish that a review
+ran; inspect its result for skipped or rate-limited reviews.
+
+Every actionable thread needs a direct reply with its disposition and
+evidence: the fixing commit and validation, a concrete reason to decline,
+or a tracked follow-up with scope and rationale. A top-level summary does
+not replace inline replies. Treat findings as claims to verify, and fix
+confirmed issues without weakening tests, lints, or product behavior.
+
+Before merging or reporting completion, check the latest head's CI and
+review state, and ensure no actionable finding is unanswered. Respond to
+follow-up findings too. Final PR replies end with `~ via nova ⚡` on its own
+line.
+
+---
+
 ## Release Workflow
 
 Releases use the shared workflow at
