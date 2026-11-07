@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used)]
-
 use serde_json::json;
 use url::Url;
 use wiremock::matchers::{body_json, method, path};
@@ -14,7 +12,7 @@ async fn setup(platform: ControllerPlatform) -> (MockServer, SessionClient) {
     let server = MockServer::start().await;
     let client = SessionClient::with_client(
         reqwest::Client::new(),
-        Url::parse(&server.uri()).unwrap(),
+        Url::parse(&server.uri()).expect("mock server URL should be valid"),
         "default".into(),
         platform,
         SessionAuth::Cookie,
@@ -33,8 +31,21 @@ async fn critical_alerts_accept_empty_array_without_legacy_query() {
         .mount(&server)
         .await;
 
-    assert!(client.list_critical_alerts().await.unwrap().is_empty());
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert!(
+        client
+            .list_critical_alerts()
+            .await
+            .expect("critical alert list should decode")
+            .is_empty()
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server should record requests")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -62,9 +73,14 @@ async fn critical_alerts_preserve_modern_record_fields_and_status() {
         .mount(&server)
         .await;
 
-    let alerts = client.list_critical_alerts().await.unwrap();
+    let alerts = client
+        .list_critical_alerts()
+        .await
+        .expect("critical alert list should decode");
     assert_eq!(alerts.len(), 1);
-    let alert = alerts.first().unwrap();
+    let alert = alerts
+        .first()
+        .expect("response should contain the critical alert");
     assert_eq!(alert.id.as_deref(), Some("672a43a233ca0c08eec56c12"));
     assert_eq!(alert.timestamp, 1_793_980_800_000);
     assert_eq!(alert.status.as_deref(), Some("NEW"));
@@ -72,7 +88,10 @@ async fn critical_alerts_preserve_modern_record_fields_and_status() {
     assert_eq!(alert.severity.as_deref(), Some("HIGH"));
     assert_eq!(alert.message.as_deref(), Some("Lab switch disconnected"));
     assert_eq!(
-        alert.parameters.get("DEVICE").unwrap()["name"],
+        alert
+            .parameters
+            .get("DEVICE")
+            .expect("alert should preserve its DEVICE parameter")["name"],
         "Lab switch"
     );
 }
@@ -102,9 +121,19 @@ async fn critical_alerts_propagate_http_errors_without_fallback() {
             .expect(1)
             .mount(&server)
             .await;
-        let error = client.list_critical_alerts().await.unwrap_err();
+        let error = client
+            .list_critical_alerts()
+            .await
+            .expect_err("HTTP error should fail the critical alert read");
         assert_eq!(error.is_not_found(), status == 404);
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock server should record requests")
+                .len(),
+            1
+        );
     }
 }
 
@@ -124,9 +153,14 @@ async fn acknowledge_critical_alert_encodes_opaque_id_as_one_segment() {
     client
         .acknowledge_critical_alert("../alert/?#% value")
         .await
-        .unwrap();
-    let requests = server.received_requests().await.unwrap();
-    let request = requests.first().unwrap();
+        .expect("opaque alert ID acknowledgement should succeed");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests");
+    let request = requests
+        .first()
+        .expect("acknowledgement should issue one request");
     assert_eq!(request.url.path(), expected_path);
     assert!(request.url.query().is_none());
     assert!(request.url.fragment().is_none());
@@ -141,7 +175,13 @@ async fn acknowledge_critical_alert_rejects_empty_and_dot_ids_without_requests()
             Err(Error::SessionApi { .. })
         ));
     }
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server should record requests")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -155,7 +195,10 @@ async fn acknowledge_all_critical_alerts_accepts_no_content() {
         .mount(&server)
         .await;
 
-    client.acknowledge_all_critical_alerts().await.unwrap();
+    client
+        .acknowledge_all_critical_alerts()
+        .await
+        .expect("HTTP 204 should acknowledge all alerts");
 }
 
 #[tokio::test]
@@ -170,7 +213,14 @@ async fn acknowledgement_errors_are_not_replayed_or_sent_to_legacy_endpoints() {
             .await;
 
         assert!(client.acknowledge_critical_alert("alert-1").await.is_err());
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock server should record requests")
+                .len(),
+            1
+        );
     }
 }
 
@@ -220,15 +270,25 @@ async fn multi_status_acknowledgement_is_reported_as_partial_without_replay() {
             .mount(&server)
             .await;
         let error = if all {
-            client.acknowledge_all_critical_alerts().await.unwrap_err()
+            client
+                .acknowledge_all_critical_alerts()
+                .await
+                .expect_err("HTTP 207 should fail bulk acknowledgement")
         } else {
             client
                 .acknowledge_critical_alert("alert-1")
                 .await
-                .unwrap_err()
+                .expect_err("HTTP 207 should fail single alert acknowledgement")
         };
         assert!(matches!(error, Error::SessionApi { message }
             if message.starts_with("HTTP 207 ") && message.contains("partial")));
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock server should record requests")
+                .len(),
+            1
+        );
     }
 }

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used)]
-
 use serde_json::{Value, json};
 use unifly_api::session::system_log::SystemLogQuery;
 use unifly_api::session::{ReauthCredentials, SessionAuth};
@@ -14,12 +12,12 @@ const LEGACY_PATH: &str = "/proxy/network/api/s/default/stat/event";
 async fn setup() -> (MockServer, SessionClient) {
     let server = MockServer::start().await;
     let client = SessionClient::new(
-        Url::parse(&server.uri()).unwrap(),
+        Url::parse(&server.uri()).expect("mock server URL should be valid"),
         "default".into(),
         ControllerPlatform::UnifiOs,
         &TransportConfig::default(),
     )
-    .unwrap();
+    .expect("session client should initialize");
     (server, client)
 }
 
@@ -59,12 +57,18 @@ async fn system_log_posts_explicit_descending_query_and_preserves_page_metadata(
         .expect(1)
         .mount(&server)
         .await;
-    let result = client.list_system_log(&query()).await.unwrap();
+    let result = client
+        .list_system_log(&query())
+        .await
+        .expect("system log read should succeed");
     assert_eq!(result.page_number, 1);
     assert_eq!(result.total_element_count, 1001);
     assert_eq!(result.total_page_count, 2);
     assert_eq!(result.data.len(), 1);
-    let event = result.data.first().unwrap();
+    let event = result
+        .data
+        .first()
+        .expect("system log page should contain its event");
     assert_eq!(event.id.as_deref(), Some("event-1"));
     assert_eq!(event.timestamp, 1_700_000_000_123);
     assert_eq!(event.parameters["CLIENT"]["name"], "Laptop");
@@ -93,8 +97,14 @@ async fn system_log_rotates_csrf_between_read_posts() {
         .expect(1)
         .mount(&server)
         .await;
-    client.list_system_log(&query()).await.unwrap();
-    client.list_system_log(&query()).await.unwrap();
+    client
+        .list_system_log(&query())
+        .await
+        .expect("system log read should succeed");
+    client
+        .list_system_log(&query())
+        .await
+        .expect("system log read should succeed");
 }
 
 #[tokio::test]
@@ -111,8 +121,17 @@ async fn legacy_page_uses_post_window_offset_and_sort() {
         .expect(1)
         .mount(&server)
         .await;
-    let events = client.list_events_page(48, 1000, 1000).await.unwrap();
-    assert_eq!(events.first().unwrap().id, "old-1");
+    let events = client
+        .list_events_page(48, 1000, 1000)
+        .await
+        .expect("legacy event page should decode");
+    assert_eq!(
+        events
+            .first()
+            .expect("legacy page should contain its event")
+            .id,
+        "old-1"
+    );
 }
 
 #[tokio::test]
@@ -121,12 +140,12 @@ async fn malformed_modern_page_fails_instead_of_returning_partial_history() {
     let mut missing_metadata = page();
     missing_metadata
         .as_object_mut()
-        .unwrap()
+        .expect("page fixture should be an object")
         .remove("total_page_count");
     let mut malformed_record = page();
     malformed_record["data"]
         .as_array_mut()
-        .unwrap()
+        .expect("page data fixture should be an array")
         .push(json!({"timestamp": "bad"}));
     for body in [missing_metadata, malformed_record] {
         server.reset().await;
@@ -243,9 +262,15 @@ async fn expired_session_replays_both_read_only_posts_after_login() {
             .mount(&server)
             .await;
         if modern {
-            client.list_system_log(&query()).await.unwrap();
+            client
+                .list_system_log(&query())
+                .await
+                .expect("system log read should succeed");
         } else {
-            client.list_events_page(24, 0, 1000).await.unwrap();
+            client
+                .list_events_page(24, 0, 1000)
+                .await
+                .expect("legacy read should succeed after login");
         }
         server.verify().await;
     }
@@ -256,13 +281,18 @@ async fn api_key_read_post_keeps_key_header_and_classifies_401() {
     unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("X-API-KEY", "synthetic-key".parse().unwrap());
+    headers.insert(
+        "X-API-KEY",
+        "synthetic-key"
+            .parse()
+            .expect("synthetic API key should be a valid header"),
+    );
     let client = SessionClient::with_client(
         reqwest::Client::builder()
             .default_headers(headers)
             .build()
-            .unwrap(),
-        Url::parse(&server.uri()).unwrap(),
+            .expect("API key HTTP client should build"),
+        Url::parse(&server.uri()).expect("mock server URL should be valid"),
         "default".into(),
         ControllerPlatform::UnifiOs,
         SessionAuth::ApiKey,
@@ -284,20 +314,22 @@ async fn api_key_read_post_keeps_key_header_and_classifies_401() {
 async fn cached_validation_updates_csrf_before_system_log_post() {
     const ISOLATED_CACHE: &str = "UNIFLY_TEST_ISOLATED_CSRF_CACHE";
     if std::env::var_os(ISOLATED_CACHE).is_none() {
-        let directory = tempfile::tempdir().unwrap();
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "cached_validation_updates_csrf_before_system_log_post",
-                "--nocapture",
-            ])
-            .env(ISOLATED_CACHE, "1")
-            .env("XDG_CACHE_HOME", directory.path())
-            .env("APPDATA", directory.path())
-            .env("LOCALAPPDATA", directory.path())
-            .env("USERPROFILE", directory.path())
-            .output()
-            .unwrap();
+        let directory = tempfile::tempdir().expect("isolated cache directory should be created");
+        let result = std::process::Command::new(
+            std::env::current_exe().expect("test executable path should be available"),
+        )
+        .args([
+            "--exact",
+            "cached_validation_updates_csrf_before_system_log_post",
+            "--nocapture",
+        ])
+        .env(ISOLATED_CACHE, "1")
+        .env("XDG_CACHE_HOME", directory.path())
+        .env("APPDATA", directory.path())
+        .env("LOCALAPPDATA", directory.path())
+        .env("USERPROFILE", directory.path())
+        .output()
+        .expect("isolated cache test subprocess should run");
         assert!(
             result.status.success(),
             "isolated cache check failed:\n{}\n{}",
@@ -308,8 +340,8 @@ async fn cached_validation_updates_csrf_before_system_log_post() {
     }
 
     let (server, client) = setup().await;
-    let cache =
-        unifly_api::session::session_cache::SessionCache::new("csrf-test", &server.uri()).unwrap();
+    let cache = unifly_api::session::session_cache::SessionCache::new("csrf-test", &server.uri())
+        .expect("isolated session cache should initialize");
     cache.save(
         "TOKEN=cached-session",
         Some("stale-token"),
@@ -343,8 +375,11 @@ async fn cached_validation_updates_csrf_before_system_log_post() {
     client
         .login_with_cache("admin", &"test-password".to_string().into(), None, &cache)
         .await
-        .unwrap();
-    client.list_system_log(&query()).await.unwrap();
+        .expect("cached session validation should succeed");
+    client
+        .list_system_log(&query())
+        .await
+        .expect("system log read should succeed");
 }
 
 #[tokio::test]
@@ -366,9 +401,15 @@ async fn modern_read_envelopes_preserve_exact_not_found_semantics() {
                 .mount(&server)
                 .await;
             let error = if modern_history {
-                client.list_system_log(&query()).await.unwrap_err()
+                client
+                    .list_system_log(&query())
+                    .await
+                    .expect_err("history error envelope should fail")
             } else {
-                client.list_critical_alerts().await.unwrap_err()
+                client
+                    .list_critical_alerts()
+                    .await
+                    .expect_err("critical alert error envelope should fail")
             };
             match error {
                 Error::SessionApi { message } if status == 200 => {
