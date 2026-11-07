@@ -21,12 +21,11 @@ pub mod widgets;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use secrecy::SecretString;
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use unifly_api::{AuthCredentials, Controller, ControllerConfig, TlsVerification};
+use unifly_api::Controller;
 
 use crate::cli::args::{GlobalOpts, TuiArgs};
 use crate::config;
@@ -78,9 +77,8 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     );
 
     let cfg = loaded_config.as_ref();
-    let (controller, demo_fleet) = demo_fleet::select_controller(global, || {
-        build_controller_direct(global, cfg).or_else(|| build_controller_from_config(global, cfg))
-    });
+    let (controller, demo_fleet) =
+        demo_fleet::select_controller(global, || build_controller_from_config(global, cfg));
 
     // The demo fleet is fictional already; sanitizing it would only scramble it.
     let sanitizer = (!demo_fleet)
@@ -156,173 +154,26 @@ fn setup_tracing(verbosity: u8, log_file: &std::path::Path) -> WorkerGuard {
     guard
 }
 
-/// Build a controller from explicit CLI flags and environment variables,
-/// bypassing the config profile.
-fn build_controller_direct(
-    global: &GlobalOpts,
-    cfg: Option<&config::Config>,
-) -> Option<Controller> {
-    let is_cloud = global.host_id.is_some();
-    let url_str = global.controller.as_deref().or({
-        if is_cloud {
-            Some(crate::config::DEFAULT_CLOUD_CONTROLLER_URL)
-        } else {
-            None
-        }
-    })?;
-    let url = match url_str.parse() {
-        Ok(url) => url,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                url = %config::redact_url_userinfo(url_str),
-                "invalid controller URL, ignoring direct flags"
-            );
-            return None;
-        }
-    };
-
-    let api_key = SecretString::from(global.api_key.as_ref()?.clone());
-
-    let (auth, session_profile) = if let Some(ref host_id) = global.host_id {
-        let auth = AuthCredentials::Cloud {
-            api_key,
-            host_id: host_id.clone(),
-        };
-        (auth, None)
-    } else {
-        match try_hybrid_from_config(&api_key, global, cfg) {
-            Some((auth, profile)) => (auth, Some(profile)),
-            None => (AuthCredentials::ApiKey(api_key), None),
-        }
-    };
-
-    let tls = if is_cloud {
-        TlsVerification::SystemDefaults
-    } else if global.insecure.unwrap_or(false) {
-        TlsVerification::DangerAcceptInvalid
-    } else {
-        TlsVerification::SystemDefaults
-    };
-
-    let site = global.site.clone().unwrap_or_else(|| "default".into());
-
-    // Session credentials borrowed from a profile bring its TOTP sources,
-    // resolved exactly as the profile path resolves them.
-    let (totp_token, totp_provider) = match session_profile {
-        Some(profile) => match config::resolve::resolve_totp(profile, global) {
-            Ok(totp) => totp,
-            Err(error) => {
-                tracing::warn!(%error, "invalid TOTP settings, ignoring direct flags");
-                return None;
-            }
-        },
-        None => (
-            global
-                .totp
-                .as_ref()
-                .map(|t| secrecy::SecretString::from(t.clone())),
-            None,
-        ),
-    };
-
-    let controller_config = ControllerConfig {
-        url,
-        auth,
-        site,
-        tls,
-        timeout: std::time::Duration::from_secs(global.timeout_secs(None, None)),
-        refresh_interval_secs: if is_cloud { 60 } else { 10 },
-        websocket_enabled: !is_cloud,
-        polling_interval_secs: if is_cloud { 30 } else { 10 },
-        totp_token,
-        totp_provider,
-        profile_name: global.profile.clone(),
-        no_session_cache: global.no_cache || is_cloud,
-    };
-
-    Some(Controller::new(controller_config))
-}
-
-/// Pair an API key with profile credentials to upgrade an Integration-only
-/// connection to hybrid auth, returning the profile they came from. Returns
-/// `None` when the profile has no username/password to add.
-fn try_hybrid_from_config<'a>(
-    api_key: &SecretString,
-    global: &GlobalOpts,
-    cfg: Option<&'a config::Config>,
-) -> Option<(AuthCredentials, &'a config::Profile)> {
-    let cfg = cfg?;
-    let name = global
-        .profile
-        .as_deref()
-        .or(cfg.default_profile.as_deref())
-        .unwrap_or("default");
-    let profile = cfg.profiles.get(name)?;
-
-    if profile.auth_mode != "hybrid" {
-        return None;
-    }
-
-    let (username, password) = match config::resolve_session_credentials(profile, name) {
-        Ok(credentials) => credentials,
-        Err(error) => {
-            tracing::warn!(
-                profile = name,
-                %error,
-                "profile is hybrid but session credentials are unavailable; \
-                 continuing with API key only (no WebSocket, statistics polled instead)"
-            );
-            return None;
-        }
-    };
-
-    let auth = AuthCredentials::Hybrid {
-        api_key: api_key.clone(),
-        username,
-        password,
-    };
-    Some((auth, profile))
-}
-
-/// Build a controller from the active config profile. Returns `None` when no
-/// config is loaded or the profile is unusable.
+/// Build the dashboard with the same profile selection and overrides as the CLI.
 fn build_controller_from_config(
     global: &GlobalOpts,
     cfg: Option<&config::Config>,
 ) -> Option<Controller> {
-    let Some(cfg) = cfg else {
-        tracing::warn!("no config file loaded; cannot build controller from profile");
-        return None;
-    };
-
-    let profile_name = global
-        .profile
-        .as_deref()
-        .or(cfg.default_profile.as_deref())
-        .unwrap_or("default");
-
-    let Some(profile) = cfg.profiles.get(profile_name) else {
-        tracing::warn!(
-            "profile '{profile_name}' not found in config (available: {:?})",
-            cfg.profiles.keys().collect::<Vec<_>>()
-        );
-        return None;
-    };
-
-    // The CLI resolver honors flag/env overrides (--insecure, --site,
-    // --api-key, --totp, --no-cache) that the plain profile translation
-    // does not; dropping them here is how issue #25 happened.
-    match config::resolve::resolve_profile(profile, profile_name, global, &cfg.defaults) {
-        Ok(mut controller_config) => {
-            let is_cloud = matches!(controller_config.auth, AuthCredentials::Cloud { .. });
-            controller_config.refresh_interval_secs = if is_cloud { 60 } else { 10 };
-            controller_config.websocket_enabled = !is_cloud;
-            controller_config.polling_interval_secs = if is_cloud { 30 } else { 10 };
-            Some(Controller::new(controller_config))
-        }
-        Err(e) => {
-            tracing::warn!("failed to build controller from profile '{profile_name}': {e}");
+    let defaults = config::Config::default();
+    let cfg = cfg.unwrap_or(&defaults);
+    let result = config::resolve::connection_profile(cfg, global).and_then(|(profile, name)| {
+        config::resolve::resolve_connection(
+            &profile,
+            name.as_deref(),
+            global,
+            &cfg.defaults,
+            config::ConnectionUsage::Interactive,
+        )
+    });
+    match result {
+        Ok(config) => Some(Controller::new(config)),
+        Err(error) => {
+            tracing::warn!(%error, "failed to resolve controller configuration");
             None
         }
     }
@@ -369,5 +220,96 @@ mod tests {
         let plain = global(&["unifly", "tui"]);
         assert_eq!(session_profile_name(&plain, Some(&cfg)), "home");
         assert_eq!(session_profile_name(&plain, None), "default");
+    }
+
+    #[test]
+    fn direct_flags_keep_saved_profile_defaults_in_the_dashboard() {
+        let mut cfg = toml::from_str::<Config>(
+            "[defaults]\ntimeout = 79\ninsecure = true\n\
+             [profiles.default]\ncontroller = 'https://saved.local'\n\
+             site = 'saved-site'\napi_key = 'fixture-key'\nca_cert = '/fixture/ca.pem'\n",
+        )
+        .expect("fixture");
+        let flags = global(&[
+            "unifly",
+            "tui",
+            "--controller",
+            "https://override.local",
+            "--api-key",
+            "override-key",
+        ]);
+        for mode in ["integration", "session", "legacy", "hybrid", "cloud"] {
+            let profile = cfg.profiles.get_mut("default").expect("fixture profile");
+            profile.auth_mode = mode.into();
+            profile.username = Some("saved-user".into());
+            profile.password = Some("saved-password".into());
+            let controller =
+                super::build_controller_from_config(&flags, Some(&cfg)).expect("controller");
+            assert_eq!(controller.config().timeout.as_secs(), 79);
+            assert_eq!(controller.config().site, "saved-site");
+            assert_eq!(controller.config().url.as_str(), "https://override.local/");
+            assert!(matches!(
+                controller.config().tls,
+                unifly_api::TlsVerification::CustomCa(_)
+            ));
+            assert!(controller.config().websocket_enabled);
+            assert_eq!(controller.config().refresh_interval_secs, 10);
+            assert!(
+                matches!(
+                    controller.config().auth,
+                    unifly_api::AuthCredentials::ApiKey(_)
+                ),
+                "an explicit direct key must not use saved {mode} credentials"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_flags_do_not_send_a_key_to_the_saved_lan_controller() {
+        let lan = wiremock::MockServer::start().await;
+        let mut cfg = toml::from_str::<Config>(&format!(
+            "[profiles.default]\ncontroller = '{}'\nauth_mode = 'session'\n\
+             username = 'saved-user'\npassword = 'saved-password'\n",
+            lan.uri()
+        ))
+        .expect("fixture");
+        for mode in ["integration", "session", "legacy", "hybrid", "cloud"] {
+            let profile = cfg.profiles.get_mut("default").expect("profile");
+            profile.auth_mode = mode.into();
+            profile.controller = if mode == "cloud" {
+                "https://saved-cloud.invalid".into()
+            } else {
+                lan.uri()
+            };
+            for custom in [false, true] {
+                let mut argv = vec![
+                    "unifly",
+                    "tui",
+                    "--api-key",
+                    "one-shot-key",
+                    "--host-id",
+                    "console",
+                ];
+                if custom {
+                    argv.extend(["--controller", "https://custom-cloud.invalid"]);
+                }
+                let flags = global(&argv);
+                let controller =
+                    super::build_controller_from_config(&flags, Some(&cfg)).expect("cloud");
+                let expected = if custom {
+                    "https://custom-cloud.invalid/"
+                } else if mode == "cloud" {
+                    "https://saved-cloud.invalid/"
+                } else {
+                    "https://api.ui.com/"
+                };
+                assert_eq!(controller.config().url.as_str(), expected, "saved {mode}");
+                assert!(matches!(
+                    controller.config().auth,
+                    unifly_api::AuthCredentials::Cloud { .. }
+                ));
+            }
+        }
+        assert!(lan.received_requests().await.expect("requests").is_empty());
     }
 }

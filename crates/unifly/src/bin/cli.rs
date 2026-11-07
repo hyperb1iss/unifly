@@ -234,113 +234,94 @@ fn command_needs_initial_refresh(command: &Command) -> bool {
     }
 }
 
-fn controller_points_to_cloud(controller: Option<&str>) -> bool {
-    controller
-        .and_then(|controller| url::Url::parse(controller).ok())
-        .is_some_and(|url| url.host_str() == Some("api.ui.com"))
-}
-
 async fn build_controller_config(
     global: &GlobalOpts,
 ) -> Result<unifly_api::ControllerConfig, CliError> {
     let cfg = resolve::load_config()?;
-    let profile_name = resolve::active_profile_name(global, &cfg);
+    build_controller_config_from(global, &cfg).await
+}
 
-    if let Some(profile) = cfg.profiles.get(&profile_name) {
-        if profile.auth_mode == "cloud"
-            && global.host_id.is_none()
-            && unifly::config::resolve_host_id(profile).is_err()
-        {
-            let mut resolved_profile = profile.clone();
-            resolved_profile.host_id = Some(commands::cloud::auto_resolve_host_id(global).await?);
-            resolved_profile.host_id_env = None;
-            return resolve::resolve_profile(
-                &resolved_profile,
-                &profile_name,
-                global,
-                &cfg.defaults,
-            );
-        }
-
-        return resolve::resolve_profile(profile, &profile_name, global, &cfg.defaults);
+async fn build_controller_config_from(
+    global: &GlobalOpts,
+    cfg: &unifly::config::Config,
+) -> Result<unifly_api::ControllerConfig, CliError> {
+    let (mut profile, name) = resolve::connection_profile(cfg, global)?;
+    if profile.auth_mode == "cloud"
+        && global.host_id.is_none()
+        && unifly::config::resolve_host_id(&profile).is_err()
+    {
+        profile.host_id = Some(commands::cloud::auto_resolve_host_id(global).await?);
+        profile.host_id_env = None;
     }
-
-    let is_cloud =
-        global.host_id.is_some() || controller_points_to_cloud(global.controller.as_deref());
-    let url_str = global.controller.as_deref().or({
-        if is_cloud {
-            Some(unifly::config::DEFAULT_CLOUD_CONTROLLER_URL)
-        } else {
-            None
-        }
-    });
-    let url_str = url_str.ok_or_else(|| resolve::missing_profile(&cfg, &profile_name))?;
-
-    let url: url::Url = url_str.parse().map_err(|_| CliError::Validation {
-        field: "controller".into(),
-        reason: format!(
-            "invalid URL: {}",
-            unifly::config::redact_url_userinfo(url_str)
-        ),
-    })?;
-
-    let auth = if let Some(ref key) = global.api_key {
-        let api_key = secrecy::SecretString::from(key.clone());
-
-        if is_cloud {
-            let host_id = if let Some(host_id) = &global.host_id {
-                host_id.clone()
-            } else {
-                commands::cloud::auto_resolve_host_id(global).await?
-            };
-
-            unifly_api::AuthCredentials::Cloud { api_key, host_id }
-        } else {
-            unifly_api::AuthCredentials::ApiKey(api_key)
-        }
-    } else {
-        return Err(CliError::no_api_key());
-    };
-
-    let tls = if is_cloud {
-        unifly_api::TlsVerification::SystemDefaults
-    } else if global.insecure.unwrap_or(cfg.defaults.insecure) {
-        unifly_api::TlsVerification::DangerAcceptInvalid
-    } else {
-        unifly_api::TlsVerification::SystemDefaults
-    };
-
-    let totp_token = global
-        .totp
-        .as_ref()
-        .map(|t| secrecy::SecretString::from(t.clone()));
-
-    Ok(unifly_api::ControllerConfig {
-        url,
-        auth,
-        site: global.site.clone().unwrap_or_else(|| "default".into()),
-        tls,
-        timeout: std::time::Duration::from_secs(
-            global.timeout_secs(None, Some(cfg.defaults.timeout)),
-        ),
-        refresh_interval_secs: 0,
-        websocket_enabled: false,
-        polling_interval_secs: 30,
-        totp_token,
-        totp_provider: None,
-        profile_name: None, // ad-hoc flags — no profile, no caching
-        no_session_cache: global.no_cache || is_cloud,
-    })
+    resolve::resolve_connection(
+        &profile,
+        name.as_deref(),
+        global,
+        &cfg.defaults,
+        unifly::config::ConnectionUsage::Command,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        command_needs_initial_refresh, command_uses_websocket, controller_points_to_cloud,
-    };
+    use super::{command_needs_initial_refresh, command_uses_websocket};
     use unifly::cli::args::{
         BackupArgs, BackupCommand, Command, EventsArgs, EventsCommand, SystemArgs, SystemCommand,
     };
+    use unifly::config::resolve::controller_points_to_cloud;
+
+    #[tokio::test]
+    async fn cloud_flags_do_not_send_a_key_to_the_saved_lan_controller() {
+        use clap::Parser;
+        use unifly::cli::args::Cli;
+        use unifly::config::Config;
+        let lan = wiremock::MockServer::start().await;
+        let mut cfg = toml::from_str::<Config>(&format!(
+            "[profiles.default]\ncontroller = '{}'\nauth_mode = 'session'\n\
+             username = 'saved-user'\npassword = 'saved-password'\n",
+            lan.uri()
+        ))
+        .expect("fixture");
+        for mode in ["integration", "session", "legacy", "hybrid", "cloud"] {
+            let profile = cfg.profiles.get_mut("default").expect("profile");
+            profile.auth_mode = mode.into();
+            profile.controller = if mode == "cloud" {
+                "https://saved-cloud.invalid".into()
+            } else {
+                lan.uri()
+            };
+            for custom in [false, true] {
+                let mut argv = vec![
+                    "unifly",
+                    "--api-key",
+                    "one-shot-key",
+                    "--host-id",
+                    "console",
+                ];
+                if custom {
+                    argv.extend(["--controller", "https://custom-cloud.invalid"]);
+                }
+                argv.extend(["system", "info"]);
+                let flags = Cli::try_parse_from(argv).expect("flags").global;
+                let resolved = super::build_controller_config_from(&flags, &cfg)
+                    .await
+                    .expect("cloud");
+                let expected = if custom {
+                    "https://custom-cloud.invalid/"
+                } else if mode == "cloud" {
+                    "https://saved-cloud.invalid/"
+                } else {
+                    "https://api.ui.com/"
+                };
+                assert_eq!(resolved.url.as_str(), expected, "saved {mode}");
+                assert!(matches!(
+                    resolved.auth,
+                    unifly_api::AuthCredentials::Cloud { .. }
+                ));
+            }
+        }
+        assert!(lan.received_requests().await.expect("requests").is_empty());
+    }
 
     #[test]
     fn only_events_watch_enables_websocket() {
