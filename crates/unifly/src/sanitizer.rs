@@ -165,14 +165,10 @@ impl Sanitizer {
             return ip;
         }
 
-        if let Some(mapped) = self.ip_map.get(&ip) {
-            return *mapped;
-        }
-
-        let idx = self.wan_ip_counter.fetch_add(1, Ordering::Relaxed);
-        let replacement = IpAddr::V4(Ipv4Addr::new(198, 51, 100, idx.wrapping_add(1)));
-        self.ip_map.insert(ip, replacement);
-        replacement
+        *self.ip_map.entry(ip).or_insert_with(|| {
+            let idx = self.wan_ip_counter.fetch_add(1, Ordering::Relaxed);
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, idx.wrapping_add(1)))
+        })
     }
 
     pub fn sanitize_ip_opt(&self, ip: &Option<IpAddr>) -> Option<IpAddr> {
@@ -180,24 +176,24 @@ impl Sanitizer {
     }
 
     pub fn sanitize_ssid(&self, ssid: &str) -> String {
-        if !self.redact_ssids || self.ssid_stand_ins.contains_key(ssid) {
+        if !self.redact_ssids || ssid.trim().is_empty() || self.ssid_stand_ins.contains_key(ssid) {
             return ssid.to_owned();
         }
 
-        if let Some(mapped) = self.ssid_map.get(ssid) {
-            return mapped.clone();
-        }
-
-        let idx = self.ssid_counter.fetch_add(1, Ordering::Relaxed);
-        let cute = CUTE_SSIDS[idx % CUTE_SSIDS.len()];
-        let replacement = if idx < CUTE_SSIDS.len() {
-            cute.to_owned()
-        } else {
-            format!("{cute} {}", idx / CUTE_SSIDS.len() + 1)
-        };
-        self.ssid_map.insert(ssid.to_owned(), replacement.clone());
-        self.ssid_stand_ins.insert(replacement.clone(), ());
-        replacement
+        self.ssid_map
+            .entry(ssid.to_owned())
+            .or_insert_with(|| {
+                let idx = self.ssid_counter.fetch_add(1, Ordering::Relaxed);
+                let cute = CUTE_SSIDS[idx % CUTE_SSIDS.len()];
+                let replacement = if idx < CUTE_SSIDS.len() {
+                    cute.to_owned()
+                } else {
+                    format!("{cute} {}", idx / CUTE_SSIDS.len() + 1)
+                };
+                self.ssid_stand_ins.insert(replacement.clone(), ());
+                replacement
+            })
+            .clone()
     }
 
     pub fn sanitize_mac(&self, mac: &MacAddress) -> MacAddress {
@@ -465,6 +461,7 @@ impl Sanitizer {
 
     pub fn sanitize_event(&self, event: &Event) -> Event {
         let mut e = event.clone();
+        e.ssid = e.ssid.as_deref().map(|ssid| self.sanitize_ssid(ssid));
         e.message = self.sanitize_text(&e.message);
         if self.redact_macs {
             e.device_mac = self.sanitize_mac_opt(&e.device_mac);
@@ -882,6 +879,141 @@ mod tests {
         let s = Sanitizer::new(&test_config());
         let private: IpAddr = "192.168.1.1".parse().expect("valid IP");
         assert_eq!(s.sanitize_wan_ip(private), private);
+    }
+
+    #[test]
+    fn historical_session_event_seeds_unquoted_ssid_before_redaction() {
+        let raw: unifly_api::session_models::SessionEvent =
+            serde_json::from_value(serde_json::json!({
+                "_id": "event-1", "key": "EVT_WU_Connected", "datetime": "2026-11-06T01:00:00Z",
+                "msg": "Client connected to {essid}", "essid": "Retired Secret Network"
+            }))
+            .expect("session event");
+        let event = Event::from(raw);
+        assert_eq!(event.ssid.as_deref(), Some("Retired Secret Network"));
+        let sanitizer = Sanitizer::new(&test_config());
+        let clean = sanitizer.sanitize_event(&event);
+        let stand_in = sanitizer.sanitize_ssid("Retired Secret Network");
+        assert_eq!(clean.ssid.as_deref(), Some(stand_in.as_str()));
+        assert_eq!(clean.message, format!("Client connected to {stand_in}"));
+        assert!(
+            !serde_json::to_string(&clean)
+                .expect("JSON")
+                .contains("Retired Secret Network")
+        );
+    }
+
+    #[test]
+    fn modern_and_websocket_events_preserve_ssid_redaction_context() {
+        let modern: unifly_api::session::system_log::SystemLogEntry =
+            serde_json::from_value(serde_json::json!({
+                "timestamp": 1_794_001_000_000_i64,
+                "message_raw": "Client connected to {WLAN}",
+                "parameters": { "WLAN": { "name": "Historical Modern SSID" } }
+            }))
+            .expect("modern entry");
+        let websocket: unifly_api::websocket::UnifiEvent =
+            serde_json::from_value(serde_json::json!({
+                "key": "EVT_WU_Connected", "subsystem": "wlan", "site_id": "default",
+                "datetime": "2026-11-06T01:00:00Z", "msg": "Client connected to {ssid}",
+                "ssid": "Historical Websocket SSID"
+            }))
+            .expect("WebSocket event");
+        let sanitizer = Sanitizer::new(&test_config());
+        for event in [
+            Event::try_from(modern).expect("modern event"),
+            Event::from(websocket),
+        ] {
+            let raw_ssid = event.ssid.as_deref().expect("SSID retained");
+            let clean = sanitizer.sanitize_event(&event);
+            let stand_in = sanitizer.sanitize_ssid(raw_ssid);
+            assert_eq!(clean.ssid.as_deref(), Some(stand_in.as_str()));
+            assert_eq!(clean.message, format!("Client connected to {stand_in}"));
+            assert!(
+                !serde_json::to_string(&clean)
+                    .expect("JSON")
+                    .contains(raw_ssid)
+            );
+        }
+    }
+
+    #[test]
+    fn modern_wlan_parameter_shapes_seed_retired_ssids_before_rendering() {
+        use serde_json::json;
+        for wlan in [
+            json!("Retired Net"),
+            json!({"hostname": "Retired Net"}),
+            json!({"name": "", "hostname": "Retired Net"}),
+            json!({"id": "Retired Net"}),
+            json!({"value": "Retired Net"}),
+        ] {
+            let entry: unifly_api::session::system_log::SystemLogEntry =
+                serde_json::from_value(json!({
+                    "timestamp": 1_794_001_000_000_i64,
+                    "message_raw": "Client joined {WLAN}",
+                    "parameters": {"WLAN": wlan}
+                }))
+                .expect("system log");
+            let event = Event::try_from(entry).expect("event");
+            assert_eq!(event.ssid.as_deref(), Some("Retired Net"));
+            let sanitizer = Sanitizer::new(&test_config());
+            let clean = sanitizer.sanitize_event(&event);
+            assert_eq!(
+                clean.message,
+                format!("Client joined {}", sanitizer.sanitize_ssid("Retired Net"))
+            );
+            assert!(
+                !serde_json::to_string(&clean)
+                    .expect("JSON")
+                    .contains("Retired Net")
+            );
+        }
+    }
+
+    #[test]
+    fn blank_ssids_do_not_consume_stand_ins_or_hide_legacy_fallback() {
+        let sanitizer = Sanitizer::new(&test_config());
+        assert_eq!(sanitizer.sanitize_ssid(""), "");
+        assert_eq!(sanitizer.ssid_counter.load(Ordering::Relaxed), 1);
+        let entry: unifly_api::session::models::SessionEvent =
+            serde_json::from_value(serde_json::json!({
+                "_id": "event", "essid": "", "ssid": "Retired Net", "msg": "Joined {ssid}"
+            }))
+            .expect("session event");
+        let clean = sanitizer.sanitize_event(&Event::from(entry));
+        assert!(
+            !serde_json::to_string(&clean)
+                .expect("JSON")
+                .contains("Retired Net")
+        );
+    }
+
+    #[test]
+    fn concurrent_ssid_and_public_ip_calls_publish_one_mapping() {
+        let sanitizer = Sanitizer::new(&test_config());
+        let barrier = std::sync::Barrier::new(16);
+        let values = std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        (
+                            sanitizer.sanitize_ssid("Shared Network"),
+                            sanitizer.sanitize_wan_ip("8.8.4.4".parse().expect("public IP")),
+                        )
+                    })
+                })
+                .collect();
+            tasks
+                .into_iter()
+                .map(|task| task.join().expect("thread"))
+                .collect::<Vec<_>>()
+        });
+        assert!(values.iter().all(|value| value == &values[0]));
+        assert_eq!(sanitizer.ssid_counter.load(Ordering::Relaxed), 2);
+        assert_eq!(sanitizer.wan_ip_counter.load(Ordering::Relaxed), 2);
+        assert_eq!(sanitizer.sanitize_ssid(&values[0].0), values[0].0);
+        assert_eq!(sanitizer.sanitize_wan_ip(values[0].1), values[0].1);
     }
 
     #[test]

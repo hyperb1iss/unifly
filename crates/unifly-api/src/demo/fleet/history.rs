@@ -69,6 +69,7 @@ pub(crate) fn event(
         device_mac: None,
         client_mac: None,
         site_id: Some(fleet.site.id.clone()),
+        ssid: None,
         raw_key: Some(key.into()),
         source: DataSource::SessionApi,
     }

@@ -51,6 +51,12 @@ impl TryFrom<SystemLogEntry> for Event {
             device_mac: actor_mac(&entry.parameters, &["DEVICE", "DEVICE_FROM", "DEVICE_TO"]),
             client_mac: actor_mac(&entry.parameters, &["CLIENT", "SRC_CLIENT"]),
             site_id: None,
+            ssid: entry
+                .parameters
+                .get("WLAN")
+                .and_then(parameter_text)
+                .filter(|value| !value.trim().is_empty())
+                .map(Cow::into_owned),
             raw_key: entry.key,
             source: DataSource::SessionApi,
         })
@@ -102,6 +108,7 @@ pub(crate) fn legacy_history_event(entry: SessionEvent) -> Result<Event, Error> 
         Some("vpn") => EventCategory::Vpn,
         _ => EventCategory::Unknown,
     };
+    let ssid = super::event::event_ssid(&entry.extra);
     Ok(Event {
         id: (!entry.id.is_empty()).then(|| EntityId::from(entry.id)),
         timestamp,
@@ -112,6 +119,7 @@ pub(crate) fn legacy_history_event(entry: SessionEvent) -> Result<Event, Error> 
         device_mac: actor_mac(&entry.extra, &["mac", "sw", "ap"]),
         client_mac: actor_mac(&entry.extra, &["user", "sta"]),
         site_id: entry.site_id.map(EntityId::from),
+        ssid,
         raw_key: entry.key,
         source: DataSource::SessionApi,
     })

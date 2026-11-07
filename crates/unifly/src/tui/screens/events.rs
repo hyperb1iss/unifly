@@ -248,7 +248,11 @@ impl EventsScreen {
         let msg_width = usize::from(area.width.saturating_sub(meta_cols).max(10));
 
         for event in self.events.iter().skip(start).take(end - start) {
-            let time_str = event.timestamp.format("%H:%M:%S").to_string();
+            let time_str = event
+                .timestamp
+                .with_timezone(&chrono::Local)
+                .format("%H:%M:%S")
+                .to_string();
             let severity_color = match event.severity {
                 EventSeverity::Error | EventSeverity::Critical => theme::error(),
                 EventSeverity::Warning => theme::warning(),
@@ -492,7 +496,16 @@ mod tests {
         let shown = shown_events(&screen);
         assert_eq!(
             shown.first().map(String::as_str),
-            Some("09:03:00    Client     client-03 connected"),
+            Some(
+                format!(
+                    "{}    Client     client-03 connected",
+                    event(3)
+                        .timestamp
+                        .with_timezone(&chrono::Local)
+                        .format("%H:%M:%S")
+                )
+                .as_str()
+            ),
             "{shown:?}"
         );
     }
