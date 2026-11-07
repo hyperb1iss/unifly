@@ -51,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   without forwarding a saved profile's password.
   A key-only override also selects API-key auth for Session and legacy
   profiles. Environment variables have the same effect as their flags.
+  Cloud host discovery is shared by CLI and TUI startup. On Windows, an
+  absolute `APPDATA` override selects the existing `unifly/config` directory;
+  configuration tests verify their temporary path before making edits.
 - Send only edited network form fields and allow DHCP range updates.
   Creating or updating a network with DHCP off sends a null configuration;
   enabling it again requires an explicit range.
@@ -64,8 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Delete sites with their Session API ID instead of sending an internal
   reference in the wrong wire field. Invalid identifiers fail before
   confirmation.
-- Report DPI permission and server errors instead of showing empty traffic
-  data. Failed TUI traffic refreshes retain the previous statistics.
+- Report DPI permission and server errors explicitly. The TUI still updates
+  successful bandwidth and client-count history when DPI is unavailable.
+- Accept successful empty raw Integration responses so completed device
+  actions are not reported as failures.
 - Honor `--start` and `--end` for device and client statistics.
 - Route raw Integration requests through API-key authentication, including
   hybrid profiles and cloud connector paths.
