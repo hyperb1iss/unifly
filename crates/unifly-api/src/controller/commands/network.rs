@@ -58,6 +58,20 @@ pub(super) async fn route(
                     NetworkManagement::Unmanaged
                 }
             });
+            if dhcp_enabled && matches!(management, NetworkManagement::Gateway) {
+                if subnet.is_none() {
+                    return Err(CoreError::ValidationFailed {
+                        message: "enabling DHCP on a gateway network requires an IPv4 subnet"
+                            .into(),
+                    });
+                }
+                if dhcp_range_start.is_none() || dhcp_range_stop.is_none() {
+                    return Err(CoreError::ValidationFailed {
+                        message: "enabling DHCP requires both range start and stop addresses"
+                            .into(),
+                    });
+                }
+            }
             let mut extra = HashMap::new();
 
             if let Some(zone) = firewall_zone_id {

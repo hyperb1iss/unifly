@@ -277,7 +277,8 @@ fn wifi_detail_and_request_serialize_exact_network11_field_names() {
     let details = json!({"id": Uuid::nil(), "name": "IoT", "type": "STANDARD", "enabled": true,
         "metadata": {}, "securityConfiguration": {}, "channel2gLockedTo6": true, "dtimPeriod2gLockedTo3": true});
     let parsed: WifiBroadcastDetailsResponse = serde_json::from_value(details).unwrap();
-    assert!(parsed.channel2g_locked_to6 && parsed.dtim_period2g_locked_to3);
+    assert_eq!(parsed.channel2g_locked_to6, Some(true));
+    assert_eq!(parsed.dtim_period2g_locked_to3, Some(true));
     let wire = serde_json::to_value(&parsed).unwrap();
     assert_eq!(wire["channel2gLockedTo6"], true);
     assert_eq!(wire["dtimPeriod2gLockedTo3"], true);
@@ -292,5 +293,9 @@ fn wifi_detail_and_request_serialize_exact_network11_field_names() {
     );
     let older: WifiBroadcastDetailsResponse = serde_json::from_value(json!({"id": Uuid::nil(),
         "name": "Old", "type": "STANDARD", "enabled": true, "metadata": {}, "securityConfiguration": {}})).unwrap();
-    assert!(!older.channel2g_locked_to6 && !older.dtim_period2g_locked_to3);
+    assert_eq!(older.channel2g_locked_to6, None);
+    assert_eq!(older.dtim_period2g_locked_to3, None);
+    let wire = serde_json::to_value(older).unwrap();
+    assert!(wire.get("channel2gLockedTo6").is_none());
+    assert!(wire.get("dtimPeriod2gLockedTo3").is_none());
 }

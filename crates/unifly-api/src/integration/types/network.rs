@@ -84,10 +84,10 @@ pub struct WifiBroadcastDetailsResponse {
     #[serde(rename = "type")]
     pub broadcast_type: String,
     pub enabled: bool,
-    #[serde(default)]
-    pub channel2g_locked_to6: bool,
-    #[serde(default)]
-    pub dtim_period2g_locked_to3: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel2g_locked_to6: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dtim_period2g_locked_to3: Option<bool>,
     pub security_configuration: Value,
     pub metadata: Value,
     pub network: Option<Value>,

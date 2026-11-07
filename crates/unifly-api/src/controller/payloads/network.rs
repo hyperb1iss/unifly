@@ -391,10 +391,12 @@ pub(in super::super) fn build_update_wifi_broadcast_payload(
     crate::integration_types::WifiBroadcastCreateUpdate {
         channel2g_locked_to6: update
             .channel2g_locked_to6
-            .unwrap_or(existing.channel2g_locked_to6),
+            .or(existing.channel2g_locked_to6)
+            .unwrap_or(false),
         dtim_period2g_locked_to3: update
             .dtim_period2g_locked_to3
-            .unwrap_or(existing.dtim_period2g_locked_to3),
+            .or(existing.dtim_period2g_locked_to3)
+            .unwrap_or(false),
         name: update
             .name
             .clone()
@@ -725,6 +727,31 @@ mod tests {
             .expect("create request");
             let payload = build_create_wifi_broadcast_payload(&request).expect("Wi-Fi payload");
             assert_eq!(payload.body.get("network"), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn wifi_update_radio_lock_defaults_apply_only_at_write_boundary() {
+        for reported in [None, Some(false), Some(true)] {
+            for requested in [None, Some(false), Some(true)] {
+                let mut raw = json!({"id": uuid::Uuid::nil(), "name": "WiFi",
+                    "type": "STANDARD", "enabled": true, "metadata": {},
+                    "securityConfiguration": {"type": "OPEN"}});
+                if let Some(value) = reported {
+                    raw["channel2gLockedTo6"] = json!(value);
+                    raw["dtimPeriod2gLockedTo3"] = json!(value);
+                }
+                let existing = serde_json::from_value(raw).expect("details");
+                let update = crate::command::UpdateWifiBroadcastRequest {
+                    channel2g_locked_to6: requested,
+                    dtim_period2g_locked_to3: requested,
+                    ..Default::default()
+                };
+                let payload = super::build_update_wifi_broadcast_payload(&existing, &update);
+                let expected = requested.or(reported).unwrap_or(false);
+                assert_eq!(payload.channel2g_locked_to6, expected);
+                assert_eq!(payload.dtim_period2g_locked_to3, expected);
+            }
         }
     }
 

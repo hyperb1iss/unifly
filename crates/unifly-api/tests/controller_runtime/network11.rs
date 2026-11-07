@@ -372,3 +372,117 @@ async fn firewall_allow_updates_require_explicit_opt_in_for_new_return_rules() {
         .await;
     }
 }
+
+fn dhcp_network_create_request() -> serde_json::Value {
+    json!({
+        "name": "DHCP test", "enabled": true, "vlan_id": 30,
+        "dhcp_enabled": true, "isolation_enabled": false, "internet_access_enabled": true,
+        "subnet": "10.0.30.1/24", "dhcp_range_start": "10.0.30.100",
+        "dhcp_range_stop": "10.0.30.200"
+    })
+}
+
+#[tokio::test]
+async fn gateway_dhcp_create_rejects_incomplete_configuration_without_posting() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    Mock::given(method("POST"))
+        .and(path(integration_route("networks")))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("fixture")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect_lightweight().await.unwrap();
+    for explicit_gateway in [false, true] {
+        for missing in [
+            vec!["subnet"],
+            vec!["dhcp_range_start"],
+            vec!["dhcp_range_stop"],
+            vec!["dhcp_range_start", "dhcp_range_stop"],
+        ] {
+            let mut request = dhcp_network_create_request();
+            if explicit_gateway {
+                request["management"] = json!("Gateway");
+            }
+            for field in &missing {
+                request.as_object_mut().unwrap().remove(*field);
+            }
+            let error = controller
+                .execute(unifly_api::Command::CreateNetwork(
+                    serde_json::from_value(request).unwrap(),
+                ))
+                .await
+                .expect_err("incomplete DHCP must fail locally");
+            assert!(
+                matches!(error, CoreError::ValidationFailed { .. }),
+                "{error}"
+            );
+            assert!(
+                error.to_string().contains(if missing == ["subnet"] {
+                    "IPv4 subnet"
+                } else {
+                    "both range start and stop"
+                }),
+                "{error}"
+            );
+        }
+    }
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn gateway_create_emits_complete_dhcp_server_or_explicitly_disabled_dhcp() {
+    for enabled in [false, true] {
+        let server = MockServer::start().await;
+        mock_api_key_with_legacy(&server).await;
+        let mut request = dhcp_network_create_request();
+        request["dhcp_enabled"] = json!(enabled);
+        if !enabled {
+            request.as_object_mut().unwrap().remove("dhcp_range_start");
+            request.as_object_mut().unwrap().remove("dhcp_range_stop");
+        }
+        let expected = if enabled {
+            json!({"mode": "SERVER", "leaseTimeSeconds": 86400,
+                "pingConflictDetectionEnabled": false,
+                "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.200"}})
+        } else {
+            serde_json::Value::Null
+        };
+        Mock::given(method("POST"))
+            .and(path(integration_route("networks")))
+            .and(body_partial_json(
+                json!({"management": "GATEWAY", "ipv4Configuration": {
+                    "hostIpAddress": "10.0.30.1", "prefixLength": 24, "dhcpConfiguration": expected
+                }}),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": uuid::Uuid::nil(), "name": "DHCP test", "enabled": true,
+                "management": "GATEWAY", "vlanId": 30, "metadata": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let controller = Controller::new(base_config(
+            Url::parse(&server.uri()).unwrap(),
+            AuthCredentials::ApiKey(secret("fixture")),
+            LEGACY_SITE_NAME,
+            false,
+        ));
+        controller.connect_lightweight().await.unwrap();
+        controller
+            .execute(unifly_api::Command::CreateNetwork(
+                serde_json::from_value(request).unwrap(),
+            ))
+            .await
+            .unwrap();
+        controller.disconnect().await;
+        server.verify().await;
+    }
+}

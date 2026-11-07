@@ -63,12 +63,12 @@ impl From<integration_types::WifiBroadcastResponse> for WifiBroadcast {
 
 impl From<integration_types::WifiBroadcastDetailsResponse> for WifiBroadcast {
     fn from(mut w: integration_types::WifiBroadcastDetailsResponse) -> Self {
-        w.extra
-            .insert("channel2gLockedTo6".into(), w.channel2g_locked_to6.into());
-        w.extra.insert(
-            "dtimPeriod2gLockedTo3".into(),
-            w.dtim_period2g_locked_to3.into(),
-        );
+        if let Some(value) = w.channel2g_locked_to6 {
+            w.extra.insert("channel2gLockedTo6".into(), value.into());
+        }
+        if let Some(value) = w.dtim_period2g_locked_to3 {
+            w.extra.insert("dtimPeriod2gLockedTo3".into(), value.into());
+        }
         let overview = integration_types::WifiBroadcastResponse {
             id: w.id,
             name: w.name,
@@ -90,6 +90,36 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn details_preserve_unknown_and_explicit_radio_lock_values() {
+        for channel in [None, Some(false), Some(true)] {
+            for dtim in [None, Some(false), Some(true)] {
+                let mut raw = json!({"id": uuid::Uuid::nil(), "name": "WiFi",
+                    "type": "STANDARD", "enabled": true, "metadata": {},
+                    "securityConfiguration": {"type": "OPEN"}});
+                if let Some(value) = channel {
+                    raw["channel2gLockedTo6"] = json!(value);
+                }
+                if let Some(value) = dtim {
+                    raw["dtimPeriod2gLockedTo3"] = json!(value);
+                }
+                let details: integration_types::WifiBroadcastDetailsResponse =
+                    serde_json::from_value(raw.clone()).expect("details");
+                let overview: integration_types::WifiBroadcastResponse =
+                    serde_json::from_value(raw).expect("overview");
+                let details = WifiBroadcast::from(details);
+                let overview = WifiBroadcast::from(overview);
+                assert_eq!(details.channel2g_locked_to6, channel);
+                assert_eq!(details.dtim_period2g_locked_to3, dtim);
+                assert_eq!(details.channel2g_locked_to6, overview.channel2g_locked_to6);
+                assert_eq!(
+                    details.dtim_period2g_locked_to3,
+                    overview.dtim_period2g_locked_to3
+                );
+            }
+        }
+    }
 
     #[test]
     fn integration_wifi_broadcast_preserves_standard_fields() {
