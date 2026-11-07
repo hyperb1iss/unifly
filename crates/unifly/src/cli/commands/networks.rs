@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use tabled::Tabled;
 use unifly_api::{
-    Command as CoreCommand, Controller, CreateNetworkRequest, EntityId, Network,
-    UpdateNetworkRequest,
+    Command as CoreCommand, Controller, CreateNetworkRequest, Network, UpdateNetworkRequest,
 };
 
 use crate::cli::args::{
@@ -206,7 +205,8 @@ pub async fn handle(
                 }
             };
 
-            let eid = EntityId::from(id);
+            let snap = controller.networks_snapshot();
+            let eid = util::lookup::resolve(&snap, &id)?.id.clone();
             controller
                 .execute(CoreCommand::UpdateNetwork { id: eid, update })
                 .await?;
@@ -217,7 +217,8 @@ pub async fn handle(
         }
 
         NetworksCommand::Delete { id, force } => {
-            let eid = EntityId::from(id.clone());
+            let snap = controller.networks_snapshot();
+            let eid = util::lookup::resolve(&snap, &id)?.id.clone();
             if !util::confirm(&format!("Delete network {id}?"), global.yes)? {
                 return Ok(());
             }
@@ -231,14 +232,14 @@ pub async fn handle(
         }
 
         NetworksCommand::Refs { id } => {
-            let refs = controller
-                .get_network_references(&EntityId::from(id.clone()))
-                .await?;
+            let snap = controller.networks_snapshot();
+            let eid = util::lookup::resolve(&snap, &id)?.id.clone();
+            let refs = controller.get_network_references(&eid).await?;
             let out = output::render_single(
                 &global.output,
                 &refs,
                 |v| serde_json::to_string_pretty(v).unwrap_or_default(),
-                |_| id.clone(),
+                |_| eid.to_string(),
             );
             output::print_output(&out, global.quiet);
             Ok(())

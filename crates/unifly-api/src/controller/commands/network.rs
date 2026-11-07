@@ -38,6 +38,17 @@ pub(super) async fn route(
                 internet_access_enabled,
             } = req;
 
+            if !dhcp_enabled
+                && (dhcp_range_start.is_some()
+                    || dhcp_range_stop.is_some()
+                    || dhcp_lease_time.is_some()
+                    || dns_servers.is_some())
+            {
+                return Err(CoreError::ValidationFailed {
+                    message: "DHCP server settings require dhcp_enabled to be true (--dhcp)".into(),
+                });
+            }
+
             let management = management.unwrap_or_else(|| {
                 if matches!(purpose, Some(NetworkPurpose::VlanOnly)) {
                     NetworkManagement::Unmanaged
@@ -75,12 +86,7 @@ pub(super) async fn route(
                     let (host_ip, prefix_len) = parse_ipv4_cidr(&cidr)?;
                     let lease_secs = dhcp_lease_time.unwrap_or(DEFAULT_DHCP_LEASE_SECS);
                     let mut dhcp_cfg = serde_json::Map::new();
-                    dhcp_cfg.insert(
-                        "mode".into(),
-                        serde_json::Value::String(
-                            if dhcp_enabled { "SERVER" } else { "NONE" }.into(),
-                        ),
-                    );
+                    dhcp_cfg.insert("mode".into(), serde_json::Value::String("SERVER".into()));
                     dhcp_cfg.insert(
                         "leaseTimeSeconds".into(),
                         serde_json::Value::Number(serde_json::Number::from(u64::from(lease_secs))),
@@ -113,7 +119,11 @@ pub(super) async fn route(
                             "hostIpAddress": host_ip.to_string(),
                             "prefixLength": u64::from(prefix_len),
                             "autoScaleEnabled": false,
-                            "dhcpConfiguration": dhcp_cfg
+                            "dhcpConfiguration": if dhcp_enabled {
+                                serde_json::Value::Object(dhcp_cfg)
+                            } else {
+                                serde_json::Value::Null
+                            }
                         }),
                     );
                 }
@@ -181,7 +191,7 @@ pub(super) async fn route(
         }
         Command::CreateWifiBroadcast(req) => {
             let (ic, sid) = require_integration(integration, site_id, "CreateWifiBroadcast")?;
-            let body = build_create_wifi_broadcast_payload(&req);
+            let body = build_create_wifi_broadcast_payload(&req)?;
             let created = ic.create_wifi_broadcast(&sid, &body).await?;
             Ok(crate::command::CommandResult::WifiBroadcast(created.into()))
         }

@@ -13,7 +13,7 @@ mod vpn;
 
 pub use dns::{CreateDnsPolicyRequest, UpdateDnsPolicyRequest};
 pub use network::{
-    CreateNetworkRequest, CreateWifiBroadcastRequest, UpdateNetworkRequest,
+    CreateNetworkRequest, CreateWifiBroadcastRequest, DhcpUpdate, UpdateNetworkRequest,
     UpdateWifiBroadcastRequest,
 };
 pub use policy::{

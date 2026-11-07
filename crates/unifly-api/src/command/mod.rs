@@ -18,7 +18,7 @@ pub use requests::{
     CreateNatPolicyRequest, CreateNetworkRequest, CreateRemoteAccessVpnServerRequest,
     CreateSiteToSiteVpnRequest, CreateTrafficMatchingListRequest, CreateVouchersRequest,
     CreateVpnClientProfileRequest, CreateWifiBroadcastRequest, CreateWireGuardPeerRequest,
-    PortSpec, TrafficFilterSpec, UpdateAclRuleRequest, UpdateDnsPolicyRequest,
+    DhcpUpdate, PortSpec, TrafficFilterSpec, UpdateAclRuleRequest, UpdateDnsPolicyRequest,
     UpdateFirewallGroupRequest, UpdateFirewallPolicyRequest, UpdateFirewallZoneRequest,
     UpdateNatPolicyRequest, UpdateNetworkRequest, UpdateRemoteAccessVpnServerRequest,
     UpdateSiteToSiteVpnRequest, UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest,

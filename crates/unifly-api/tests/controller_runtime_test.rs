@@ -2126,11 +2126,9 @@ async fn update_network_writes_subnet_and_disables_dhcp() {
     assert_eq!(ipv4["hostIpAddress"], json!("10.0.40.1"));
     assert_eq!(ipv4["prefixLength"], json!(23));
     assert_eq!(ipv4["autoScaleEnabled"], json!(false));
-    let mut expected_dhcp = serving_dhcp_ipv4()["dhcpConfiguration"].clone();
-    expected_dhcp["mode"] = json!("NONE");
-    assert_eq!(
-        ipv4["dhcpConfiguration"], expected_dhcp,
-        "turning DHCP off sets mode NONE and keeps the rest"
+    assert!(
+        ipv4["dhcpConfiguration"].is_null(),
+        "DHCP off is a null configuration"
     );
 }
 
@@ -2141,13 +2139,15 @@ async fn update_network_enables_dhcp_as_a_server() {
             "autoScaleEnabled": false,
             "hostIpAddress": "10.0.30.1",
             "prefixLength": 24,
-            "dhcpConfiguration": {
-                "mode": "NONE",
-                "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
-            },
+            "dhcpConfiguration": null,
         }),
         unifly_api::UpdateNetworkRequest {
             dhcp_enabled: Some(true),
+            dhcp: Some(unifly_api::DhcpUpdate {
+                range_start: Some("10.0.30.100".into()),
+                range_stop: Some("10.0.30.254".into()),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     )
@@ -2402,7 +2402,7 @@ async fn nat_create_rejected_in_a_200_is_an_error() {
 }
 
 #[tokio::test]
-async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
+async fn spec_shaped_network_preserves_server_settings_during_range_update() {
     let server = MockServer::start().await;
     mock_api_key_with_legacy(&server).await;
 
@@ -2418,14 +2418,14 @@ async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
         .with_priority(1)
         .mount(&server)
         .await;
-    // Shaped as the 10.1.84 spec's IPv4 DHCP configuration describes it.
+    // A populated server configuration from the pinned Integration schema.
     let mut detail = network_summary(LAN_NETWORK_ID, "LAN", 1);
     detail["ipv4Configuration"] = json!({
         "autoScaleEnabled": false,
         "hostIpAddress": "10.0.30.1",
         "prefixLength": 24,
         "dhcpConfiguration": {
-            "mode": "NONE",
+            "mode": "SERVER",
             "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
             "leaseTimeSeconds": 3600,
         },
@@ -2454,7 +2454,7 @@ async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
         .dhcp
         .clone()
         .expect("the network reads its DHCP configuration");
-    assert!(!dhcp.enabled);
+    assert!(dhcp.enabled);
     assert_eq!(dhcp.range_start, Some("10.0.30.100".parse().unwrap()));
     assert_eq!(dhcp.range_stop, Some("10.0.30.254".parse().unwrap()));
 
@@ -2462,12 +2462,15 @@ async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
         .execute(unifly_api::Command::UpdateNetwork {
             id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
             update: unifly_api::UpdateNetworkRequest {
-                dhcp_enabled: Some(true),
+                dhcp: Some(unifly_api::DhcpUpdate {
+                    range_stop: Some("10.0.30.253".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         })
         .await
-        .expect("a network with a spec-shaped range can turn DHCP on");
+        .expect("a server range can change without losing its lease");
     controller.disconnect().await;
 
     let put = server
@@ -2484,7 +2487,7 @@ async fn spec_shaped_network_reads_its_dhcp_range_and_enables_dhcp() {
     assert_eq!(dhcp_body["mode"], json!("SERVER"));
     assert_eq!(
         dhcp_body["ipAddressRange"],
-        json!({"start": "10.0.30.100", "stop": "10.0.30.254"})
+        json!({"start": "10.0.30.100", "stop": "10.0.30.253"})
     );
     assert_eq!(dhcp_body["leaseTimeSeconds"], json!(3600));
 }
@@ -2537,7 +2540,7 @@ impl Respond for StoredNetwork {
 }
 
 #[tokio::test]
-async fn dhcp_off_then_on_restores_the_same_server() {
+async fn dhcp_off_then_on_requires_a_new_server_configuration() {
     let server = MockServer::start().await;
     mock_api_key_with_legacy(&server).await;
 
@@ -2546,7 +2549,6 @@ async fn dhcp_off_then_on_restores_the_same_server() {
     detail["ipv4Configuration"]["dhcpConfiguration"]["dnsServerIpAddressesOverride"] =
         json!(["1.1.1.1"]);
     detail["ipv4Configuration"]["dhcpConfiguration"]["domainName"] = json!("lan.example");
-    let original_dhcp = detail["ipv4Configuration"]["dhcpConfiguration"].clone();
     let stored = Arc::new(std::sync::Mutex::new(detail));
     Mock::given(path(integration_route(&format!(
         "networks/{LAN_NETWORK_ID}"
@@ -2562,30 +2564,50 @@ async fn dhcp_off_then_on_restores_the_same_server() {
         false,
     ));
     controller.connect().await.unwrap();
-    let set_dhcp = |enabled: bool| {
+    let set_dhcp = |update| {
         controller.execute(unifly_api::Command::UpdateNetwork {
             id: unifly_api::EntityId::from(LAN_NETWORK_ID.to_owned()),
-            update: unifly_api::UpdateNetworkRequest {
-                dhcp_enabled: Some(enabled),
-                ..Default::default()
-            },
+            update,
         })
     };
-
-    set_dhcp(false).await.expect("DHCP turns off");
-    assert_eq!(
-        stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"]["mode"],
-        json!("NONE")
+    set_dhcp(unifly_api::UpdateNetworkRequest {
+        dhcp_enabled: Some(false),
+        ..Default::default()
+    })
+    .await
+    .expect("DHCP turns off");
+    assert!(stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"].is_null());
+    let missing_range = set_dhcp(unifly_api::UpdateNetworkRequest {
+        dhcp_enabled: Some(true),
+        ..Default::default()
+    })
+    .await;
+    assert!(
+        missing_range.is_err(),
+        "enabling must not invent an address range"
     );
-    set_dhcp(true)
-        .await
-        .expect("DHCP turned off through unifly turns back on");
+    assert!(stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"].is_null());
+    set_dhcp(unifly_api::UpdateNetworkRequest {
+        dhcp_enabled: Some(true),
+        dhcp: Some(unifly_api::DhcpUpdate {
+            range_start: Some("10.0.30.100".into()),
+            range_stop: Some("10.0.30.254".into()),
+            dns_servers: Some(vec!["1.1.1.1".into()]),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("DHCP turns on with an explicit range");
     controller.disconnect().await;
 
     assert_eq!(
         stored.lock().unwrap()["ipv4Configuration"]["dhcpConfiguration"],
-        original_dhcp,
-        "the server comes back with its range, lease, DNS, and domain"
+        json!({
+            "mode": "SERVER", "ipAddressRange": {"start": "10.0.30.100", "stop": "10.0.30.254"},
+            "dnsServerIpAddressesOverride": ["1.1.1.1"], "leaseTimeSeconds": 86400,
+            "pingConflictDetectionEnabled": false,
+        }),
+        "the server uses supplied settings and defaults, not invented retained state"
     );
 }
 

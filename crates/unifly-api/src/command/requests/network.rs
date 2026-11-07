@@ -34,6 +34,10 @@ pub struct CreateNetworkRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DhcpUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_stop: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dns_servers: Option<Vec<String>>,
 }
 

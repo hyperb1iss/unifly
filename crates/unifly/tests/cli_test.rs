@@ -10,6 +10,9 @@ mod refresh_warnings;
 #[path = "cli/site_creation.rs"]
 mod site_creation;
 
+#[path = "cli/wifi_native.rs"]
+mod wifi_native;
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -2903,3 +2906,6 @@ mod events_history;
 
 #[path = "cli/network11_fields.rs"]
 mod network11_fields;
+
+#[path = "cli/network_identifiers.rs"]
+mod network_identifiers;

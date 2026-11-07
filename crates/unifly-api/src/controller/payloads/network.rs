@@ -35,17 +35,17 @@ pub(in super::super) fn parse_ipv4_cidr(cidr: &str) -> Result<(Ipv4Addr, u8), Co
 }
 
 /// Apply the IPv4 parts of a network update (subnet, DHCP server state,
-/// DHCP DNS servers) to the fields of the network as last read.
+/// DHCP range and DNS servers) to the fields of the network as last read.
 ///
 /// The Integration API replaces the whole network on update, so these are
 /// written into `ipv4Configuration` alongside everything the controller
 /// returned. A DHCP server is `dhcpConfiguration.mode = "SERVER"`, which
 /// the API requires to carry an `ipAddressRange`. Turning it off sets
-/// `mode = "NONE"`, as network create does, and keeps the range, lease,
-/// and overrides, so turning it back on restores the same server.
+/// `dhcpConfiguration` to null. Re-enabling needs an explicit range if the
+/// controller no longer returns the old server configuration.
 ///
 /// `dhcp_serving` is the server state as the network reads back, so a
-/// request that restates it (the TUI form always sends one) changes
+/// request that restates it changes
 /// nothing, whatever shape the controller described it in.
 pub(in super::super) fn apply_ipv4_update(
     extra: &mut HashMap<String, Value>,
@@ -57,6 +57,37 @@ pub(in super::super) fn apply_ipv4_update(
         let ipv4 = ipv4_configuration(extra, "subnet")?;
         ipv4.insert("hostIpAddress".into(), Value::String(host_ip.to_string()));
         ipv4.insert("prefixLength".into(), Value::from(prefix_len));
+    }
+
+    if let Some(dhcp) = update.dhcp.as_ref()
+        && (dhcp.range_start.is_some() || dhcp.range_stop.is_some() || dhcp.dns_servers.is_some())
+        && (update.dhcp_enabled == Some(false)
+            || (!dhcp_serving && update.dhcp_enabled != Some(true)))
+    {
+        return Err(CoreError::ValidationFailed {
+            message:
+                "editing DHCP server settings requires an enabled server; set dhcp_enabled to true"
+                    .into(),
+        });
+    }
+
+    if let Some(dhcp) = update.dhcp.as_ref()
+        && (dhcp.range_start.is_some() || dhcp.range_stop.is_some())
+    {
+        if dhcp_serving
+            && extra
+                .get("ipv4Configuration")
+                .and_then(|ipv4| ipv4.get("dhcpConfiguration"))
+                .and_then(|dhcp| dhcp.get("mode"))
+                .and_then(Value::as_str)
+                != Some("SERVER")
+        {
+            return Err(CoreError::ValidationFailed {
+                message: "this network does not describe its DHCP server in dhcpConfiguration"
+                    .into(),
+            });
+        }
+        apply_dhcp_range(extra, dhcp)?;
     }
 
     if let Some(enable) = update.dhcp_enabled
@@ -75,7 +106,7 @@ pub(in super::super) fn apply_ipv4_update(
             if !(bound("start") && bound("stop")) {
                 return Err(CoreError::ValidationFailed {
                     message: "turning DHCP on needs an address range, and this network has \
-                              none; set the DHCP range on the controller first"
+                              none; supply dhcp.range_start and dhcp.range_stop"
                         .into(),
                 });
             }
@@ -90,7 +121,7 @@ pub(in super::super) fn apply_ipv4_update(
         } else if let Some(Value::Object(dhcp)) = ipv4.get_mut("dhcpConfiguration")
             && dhcp.get("mode").and_then(Value::as_str) == Some("SERVER")
         {
-            dhcp.insert("mode".into(), Value::String("NONE".into()));
+            ipv4.insert("dhcpConfiguration".into(), Value::Null);
         } else {
             return Err(CoreError::ValidationFailed {
                 message: "this network does not describe its DHCP server in \
@@ -115,6 +146,44 @@ pub(in super::super) fn apply_ipv4_update(
         );
     }
 
+    Ok(())
+}
+
+fn apply_dhcp_range(
+    extra: &mut HashMap<String, Value>,
+    update: &crate::command::DhcpUpdate,
+) -> Result<(), CoreError> {
+    let ipv4 = ipv4_configuration(extra, "dhcp range")?;
+    let mut dhcp = ipv4
+        .get("dhcpConfiguration")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let current = dhcp.get("ipAddressRange");
+    let bound = |name, supplied: Option<&str>| {
+        supplied
+            .or_else(|| {
+                current
+                    .and_then(|range| range.get(name))
+                    .and_then(Value::as_str)
+            })
+            .and_then(|value| value.parse::<Ipv4Addr>().ok())
+            .ok_or_else(|| CoreError::ValidationFailed {
+                message: format!("DHCP range {name} must be an IPv4 address"),
+            })
+    };
+    let start = bound("start", update.range_start.as_deref())?;
+    let stop = bound("stop", update.range_stop.as_deref())?;
+    if start > stop {
+        return Err(CoreError::ValidationFailed {
+            message: "DHCP range start must not exceed stop".into(),
+        });
+    }
+    dhcp.insert(
+        "ipAddressRange".into(),
+        serde_json::json!({"start": start.to_string(), "stop": stop.to_string()}),
+    );
+    ipv4.insert("dhcpConfiguration".into(), Value::Object(dhcp));
     Ok(())
 }
 
@@ -196,7 +265,7 @@ fn ensure_wifi_payload_defaults(
 
 pub(in super::super) fn build_create_wifi_broadcast_payload(
     req: &crate::command::CreateWifiBroadcastRequest,
-) -> crate::integration_types::WifiBroadcastCreateUpdate {
+) -> Result<crate::integration_types::WifiBroadcastCreateUpdate, CoreError> {
     let broadcast_type = req
         .broadcast_type
         .clone()
@@ -238,10 +307,13 @@ pub(in super::super) fn build_create_wifi_broadcast_payload(
     );
 
     if let Some(network_id) = &req.network_id {
-        body.insert(
-            "network".into(),
-            serde_json::json!({ "type": "SPECIFIC", "networkId": network_id.to_string() }),
-        );
+        let network = if network_id.as_legacy() == Some("native") {
+            serde_json::json!({ "type": "NATIVE" })
+        } else {
+            let id = crate::controller::support::require_uuid(network_id)?;
+            serde_json::json!({ "type": "SPECIFIC", "networkId": id })
+        };
+        body.insert("network".into(), network);
     }
     body.insert("hideName".into(), serde_json::Value::Bool(req.hide_ssid));
     if req.band_steering {
@@ -263,14 +335,14 @@ pub(in super::super) fn build_create_wifi_broadcast_payload(
     }
     ensure_wifi_payload_defaults(&mut body, &broadcast_type);
 
-    crate::integration_types::WifiBroadcastCreateUpdate {
+    Ok(crate::integration_types::WifiBroadcastCreateUpdate {
         channel2g_locked_to6: req.channel2g_locked_to6.unwrap_or(false),
         dtim_period2g_locked_to3: req.dtim_period2g_locked_to3.unwrap_or(false),
         name: wifi_payload_name(&req.name, &req.ssid),
         broadcast_type,
         enabled: req.enabled,
         body,
-    }
+    })
 }
 
 pub(in super::super) fn build_update_wifi_broadcast_payload(
@@ -371,6 +443,56 @@ mod tests {
     }
 
     #[test]
+    fn dhcp_off_uses_null_and_reenable_requires_an_explicit_range() {
+        let mut extra = relay_network();
+        extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"] = json!({
+            "mode": "SERVER", "ipAddressRange": {"start": "10.0.50.100", "stop": "10.0.50.200"}
+        });
+        let disable = UpdateNetworkRequest {
+            dhcp_enabled: Some(false),
+            ..Default::default()
+        };
+        apply_ipv4_update(&mut extra, true, &disable).expect("disable server");
+        assert!(extra["ipv4Configuration"]["dhcpConfiguration"].is_null());
+        assert_eq!(extra["ipv4Configuration"]["hostIpAddress"], "10.0.50.1");
+        let enable = UpdateNetworkRequest {
+            dhcp_enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(apply_ipv4_update(&mut extra, false, &enable).is_err());
+        let enable: UpdateNetworkRequest = serde_json::from_value(json!({
+            "dhcp_enabled": true, "dhcp": {"range_start": "10.0.50.110", "range_stop": "10.0.50.210"}
+        })).expect("enable request");
+        apply_ipv4_update(&mut extra, false, &enable).expect("enable with range");
+        assert_eq!(
+            extra["ipv4Configuration"]["dhcpConfiguration"]["mode"],
+            "SERVER"
+        );
+        assert_eq!(
+            extra["ipv4Configuration"]["dhcpConfiguration"]["ipAddressRange"]["start"],
+            "10.0.50.110"
+        );
+    }
+
+    #[test]
+    fn range_edits_cannot_silently_enable_or_disable_dhcp() {
+        for current in [
+            json!(null),
+            json!({"mode": "RELAY", "dhcpServerIpAddresses": ["10.0.0.5"]}),
+        ] {
+            let mut extra = relay_network();
+            extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"] = current;
+            let before = extra.clone();
+            let update: UpdateNetworkRequest = serde_json::from_value(json!({
+                "dhcp": {"range_start": "10.0.50.100", "range_stop": "10.0.50.200"}
+            }))
+            .expect("range request");
+            assert!(apply_ipv4_update(&mut extra, false, &update).is_err());
+            assert_eq!(extra, before);
+        }
+    }
+
+    #[test]
     fn dhcp_on_turns_a_relay_with_a_range_into_a_server_with_dns() {
         let mut extra = relay_network();
         extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"]["ipAddressRange"] =
@@ -393,6 +515,56 @@ mod tests {
                 "dnsServerIpAddressesOverride": ["1.1.1.1"],
             })
         );
+    }
+
+    #[test]
+    fn dhcp_enable_accepts_a_supplied_range_and_preserves_other_settings() {
+        let mut extra = relay_network();
+        let update: UpdateNetworkRequest = serde_json::from_value(json!({
+            "dhcp_enabled": true,
+            "dhcp": {"range_start": "10.0.50.100", "range_stop": "10.0.50.200"}
+        }))
+        .expect("request");
+        apply_ipv4_update(&mut extra, false, &update).expect("update");
+        let ipv4 = &extra["ipv4Configuration"];
+        assert_eq!(ipv4["hostIpAddress"], "10.0.50.1");
+        assert_eq!(ipv4["dhcpConfiguration"]["mode"], "SERVER");
+        assert_eq!(
+            ipv4["dhcpConfiguration"]["ipAddressRange"],
+            json!({"start": "10.0.50.100", "stop": "10.0.50.200"})
+        );
+        assert!(
+            ipv4["dhcpConfiguration"]
+                .get("dhcpServerIpAddresses")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dhcp_range_merges_one_changed_bound_and_rejects_invalid_ranges() {
+        let mut extra = relay_network();
+        extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"]["mode"] =
+            json!("SERVER");
+        extra.get_mut("ipv4Configuration").expect("ipv4")["dhcpConfiguration"]["ipAddressRange"] =
+            json!({"start": "10.0.50.100", "stop": "10.0.50.200"});
+        let update: UpdateNetworkRequest = serde_json::from_value(json!({
+            "dhcp": {"range_stop": "10.0.50.250"}
+        }))
+        .expect("request");
+        apply_ipv4_update(&mut extra, true, &update).expect("update");
+        assert_eq!(
+            extra["ipv4Configuration"]["dhcpConfiguration"]["ipAddressRange"],
+            json!({"start": "10.0.50.100", "stop": "10.0.50.250"})
+        );
+        let unchanged = extra.clone();
+        for start in ["not an IP", "10.0.50.251", "::1"] {
+            let update: UpdateNetworkRequest = serde_json::from_value(json!({
+                "dhcp": {"range_start": start}
+            }))
+            .expect("request");
+            assert!(apply_ipv4_update(&mut extra, true, &update).is_err());
+            assert_eq!(extra, unchanged);
+        }
     }
 
     #[test]
@@ -484,7 +656,8 @@ mod tests {
             fast_roaming: Some(true),
             channel2g_locked_to6: None,
             dtim_period2g_locked_to3: None,
-        });
+        })
+        .expect("Wi-Fi payload");
 
         assert_eq!(payload.name, "Main");
         assert!(payload.body.get("ssid").is_none());
@@ -516,7 +689,8 @@ mod tests {
             fast_roaming: None,
             channel2g_locked_to6: None,
             dtim_period2g_locked_to3: None,
-        });
+        })
+        .expect("Wi-Fi payload");
 
         let json = serde_json::to_string(&payload).expect("wifi payload should serialize");
         assert!(json.contains("2.4"), "expected 2.4 not f64 artifact");
@@ -529,11 +703,29 @@ mod tests {
             "name": "Guest", "security_mode": "Open"
         }))
         .expect("create request");
-        let payload = build_create_wifi_broadcast_payload(&request);
+        let payload = build_create_wifi_broadcast_payload(&request).expect("Wi-Fi payload");
         let body = serde_json::to_value(payload).expect("wire payload");
         assert!(body.get("mloEnabled").is_none());
         assert_eq!(body["channel2gLockedTo6"], false);
         assert_eq!(body["dtimPeriod2gLockedTo3"], false);
+    }
+
+    #[test]
+    fn wifi_network_binding_uses_native_or_specific_discriminator() {
+        for (id, expected) in [
+            ("native", json!({"type": "NATIVE"})),
+            (
+                "00000000-0000-0000-0000-000000000001",
+                json!({"type": "SPECIFIC", "networkId": "00000000-0000-0000-0000-000000000001"}),
+            ),
+        ] {
+            let request = serde_json::from_value(json!({
+                "name": "Guest", "security_mode": "Open", "network_id": id
+            }))
+            .expect("create request");
+            let payload = build_create_wifi_broadcast_payload(&request).expect("Wi-Fi payload");
+            assert_eq!(payload.body.get("network"), Some(&expected));
+        }
     }
 
     #[test]
