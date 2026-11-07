@@ -170,6 +170,9 @@ impl NetworkEditState {
 
     fn dhcp_update(&self) -> Result<Option<DhcpUpdate>, String> {
         let range_changed = self.changed(8) || self.changed(9);
+        if range_changed && !self.dhcp_enabled {
+            return Err("Enable DHCP before changing its address range".into());
+        }
         if range_changed || (self.changed(3) && self.dhcp_enabled) {
             let start = self
                 .range_start

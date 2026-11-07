@@ -232,6 +232,60 @@ mod tests {
     }
 
     #[test]
+    fn changing_ranges_with_dhcp_off_keeps_the_draft_until_enabled() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        for initially_enabled in [false, true] {
+            let mut network = test_network();
+            if !initially_enabled {
+                network.dhcp = None;
+            }
+            let mut screen = NetworksScreen::new();
+            screen.apply_action(&Action::NetworksUpdated(Arc::new(vec![Arc::new(network)])));
+            screen.handle_key_input(KeyEvent::from(KeyCode::Char('e')));
+            let edit = screen.edit_state.as_mut().expect("open form");
+            if initially_enabled {
+                edit.field_idx = 3;
+                edit.toggle_bool();
+            }
+            for (index, address) in [(8, "192.168.100.20"), (9, "192.168.100.200")] {
+                edit.field_idx = index;
+                for _ in 0..edit.field_value(index).len() {
+                    edit.handle_backspace();
+                }
+                for ch in address.chars() {
+                    edit.handle_text_input(ch);
+                }
+            }
+            let action = screen.handle_key_input(KeyEvent::from(KeyCode::Enter));
+            assert!(
+                matches!(action, Some(Action::Notify(ref notice))
+                if notice.message.contains("Enable DHCP")),
+                "{action:?}"
+            );
+            let edit = screen
+                .edit_state
+                .as_mut()
+                .expect("invalid draft stays open");
+            assert_eq!(edit.field_value(8), "192.168.100.20");
+            assert_eq!(edit.field_value(9), "192.168.100.200");
+            edit.field_idx = 3;
+            edit.toggle_bool();
+            let Some(Action::NetworkSave(_, request)) =
+                screen.handle_key_input(KeyEvent::from(KeyCode::Enter))
+            else {
+                panic!("enabling DHCP must allow saving the retained range");
+            };
+            assert_eq!(request.dhcp_enabled, (!initially_enabled).then_some(true));
+            assert_eq!(
+                request.dhcp.expect("range edit").range_start.as_deref(),
+                Some("192.168.100.20")
+            );
+            assert!(screen.edit_state.is_none());
+        }
+    }
+
+    #[test]
     fn enabling_dhcp_can_supply_a_new_range_without_resending_other_fields() {
         let mut network = test_network();
         network.dhcp = None;

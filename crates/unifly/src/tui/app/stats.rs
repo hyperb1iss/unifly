@@ -1,6 +1,9 @@
 use super::App;
 use crate::tui::action::{Action, Notification, StatsData, StatsPeriod};
 
+#[cfg(test)]
+mod fetch_tests;
+
 impl App {
     /// Fetch historical stats from the controller and send `StatsUpdated`.
     ///
@@ -77,7 +80,6 @@ impl App {
                                 "Could not load application traffic: {error}"
                             ))));
                         }
-                        return;
                     }
                 }
             }
@@ -102,7 +104,6 @@ impl App {
                                 "Could not load traffic categories: {error}"
                             ))));
                         }
-                        return;
                     }
                 }
             }
