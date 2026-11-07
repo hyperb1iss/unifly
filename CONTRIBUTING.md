@@ -143,7 +143,7 @@ just e2e-test       # run the suite against a running controller
 just e2e-down       # stop and remove the container
 ```
 
-`just e2e` with its default URL and the Docker CI job set
+`just e2e` with `UNIFLY_E2E_URL` unset or empty and the Docker CI job set
 `UNIFLY_E2E_SIMULATION=1` to identify the seeded simulation fixture. Its
 pending-device test requires a nonempty result. External-controller runs leave this unset and compare the pending
 list against inventory without assuming any device needs adoption.

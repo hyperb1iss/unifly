@@ -137,8 +137,9 @@ unifly networks refs <ID|NAME>                   # What depends on this network?
 
 Gotchas: `list` returns summary data without `ipv4Configuration`. Use `get` for full config. `refs` is the only pre-delete dependency check; use it before deleting.
 
-Switch-managed creation requires `--device-id <UUID>` for its L3 switch and
-`--ipv4-host <ADDRESS/PREFIX>`. Gateway and switch DHCP creation require
+Gateway- and switch-managed creation require `--ipv4-host <ADDRESS/PREFIX>`,
+even with DHCP disabled. Switch-managed creation also requires
+`--device-id <UUID>` for its L3 switch. Gateway and switch DHCP creation require
 both `--dhcp-start` and `--dhcp-stop`; ranges must contain IPv4 addresses
 in ascending order. Unmanaged VLANs do not accept DHCP or IPv4 settings.
 

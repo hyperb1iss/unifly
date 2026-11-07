@@ -166,8 +166,9 @@ are a different identifier and cannot replace Session IDs.
 
 `CreateNetworkRequest` gains an optional `device_id`. Set it to the owning
 Integration device UUID for switch-managed networks and `None` otherwise.
-Switch-managed creation also requires an IPv4 host/prefix; DHCP creation
-requires both valid IPv4 range bounds in ascending order.
+Gateway- and switch-managed creation require an IPv4 host/prefix in `subnet`,
+even with DHCP disabled. DHCP creation requires both valid IPv4 range bounds
+in ascending order.
 
 Device and client statistics have `get_device_stats_in_range` and
 `get_client_stats_in_range` methods for explicit Unix-millisecond bounds.

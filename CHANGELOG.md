@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   2.4 GHz channel and DTIM locks with `--channel-2g-locked-to-6` and
   `--dtim-period-2g-locked-to-3`. Updates preserve existing values.
 
+- Read event history from the system log on modern Network controllers,
+  including the TUI history feed. Event lists paginate through the requested
+  time window and count visible results toward `--limit`. Firewall blocks
+  are hidden by default; `--include-firewall` restores them while
+  intrusion-prevention events remain visible in either mode.
+  The refresh snapshot now holds up to 100 visible events from the last
+  24 hours; older history remains available through `events list --within`.
+- Read dashboard alert groups and acknowledge them through the modern
+  critical-alert API. Older controllers retain legacy event and alarm
+  support. An empty modern response does not trigger a legacy fallback.
+
 ### Changed
 
 - The library's pinned Integration specification is Network API 11.0.97.
@@ -86,17 +97,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retain distinct ID-less records, and bound retained history in memory.
 - Decode numeric CPU and load-average fields without dropping device
   inventory.
-
-- Read event history from the system log on modern Network controllers,
-  including the TUI history feed. Event lists paginate through the requested
-  time window and count visible results toward `--limit`. Firewall blocks
-  are hidden by default; `--include-firewall` restores them while
-  intrusion-prevention events remain visible in either mode.
-  The refresh snapshot now holds up to 100 visible events from the last
-  24 hours; older history remains available through `events list --within`.
-- Read dashboard alert groups and acknowledge them through the modern
-  critical-alert API. Older controllers retain legacy event and alarm
-  support. An empty modern response does not trigger a legacy fallback.
 
 ## [0.12.1] - 2026-11-06
 
