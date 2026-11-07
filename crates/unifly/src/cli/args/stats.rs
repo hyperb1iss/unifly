@@ -34,7 +34,7 @@ pub enum StatsCommand {
 
 #[derive(Debug, Args)]
 pub struct StatsQuery {
-    /// Reporting interval
+    /// Reporting interval (modern controllers return 8-hour buckets for daily)
     #[arg(long, default_value = "hourly", value_enum)]
     pub interval: StatsInterval,
 

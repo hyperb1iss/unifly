@@ -116,6 +116,7 @@ pub struct SessionClient {
     spent_totp: std::sync::Mutex<Option<secrecy::SecretString>>,
     /// Request timeout `http` was built with, when known.
     request_timeout: Option<std::time::Duration>,
+    pub(super) stats_backend: tokio::sync::OnceCell<super::stats::StatsBackend>,
 }
 
 /// Decode the body of a raw route as JSON.
@@ -158,6 +159,7 @@ impl SessionClient {
             session_generation: std::sync::atomic::AtomicU64::new(0),
             spent_totp: std::sync::Mutex::default(),
             request_timeout: Some(config.timeout),
+            stats_backend: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -189,6 +191,7 @@ impl SessionClient {
             session_generation: std::sync::atomic::AtomicU64::new(0),
             spent_totp: std::sync::Mutex::default(),
             request_timeout: None,
+            stats_backend: tokio::sync::OnceCell::new(),
         }
     }
 

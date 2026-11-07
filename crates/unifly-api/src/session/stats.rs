@@ -1,71 +1,151 @@
-// Session API statistics endpoints
-//
-// Historical reports (stat/report/) and DPI statistics (stat/sitedpi).
-// These endpoints return loosely-typed JSON because the field set varies
-// by report type, interval, and firmware version.
+//! Historical statistics, selected through the controller's statistics source.
+//!
+//! Legacy reports retain their requested resolution. Modern reports retain native
+//! controller buckets and expose their actual `duration` in milliseconds. Modern
+//! controllers support 5-minute, hourly, 8-hour, and monthly buckets; daily requests
+//! use native 8-hour buckets without inventing daily aggregates. On modern
+//! controllers, `interval` selects the default window when bounds are absent:
+//! 5minutes:12h, hourly:7d, daily:30d, monthly:365d. Missing measurements stay absent.
 
-use serde_json::json;
-use tracing::debug;
+use serde::Deserialize;
+use serde_json::{Value, json};
 
-use crate::error::Error;
-use crate::session::client::SessionClient;
+use crate::{Error, SessionClient};
 
-fn attrs_or_default(attrs: Option<&[String]>, default: &[&str]) -> serde_json::Value {
-    attrs.map_or_else(|| json!(default), |custom| json!(custom))
+mod dpi;
+mod modern;
+mod wire;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(super) enum StatsBackend {
+    Legacy,
+    Modern,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Report {
+    Site,
+    Device,
+    Client,
+    Gateway,
+}
+
+impl Report {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Site => "site",
+            Self::Device => "device",
+            Self::Client => "user",
+            Self::Gateway => "gw",
+        }
+    }
+
+    fn attributes(self) -> &'static [&'static str] {
+        match self {
+            Self::Site => &["bytes", "num_sta", "time", "wlan-num_sta", "lan-num_sta"],
+            Self::Device => &["bytes", "num_sta", "time", "rx_bytes", "tx_bytes"],
+            Self::Client => &["bytes", "time", "rx_bytes", "tx_bytes"],
+            Self::Gateway => &[
+                "bytes",
+                "time",
+                "wan-tx_bytes",
+                "wan-rx_bytes",
+                "lan-rx_bytes",
+                "lan-tx_bytes",
+            ],
+        }
+    }
+}
+
+struct ReportQuery<'a> {
+    interval: &'a str,
+    start: Option<i64>,
+    end: Option<i64>,
+    macs: Option<&'a [String]>,
+    attrs: Option<&'a [String]>,
 }
 
 impl SessionClient {
-    /// Fetch site-level historical statistics with optional Unix millisecond bounds.
-    ///
-    /// `POST /api/s/{site}/stat/report/{interval}.site`
-    ///
-    /// The `interval` parameter should be one of: `"5minutes"`, `"hourly"`, `"daily"`.
-    /// Returns loosely-typed JSON because the field set varies by report type.
+    async fn stats_backend(&self) -> Result<StatsBackend, Error> {
+        self.stats_backend
+            .get_or_try_init(|| async {
+                match self.raw_get("v2/api/stats/source").await {
+                    Ok(value) => wire::decode(&value),
+                    Err(error) if error.is_not_found() => Ok(StatsBackend::Legacy),
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .copied()
+    }
+
+    async fn stats_report(
+        &self,
+        report: Report,
+        query: ReportQuery<'_>,
+    ) -> Result<Vec<Value>, Error> {
+        match self.stats_backend().await? {
+            StatsBackend::Modern => modern::report(self, report, &query).await,
+            StatsBackend::Legacy => {
+                let mut body = json!({"attrs": query.attrs.map_or_else(|| json!(report.attributes()), |attrs| json!(attrs))});
+                if let Some(start) = query.start {
+                    body["start"] = json!(start);
+                }
+                if let Some(end) = query.end {
+                    body["end"] = json!(end);
+                }
+                if let Some(macs) = query.macs {
+                    body["macs"] = json!(macs);
+                }
+                self.post_read(
+                    self.site_url(&format!(
+                        "stat/report/{}.{}",
+                        query.interval,
+                        report.suffix()
+                    )),
+                    &body,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Fetch site history with optional Unix millisecond bounds.
+    /// Modern controllers return native buckets with an explicit millisecond `duration`.
     pub async fn get_site_stats(
         &self,
         interval: &str,
         start: Option<i64>,
         end: Option<i64>,
         attrs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
-        let path = format!("stat/report/{interval}.site");
-        let url = self.site_url(&path);
-        debug!(interval, ?start, ?end, "fetching site stats");
-
-        // The report endpoint requires a POST with attribute selection.
-        // Requesting common attributes; the API ignores unknown ones.
-        let mut body = json!({
-            "attrs": attrs_or_default(
+    ) -> Result<Vec<Value>, Error> {
+        self.stats_report(
+            Report::Site,
+            ReportQuery {
+                interval,
+                start,
+                end,
+                macs: None,
                 attrs,
-                &["bytes", "num_sta", "time", "wlan-num_sta", "lan-num_sta"],
-            ),
-        });
-        if let Some(s) = start {
-            body["start"] = json!(s);
-        }
-        if let Some(e) = end {
-            body["end"] = json!(e);
-        }
-
-        self.post_read(url, &body).await
+            },
+        )
+        .await
     }
 
-    /// Fetch per-device historical statistics.
-    ///
-    /// `POST /api/s/{site}/stat/report/{interval}.device`
-    ///
-    /// If `macs` is provided, results are filtered to those devices.
+    /// Fetch per-device history using the default window for `interval`.
     pub async fn get_device_stats(
         &self,
         interval: &str,
         macs: Option<&[String]>,
         attrs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
+    ) -> Result<Vec<Value>, Error> {
         self.get_device_stats_in_range(interval, None, None, macs, attrs)
             .await
     }
 
-    /// Fetch per-device historical statistics within optional Unix millisecond bounds.
+    /// Fetch device history with optional Unix millisecond bounds.
+    /// Modern controllers return native buckets with an explicit millisecond `duration`.
     pub async fn get_device_stats_in_range(
         &self,
         interval: &str,
@@ -73,43 +153,33 @@ impl SessionClient {
         end: Option<i64>,
         macs: Option<&[String]>,
         attrs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
-        let path = format!("stat/report/{interval}.device");
-        let url = self.site_url(&path);
-        debug!(interval, "fetching device stats");
-
-        let mut body = json!({
-            "attrs": attrs_or_default(attrs, &["bytes", "num_sta", "time", "rx_bytes", "tx_bytes"]),
-        });
-        if let Some(m) = macs {
-            body["macs"] = json!(m);
-        }
-        if let Some(start) = start {
-            body["start"] = json!(start);
-        }
-        if let Some(end) = end {
-            body["end"] = json!(end);
-        }
-
-        self.post_read(url, &body).await
+    ) -> Result<Vec<Value>, Error> {
+        self.stats_report(
+            Report::Device,
+            ReportQuery {
+                interval,
+                start,
+                end,
+                macs,
+                attrs,
+            },
+        )
+        .await
     }
 
-    /// Fetch per-client historical statistics.
-    ///
-    /// `POST /api/s/{site}/stat/report/{interval}.user`
-    ///
-    /// If `macs` is provided, results are filtered to those clients.
+    /// Fetch per-client history using the default window for `interval`.
     pub async fn get_client_stats(
         &self,
         interval: &str,
         macs: Option<&[String]>,
         attrs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
+    ) -> Result<Vec<Value>, Error> {
         self.get_client_stats_in_range(interval, None, None, macs, attrs)
             .await
     }
 
-    /// Fetch per-client historical statistics within optional Unix millisecond bounds.
+    /// Fetch client history with optional Unix millisecond bounds.
+    /// Modern controllers return native buckets with an explicit millisecond `duration`.
     pub async fn get_client_stats_in_range(
         &self,
         interval: &str,
@@ -117,119 +187,39 @@ impl SessionClient {
         end: Option<i64>,
         macs: Option<&[String]>,
         attrs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
-        let path = format!("stat/report/{interval}.user");
-        let url = self.site_url(&path);
-        debug!(interval, "fetching client stats");
-
-        let mut body = json!({
-            "attrs": attrs_or_default(attrs, &["bytes", "time", "rx_bytes", "tx_bytes"]),
-        });
-        if let Some(m) = macs {
-            body["macs"] = json!(m);
-        }
-        if let Some(start) = start {
-            body["start"] = json!(start);
-        }
-        if let Some(end) = end {
-            body["end"] = json!(end);
-        }
-
-        self.post_read(url, &body).await
+    ) -> Result<Vec<Value>, Error> {
+        self.stats_report(
+            Report::Client,
+            ReportQuery {
+                interval,
+                start,
+                end,
+                macs,
+                attrs,
+            },
+        )
+        .await
     }
 
-    /// Fetch gateway historical statistics with optional Unix millisecond bounds.
-    ///
-    /// `POST /api/s/{site}/stat/report/{interval}.gw`
+    /// Fetch gateway history with optional Unix millisecond bounds.
+    /// Modern controllers return native buckets with an explicit millisecond `duration`.
     pub async fn get_gateway_stats(
         &self,
         interval: &str,
         start: Option<i64>,
         end: Option<i64>,
         attrs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
-        let path = format!("stat/report/{interval}.gw");
-        let url = self.site_url(&path);
-        debug!(interval, ?start, ?end, "fetching gateway stats");
-
-        let mut body = json!({
-            "attrs": attrs_or_default(
+    ) -> Result<Vec<Value>, Error> {
+        self.stats_report(
+            Report::Gateway,
+            ReportQuery {
+                interval,
+                start,
+                end,
+                macs: None,
                 attrs,
-                &[
-                    "bytes",
-                    "time",
-                    "wan-tx_bytes",
-                    "wan-rx_bytes",
-                    "lan-rx_bytes",
-                    "lan-tx_bytes",
-                ],
-            ),
-        });
-        if let Some(s) = start {
-            body["start"] = json!(s);
-        }
-        if let Some(e) = end {
-            body["end"] = json!(e);
-        }
-
-        self.post_read(url, &body).await
-    }
-
-    /// Fetch DPI (Deep Packet Inspection) statistics.
-    ///
-    /// Tries multiple session DPI endpoints for compatibility across firmware
-    /// versions:
-    /// 1. `stat/stadpi` with MAC filter — when `macs` is provided
-    /// 2. `stat/sitedpi` with type filter — site-level aggregated stats
-    /// 3. `stat/dpi` (unfiltered GET) — fallback for firmware that only
-    ///    populates this endpoint
-    ///
-    /// The `group_by` parameter selects the DPI grouping: `"by_app"` or `"by_cat"`.
-    /// Returns empty data if DPI tracking is not enabled on the controller.
-    pub async fn get_dpi_stats(
-        &self,
-        group_by: &str,
-        macs: Option<&[String]>,
-    ) -> Result<Vec<serde_json::Value>, Error> {
-        // Per-station endpoint when filtering by MAC addresses.
-        if let Some(m) = macs {
-            let url = self.site_url("stat/stadpi");
-            debug!(group_by, "fetching station DPI stats (filtered)");
-            let body = json!({"type": group_by, "macs": m});
-            return self.post(url, &body).await;
-        }
-
-        // Try v2 flow statistics endpoint first (Network Application 9+).
-        let v2_url = self.site_url_v2("traffic-flow-latest-statistics?period=DAY&top=30");
-        debug!("fetching v2 traffic flow statistics");
-        match self.get_raw(v2_url).await {
-            Ok(v2_data) => {
-                if v2_data
-                    .get("top_all_traffic_by_application")
-                    .and_then(|a| a.as_array())
-                    .is_some_and(|a| !a.is_empty())
-                {
-                    debug!("v2 traffic flow stats received");
-                    return Ok(vec![v2_data]);
-                }
-                debug!("v2 response had no DPI app data, trying session");
-            }
-            Err(e) => {
-                debug!("v2 traffic flow stats unavailable, trying session: {e}");
-            }
-        }
-
-        // Session: site-level filtered endpoint.
-        let url = self.site_url("stat/sitedpi");
-        debug!(group_by, "fetching site DPI stats");
-        let result: Vec<serde_json::Value> = self.post(url, &json!({"type": group_by})).await?;
-        if !result.is_empty() && result.iter().any(|v| v.get(group_by).is_some()) {
-            return Ok(result);
-        }
-
-        // Session fallback: unfiltered DPI endpoint.
-        let url = self.site_url("stat/dpi");
-        debug!("falling back to unfiltered DPI stats");
-        self.get(url).await
+            },
+        )
+        .await
     }
 }
