@@ -38,11 +38,11 @@ pub struct StatsQuery {
     #[arg(long, default_value = "hourly", value_enum)]
     pub interval: StatsInterval,
 
-    /// Start time (ISO 8601 or Unix timestamp)
+    /// Start time (RFC3339 or Unix seconds)
     #[arg(long)]
     pub start: Option<String>,
 
-    /// End time (ISO 8601 or Unix timestamp)
+    /// End time (RFC3339 or Unix seconds)
     #[arg(long)]
     pub end: Option<String>,
 

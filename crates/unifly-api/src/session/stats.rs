@@ -15,7 +15,7 @@ fn attrs_or_default(attrs: Option<&[String]>, default: &[&str]) -> serde_json::V
 }
 
 impl SessionClient {
-    /// Fetch site-level historical statistics.
+    /// Fetch site-level historical statistics with optional Unix millisecond bounds.
     ///
     /// `POST /api/s/{site}/stat/report/{interval}.site`
     ///
@@ -47,7 +47,7 @@ impl SessionClient {
             body["end"] = json!(e);
         }
 
-        self.post(url, &body).await
+        self.post_read(url, &body).await
     }
 
     /// Fetch per-device historical statistics.
@@ -61,6 +61,19 @@ impl SessionClient {
         macs: Option<&[String]>,
         attrs: Option<&[String]>,
     ) -> Result<Vec<serde_json::Value>, Error> {
+        self.get_device_stats_in_range(interval, None, None, macs, attrs)
+            .await
+    }
+
+    /// Fetch per-device historical statistics within optional Unix millisecond bounds.
+    pub async fn get_device_stats_in_range(
+        &self,
+        interval: &str,
+        start: Option<i64>,
+        end: Option<i64>,
+        macs: Option<&[String]>,
+        attrs: Option<&[String]>,
+    ) -> Result<Vec<serde_json::Value>, Error> {
         let path = format!("stat/report/{interval}.device");
         let url = self.site_url(&path);
         debug!(interval, "fetching device stats");
@@ -71,8 +84,14 @@ impl SessionClient {
         if let Some(m) = macs {
             body["macs"] = json!(m);
         }
+        if let Some(start) = start {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = end {
+            body["end"] = json!(end);
+        }
 
-        self.post(url, &body).await
+        self.post_read(url, &body).await
     }
 
     /// Fetch per-client historical statistics.
@@ -86,6 +105,19 @@ impl SessionClient {
         macs: Option<&[String]>,
         attrs: Option<&[String]>,
     ) -> Result<Vec<serde_json::Value>, Error> {
+        self.get_client_stats_in_range(interval, None, None, macs, attrs)
+            .await
+    }
+
+    /// Fetch per-client historical statistics within optional Unix millisecond bounds.
+    pub async fn get_client_stats_in_range(
+        &self,
+        interval: &str,
+        start: Option<i64>,
+        end: Option<i64>,
+        macs: Option<&[String]>,
+        attrs: Option<&[String]>,
+    ) -> Result<Vec<serde_json::Value>, Error> {
         let path = format!("stat/report/{interval}.user");
         let url = self.site_url(&path);
         debug!(interval, "fetching client stats");
@@ -96,11 +128,17 @@ impl SessionClient {
         if let Some(m) = macs {
             body["macs"] = json!(m);
         }
+        if let Some(start) = start {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = end {
+            body["end"] = json!(end);
+        }
 
-        self.post(url, &body).await
+        self.post_read(url, &body).await
     }
 
-    /// Fetch gateway historical statistics.
+    /// Fetch gateway historical statistics with optional Unix millisecond bounds.
     ///
     /// `POST /api/s/{site}/stat/report/{interval}.gw`
     pub async fn get_gateway_stats(
@@ -134,7 +172,7 @@ impl SessionClient {
             body["end"] = json!(e);
         }
 
-        self.post(url, &body).await
+        self.post_read(url, &body).await
     }
 
     /// Fetch DPI (Deep Packet Inspection) statistics.

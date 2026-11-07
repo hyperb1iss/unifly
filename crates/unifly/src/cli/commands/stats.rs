@@ -1,6 +1,6 @@
 //! Statistics command handlers.
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use unifly_api::Controller;
 
 use crate::cli::args::{
@@ -31,10 +31,13 @@ fn render_stats(data: &[serde_json::Value], format: &OutputFormat) -> String {
 
 fn parse_time(value: &str, field: &str) -> Result<i64, CliError> {
     if let Ok(ts) = value.parse::<i64>() {
-        return Ok(ts);
+        return ts.checked_mul(1000).ok_or_else(|| CliError::Validation {
+            field: field.into(),
+            reason: "Unix seconds are outside the supported millisecond range".into(),
+        });
     }
     DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.with_timezone(&Utc).timestamp())
+        .map(|dt| dt.timestamp_millis())
         .map_err(|_| CliError::Validation {
             field: field.into(),
             reason: format!("invalid timestamp '{value}' (use Unix seconds or RFC3339)"),
@@ -73,14 +76,28 @@ pub async fn handle(
         }
         StatsCommand::Device(query) => {
             let interval = interval_str(&query.interval);
+            let (start, end) = parse_time_range(query.start.as_deref(), query.end.as_deref())?;
             controller
-                .get_device_stats(interval, query.macs.as_deref(), query.attrs.as_deref())
+                .get_device_stats_in_range(
+                    interval,
+                    start,
+                    end,
+                    query.macs.as_deref(),
+                    query.attrs.as_deref(),
+                )
                 .await?
         }
         StatsCommand::Client(query) => {
             let interval = interval_str(&query.interval);
+            let (start, end) = parse_time_range(query.start.as_deref(), query.end.as_deref())?;
             controller
-                .get_client_stats(interval, query.macs.as_deref(), query.attrs.as_deref())
+                .get_client_stats_in_range(
+                    interval,
+                    start,
+                    end,
+                    query.macs.as_deref(),
+                    query.attrs.as_deref(),
+                )
                 .await?
         }
         StatsCommand::Gateway(query) => {
@@ -102,4 +119,42 @@ pub async fn handle(
     let out = render_stats(&data, &global.output);
     output::print_output(&out, global.quiet);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_time, parse_time_range};
+
+    #[test]
+    fn stats_times_normalize_seconds_and_rfc3339_to_milliseconds() {
+        assert_eq!(
+            parse_time("1700000000", "start").expect("Unix seconds"),
+            1_700_000_000_000
+        );
+        assert_eq!(
+            parse_time("2023-11-14T22:13:20.123Z", "start").expect("RFC3339"),
+            1_700_000_000_123
+        );
+        assert_eq!(
+            parse_time("2023-11-15T00:13:20.123+02:00", "start").expect("offset timestamp"),
+            1_700_000_000_123
+        );
+        assert_eq!(parse_time("-1", "start").expect("pre-epoch seconds"), -1000);
+    }
+
+    #[test]
+    fn stats_times_reject_overflow_invalid_values_and_reversed_ranges() {
+        for value in ["9223372036854775807", "-9223372036854775808", "not-a-time"] {
+            assert!(parse_time(value, "end").is_err(), "{value}");
+        }
+        assert!(parse_time_range(Some("2"), Some("1")).is_err());
+        assert_eq!(
+            parse_time_range(None, Some("1")).expect("end-only range"),
+            (None, Some(1000))
+        );
+        assert_eq!(
+            parse_time_range(Some("1"), Some("1")).expect("equal bounds"),
+            (Some(1000), Some(1000))
+        );
+    }
 }
