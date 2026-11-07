@@ -301,9 +301,9 @@ both give a single-use code that serves only the first login. The
 profile's `totp_command` (argv array, no shell, 10 s timeout, see
 `config/totp_command.rs`) becomes a `TotpProvider` that runs for every
 re-login, which is what lets an MFA session renew when its cookie expires.
-Flag-aware paths (CLI, TUI launch) resolve TOTP through
-`config::resolve::resolve_totp`; `profile_to_controller_config` uses the
-same `config::resolve_totp_provider`. Never wrap a value captured once as
+CLI and TUI launch and `profile_to_controller_config` resolve TOTP through
+the shared controller configuration builder and `resolve_totp_provider`.
+Never wrap a value captured once as
 a provider; the session client refuses to resend a spent code anyway.
 
 `--no-cache` forces a fresh Session login, bypassing the session cookie
@@ -702,15 +702,12 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **`nat policies list` works in session-only auth.** The session
   refresh snapshot fetches the v2 NAT inventory alongside the other
   session collections.
-- **Wire formats follow Ubiquiti's OpenAPI spec, not intuition**
-  (#26/#27). The controller sends port ranges as `start`/`stop`, the
-  only shape in the spec (`startPort` appears nowhere in it), and reads
-  accept both. Writes still send `startPort`/`endPort`, the shape a live
-  UDM accepted in #18; the e2e Integration lane's firewall round trip is
-  the check that decides whether writes can move to `start`/`stop`. DNS
-  record types are `*_RECORD` tokens (`A_RECORD`, not `A`). Integration
-  list pages decode per-item so one unparseable record cannot blank a
-  collection, and pagination advances by the server-reported count.
+- **Port range writes use integer `start`/`stop` fields** from the OpenAPI
+  spec. Reads also accept legacy `startPort`/`endPort` names and string
+  values. The Integration E2E firewall round trip verifies writes and
+  readback. DNS record types are `*_RECORD` tokens (`A_RECORD`, not `A`).
+  Integration list pages decode per-item so one unparseable record cannot
+  blank a collection, and pagination advances by the server-reported count.
 - **Default list limit is 25** with a silent truncation hint. Agents and
   scripts should pass `--all` or `--limit 200+` for enumeration.
 - **`events watch --types` takes `EventCategory` enum values** (Device,
@@ -722,8 +719,8 @@ Check them by hand only when bumping the version outside `release.yml`.
   exclusive) for the display label. Both map to the v2 API `description`
   field. The `--name` flag is the user-friendly alias.
 - **`firewall policies patch`** is a fast partial-update path for toggling
-  `enabled`/`logging`; use it instead of `update` when only those fields
-  change.
+  `enabled`/`logging`/`reportFlowEnabled`; use it instead of `update` when
+  only those fields change.
 - **`firewall groups`** uses the Session API (`rest/firewallgroup`), not
   Integration. The `external_id` (UUID) in group responses is what
   firewall policies reference. Policy create/update supports
@@ -733,9 +730,24 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **`networks refs <id>`** is the only command that answers "what depends
   on this entity before I delete it." No equivalent exists for other
   entities yet.
-- **`unifly api <path>`** routes through the Session client and handles
-  CSRF automatically, so it can reach Session v1, v2, and Integration
-  endpoints without caring about auth mode.
+- **`unifly api <path>`** sends `integration/` paths through the
+  Integration client, preserving API-key auth and cloud connector routing.
+  Other paths use the Session client with automatic CSRF handling. Failed
+  mutations are not replayed through a different authentication path.
+- **Network 11 stats use explicit time-series queries.** Probe
+  `v2/api/stats/source` once per Session client; a strict 404 selects legacy
+  reports. Modern requests use `v2/api/stats/series` with a quoted
+  `siteId.eq('UUID')` filter. The UUID is the Session site's `_id`, not its
+  Integration ID. Preserve native bucket durations in milliseconds and
+  fractional metrics. Modern `daily` means native 8-hour buckets; monthly
+  uses native monthly retention. Do not substitute 8-hour data for yearly
+  history. Monthly wire bounds expand to January anchors to avoid the
+  controller's timezone alignment bug; returned buckets still overlap the
+  original requested window.
+- **Site creation sends the display name as `desc`.** The controller
+  generates the internal site reference. Supplying `name` in the wire
+  request breaks creation on Network 11. The CLI accepts `--name` or its
+  `--description` alias, not both.
 - **`clients roams` and `clients wifi`** accept any client identifier
   (name, hostname, IP, or MAC). Resolution uses the in-memory snapshot,
   so the client must appear in `clients list`. `roams` resolves to MAC;

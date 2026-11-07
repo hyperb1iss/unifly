@@ -7,7 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-07
+
+### Added
+
+- Read Network 11 site, device, client, and gateway statistics through the
+  modern time-series API. Reports preserve native bucket durations,
+  fractional values, device dimensions, and monthly retention. The TUI
+  calculates bandwidth from the returned duration and retains its last
+  chart when a refresh fails.
+- Inspect link aggregation groups, MC-LAG domains, and switch stacks with
+  `devices lags`, `devices mc-lag-domains`, and `devices switch-stacks`.
+  Each group provides list and get commands backed by Network API 11.
+- Configure firewall flow reporting with `--report-flow`, and WiFi's
+  2.4 GHz channel and DTIM locks with `--channel-2g-locked-to-6` and
+  `--dtim-period-2g-locked-to-3`. Updates preserve existing values.
+
+### Changed
+
+- The library's pinned Integration specification is Network API 11.0.97.
+  Remove five unsupported Integration NAT methods; use the Session NAT
+  methods or controller commands instead.
+- The library site-create method and `Command::CreateSite` take one display
+  name. The controller assigns the internal reference. CLI `--description`
+  is an alias for `--name`, rather than a separate required value.
+- New allow policies and block-to-allow updates leave mirrored return traffic disabled unless
+  `--allow-return-traffic true` is explicit. Network 11 rejects mirrored
+  return policies for external and gateway destination zones.
+
 ### Fixed
+
+- Resolve network names consistently for update, delete, and dependency
+  queries. Missing and ambiguous names fail before confirmation or writes.
+- Resolve firewall network names before writes, preserve Network 11 VPN
+  and IPv6 filters, and reject updates that cannot preserve an unfamiliar
+  filter. Domain, IP-range, and nested MAC filters follow the controller's
+  wire shapes. Native WiFi bindings use the controller's native network type.
+- Share configuration resolution across CLI and TUI startup, including
+  direct flags, profile settings, TLS, timeout, site, and TOTP behavior.
+  Config saves preserve comments and unknown keys, and URL diagnostics
+  mask malformed slash-containing passwords.
+  Explicit controller and API-key overrides select direct API-key auth
+  without forwarding a saved profile's password.
+  A key-only override also selects API-key auth for Session and legacy
+  profiles. Environment variables have the same effect as their flags.
+- Send only edited network form fields and allow DHCP range updates.
+  Creating or updating a network with DHCP off sends a null configuration;
+  enabling it again requires an explicit range.
+  Client kicks require confirmation. Event lists, heatmaps, and dashboard
+  events use local time. Topology labels stay inside their borders across
+  zoom levels, and WiFi sorting indexes client associations once.
+- Preserve SSID identity through event conversion so demo sanitization can
+  redact historical wireless names. WiFi details resolve displayed public
+  IPs back to real client addresses; concurrent sanitization reuses one
+  mapping per SSID or public IP.
+- Delete sites with their Session API ID instead of sending an internal
+  reference in the wrong wire field. Invalid identifiers fail before
+  confirmation.
+- Report DPI permission and server errors instead of showing empty traffic
+  data. Failed TUI traffic refreshes retain the previous statistics.
+- Honor `--start` and `--end` for device and client statistics.
+- Route raw Integration requests through API-key authentication, including
+  hybrid profiles and cloud connector paths.
+- Release shared Session client locks before HTTP calls so unrelated reads
+  can progress concurrently. Keep whole-array port updates atomic per
+  switch.
+- Warn on stderr when an optional inventory fetch fails, including 404s,
+  while retaining the last successful collection.
+- Follow system-log continuation flags beyond lower-bound page totals,
+  retain distinct ID-less records, and bound retained history in memory.
+- Decode numeric CPU and load-average fields without dropping device
+  inventory.
 
 - Read event history from the system log on modern Network controllers,
   including the TUI history feed. Event lists paginate through the requested
@@ -1070,7 +1140,8 @@ same running notes. Each of those releases has its own notes on the
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/hyperb1iss/unifly/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/hyperb1iss/unifly/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/hyperb1iss/unifly/compare/v0.10.0...v0.11.0

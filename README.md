@@ -275,7 +275,7 @@ Tables for people, JSON and plain IDs for scripts, and names that resolve wherev
 | `completions`   |            | Generate shell completions                                                                                                                                                   |
 | `config`        |            | Manage CLI configuration                                                                                                                                                     |
 | `countries`     |            | List available country codes                                                                                                                                                 |
-| `devices`       | `dev`, `d` | Manage adopted and pending devices, plus switch port config-as-code (`ports`, `ports-export`, `port-set`)                                                                    |
+| `devices`       | `dev`, `d` | Manage adopted and pending devices, plus switch ports, LAGs, MC-LAG domains, and switch stacks                                                                               |
 | `dns`           |            | Manage DNS policies (local records)                                                                                                                                          |
 | `dpi`           |            | DPI reference data                                                                                                                                                           |
 | `events`        |            | View and stream events                                                                                                                                                       |

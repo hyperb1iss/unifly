@@ -150,6 +150,43 @@ The infallible `From<DnsPolicyResponse> for DnsPolicy` impl is replaced by this 
 
 See [docs.rs/unifly-api](https://docs.rs/unifly-api) for the complete API reference with all types, methods, and examples.
 
+## Migrating to 0.13
+
+The Integration client follows Network API 11.0.97. Five methods for the
+unsupported `firewall/nat` route have been removed. Use the Session client's
+`list_nat_rules`, `create_nat_rule`, `update_nat_rule`, and `delete_nat_rule`
+methods, or the corresponding controller commands. To read one NAT rule,
+select its ID from the Session inventory.
+
+Site creation takes one display name: `SessionClient::create_site(name)`
+and `Command::CreateSite { name }`. The controller generates the internal
+site reference. Site deletion resolves an internal reference or Session
+site ID, then sends the Session ID to the controller. Integration site IDs
+are a different identifier and cannot replace Session IDs.
+
+Device and client statistics have `get_device_stats_in_range` and
+`get_client_stats_in_range` methods for explicit Unix-millisecond bounds.
+The existing methods retain their default windows. Modern reports return
+native buckets with `duration` in milliseconds, including partial buckets;
+use that duration when calculating rates. The `daily` interval uses native
+8-hour buckets on Network 11. Monthly requests retain monthly resolution
+and filter returned buckets against the original requested window.
+
+The optional `Event::ssid` field preserves wireless identity through event
+conversion, including legacy logs, modern system logs, and WebSocket events.
+Consumers that redact event messages should map this field before replacing
+SSID text in the message.
+
+The source and destination firewall filter enums add VPN server, site-to-site
+VPN tunnel, and IPv6 interface-identifier variants. Update exhaustive matches
+when upgrading. Policy updates reject an untouched filter that cannot be
+represented without losing its body; replace that filter explicitly or use
+a partial policy patch for supported fields.
+Nested MAC selectors on network and IP-address filters are single strings,
+as the controller returns them. Standalone MAC-address filters retain their
+list shape. Domain and IP-range filters serialize the canonical `DOMAINS`
+and `IP_ADDRESS_RANGE` discriminators.
+
 ## Next Steps
 
 - [Architecture Overview](/architecture/): how the crates fit together
