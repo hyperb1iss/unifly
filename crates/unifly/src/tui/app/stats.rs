@@ -1,12 +1,14 @@
 use super::App;
-use crate::tui::action::{Action, StatsData, StatsPeriod};
+use crate::tui::action::{Action, Notification, StatsData, StatsPeriod};
+
+#[cfg(test)]
+mod fetch_tests;
 
 impl App {
     /// Fetch historical stats from the controller and send `StatsUpdated`.
     ///
     /// Uses a generation counter so stale responses from a previous period
     /// switch are silently dropped.
-    #[allow(clippy::too_many_lines)]
     pub(super) fn fetch_stats(&self, period: StatsPeriod) {
         use std::sync::atomic::Ordering;
 
@@ -22,15 +24,7 @@ impl App {
         let generation = self.stats_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let generation_ref = self.stats_generation.clone();
 
-        #[allow(
-            clippy::cast_possible_wrap,
-            clippy::cast_possible_truncation,
-            clippy::as_conversions
-        )]
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        let now_ms = chrono::Utc::now().timestamp_millis();
         let start = Some(now_ms - period.duration_secs() * 1000);
         let end = Some(now_ms);
 
@@ -46,42 +40,24 @@ impl App {
                 return;
             }
 
-            let mut data = StatsData::default();
-
-            if let Ok(gateway_stats) = gateway_res {
-                for entry in &gateway_stats {
-                    let ts = report_time_secs(entry);
-                    if let Some(tx_bytes) = entry
-                        .get("wan-tx_bytes")
-                        .or_else(|| entry.get("tx_bytes"))
-                        .and_then(serde_json::Value::as_f64)
-                    {
-                        data.bandwidth_tx
-                            .push((ts, tx_bytes / bucket_duration_secs));
+            let mut data =
+                match gateway_res.and_then(|gateway| site_res.map(|site| (gateway, site))) {
+                    Ok((gateway, site)) => {
+                        match historical_stats_data(&gateway, &site, bucket_duration_secs) {
+                            Ok(data) => data,
+                            Err(message) => {
+                                let _ = tx.send(Action::Notify(Notification::error(message)));
+                                return;
+                            }
+                        }
                     }
-                    if let Some(rx_bytes) = entry
-                        .get("wan-rx_bytes")
-                        .or_else(|| entry.get("rx_bytes"))
-                        .and_then(serde_json::Value::as_f64)
-                    {
-                        data.bandwidth_rx
-                            .push((ts, rx_bytes / bucket_duration_secs));
+                    Err(error) => {
+                        let _ = tx.send(Action::Notify(Notification::error(format!(
+                            "Could not load statistics: {error}"
+                        ))));
+                        return;
                     }
-                }
-            }
-
-            if let Ok(site_stats) = site_res {
-                for entry in &site_stats {
-                    let ts = report_time_secs(entry);
-                    if let Some(count) = entry
-                        .get("num_sta")
-                        .or_else(|| entry.get("wlan-num_sta"))
-                        .and_then(serde_json::Value::as_f64)
-                    {
-                        data.client_counts.push((ts, count));
-                    }
-                }
-            }
+                };
 
             if let Ok(apps) = dpi_apps_res
                 && !apps.is_empty()
@@ -95,10 +71,17 @@ impl App {
                 app_list.truncate(10);
                 data.dpi_apps = app_list;
             }
-            if data.dpi_apps.is_empty()
-                && let Ok(raw) = controller.get_dpi_stats("by_app", None).await
-            {
-                data.dpi_apps = parse_session_dpi_apps(&raw);
+            if data.dpi_apps.is_empty() {
+                match controller.get_dpi_stats("by_app", None).await {
+                    Ok(raw) => data.dpi_apps = parse_session_dpi_apps(&raw),
+                    Err(error) => {
+                        if generation_ref.load(Ordering::Relaxed) == generation {
+                            let _ = tx.send(Action::Notify(Notification::error(format!(
+                                "Could not load application traffic: {error}"
+                            ))));
+                        }
+                    }
+                }
             }
 
             if let Ok(categories) = dpi_categories_res
@@ -112,25 +95,82 @@ impl App {
                 category_list.sort_by_key(|item| std::cmp::Reverse(item.1));
                 data.dpi_categories = category_list;
             }
-            if data.dpi_categories.is_empty()
-                && let Ok(raw) = controller.get_dpi_stats("by_cat", None).await
-            {
-                data.dpi_categories = parse_session_dpi_categories(&raw);
+            if data.dpi_categories.is_empty() {
+                match controller.get_dpi_stats("by_cat", None).await {
+                    Ok(raw) => data.dpi_categories = parse_session_dpi_categories(&raw),
+                    Err(error) => {
+                        if generation_ref.load(Ordering::Relaxed) == generation {
+                            let _ = tx.send(Action::Notify(Notification::error(format!(
+                                "Could not load traffic categories: {error}"
+                            ))));
+                        }
+                    }
+                }
             }
 
-            let _ = tx.send(Action::StatsUpdated(data));
+            if generation_ref.load(Ordering::Relaxed) == generation {
+                let _ = tx.send(Action::StatsUpdated(data));
+            }
         });
     }
 }
 
-/// Bucket start of a `stat/report` row in epoch seconds. The controller
-/// reports `time` in milliseconds; the charts plot seconds.
-fn report_time_secs(entry: &serde_json::Value) -> f64 {
-    let time = entry
+fn historical_stats_data(
+    gateway: &[serde_json::Value],
+    site: &[serde_json::Value],
+    legacy_bucket_secs: f64,
+) -> Result<StatsData, String> {
+    let mut data = StatsData::default();
+    for entry in gateway {
+        let timestamp = report_time_secs(entry)?;
+        let duration = report_duration_secs(entry, legacy_bucket_secs)?;
+        if let Some(bytes) = entry
+            .get("wan-tx_bytes")
+            .or_else(|| entry.get("tx_bytes"))
+            .and_then(serde_json::Value::as_f64)
+        {
+            data.bandwidth_tx.push((timestamp, bytes / duration));
+        }
+        if let Some(bytes) = entry
+            .get("wan-rx_bytes")
+            .or_else(|| entry.get("rx_bytes"))
+            .and_then(serde_json::Value::as_f64)
+        {
+            data.bandwidth_rx.push((timestamp, bytes / duration));
+        }
+    }
+    for entry in site {
+        let timestamp = report_time_secs(entry)?;
+        if let Some(count) = entry
+            .get("num_sta")
+            .or_else(|| entry.get("wlan-num_sta"))
+            .and_then(serde_json::Value::as_f64)
+        {
+            data.client_counts.push((timestamp, count));
+        }
+    }
+    Ok(data)
+}
+
+/// Both report backends expose epoch milliseconds; charts plot seconds.
+fn report_time_secs(entry: &serde_json::Value) -> Result<f64, String> {
+    entry
         .get("time")
         .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    if time > 1e11 { time / 1000.0 } else { time }
+        .map(|time| time / 1000.0)
+        .ok_or_else(|| "Statistics response contains an invalid timestamp".into())
+}
+
+/// Modern buckets include their actual duration, including partial current buckets.
+fn report_duration_secs(entry: &serde_json::Value, legacy_bucket_secs: f64) -> Result<f64, String> {
+    let Some(duration) = entry.get("duration") else {
+        return Ok(legacy_bucket_secs);
+    };
+    duration
+        .as_f64()
+        .filter(|duration| *duration > 0.0)
+        .map(|duration| duration / 1000.0)
+        .ok_or_else(|| "Statistics response contains an invalid bucket duration".into())
 }
 
 /// Well-known UniFi DPI category IDs → human-readable names.
@@ -222,4 +262,44 @@ fn parse_session_dpi_categories(raw: &[serde_json::Value]) -> Vec<(String, u64)>
     }
     categories.sort_by_key(|item| std::cmp::Reverse(item.1));
     categories
+}
+
+#[cfg(test)]
+mod tests {
+    use super::historical_stats_data;
+    use serde_json::json;
+
+    #[test]
+    fn actual_bucket_duration_controls_rates_without_scaling_partial_metrics() {
+        let gateway = [
+            json!({"time": 1_700_000_000_000_i64, "duration": 150_000, "wan-tx_bytes": 300_000, "wan-rx_bytes": 600_000}),
+        ];
+        let data = historical_stats_data(&gateway, &[], 300.0).expect("partial bucket");
+        assert_eq!(data.bandwidth_tx, vec![(1_700_000_000.0, 2000.0)]);
+        assert_eq!(data.bandwidth_rx, vec![(1_700_000_000.0, 4000.0)]);
+    }
+
+    #[test]
+    fn legacy_bucket_duration_and_missing_measurements_are_preserved() {
+        let gateway = [
+            json!({"time": 1000, "tx_bytes": 600}),
+            json!({"time": 2000}),
+        ];
+        let site = [json!({"time": 1000, "num_sta": 0}), json!({"time": 2000})];
+        let data = historical_stats_data(&gateway, &site, 300.0).expect("legacy report");
+        assert_eq!(data.bandwidth_tx, vec![(1.0, 2.0)]);
+        assert_eq!(data.bandwidth_rx, Vec::<(f64, f64)>::new());
+        assert_eq!(data.client_counts, vec![(1.0, 0.0)]);
+    }
+
+    #[test]
+    fn malformed_metadata_cannot_create_infinite_rates_or_epoch_zero_points() {
+        for duration in [json!(0), json!(-1), json!(null), json!("300000")] {
+            assert!(
+                historical_stats_data(&[json!({"time": 1000, "duration": duration})], &[], 300.0)
+                    .is_err()
+            );
+        }
+        assert!(historical_stats_data(&[json!({"tx_bytes": 1000})], &[], 300.0).is_err());
+    }
 }

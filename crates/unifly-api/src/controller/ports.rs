@@ -58,8 +58,8 @@ impl Controller {
             return Ok(port_profiles(&device, &networks));
         }
 
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
 
         let device = session
             .get_device_raw(device_mac.as_str())
@@ -81,8 +81,8 @@ impl Controller {
         &self,
         identifier: &str,
     ) -> Result<(String, Option<u16>), CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
 
         let records = session.list_network_conf().await?;
 
@@ -142,8 +142,9 @@ impl Controller {
                     .to_owned(),
             });
         }
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let _write = self.inner.port_writes.acquire(device_mac).await;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
 
         let device = session
             .get_device_raw(device_mac.as_str())
@@ -215,8 +216,9 @@ impl Controller {
         device_mac: &MacAddress,
         request: &ApplyPortsRequest,
     ) -> Result<ApplyPortsSummary, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let _write = self.inner.port_writes.acquire(device_mac).await;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
 
         // Fetch device + network list once. resolve_network_session_id
         // would re-fetch the network list per call.
@@ -332,8 +334,8 @@ impl Controller {
             return Ok(export_ports(&device, include_all));
         }
 
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
 
         let device = session
             .get_device_raw(device_mac.as_str())

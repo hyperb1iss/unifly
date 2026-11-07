@@ -28,8 +28,8 @@ Device commands and client get, roams, and WiFi experience also take an IP
 or a MAC in any spelling (colons, dashes, dots, or none; any case); clients
 answer to their hostname too. A MAC- or IP-shaped identifier only ever
 matches MACs or IPs, never a name. A name two records share fails with exit
-2 and lists the candidates; pass an ID then. Update, delete, and VPN commands
-still take IDs. Client find searches IP, name, hostname, and MAC by
+2 and lists the candidates; pass an ID then. Network update, delete, and refs
+also accept names. Other update/delete commands and VPN commands take IDs. Client find searches IP, name, hostname, and MAC by
 substring.
 
 Most lists default to 25 entries. Pass `--all` for complete enumeration when
@@ -150,6 +150,10 @@ not the current channel of each AP; its JSON and YAML rows carry `country` and
 table and plain output; its JSON and YAML hold `gateway`, `devices` (each with
 its uplinked `clients`), and `unlinked_clients`.
 
+Switching inventory uses Integration API 11: `devices lags`,
+`devices mc-lag-domains`, and `devices switch-stacks` each provide `list`
+and `get <UUID>`. Lists accept the usual filters and limits.
+
 ## Networks, WiFi, firewall, NAT, ACL, and DNS
 
 Network, WiFi configuration, firewall policy/zone, ACL, DNS, and traffic-list
@@ -157,13 +161,29 @@ commands require Integration. WiFi neighbors/channels are Session exceptions.
 Network VLAN values are 1 through 4009. Network DNS flags are repeatable.
 Use network refs before deleting to inspect dependencies. Network and WiFi
 delete expose `--force`; inspect its help before bypassing reference checks.
+Gateway- and switch-managed network creation require an IPv4 host/prefix
+via `--ipv4-host` (or `subnet` in a file), even with DHCP disabled.
+Switch-managed creation also requires the owning Integration switch UUID
+via `--device-id` (or `device_id` in a file).
+Gateway and switch DHCP creation require both valid IPv4 range bounds;
+unmanaged VLANs reject DHCP and IPv4 settings.
+DHCP updates accept `dhcp.range_start` and `dhcp.range_stop` in file payloads.
+An omitted bound preserves the active server's value. Turning DHCP off clears
+the server configuration, so enabling it again requires both bounds together
+with `dhcp_enabled: true`.
 
 WiFi security and broadcast type are separate choices. Frequencies are
 comma-separated GHz values (`2.4,5,6`). Use file payloads for enterprise
-RADIUS settings and other fields absent from inline flags. RADIUS profiles
+RADIUS settings and other fields absent from inline flags. Network 11 controls
+`--channel-2g-locked-to-6 true|false` and
+`--dtim-period-2g-locked-to-3 true|false` work on create and update. RADIUS profiles
 and WAN inventory are available through their Integration reference commands.
+Use `--network native` for the native network or a UUID for a specific network.
 
-Firewall policy patch changes enabled/logging without the full update path.
+Firewall policy patch changes enabled, logging, or flow reporting without the
+full update path. The `--report-flow true|false` flag also works for create
+and update. New allow policies and block-to-allow updates do not create a mirrored return policy unless
+`--allow-return-traffic true` is explicit.
 Reorder reads two lists for a source/destination zone pair:
 `beforeSystemDefined` and `afterSystemDefined`. A set replaces only the
 before-system list unless `--after-system` selects the other list. Naming an
@@ -205,8 +225,14 @@ Network, System, Admin, Firewall, Vpn, Unknown. Event-name globs do not work.
 
 Statistics require Session HTTP. Device/client queries take comma-separated
 `--macs`, not positional MACs. Intervals are `5m`, `hourly`, `daily`, or
-`monthly`. Site/gateway start/end accept RFC 3339 or Unix-second timestamps;
-device/client stats currently ignore those flags despite accepting them.
+`monthly`. All report start/end flags accept RFC 3339 or Unix-second timestamps;
+device/client queries honor the same bounds.
+Network 11 selects its modern statistics engine automatically. Native bucket
+sizes are 5 minutes, 1 hour, 8 hours (`daily`), and 1 month. JSON rows carry
+actual `duration` in milliseconds and preserve fractional measurements.
+Without explicit bounds, the corresponding windows are 12 hours, 7 days,
+30 days, and 365 days. Missing measurements remain absent.
+
 DPI statistics group by app or category. DPI apps/categories are Integration reference data, while DPI
 status/enable/disable use Session HTTP.
 
@@ -215,7 +241,8 @@ System health requires Session, so it is not a cloud connectivity probe.
 Backups, reboot, and poweroff also use Session. Backup download accepts a
 file path or an existing directory (create the directory first). Admin
 revoke/update take a positional admin ID; fetch it with
-admin list. Site creation requires both name and description.
+admin list. Site creation takes a display name with `--name` (`--description`
+is an alias); the controller assigns its internal reference.
 
 ## VPN and settings
 

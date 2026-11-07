@@ -42,6 +42,9 @@ pub struct Event {
     pub device_mac: Option<MacAddress>,
     pub client_mac: Option<MacAddress>,
     pub site_id: Option<EntityId>,
+    /// Wireless network named by the event, retained for consistent redaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssid: Option<String>,
 
     // Raw data for consumers that need it
     pub raw_key: Option<String>,

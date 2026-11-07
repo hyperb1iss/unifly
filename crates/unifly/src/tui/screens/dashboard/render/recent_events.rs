@@ -48,7 +48,11 @@ impl DashboardScreen {
             )));
         } else {
             for evt in self.events.iter().rev().take(max_rows) {
-                let time_str = evt.timestamp.format("%H:%M").to_string();
+                let time_str = evt
+                    .timestamp
+                    .with_timezone(&chrono::Local)
+                    .format("%H:%M")
+                    .to_string();
                 let severity_color = match evt.severity {
                     EventSeverity::Error | EventSeverity::Critical => theme::error(),
                     EventSeverity::Warning => theme::warning(),

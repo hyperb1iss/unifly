@@ -311,16 +311,6 @@ async fn zero_limit_makes_no_request() {
     );
 }
 
-#[test]
-fn fallback_rejects_not_found_text_in_server_failure() {
-    assert!(endpoint_missing(&Error::SessionApi {
-        message: "api.err.NotFound".into()
-    }));
-    assert!(!endpoint_missing(&Error::SessionApi {
-        message: "HTTP 500 Internal Server Error: api.err.NotFound".into()
-    }));
-}
-
 #[tokio::test]
 async fn legacy_pagination_counts_filtered_raw_rows_and_keeps_ips() {
     let (server, client) = setup().await;

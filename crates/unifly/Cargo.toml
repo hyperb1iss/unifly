@@ -69,6 +69,7 @@ url                = { workspace = true }
 # Config deps (shared by CLI and TUI)
 figment            = { workspace = true }
 toml               = { workspace = true }
+toml_edit          = { workspace = true }
 keyring            = { workspace = true }
 directories        = { workspace = true }
 

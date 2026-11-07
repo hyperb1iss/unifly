@@ -2,6 +2,7 @@
 
 mod handler;
 mod render;
+mod switching;
 
 use unifly_api::Controller;
 

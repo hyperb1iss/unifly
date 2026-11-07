@@ -4,6 +4,18 @@
 //! and error handling — all without requiring a live UniFi controller.
 #![allow(clippy::unwrap_used)]
 
+#[path = "cli/refresh_warnings.rs"]
+mod refresh_warnings;
+
+#[path = "cli/site_creation.rs"]
+mod site_creation;
+
+#[path = "cli/wifi_native.rs"]
+mod wifi_native;
+
+#[path = "cli/firewall_identifiers.rs"]
+mod firewall_identifiers;
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -2894,3 +2906,9 @@ fn test_insecure_accepts_the_documented_boolean_spellings() {
 
 #[path = "cli/events_history.rs"]
 mod events_history;
+
+#[path = "cli/network11_fields.rs"]
+mod network11_fields;
+
+#[path = "cli/network_identifiers.rs"]
+mod network_identifiers;

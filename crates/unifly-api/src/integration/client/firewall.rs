@@ -124,57 +124,6 @@ impl IntegrationClient {
         Ok(result.ordered_firewall_policy_ids)
     }
 
-    // ── NAT Policies ─────────────────────────────────────────────────
-
-    pub async fn list_nat_policies(
-        &self,
-        site_id: &Uuid,
-        offset: i64,
-        limit: i32,
-    ) -> Result<types::Page<types::NatPolicyResponse>, Error> {
-        self.get_with_params(
-            &format!("v1/sites/{site_id}/firewall/nat"),
-            &[("offset", offset.to_string()), ("limit", limit.to_string())],
-        )
-        .await
-    }
-
-    pub async fn get_nat_policy(
-        &self,
-        site_id: &Uuid,
-        policy_id: &Uuid,
-    ) -> Result<types::NatPolicyResponse, Error> {
-        self.get(&format!("v1/sites/{site_id}/firewall/nat/{policy_id}"))
-            .await
-    }
-
-    pub async fn create_nat_policy(
-        &self,
-        site_id: &Uuid,
-        body: &types::NatPolicyCreateUpdate,
-    ) -> Result<types::NatPolicyResponse, Error> {
-        self.post(&format!("v1/sites/{site_id}/firewall/nat"), body)
-            .await
-    }
-
-    pub async fn update_nat_policy(
-        &self,
-        site_id: &Uuid,
-        policy_id: &Uuid,
-        body: &types::NatPolicyCreateUpdate,
-    ) -> Result<types::NatPolicyResponse, Error> {
-        self.put(
-            &format!("v1/sites/{site_id}/firewall/nat/{policy_id}"),
-            body,
-        )
-        .await
-    }
-
-    pub async fn delete_nat_policy(&self, site_id: &Uuid, policy_id: &Uuid) -> Result<(), Error> {
-        self.delete(&format!("v1/sites/{site_id}/firewall/nat/{policy_id}"))
-            .await
-    }
-
     // ── Firewall Zones ───────────────────────────────────────────────
 
     pub async fn list_firewall_zones(

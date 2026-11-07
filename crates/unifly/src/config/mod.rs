@@ -3,13 +3,17 @@
 //! TOML profiles, credential resolution (keyring + env + plaintext),
 //! and translation to `unifly_api::ControllerConfig`.
 
+mod controller;
+mod persistence;
+mod redaction;
 #[cfg(feature = "cli")]
 pub mod resolve;
 pub mod totp_command;
+pub use controller::ConnectionUsage;
+pub use redaction::redact_url_userinfo;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use figment::{
     Figment,
@@ -19,7 +23,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use unifly_api::{AuthCredentials, ControllerConfig, TlsVerification, TotpProvider};
+use unifly_api::{AuthCredentials, ControllerConfig, TotpProvider};
 
 pub const DEFAULT_CLOUD_CONTROLLER_URL: &str = "https://api.ui.com";
 
@@ -316,7 +320,8 @@ fn default_auth_mode() -> String {
 /// Resolve the config file path.
 ///
 /// Unix (including macOS): `$XDG_CONFIG_HOME/unifly/config.toml` or `~/.config/unifly/config.toml`
-/// Windows: `%APPDATA%\unifly\config.toml` via `ProjectDirs`, with env-var fallback
+/// Windows: an absolute `%APPDATA%` override followed by `unifly/config/config.toml`,
+/// otherwise the Windows known-folder location (with a user-profile fallback).
 ///
 /// On macOS, automatically migrates from the old `~/Library/Application Support/unifly/`
 /// location if it exists and the XDG path does not.
@@ -329,20 +334,31 @@ pub fn config_path() -> PathBuf {
 
 #[cfg(windows)]
 fn config_dir() -> PathBuf {
-    directories::ProjectDirs::from("", "", "unifly").map_or_else(
-        || {
-            std::env::var_os("APPDATA")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("USERPROFILE")
-                        .map(PathBuf::from)
-                        .map(|home| home.join("AppData").join("Roaming"))
-                })
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("unifly")
-        },
-        |dirs| dirs.config_dir().to_owned(),
+    windows_config_dir(
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        directories::ProjectDirs::from("", "", "unifly").map(|dirs| dirs.config_dir().to_owned()),
+        std::env::var_os("USERPROFILE").map(PathBuf::from),
     )
+}
+
+#[cfg(any(windows, test))]
+fn windows_config_dir(
+    appdata: Option<PathBuf>,
+    known_folder: Option<PathBuf>,
+    user_profile: Option<PathBuf>,
+) -> PathBuf {
+    appdata
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("unifly").join("config"))
+        .or(known_folder)
+        .unwrap_or_else(|| {
+            user_profile
+                .map_or_else(
+                    || PathBuf::from("."),
+                    |home| home.join("AppData").join("Roaming"),
+                )
+                .join("unifly")
+        })
 }
 
 #[cfg(not(windows))]
@@ -411,23 +427,28 @@ pub fn load_config() -> Result<Config, ConfigError> {
 /// saving defaults over a file with one typo in it would erase every
 /// profile it holds.
 pub fn load_config_from(path: &Path) -> Result<Config, ConfigError> {
-    let load_error = |reason: String| ConfigError::Load {
-        path: path.to_owned(),
-        reason,
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(error) => {
+            return Err(ConfigError::Load {
+                path: path.to_owned(),
+                reason: error.to_string(),
+            });
+        }
     };
+    parse_config(&source, path)
+}
 
-    if !path
-        .try_exists()
-        .map_err(|error| load_error(error.to_string()))?
-    {
-        return Ok(Config::default());
-    }
-
+fn parse_config(source: &str, path: &Path) -> Result<Config, ConfigError> {
     Figment::new()
         .merge(Serialized::defaults(Config::default()))
-        .merge(Toml::file_exact(path))
+        .merge(Toml::string(source))
         .extract()
-        .map_err(|error| load_error(describe_figment_error(error)))
+        .map_err(|error| ConfigError::Load {
+            path: path.to_owned(),
+            reason: describe_figment_error(error),
+        })
 }
 
 /// What went wrong and at which key, without figment's trailing "in <file>
@@ -548,7 +569,7 @@ pub fn save_config(cfg: &Config) -> Result<(), ConfigError> {
 /// target, so the config is replaced whole or not at all. A symlinked config
 /// stays a link: the save lands in the file it points at.
 pub fn save_config_to(path: &Path, cfg: &Config) -> Result<(), ConfigError> {
-    let toml_str = toml::to_string_pretty(cfg)?;
+    let toml_str = persistence::render(path, cfg)?;
     write_atomically(&save_target(path), toml_str.as_bytes()).map_err(|error| ConfigError::Save {
         path: path.to_owned(),
         reason: error.to_string(),
@@ -931,112 +952,18 @@ pub fn resolve_totp_provider(profile: &Profile) -> Result<Option<TotpProvider>, 
     Ok(Some(totp_command::provider(argv.clone())))
 }
 
-/// `url` with its userinfo (`user:password@`) masked as `****@`, for
-/// errors, logs, and displays. It works on the text, so a URL that does not
-/// parse is covered too, as is one without a scheme (`admin:pw@host`,
-/// `//admin:pw@host`) or with a password holding an unencoded `/`, `?`, or
-/// `#`. An `@` after the host, in a path or query, is left alone.
-pub fn redact_url_userinfo(url: &str) -> String {
-    let start = match url.find("://") {
-        Some(index) => index + 3,
-        None if url.starts_with("//") => 2,
-        None => 0,
-    };
-    let rest = &url[start..];
-    match userinfo_end(rest) {
-        Some(at) => format!("{}****{}", &url[..start], &rest[at..]),
-        None => url.to_owned(),
-    }
-}
-
-/// Where the userinfo of `rest`, a URL after its `scheme://`, ends: the `@`
-/// before the host, when there is userinfo at all.
-fn userinfo_end(rest: &str) -> Option<usize> {
-    const DELIMITERS: [char; 3] = ['/', '?', '#'];
-
-    let authority_end = rest.find(DELIMITERS).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    if let Some(at) = authority.rfind('@') {
-        return Some(at);
-    }
-
-    // No `@` before the first delimiter. A password holding one unencoded
-    // runs past it, leaving `user:pass` in front of it, which a host
-    // (`host`, `host:8443`, `[::1]:8443`) never is.
-    if authority.starts_with('[') {
-        return None;
-    }
-    let (_, after_colon) = authority.split_once(':')?;
-    if !after_colon.is_empty() && after_colon.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let first_at = authority_end + rest[authority_end..].find('@')?;
-    let host_end = rest[first_at..]
-        .find(DELIMITERS)
-        .map_or(rest.len(), |offset| first_at + offset);
-    rest[..host_end].rfind('@')
-}
-
-/// Build a `ControllerConfig` from a profile — no CLI flag overrides.
-///
-/// Suitable for the TUI and other non-CLI consumers. Sets TUI-friendly
-/// defaults: `websocket_enabled: true`, `refresh_interval_secs: 10`.
-/// `[defaults]` supplies `insecure` and `timeout` when the profile
-/// leaves them unset, mirroring the CLI resolution ladder.
+/// Resolve a profile for an interactive controller, using the shared resolver.
 pub fn profile_to_controller_config(
     profile: &Profile,
     profile_name: &str,
     defaults: &Defaults,
 ) -> Result<ControllerConfig, ConfigError> {
-    let is_cloud = profile.auth_mode == "cloud";
-    let controller_url = if is_cloud && profile.controller.trim().is_empty() {
-        DEFAULT_CLOUD_CONTROLLER_URL
-    } else {
-        profile.controller.as_str()
-    };
-
-    let url: url::Url = controller_url
-        .parse()
-        .map_err(|_| ConfigError::Validation {
-            field: "controller".into(),
-            reason: format!("invalid URL: {}", redact_url_userinfo(controller_url)),
-        })?;
-
-    let auth = resolve_auth(profile, profile_name)?;
-
-    // Profile insecure > profile ca_cert > defaults insecure: a CA is
-    // still verification, so only an explicit insecure=true skips it.
-    let tls = if is_cloud {
-        TlsVerification::SystemDefaults
-    } else if profile.insecure.unwrap_or(false) {
-        TlsVerification::DangerAcceptInvalid
-    } else if let Some(ref ca_path) = profile.ca_cert {
-        TlsVerification::CustomCa(ca_path.clone())
-    } else if profile.insecure.unwrap_or(defaults.insecure) {
-        TlsVerification::DangerAcceptInvalid
-    } else {
-        TlsVerification::SystemDefaults
-    };
-
-    let timeout = Duration::from_secs(profile.timeout.unwrap_or(defaults.timeout));
-
-    let totp_token = resolve_totp_token(profile);
-    let totp_provider = resolve_totp_provider(profile)?;
-
-    Ok(ControllerConfig {
-        url,
-        auth,
-        site: profile.site.clone(),
-        tls,
-        timeout,
-        refresh_interval_secs: if is_cloud { 60 } else { 10 },
-        websocket_enabled: !is_cloud,
-        polling_interval_secs: if is_cloud { 30 } else { 10 },
-        totp_token,
-        totp_provider,
-        profile_name: Some(profile_name.to_owned()),
-        no_session_cache: is_cloud,
-    })
+    controller::build(
+        profile,
+        Some(profile_name),
+        defaults,
+        ConnectionUsage::Interactive,
+    )
 }
 
 #[cfg(test)]
@@ -1048,6 +975,27 @@ mod tests {
     use secrecy::ExposeSecret;
     use std::time::Duration;
     use unifly_api::{AuthCredentials, TlsVerification};
+
+    #[test]
+    fn windows_config_override_is_absolute_and_keeps_the_existing_suffix() {
+        let home = tempfile::tempdir().expect("home");
+        let known_folder = home.path().join("known").join("unifly").join("config");
+        let redirected = home.path().join("redirected");
+        assert_eq!(
+            super::windows_config_dir(Some(redirected.clone()), Some(known_folder.clone()), None),
+            redirected.join("unifly").join("config")
+        );
+        for invalid in [None, Some("".into()), Some("relative".into())] {
+            assert_eq!(
+                super::windows_config_dir(invalid, Some(known_folder.clone()), None),
+                known_folder
+            );
+        }
+        assert_eq!(
+            super::windows_config_dir(None, None, Some(home.path().into())),
+            home.path().join("AppData").join("Roaming").join("unifly")
+        );
+    }
 
     fn cloud_profile() -> Profile {
         Profile {
@@ -1438,7 +1386,7 @@ mod tests {
     }
 
     #[test]
-    fn redact_url_userinfo_masks_only_the_userinfo() {
+    fn redact_url_userinfo_masks_credentials_and_ambiguous_authorities() {
         use super::redact_url_userinfo;
 
         for (url, redacted) in [
@@ -1460,24 +1408,18 @@ mod tests {
             // A password holding an unencoded `/`, `?`, or `#` (or `@`).
             ("https://admin:p/ss@host/x", "https://****@host/x"),
             ("https://admin:p?ss@host", "https://****@host"),
-            (
-                "https://admin:p#ss@host:8443/a@b",
-                "https://****@host:8443/a@b",
-            ),
-            (
-                "https://admin:p/w@x@host/path@y",
-                "https://****@host/path@y",
-            ),
+            ("https://admin:p#ss@host:8443/a@b", "https://****@b"),
+            ("https://admin:p/w@x@host/path@y", "https://****@y"),
             ("https://admin:/secret@host", "https://****@host"),
             // An `@` after the host is not userinfo.
             (
                 "https://10.0.0.1/path@not-userinfo",
                 "https://10.0.0.1/path@not-userinfo",
             ),
-            ("https://host:8443/path@x", "https://host:8443/path@x"),
+            ("https://host:8443/path@x", "https://****@x"),
             ("https://host?q=a@b", "https://host?q=a@b"),
             ("https://host#frag@x", "https://host#frag@x"),
-            ("https://[::1]:8443/a@b", "https://[::1]:8443/a@b"),
+            ("https://[::1]:8443/a@b", "https://****@b"),
             ("https://a/b@host", "https://a/b@host"),
             // Nothing to mask.
             ("https://192.168.1.1", "https://192.168.1.1"),

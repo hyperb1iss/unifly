@@ -15,6 +15,10 @@ pub struct CreateFirewallPolicyRequest {
     pub enabled: bool,
     #[serde(default, alias = "logging")]
     pub logging_enabled: bool,
+    /// Report matched traffic in Insights Flows.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "reportFlowEnabled")]
+    pub report_flow_enabled: Option<bool>,
+    /// Create an additional mirrored-zone policy. Omitted means false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_return_traffic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +59,9 @@ pub struct UpdateFirewallPolicyRequest {
     pub destination_filter: Option<TrafficFilterSpec>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "logging")]
     pub logging_enabled: Option<bool>,
+    /// Report matched traffic in Insights Flows.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "reportFlowEnabled")]
+    pub report_flow_enabled: Option<bool>,
 }
 
 /// Port-side specification: either inline values or a reference to a

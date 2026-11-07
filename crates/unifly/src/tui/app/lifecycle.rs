@@ -38,6 +38,13 @@ impl App {
     }
 
     pub(super) fn open_settings(&mut self) -> Result<()> {
+        self.open_settings_with(crate::tui::screens::settings::SettingsScreen::new)
+    }
+
+    fn open_settings_with(
+        &mut self,
+        build: impl FnOnce() -> crate::tui::screens::settings::SettingsScreen,
+    ) -> Result<()> {
         if self.active_screen == ScreenId::Settings || self.active_screen == ScreenId::Setup {
             return Ok(());
         }
@@ -48,10 +55,7 @@ impl App {
         }
 
         self.previous_screen = Some(self.active_screen);
-        self.install_screen(
-            ScreenId::Settings,
-            crate::tui::screens::settings::SettingsScreen::new(),
-        )?;
+        self.install_screen(ScreenId::Settings, build())?;
         self.set_active_screen(ScreenId::Settings);
 
         Ok(())
@@ -139,7 +143,8 @@ mod tests {
             .expect("dashboard screen should exist")
             .set_focused(true);
 
-        app.open_settings().expect("settings should open");
+        app.open_settings_with(crate::tui::screens::settings::SettingsScreen::blank)
+            .expect("settings should open");
 
         assert_eq!(app.active_screen, ScreenId::Settings);
         assert_eq!(app.previous_screen, Some(ScreenId::Dashboard));

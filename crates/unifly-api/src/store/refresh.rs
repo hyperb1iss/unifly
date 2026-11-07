@@ -236,6 +236,7 @@ mod tests {
             device_mac: None,
             client_mac: None,
             site_id: None,
+            ssid: None,
             raw_key: Some("EVT_TEST".into()),
             source: crate::model::common::DataSource::SessionApi,
         }

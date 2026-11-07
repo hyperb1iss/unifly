@@ -35,6 +35,7 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 toml = "1.1"
+toml_edit = "0.25.17"
 
 # ── Error handling ──
 thiserror = "2"
@@ -84,6 +85,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "cloc
 
 # ── Encoding ──
 base64 = "0.23"
+sha2 = "0.11"
 
 # ── Filesystem ──
 directories = "6"

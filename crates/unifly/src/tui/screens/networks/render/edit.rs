@@ -53,7 +53,13 @@ pub(super) fn render_edit_overlay(
 
     let mut lines = Vec::new();
 
-    for index in 0..NetworkEditState::FIELD_COUNT {
+    let visible_fields = usize::from(inner.height.saturating_sub(2));
+    let first = edit
+        .field_idx
+        .saturating_add(1)
+        .saturating_sub(visible_fields);
+    let last = (first + visible_fields).min(NetworkEditState::FIELD_COUNT);
+    for index in first..last {
         let is_focused = index == edit.field_idx;
         let label_style = if is_focused { focused_label } else { label };
         let marker = if is_focused { "▸ " } else { "  " };

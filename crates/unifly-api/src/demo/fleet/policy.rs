@@ -51,6 +51,8 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
         band_steering: frequencies.len() > 1,
         mlo_enabled: false,
         fast_roaming: false,
+        channel2g_locked_to6: None,
+        dtim_period2g_locked_to3: None,
         hotspot_enabled: false,
         origin: Some(EntityOrigin::UserDefined),
         source: DataSource::IntegrationApi,
@@ -336,6 +338,7 @@ fn policies(fleet: &Fleet, rng: &mut DemoRng) -> Vec<FirewallPolicy> {
                     Vec::new()
                 },
                 logging_enabled: matches!(spec.action, FirewallAction::Block) && !system,
+                report_flow_enabled: None,
                 origin: Some(if system {
                     EntityOrigin::SystemDefined
                 } else {

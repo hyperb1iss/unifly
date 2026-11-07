@@ -264,17 +264,17 @@ pub struct SessionRadioStats {
 /// System statistics nested inside `SessionDevice`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SysStats {
-    #[serde(default, rename = "loadavg_1")]
+    #[serde(default, rename = "loadavg_1", deserialize_with = "lenient_string")]
     pub load_1: Option<String>,
-    #[serde(default, rename = "loadavg_5")]
+    #[serde(default, rename = "loadavg_5", deserialize_with = "lenient_string")]
     pub load_5: Option<String>,
-    #[serde(default, rename = "loadavg_15")]
+    #[serde(default, rename = "loadavg_15", deserialize_with = "lenient_string")]
     pub load_15: Option<String>,
     #[serde(default)]
     pub mem_total: Option<i64>,
     #[serde(default)]
     pub mem_used: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub cpu: Option<String>,
 }
 
@@ -552,5 +552,22 @@ mod tests {
         assert_eq!(device.port_table[0].media.as_deref(), Some("GE"));
         assert_eq!(device.radio_table_stats[0].channel, Some(6));
         assert_eq!(device.radio_table_stats[0].cu_total, Some(71.0));
+    }
+
+    #[test]
+    fn device_system_statistics_accept_numeric_and_string_metrics() {
+        for cpu in [serde_json::json!(1.5), serde_json::json!("1.5")] {
+            let device: SessionDevice = serde_json::from_value(serde_json::json!({
+                "mac": "00:11:22:33:44:55",
+                "type": "uap",
+                "sys_stats": {"cpu": cpu, "loadavg_1": 0.25, "loadavg_5": "0.5", "loadavg_15": null}
+            }))
+            .expect("controller device response");
+            let stats = device.sys_stats.expect("system stats");
+            assert_eq!(stats.cpu.as_deref(), Some("1.5"));
+            assert_eq!(stats.load_1.as_deref(), Some("0.25"));
+            assert_eq!(stats.load_5.as_deref(), Some("0.5"));
+            assert_eq!(stats.load_15, None);
+        }
     }
 }

@@ -97,6 +97,9 @@ fn policy_detail(policy: &Arc<FirewallPolicy>) -> String {
         }
     ));
     lines.push(format!("Logging:     {}", policy.logging_enabled));
+    if let Some(report_flow_enabled) = policy.report_flow_enabled {
+        lines.push(format!("Report Flow: {report_flow_enabled}"));
+    }
     lines.join("\n")
 }
 
@@ -144,6 +147,7 @@ pub(super) async fn handle(
             description,
             logging,
             allow_return_traffic,
+            report_flow_enabled,
             src_network,
             src_ip,
             src_port,
@@ -170,6 +174,7 @@ pub(super) async fn handle(
                 description,
                 logging,
                 allow_return_traffic,
+                report_flow_enabled,
                 src_network,
                 src_ip,
                 src_port,
@@ -190,6 +195,7 @@ pub(super) async fn handle(
         FirewallPoliciesCommand::Update {
             id,
             allow_return_traffic,
+            report_flow_enabled,
             from_file,
             src_network,
             src_ip,
@@ -209,6 +215,7 @@ pub(super) async fn handle(
                 global,
                 id,
                 allow_return_traffic,
+                report_flow_enabled,
                 from_file,
                 src_network,
                 src_ip,
@@ -230,36 +237,17 @@ pub(super) async fn handle(
             id,
             enabled,
             logging,
+            report_flow_enabled,
         } => {
-            if enabled.is_none() && logging.is_none() {
-                return Err(CliError::Validation {
-                    field: "patch".into(),
-                    reason: "at least one of --enabled or --logging is required".into(),
-                });
-            }
-
-            controller
-                .execute(CoreCommand::PatchFirewallPolicy {
-                    id: EntityId::from(id),
-                    enabled,
-                    logging,
-                })
-                .await?;
-            if !global.quiet {
-                let mut parts = Vec::new();
-                if let Some(enabled) = enabled {
-                    parts.push(if enabled { "enabled" } else { "disabled" });
-                }
-                if let Some(logging) = logging {
-                    parts.push(if logging {
-                        "logging enabled"
-                    } else {
-                        "logging disabled"
-                    });
-                }
-                eprintln!("Firewall policy {}", parts.join(", "));
-            }
-            Ok(())
+            handle_patch(
+                controller,
+                global,
+                id,
+                enabled,
+                logging,
+                report_flow_enabled,
+            )
+            .await
         }
 
         FirewallPoliciesCommand::Delete { id } => {
@@ -411,6 +399,7 @@ async fn handle_create(
     description: Option<String>,
     logging: bool,
     allow_return_traffic: Option<bool>,
+    report_flow_enabled: Option<bool>,
     src_network: Option<Vec<String>>,
     src_ip: Option<Vec<String>>,
     src_port: Option<Vec<String>>,
@@ -436,6 +425,7 @@ async fn handle_create(
         description,
         logging,
         allow_return_traffic,
+        report_flow_enabled,
         src_network,
         src_ip,
         src_port,
@@ -519,6 +509,7 @@ async fn build_create_request(
     description: Option<String>,
     logging: bool,
     allow_return_traffic: Option<bool>,
+    report_flow_enabled: Option<bool>,
     src_network: Option<Vec<String>>,
     src_ip: Option<Vec<String>>,
     src_port: Option<Vec<String>>,
@@ -535,7 +526,7 @@ async fn build_create_request(
     if let Some(path) = from_file.as_ref() {
         let mut input: CreatePolicyInput = serde_json::from_value(util::read_json_file(path)?)?;
         input.filters.resolve_inline_filters()?;
-        resolve_policy_group_refs(controller, &mut input.filters).await?;
+        resolve_policy_refs(controller, &mut input.filters).await?;
         Ok(input.into_request())
     } else {
         let mut filters = PolicyFilterInput::from_cli(
@@ -550,7 +541,7 @@ async fn build_create_request(
             src_address_group,
             dst_address_group,
         )?;
-        resolve_policy_group_refs(controller, &mut filters).await?;
+        resolve_policy_refs(controller, &mut filters).await?;
         let (source_filter, destination_filter) = filters.into_filters();
         Ok(CreateFirewallPolicyRequest {
             name: name.unwrap_or_default(),
@@ -562,6 +553,7 @@ async fn build_create_request(
             enabled,
             logging_enabled: logging,
             allow_return_traffic,
+            report_flow_enabled,
             description,
             ip_version,
             connection_states: states,
@@ -571,10 +563,11 @@ async fn build_create_request(
     }
 }
 
-async fn resolve_policy_group_refs(
+async fn resolve_policy_refs(
     controller: &Controller,
     filters: &mut PolicyFilterInput,
 ) -> Result<(), CliError> {
+    filters.resolve_network_refs(controller)?;
     if filters.has_group_refs() {
         util::ensure_session_access(controller, "firewall policy with group references").await?;
         filters.resolve_group_refs(controller)?;
@@ -614,6 +607,7 @@ async fn handle_update(
     global: &GlobalOpts,
     id: String,
     allow_return_traffic: Option<bool>,
+    report_flow_enabled: Option<bool>,
     from_file: Option<std::path::PathBuf>,
     src_network: Option<Vec<String>>,
     src_ip: Option<Vec<String>>,
@@ -630,6 +624,7 @@ async fn handle_update(
 ) -> Result<(), CliError> {
     if from_file.is_none()
         && allow_return_traffic.is_none()
+        && report_flow_enabled.is_none()
         && src_network.is_none()
         && src_ip.is_none()
         && src_port.is_none()
@@ -652,7 +647,7 @@ async fn handle_update(
     let update = if let Some(path) = from_file.as_ref() {
         let mut input: UpdatePolicyInput = serde_json::from_value(util::read_json_file(path)?)?;
         input.filters.resolve_inline_filters()?;
-        resolve_policy_group_refs(controller, &mut input.filters).await?;
+        resolve_policy_refs(controller, &mut input.filters).await?;
         input.into_request()
     } else {
         let mut filters = PolicyFilterInput::from_cli(
@@ -667,10 +662,11 @@ async fn handle_update(
             src_address_group,
             dst_address_group,
         )?;
-        resolve_policy_group_refs(controller, &mut filters).await?;
+        resolve_policy_refs(controller, &mut filters).await?;
         let (source_filter, destination_filter) = filters.into_filters();
         UpdateFirewallPolicyRequest {
             allow_return_traffic,
+            report_flow_enabled,
             source_filter,
             destination_filter,
             connection_states: states,
@@ -738,5 +734,51 @@ async fn move_policy_after_system(
                 .collect(),
         })
         .await?;
+    Ok(())
+}
+
+async fn handle_patch(
+    controller: &Controller,
+    global: &GlobalOpts,
+    id: String,
+    enabled: Option<bool>,
+    logging: Option<bool>,
+    report_flow_enabled: Option<bool>,
+) -> Result<(), CliError> {
+    if enabled.is_none() && logging.is_none() && report_flow_enabled.is_none() {
+        return Err(CliError::Validation {
+            field: "patch".into(),
+            reason: "at least one of --enabled, --logging, or --report-flow is required".into(),
+        });
+    }
+    controller
+        .execute(CoreCommand::PatchFirewallPolicy {
+            id: EntityId::from(id),
+            enabled,
+            logging,
+            report_flow_enabled,
+        })
+        .await?;
+    if !global.quiet {
+        let mut parts = Vec::new();
+        if let Some(enabled) = enabled {
+            parts.push(if enabled { "enabled" } else { "disabled" });
+        }
+        if let Some(logging) = logging {
+            parts.push(if logging {
+                "logging enabled"
+            } else {
+                "logging disabled"
+            });
+        }
+        if let Some(report_flow_enabled) = report_flow_enabled {
+            parts.push(if report_flow_enabled {
+                "flow reporting enabled"
+            } else {
+                "flow reporting disabled"
+            });
+        }
+        eprintln!("Firewall policy {}", parts.join(", "));
+    }
     Ok(())
 }

@@ -18,8 +18,8 @@ fn build_port_item_json(p: &str) -> Result<serde_json::Value, CoreError> {
         let end = parse_port(end_str)?;
         Ok(serde_json::json!({
             "type": "PORT_NUMBER_RANGE",
-            "startPort": start,
-            "endPort": end,
+            "start": start,
+            "stop": end,
         }))
     } else {
         let port = parse_port(p)?;
@@ -67,6 +67,16 @@ pub(in super::super) fn build_endpoint_json(
                 match_opposite,
                 ports,
             } => {
+                let network_ids = network_ids
+                    .iter()
+                    .map(|id| {
+                        uuid::Uuid::parse_str(id).map_err(|_| CoreError::ValidationFailed {
+                            message: format!(
+                                "network filter requires an Integration UUID, got {id:?}"
+                            ),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let mut v = serde_json::json!({
                     "type": "NETWORK",
                     "networkFilter": {
@@ -93,7 +103,7 @@ pub(in super::super) fn build_endpoint_json(
                             serde_json::json!({ "type": "SUBNET", "value": addr })
                         } else if addr.contains('-') {
                             let parts: Vec<&str> = addr.splitn(2, '-').collect();
-                            serde_json::json!({ "type": "RANGE", "start": parts[0], "stop": parts.get(1).unwrap_or(&"") })
+                            serde_json::json!({ "type": "IP_ADDRESS_RANGE", "start": parts[0], "stop": parts.get(1).unwrap_or(&"") })
                         } else {
                             serde_json::json!({ "type": "IP_ADDRESS", "value": addr })
                         }
@@ -169,6 +179,67 @@ mod tests {
     use crate::command::requests::{PortSpec, TrafficFilterSpec};
     use crate::core_error::CoreError;
     use serde_json::json;
+
+    #[test]
+    fn network_filters_require_integration_ids_before_serialization() {
+        for identifier in ["Guest", "legacy-network-id"] {
+            let spec = TrafficFilterSpec::Network {
+                network_ids: vec![identifier.into()],
+                match_opposite: false,
+                ports: None,
+            };
+            assert!(matches!(
+                build_endpoint_json("zone", Some(&spec)),
+                Err(CoreError::ValidationFailed { .. })
+            ));
+        }
+        let id = "00000000-0000-0000-0000-000000000010";
+        let spec = TrafficFilterSpec::Network {
+            network_ids: vec![id.into()],
+            match_opposite: true,
+            ports: None,
+        };
+        let body = build_endpoint_json("zone", Some(&spec)).expect("UUID network filter");
+        assert_eq!(
+            body["trafficFilter"]["networkFilter"],
+            json!({
+                "networkIds": [id], "matchOpposite": true
+            })
+        );
+    }
+
+    #[test]
+    fn ip_ranges_emit_the_canonical_discriminator() {
+        let spec = TrafficFilterSpec::IpAddress {
+            addresses: vec!["192.0.2.10-192.0.2.20".into()],
+            match_opposite: false,
+            ports: None,
+        };
+        let body = build_endpoint_json("zone", Some(&spec)).expect("IP range");
+        assert_eq!(
+            body["trafficFilter"]["ipAddressFilter"]["items"],
+            json!([
+                {"type": "IP_ADDRESS_RANGE", "start": "192.0.2.10", "stop": "192.0.2.20"}
+            ])
+        );
+    }
+
+    #[test]
+    fn port_ranges_use_integer_start_stop_fields() {
+        let spec = TrafficFilterSpec::Port {
+            ports: PortSpec::Values {
+                items: vec!["8000-9000".into()],
+                match_opposite: false,
+            },
+        };
+        let body = build_endpoint_json("zone", Some(&spec)).expect("port range");
+        assert_eq!(
+            body["trafficFilter"]["portFilter"]["items"],
+            json!([
+                {"type": "PORT_NUMBER_RANGE", "start": 8000, "stop": 9000}
+            ])
+        );
+    }
 
     #[test]
     fn traffic_matching_list_items_prefer_raw_payloads() {

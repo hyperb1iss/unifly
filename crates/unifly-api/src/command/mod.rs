@@ -18,7 +18,7 @@ pub use requests::{
     CreateNatPolicyRequest, CreateNetworkRequest, CreateRemoteAccessVpnServerRequest,
     CreateSiteToSiteVpnRequest, CreateTrafficMatchingListRequest, CreateVouchersRequest,
     CreateVpnClientProfileRequest, CreateWifiBroadcastRequest, CreateWireGuardPeerRequest,
-    PortSpec, TrafficFilterSpec, UpdateAclRuleRequest, UpdateDnsPolicyRequest,
+    DhcpUpdate, PortSpec, TrafficFilterSpec, UpdateAclRuleRequest, UpdateDnsPolicyRequest,
     UpdateFirewallGroupRequest, UpdateFirewallPolicyRequest, UpdateFirewallZoneRequest,
     UpdateNatPolicyRequest, UpdateNetworkRequest, UpdateRemoteAccessVpnServerRequest,
     UpdateSiteToSiteVpnRequest, UpdateTrafficMatchingListRequest, UpdateVpnClientProfileRequest,
@@ -131,6 +131,7 @@ pub enum Command {
         id: EntityId,
         enabled: Option<bool>,
         logging: Option<bool>,
+        report_flow_enabled: Option<bool>,
     },
     ReorderFirewallPolicies {
         zone_pair: (EntityId, EntityId),
@@ -262,7 +263,6 @@ pub enum Command {
     ArchiveAllAlarms,
     CreateSite {
         name: String,
-        description: String,
     },
     DeleteSite {
         name: String,

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use chrono::{Datelike, Timelike};
+use chrono::{Datelike, Local, TimeZone, Timelike};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -28,7 +28,7 @@ const MAX_HOUR_WIDTH: u16 = 8;
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 pub(super) fn render_punchcard(events: &VecDeque<Arc<Event>>, frame: &mut Frame, area: Rect) {
-    let buckets = event_punchcard(events);
+    let buckets = event_punchcard(events, &Local);
     let max_count = buckets
         .iter()
         .flatten()
@@ -112,11 +112,12 @@ fn hour_axis(width: u16) -> String {
     axis
 }
 
-fn event_punchcard(events: &VecDeque<Arc<Event>>) -> [[usize; 24]; 7] {
+fn event_punchcard(events: &VecDeque<Arc<Event>>, timezone: &impl TimeZone) -> [[usize; 24]; 7] {
     let mut buckets = [[0usize; 24]; 7];
     for event in events {
-        let day = usize::try_from(event.timestamp.weekday().num_days_from_monday()).unwrap_or(0);
-        let hour = usize::try_from(event.timestamp.hour()).unwrap_or(0);
+        let local = event.timestamp.with_timezone(timezone);
+        let day = usize::try_from(local.weekday().num_days_from_monday()).unwrap_or(0);
+        let hour = usize::try_from(local.hour()).unwrap_or(0);
         buckets[day][hour] = buckets[day][hour].saturating_add(1);
     }
     buckets
@@ -146,6 +147,21 @@ fn punchcard_cell(count: usize, max_count: usize) -> (&'static str, Color) {
 #[cfg(test)]
 mod tests {
     use super::{GUTTER, MAX_HOUR_WIDTH, hour_axis, hour_cell, hour_width};
+
+    #[test]
+    fn local_offset_moves_events_to_the_previous_weekday() {
+        let event = serde_json::from_value(serde_json::json!({
+            "timestamp": "2026-11-02T01:30:00Z", "category": "Client",
+            "severity": "Info", "event_type": "connected", "message": "connected"
+        }))
+        .expect("event");
+        let events = std::collections::VecDeque::from([std::sync::Arc::new(event)]);
+        let timezone = chrono::FixedOffset::west_opt(8 * 3600).expect("offset");
+        let buckets = super::event_punchcard(&events, &timezone);
+        assert_eq!(buckets[6][17], 1);
+        assert_eq!(buckets[0][1], 0);
+        assert_eq!(buckets.iter().flatten().sum::<usize>(), 1);
+    }
 
     #[test]
     fn hour_cells_fill_the_room_beside_the_gutter() {

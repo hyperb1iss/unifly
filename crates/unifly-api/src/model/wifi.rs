@@ -45,6 +45,10 @@ pub struct WifiBroadcast {
     pub band_steering: bool,
     pub mlo_enabled: bool,
     pub fast_roaming: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel2g_locked_to6: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dtim_period2g_locked_to3: Option<bool>,
 
     // Hotspot
     pub hotspot_enabled: bool,

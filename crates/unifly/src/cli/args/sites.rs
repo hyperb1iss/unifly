@@ -16,18 +16,14 @@ pub enum SitesCommand {
 
     /// Create a new site (session API)
     Create {
-        /// Site name (internal reference)
-        #[arg(long, required = true)]
+        /// Display name (the controller generates its internal reference)
+        #[arg(long, alias = "description", required = true)]
         name: String,
-
-        /// Site description (display name)
-        #[arg(long, required = true)]
-        description: String,
     },
 
     /// Delete a site (session API)
     Delete {
-        /// Site name
+        /// Internal reference or Session API ID (not the Integration API ID)
         name: String,
     },
 }

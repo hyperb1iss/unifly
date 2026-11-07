@@ -8,6 +8,18 @@ use crate::websocket::UnifiEvent;
 
 use super::helpers::{parse_datetime, resolve_event_templates};
 
+pub(super) fn event_ssid(fields: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    ["essid", "ssid"]
+        .into_iter()
+        .find_map(|key| {
+            fields
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(str::to_owned)
+}
+
 fn map_event_category(subsystem: Option<&String>) -> EventCategory {
     match subsystem.map(String::as_str) {
         Some("wlan" | "lan" | "wan") => EventCategory::Network,
@@ -23,6 +35,7 @@ fn map_event_category(subsystem: Option<&String>) -> EventCategory {
 
 impl From<SessionEvent> for Event {
     fn from(e: SessionEvent) -> Self {
+        let ssid = event_ssid(&e.extra);
         Event {
             id: Some(EntityId::from(e.id)),
             timestamp: parse_datetime(e.datetime.as_ref()).unwrap_or_else(Utc::now),
@@ -36,6 +49,7 @@ impl From<SessionEvent> for Event {
             device_mac: None,
             client_mac: None,
             site_id: e.site_id.map(EntityId::from),
+            ssid,
             raw_key: e.key,
             source: DataSource::SessionApi,
         }
@@ -46,6 +60,7 @@ impl From<SessionEvent> for Event {
 
 impl From<SessionAlarm> for Event {
     fn from(a: SessionAlarm) -> Self {
+        let ssid = event_ssid(&a.extra);
         Event {
             id: Some(EntityId::from(a.id)),
             timestamp: parse_datetime(a.datetime.as_ref()).unwrap_or_else(Utc::now),
@@ -56,6 +71,7 @@ impl From<SessionAlarm> for Event {
             device_mac: None,
             client_mac: None,
             site_id: None,
+            ssid,
             raw_key: a.key,
             source: DataSource::SessionApi,
         }
@@ -126,6 +142,7 @@ impl From<UnifiEvent> for Event {
             device_mac,
             client_mac,
             site_id,
+            ssid: e.extra.as_object().and_then(event_ssid),
             raw_key: Some(e.key),
             source: DataSource::SessionApi,
         }
@@ -135,6 +152,16 @@ impl From<UnifiEvent> for Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alarm_event_preserves_ssid_for_message_sanitization() {
+        let alarm: SessionAlarm = serde_json::from_value(serde_json::json!({
+            "_id": "alarm-id", "msg": "OfficeWiFi is unavailable", "essid": "OfficeWiFi"
+        }))
+        .expect("alarm");
+        let event = Event::from(alarm);
+        assert_eq!(event.ssid.as_deref(), Some("OfficeWiFi"));
+    }
 
     #[test]
     fn event_category_mapping() {

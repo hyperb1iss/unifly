@@ -95,7 +95,7 @@ pub use wifi::*;
     version,
     about = "Manage UniFi networks from the command line",
     long_about = "A powerful CLI for administering UniFi network controllers.\n\n\
-        Uses the official Integration API (v10.1.84) as primary interface,\n\
+        Uses the official Integration API (v11.0.97) as primary interface,\n\
         with session API fallback for features not yet in the official spec.",
     propagate_version = true,
     subcommand_required = true,

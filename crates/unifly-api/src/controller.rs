@@ -24,6 +24,7 @@ mod demo;
 pub(crate) mod event_history;
 mod lifecycle;
 mod payloads;
+mod port_writes;
 pub(crate) mod ports;
 mod query;
 mod refresh;
@@ -84,6 +85,7 @@ struct ControllerInner {
     /// replaced on reconnect (avoids permanent cancellation).
     cancel_child: Mutex<CancellationToken>,
     session_client: Mutex<Option<Arc<SessionClient>>>,
+    port_writes: port_writes::PortWrites,
     integration_client: Mutex<Option<Arc<IntegrationClient>>>,
     /// Resolved Integration API site UUID (populated on connect).
     site_id: Mutex<Option<uuid::Uuid>>,
@@ -120,6 +122,7 @@ impl Controller {
                 cancel,
                 cancel_child: Mutex::new(cancel_child),
                 session_client: Mutex::new(None),
+                port_writes: port_writes::PortWrites::default(),
                 integration_client: Mutex::new(None),
                 warnings: Mutex::new(Vec::new()),
                 site_id: Mutex::new(None),

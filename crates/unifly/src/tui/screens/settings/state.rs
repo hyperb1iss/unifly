@@ -76,7 +76,7 @@ impl SettingsScreen {
 
     /// A screen with default values, before anything is read from the
     /// config file or the keyring.
-    fn blank() -> Self {
+    pub(crate) fn blank() -> Self {
         Self {
             focused: false,
             action_tx: None,

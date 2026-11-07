@@ -5,8 +5,8 @@ use crate::model::{Admin, EntityId};
 
 impl Controller {
     pub async fn list_admins(&self) -> Result<Vec<Admin>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         let raw = session.list_admins().await?;
         Ok(raw
             .into_iter()
@@ -44,8 +44,8 @@ impl Controller {
     pub async fn list_users(
         &self,
     ) -> Result<Vec<crate::session::models::SessionUserEntry>, CoreError> {
-        let guard = self.inner.session_client.lock().await;
-        let session = require_session(guard.as_ref())?;
+        let session = self.inner.session_client.lock().await.clone();
+        let session = require_session(session.as_ref())?;
         Ok(session.list_users().await?)
     }
 }

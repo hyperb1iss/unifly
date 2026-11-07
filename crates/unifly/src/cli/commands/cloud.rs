@@ -58,6 +58,23 @@ pub async fn auto_resolve_host_id(global: &GlobalOpts) -> Result<String, CliErro
     choose_host_id(&hosts)
 }
 
+/// Discover a console using the already-selected startup profile and defaults.
+pub(crate) async fn discover_profile_host(
+    profile: &Profile,
+    profile_name: &str,
+    global: &GlobalOpts,
+    defaults: &Defaults,
+) -> Result<String, CliError> {
+    let api_key = config::resolve_api_key(profile, profile_name)?;
+    let controller = resolve_site_manager_url(Some(profile), global);
+    super::util::require_http_url(&controller)?;
+    let transport = cloud_transport(global, profile.timeout, Some(defaults.timeout));
+    let client =
+        SiteManagerClient::from_api_key(&controller, &api_key, &transport).map_err(api_error)?;
+    let hosts = client.list_hosts().await.map_err(api_error)?;
+    choose_host_id(&hosts)
+}
+
 pub(crate) fn api_error(error: unifly_api::Error) -> CliError {
     CliError::from(CoreError::from(error))
 }

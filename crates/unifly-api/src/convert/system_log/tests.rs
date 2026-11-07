@@ -63,7 +63,14 @@ fn event_type_is_not_identity_and_unknown_categories_survive() {
         "id": null, "category": "FUTURE_CATEGORY", "event": "CONNECTED"
     })))
     .expect("event");
-    assert_eq!(event.id, None);
+    assert!(
+        event
+            .id
+            .as_ref()
+            .expect("content ID")
+            .to_string()
+            .starts_with("syslog:")
+    );
     assert_eq!(event.raw_key.as_deref(), Some("CLIENT_CONNECTED_WIRELESS"));
     assert_eq!(event.event_type, "CONNECTED");
     assert_eq!(event.category, EventCategory::Unknown);
@@ -146,4 +153,41 @@ fn alarms_require_ids_and_only_read_is_archived() {
         assert_eq!(alarm.category, EventCategory::Firewall);
         assert_eq!(alarm.severity, EventSeverity::Error);
     }
+}
+
+#[test]
+fn scalar_parameters_preserve_precedence_and_missing_placeholders() {
+    let event = Event::try_from(entry(&json!({
+        "message_raw": "{COUNT} {SIGNAL} {ENABLED} {LABEL} {NAMED} {NULL} {OBJECT} {MISSING}",
+        "parameters": {
+            "COUNT": 42,
+            "SIGNAL": {"value": -67.5},
+            "ENABLED": true,
+            "LABEL": {"value": "literal {COUNT}"},
+            "NAMED": {"name": "preferred", "hostname": "host", "id": "id", "value": 99},
+            "NULL": null,
+            "OBJECT": {"value": {"nested": 1}}
+        }
+    })))
+    .expect("event");
+    assert_eq!(
+        event.message,
+        "42 -67.5 true literal {COUNT} preferred {NULL} {OBJECT} {MISSING}"
+    );
+}
+
+#[test]
+fn content_identity_is_canonical_and_preserves_unknown_fields() {
+    let first =
+        serde_json::from_str::<Value>(r#"{"z":{"b":2,"a":1},"a":[{"y":2,"x":1}]}"#).expect("json");
+    let reordered =
+        serde_json::from_str::<Value>(r#"{"a":[{"x":1,"y":2}],"z":{"a":1,"b":2}}"#).expect("json");
+    assert_eq!(
+        content_identity(&first).expect("identity"),
+        content_identity(&reordered).expect("identity")
+    );
+    let first = Event::try_from(entry(&json!({"id": null, "future_detail": 1}))).expect("event");
+    let second = Event::try_from(entry(&json!({"id": null, "future_detail": 2}))).expect("event");
+    assert_ne!(first.id, second.id);
+    assert_eq!(first.message, second.message);
 }

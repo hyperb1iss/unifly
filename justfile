@@ -101,6 +101,9 @@ e2e:
     trap cleanup EXIT
     just e2e-up
     just e2e-wait
+    if [[ -z "${UNIFLY_E2E_URL:-}" ]]; then
+        export UNIFLY_E2E_SIMULATION=1
+    fi
     just e2e-test
 
 # Update insta snapshots

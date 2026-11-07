@@ -102,7 +102,8 @@ impl Simulation {
                 id,
                 enabled,
                 logging,
-            } => self.patch_policy(&id, enabled, logging, now, &mut delta)?,
+                report_flow_enabled,
+            } => self.patch_policy(&id, enabled, logging, report_flow_enabled, now, &mut delta)?,
             other => return Err(unavailable(&command_name(&other))),
         }
         Ok((CommandResult::Ok, delta))
@@ -263,6 +264,7 @@ impl Simulation {
         id: &EntityId,
         enabled: Option<bool>,
         logging: Option<bool>,
+        report_flow_enabled: Option<bool>,
         now: DateTime<Utc>,
         delta: &mut Delta,
     ) -> Result<(), CoreError> {
@@ -280,6 +282,9 @@ impl Simulation {
         }
         if let Some(logging) = logging {
             policy.logging_enabled = logging;
+        }
+        if let Some(report_flow_enabled) = report_flow_enabled {
+            policy.report_flow_enabled = Some(report_flow_enabled);
         }
         let updated = policy.clone();
         let state = if updated.enabled {

@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-
 use crate::command::Command;
 use crate::core_error::CoreError;
-use crate::model::{NetworkManagement, NetworkPurpose};
 
 use super::{
-    CommandContext, DEFAULT_DHCP_LEASE_SECS, apply_ipv4_update,
-    build_create_wifi_broadcast_payload, build_update_wifi_broadcast_payload, parse_ipv4_cidr,
-    require_integration, require_uuid,
+    CommandContext, apply_ipv4_update, build_create_network_payload,
+    build_create_wifi_broadcast_payload, build_update_wifi_broadcast_payload, require_integration,
+    require_uuid,
 };
 
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
@@ -21,117 +18,7 @@ pub(super) async fn route(
     match cmd {
         Command::CreateNetwork(req) => {
             let (ic, sid) = require_integration(integration, site_id, "CreateNetwork")?;
-            let crate::command::CreateNetworkRequest {
-                name,
-                vlan_id,
-                subnet,
-                management,
-                purpose,
-                dhcp_enabled,
-                enabled,
-                dhcp_range_start,
-                dhcp_range_stop,
-                dhcp_lease_time,
-                dns_servers,
-                firewall_zone_id,
-                isolation_enabled,
-                internet_access_enabled,
-            } = req;
-
-            let management = management.unwrap_or_else(|| {
-                if matches!(purpose, Some(NetworkPurpose::VlanOnly)) {
-                    NetworkManagement::Unmanaged
-                } else if purpose.is_some() || subnet.is_some() || dhcp_enabled {
-                    NetworkManagement::Gateway
-                } else {
-                    NetworkManagement::Unmanaged
-                }
-            });
-            let mut extra = HashMap::new();
-
-            if let Some(zone) = firewall_zone_id {
-                extra.insert("zoneId".into(), serde_json::Value::String(zone));
-            }
-
-            if matches!(management, NetworkManagement::Gateway) {
-                extra.insert(
-                    "isolationEnabled".into(),
-                    serde_json::Value::Bool(isolation_enabled),
-                );
-                extra.insert(
-                    "internetAccessEnabled".into(),
-                    serde_json::Value::Bool(internet_access_enabled),
-                );
-                extra.insert(
-                    "mdnsForwardingEnabled".into(),
-                    serde_json::Value::Bool(false),
-                );
-                extra.insert(
-                    "cellularBackupEnabled".into(),
-                    serde_json::Value::Bool(false),
-                );
-
-                if let Some(cidr) = subnet {
-                    let (host_ip, prefix_len) = parse_ipv4_cidr(&cidr)?;
-                    let lease_secs = dhcp_lease_time.unwrap_or(DEFAULT_DHCP_LEASE_SECS);
-                    let mut dhcp_cfg = serde_json::Map::new();
-                    dhcp_cfg.insert(
-                        "mode".into(),
-                        serde_json::Value::String(
-                            if dhcp_enabled { "SERVER" } else { "NONE" }.into(),
-                        ),
-                    );
-                    dhcp_cfg.insert(
-                        "leaseTimeSeconds".into(),
-                        serde_json::Value::Number(serde_json::Number::from(u64::from(lease_secs))),
-                    );
-                    dhcp_cfg.insert(
-                        "pingConflictDetectionEnabled".into(),
-                        serde_json::Value::Bool(false),
-                    );
-
-                    if let (Some(start), Some(stop)) = (dhcp_range_start, dhcp_range_stop) {
-                        dhcp_cfg.insert(
-                            "ipAddressRange".into(),
-                            serde_json::json!({
-                                "start": start,
-                                "stop": stop
-                            }),
-                        );
-                    }
-
-                    if let Some(ref servers) = dns_servers {
-                        dhcp_cfg.insert(
-                            "dnsServerIpAddressesOverride".into(),
-                            serde_json::json!(servers),
-                        );
-                    }
-
-                    extra.insert(
-                        "ipv4Configuration".into(),
-                        serde_json::json!({
-                            "hostIpAddress": host_ip.to_string(),
-                            "prefixLength": u64::from(prefix_len),
-                            "autoScaleEnabled": false,
-                            "dhcpConfiguration": dhcp_cfg
-                        }),
-                    );
-                }
-            }
-
-            let body = crate::integration_types::NetworkCreateUpdate {
-                name,
-                enabled,
-                management: match management {
-                    NetworkManagement::Gateway => "GATEWAY",
-                    NetworkManagement::Switch => "SWITCH",
-                    NetworkManagement::Unmanaged => "UNMANAGED",
-                }
-                .into(),
-                vlan_id: vlan_id.map_or(1, i32::from),
-                dhcp_guarding: None,
-                extra,
-            };
+            let body = build_create_network_payload(req)?;
             let created = ic.create_network(&sid, &body).await?;
             Ok(crate::command::CommandResult::Network(created.into()))
         }
@@ -161,7 +48,7 @@ pub(super) async fn route(
                     extra.remove("ipv6Configuration");
                 }
             }
-            apply_ipv4_update(&mut extra, dhcp_serving, &update)?;
+            apply_ipv4_update(&mut extra, &existing.management, dhcp_serving, &update)?;
             let body = crate::integration_types::NetworkCreateUpdate {
                 name: update.name.unwrap_or(existing.name),
                 enabled: update.enabled.unwrap_or(existing.enabled),
@@ -181,7 +68,7 @@ pub(super) async fn route(
         }
         Command::CreateWifiBroadcast(req) => {
             let (ic, sid) = require_integration(integration, site_id, "CreateWifiBroadcast")?;
-            let body = build_create_wifi_broadcast_payload(&req);
+            let body = build_create_wifi_broadcast_payload(&req)?;
             let created = ic.create_wifi_broadcast(&sid, &body).await?;
             Ok(crate::command::CommandResult::WifiBroadcast(created.into()))
         }

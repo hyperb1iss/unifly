@@ -1,5 +1,11 @@
+use std::borrow::Cow;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::Error;
 use crate::model::common::DataSource;
@@ -16,6 +22,10 @@ impl TryFrom<SystemLogEntry> for Event {
         let timestamp = DateTime::from_timestamp_millis(entry.timestamp).ok_or_else(|| {
             invalid_history("system-log timestamp is outside the supported range")
         })?;
+        let id = match entry.id.as_ref().filter(|id| !id.is_empty()) {
+            Some(id) => EntityId::from(id.clone()),
+            None => EntityId::from(format!("syslog:{}", content_identity(&entry)?)),
+        };
         let message = entry
             .message
             .filter(|value| !value.trim().is_empty())
@@ -29,7 +39,7 @@ impl TryFrom<SystemLogEntry> for Event {
                 render_message(template, &entry.parameters)
             });
         Ok(Self {
-            id: entry.id.filter(|id| !id.is_empty()).map(EntityId::from),
+            id: Some(id),
             timestamp,
             category: category(entry.category.as_deref()),
             severity: severity(entry.severity.as_deref()),
@@ -41,6 +51,12 @@ impl TryFrom<SystemLogEntry> for Event {
             device_mac: actor_mac(&entry.parameters, &["DEVICE", "DEVICE_FROM", "DEVICE_TO"]),
             client_mac: actor_mac(&entry.parameters, &["CLIENT", "SRC_CLIENT"]),
             site_id: None,
+            ssid: entry
+                .parameters
+                .get("WLAN")
+                .and_then(parameter_text)
+                .filter(|value| !value.trim().is_empty())
+                .map(Cow::into_owned),
             raw_key: entry.key,
             source: DataSource::SessionApi,
         })
@@ -51,12 +67,16 @@ impl TryFrom<SystemLogEntry> for Alarm {
     type Error = Error;
 
     fn try_from(entry: SystemLogEntry) -> Result<Self, Self::Error> {
+        let id = entry
+            .id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| invalid_history("critical alert has no ID"))?
+            .clone();
         let archived = entry.status.as_deref() == Some("READ");
         let event = Event::try_from(entry)?;
         Ok(Self {
-            id: event
-                .id
-                .ok_or_else(|| invalid_history("critical alert has no ID"))?,
+            id: EntityId::from(id),
             timestamp: event.timestamp,
             category: event.category,
             severity: event.severity,
@@ -88,6 +108,7 @@ pub(crate) fn legacy_history_event(entry: SessionEvent) -> Result<Event, Error> 
         Some("vpn") => EventCategory::Vpn,
         _ => EventCategory::Unknown,
     };
+    let ssid = super::event::event_ssid(&entry.extra);
     Ok(Event {
         id: (!entry.id.is_empty()).then(|| EntityId::from(entry.id)),
         timestamp,
@@ -98,6 +119,7 @@ pub(crate) fn legacy_history_event(entry: SessionEvent) -> Result<Event, Error> 
         device_mac: actor_mac(&entry.extra, &["mac", "sw", "ap"]),
         client_mac: actor_mac(&entry.extra, &["user", "sta"]),
         site_id: entry.site_id.map(EntityId::from),
+        ssid,
         raw_key: entry.key,
         source: DataSource::SessionApi,
     })
@@ -149,7 +171,7 @@ fn render_message(template: &str, parameters: &Map<String, Value>) -> String {
             return output;
         };
         if let Some(value) = parameters.get(name).and_then(parameter_text) {
-            output.push_str(value);
+            output.push_str(&value);
         } else {
             output.push('{');
             output.push_str(name);
@@ -161,15 +183,35 @@ fn render_message(template: &str, parameters: &Map<String, Value>) -> String {
     output
 }
 
-fn parameter_text(value: &Value) -> Option<&str> {
-    value.as_str().or_else(|| {
-        ["name", "hostname", "id"].iter().find_map(|key| {
+fn parameter_text(value: &Value) -> Option<Cow<'_, str>> {
+    scalar_text(value).or_else(|| {
+        ["name", "hostname", "id", "value"].iter().find_map(|key| {
             value
                 .get(key)
-                .and_then(Value::as_str)
+                .and_then(scalar_text)
                 .filter(|text| !text.is_empty())
         })
     })
+}
+
+fn scalar_text(value: &Value) -> Option<Cow<'_, str>> {
+    match value {
+        Value::String(text) => Some(Cow::Borrowed(text)),
+        Value::Number(number) => Some(Cow::Owned(number.to_string())),
+        Value::Bool(value) => Some(Cow::Borrowed(if *value { "true" } else { "false" })),
+        _ => None,
+    }
+}
+
+/// Hash canonical raw contents so ID-less records retain their identity after
+/// conversion, without exposing unknown payload fields in a synthetic ID.
+pub(crate) fn content_identity(entry: &impl Serialize) -> Result<String, Error> {
+    let mut value = serde_json::to_value(entry)
+        .map_err(|_| invalid_history("event identity could not be encoded"))?;
+    value.sort_all_objects();
+    let encoded = serde_json::to_vec(&value)
+        .map_err(|_| invalid_history("event identity could not be encoded"))?;
+    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(encoded)))
 }
 
 pub(crate) fn invalid_history(message: &str) -> Error {

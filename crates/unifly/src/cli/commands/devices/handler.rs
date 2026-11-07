@@ -24,6 +24,15 @@ pub(super) async fn handle(
     let painter = output::Painter::new(global);
 
     match args.command {
+        DevicesCommand::Lags { command } => {
+            super::switching::lags(controller, command, global).await
+        }
+        DevicesCommand::McLagDomains { command } => {
+            super::switching::mc_lag_domains(controller, command, global).await
+        }
+        DevicesCommand::SwitchStacks { command } => {
+            super::switching::switch_stacks(controller, command, global).await
+        }
         DevicesCommand::List(list) => {
             let all = controller.devices_snapshot();
             let snapshot = util::apply_list_args(util::order::devices(&all), &list, global.quiet);
@@ -65,17 +74,7 @@ pub(super) async fn handle(
             Ok(())
         }
 
-        DevicesCommand::Remove { device } => {
-            let id = util::resolve_device_id(controller, &device)?;
-            if !util::confirm(&format!("Remove device {device}?"), global.yes)? {
-                return Ok(());
-            }
-            controller.execute(CoreCommand::RemoveDevice { id }).await?;
-            if !global.quiet {
-                eprintln!("Device removed");
-            }
-            Ok(())
-        }
+        DevicesCommand::Remove { device } => remove_device(controller, &device, global).await,
 
         DevicesCommand::Restart { device } => {
             let id = util::resolve_device_id(controller, &device)?;
@@ -89,15 +88,7 @@ pub(super) async fn handle(
         }
 
         DevicesCommand::Locate { device, on } => {
-            let mac = util::resolve_device_mac(controller, &device)?;
-            controller
-                .execute(CoreCommand::LocateDevice { mac, enable: on })
-                .await?;
-            if !global.quiet {
-                let state = if on { "enabled" } else { "disabled" };
-                eprintln!("Locate LED {state}");
-            }
-            Ok(())
+            locate_device(controller, &device, on, global).await
         }
 
         DevicesCommand::PortCycle { device, port } => {
@@ -538,6 +529,39 @@ fn map_speed(arg: SpeedArg) -> PortSpeedSetting {
         SpeedArg::Mbps5000 => PortSpeedSetting::Mbps5000,
         SpeedArg::Mbps10000 => PortSpeedSetting::Mbps10000,
     }
+}
+
+async fn remove_device(
+    controller: &Controller,
+    device: &str,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    let id = util::resolve_device_id(controller, device)?;
+    if !util::confirm(&format!("Remove device {device}?"), global.yes)? {
+        return Ok(());
+    }
+    controller.execute(CoreCommand::RemoveDevice { id }).await?;
+    if !global.quiet {
+        eprintln!("Device removed");
+    }
+    Ok(())
+}
+
+async fn locate_device(
+    controller: &Controller,
+    device: &str,
+    on: bool,
+    global: &GlobalOpts,
+) -> Result<(), CliError> {
+    let mac = util::resolve_device_mac(controller, device)?;
+    controller
+        .execute(CoreCommand::LocateDevice { mac, enable: on })
+        .await?;
+    if !global.quiet {
+        let state = if on { "enabled" } else { "disabled" };
+        eprintln!("Locate LED {state}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

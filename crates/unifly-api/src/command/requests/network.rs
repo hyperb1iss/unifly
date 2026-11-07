@@ -12,6 +12,9 @@ pub struct CreateNetworkRequest {
     pub subnet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub management: Option<NetworkManagement>,
+    /// Integration UUID of the L3 switch that manages a switch network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<EntityId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<NetworkPurpose>,
     pub dhcp_enabled: bool,
@@ -33,6 +36,10 @@ pub struct CreateNetworkRequest {
 /// Optional DHCP overrides for network updates (from JSON files).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DhcpUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_stop: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dns_servers: Option<Vec<String>>,
 }
@@ -91,6 +98,15 @@ pub struct CreateWifiBroadcastRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub fast_roaming: Option<bool>,
+    /// Lock the 2.4 GHz channel to 6 on broadcasting devices.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "channel2gLockedTo6")]
+    pub channel2g_locked_to6: Option<bool>,
+    /// Lock the 2.4 GHz DTIM period to 3.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "dtimPeriod2gLockedTo3"
+    )]
+    pub dtim_period2g_locked_to3: Option<bool>,
 }
 
 fn default_enabled() -> bool {
@@ -112,6 +128,15 @@ pub struct UpdateWifiBroadcastRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "hideName")]
     pub hide_ssid: Option<bool>,
+    /// Lock the 2.4 GHz channel to 6 on broadcasting devices.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "channel2gLockedTo6")]
+    pub channel2g_locked_to6: Option<bool>,
+    /// Lock the 2.4 GHz DTIM period to 3.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "dtimPeriod2gLockedTo3"
+    )]
+    pub dtim_period2g_locked_to3: Option<bool>,
 }
 
 #[cfg(test)]

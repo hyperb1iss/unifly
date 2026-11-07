@@ -82,6 +82,22 @@ unifly devices port-set <DEVICE> 5 --reset      # Back to controller defaults
 
 Port indices are **1-based**, matching the controller's wire format. `port-set -F` accepts a JSONC payload (comments and trailing commas allowed) with splice semantics: ports not listed keep their existing override, and a per-port `"reset": true` removes that port's override entirely. `--with-clients` adds connection annotations, and on `ports-export` it prepends `// last-seen <timestamp>: <mac>` comment lines for git-diff drift detection. `ports-export` always writes JSONC, whatever `-o` says. See [Switch Ports](/guide/switch-ports) for the full workflow and payload schema.
 
+### Switching inventory
+
+Network API 11 adds site-wide switching reads:
+
+```bash
+unifly devices lags list --all
+unifly devices lags get <UUID>
+unifly devices mc-lag-domains list --all
+unifly devices mc-lag-domains get <UUID>
+unifly devices switch-stacks list --all
+unifly devices switch-stacks get <UUID>
+```
+
+These commands require Integration access and accept the standard output
+formats. A controller without these endpoints returns its API error.
+
 ## Clients
 
 ```bash
@@ -114,12 +130,32 @@ unifly networks list                            # All networks/VLANs
 unifly networks get <ID|NAME>                   # Full network details
 unifly networks create --name "IoT" --management gateway --vlan 20 --ipv4-host "10.0.20.1/24"
 unifly networks create -F network.json          # Create from JSON file
-unifly networks update <ID> --enabled false
-unifly networks delete <ID>
-unifly networks refs <ID>                       # What depends on this network?
+unifly networks update <ID|NAME> --enabled false
+unifly networks delete <ID|NAME>
+unifly networks refs <ID|NAME>                   # What depends on this network?
 ```
 
 Gotchas: `list` returns summary data without `ipv4Configuration`. Use `get` for full config. `refs` is the only pre-delete dependency check; use it before deleting.
+
+Gateway- and switch-managed creation require `--ipv4-host <ADDRESS/PREFIX>`,
+even with DHCP disabled. Switch-managed creation also requires
+`--device-id <UUID>` for its L3 switch. Gateway and switch DHCP creation require
+both `--dhcp-start` and `--dhcp-stop`; ranges must contain IPv4 addresses
+in ascending order. Unmanaged VLANs do not accept DHCP or IPv4 settings.
+
+Network updates can set DHCP ranges through a file. Omitted fields keep the
+fresh controller value, including an omitted range bound:
+
+```json
+{
+  "dhcp_enabled": true,
+  "dhcp": { "range_start": "10.0.20.100", "range_stop": "10.0.20.200" }
+}
+```
+
+Turning DHCP off clears the server configuration. To turn it back on,
+provide both range bounds; the controller does not return the old range
+while DHCP is disabled. A range-only edit requires an active DHCP server.
 
 ## WiFi
 
@@ -129,6 +165,7 @@ unifly wifi get <ID|NAME>                       # SSID details
 unifly wifi create --name "Guest" --network <ID> --security wpa2-personal --passphrase "..."
 unifly wifi create -F wifi.json                 # Create from JSON file
 unifly wifi update <ID> --enabled false
+unifly wifi update <ID> --channel-2g-locked-to-6 true --dtim-period-2g-locked-to-3 true
 unifly wifi delete <ID>
 unifly wifi neighbors                           # Scan nearby APs (RF environment)
 unifly wifi channels                            # Channel utilization analysis
@@ -149,12 +186,18 @@ unifly firewall policies create -F policy.json
 unifly firewall policies update <ID> -F policy.json
 unifly firewall policies patch <ID> --enabled false    # Quick toggle
 unifly firewall policies patch <ID> --logging true     # Toggle logging
+unifly firewall policies patch <ID> --report-flow true # Flow reporting
 unifly firewall policies delete <ID>
 unifly firewall policies reorder --source-zone <ID> --dest-zone <ID> --get
 unifly firewall policies reorder --source-zone <ID> --dest-zone <ID> --set <ID1,ID2,...>
 ```
 
-Gotchas: `patch` is the fast path for toggling `enabled`/`logging` only. Use `update` for other fields. `reorder` with `--get` shows current order; `--set` applies a new order. First-match wins, so ordering matters.
+Gotchas: `patch` is the fast path for toggling `enabled`, `logging`, or `reportFlowEnabled`. Use `update` for other fields. `reorder` with `--get` shows current order; `--set` applies a new order. First-match wins, so ordering matters.
+
+The `--report-flow true|false` flag also works on create and update.
+New allow policies leave mirrored return traffic disabled unless
+`--allow-return-traffic true` is explicit. External and gateway destination
+zones reject mirrored return policies on Network 11.
 
 ### Zones
 
@@ -276,6 +319,17 @@ unifly stats site --interval daily              # Long-term trends
 ```
 
 Supported intervals: `5m` (high resolution), `hourly` (default), `daily`, `monthly`.
+
+Every report accepts `--start` and `--end` as RFC 3339 or Unix-second
+timestamps. The client selects the controller's legacy or modern engine.
+Network 11 returns native 5-minute, hourly, 8-hour (`daily`), or monthly
+buckets. Modern JSON rows include the actual bucket `duration` in
+milliseconds; byte rates must divide by that duration. Missing metrics
+remain absent, and fractional measurements retain their precision.
+
+Without explicit bounds, modern requests cover 12 hours, 7 days, 30 days,
+or 365 days respectively. Monthly requests retain monthly history rather
+than substituting the shorter-lived 8-hour series.
 
 ## Hotspot
 
@@ -425,7 +479,9 @@ unifly countries                                # Country codes for WiFi regulat
 
 ## Raw API
 
-Escape hatch for any controller endpoint. Routes through the Session client with automatic CSRF handling.
+Escape hatch for controller endpoints. Paths beginning with `integration/` use
+API-key authentication and preserve cloud connector routing. Other paths use
+the Session client with automatic CSRF handling.
 
 ```bash
 unifly api api/s/default/stat/sitedpi                    # GET a session endpoint

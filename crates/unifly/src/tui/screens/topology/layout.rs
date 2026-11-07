@@ -48,6 +48,7 @@ impl TopoNode {
     }
 
     /// Where the label starts, and how many cells it takes.
+    #[cfg(test)]
     pub(super) fn label_span(&self) -> (f64, usize) {
         (self.x + 1.0, cell_width(&self.label))
     }

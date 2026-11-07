@@ -31,8 +31,10 @@ impl SessionClient {
 
     /// Create a new site.
     ///
-    /// `POST /api/s/{site}/cmd/sitemgr` with `{"cmd": "add-site", "name": "...", "desc": "..."}`
-    pub async fn create_site(&self, name: &str, description: &str) -> Result<(), Error> {
+    /// The controller generates the internal site reference. `name` is the display name.
+    ///
+    /// `POST /api/s/{site}/cmd/sitemgr` with `{"cmd": "add-site", "desc": "..."}`
+    pub async fn create_site(&self, name: &str) -> Result<(), Error> {
         let url = self.site_url("cmd/sitemgr");
         debug!(name, "creating site");
         let _: Vec<serde_json::Value> = self
@@ -40,18 +42,33 @@ impl SessionClient {
                 url,
                 &json!({
                     "cmd": "add-site",
-                    "name": name,
-                    "desc": description,
+                    "desc": name,
                 }),
             )
             .await?;
         Ok(())
     }
 
-    /// Delete a site.
+    /// Resolve an internal reference or Session API ID to the Session API ID.
+    pub async fn resolve_site_id(&self, name: &str) -> Result<String, Error> {
+        let sites = self.list_sites().await?;
+        let site = sites
+            .iter()
+            .find(|site| site.id == name)
+            .or_else(|| sites.iter().find(|site| site.name == name))
+            .ok_or_else(|| Error::SessionApi {
+                message: format!(
+                    "Site '{name}' was not found; use its internal reference or Session ID"
+                ),
+            })?;
+        Ok(site.id.clone())
+    }
+
+    /// Delete a site by its internal reference or Session API ID.
     ///
-    /// `POST /api/s/{site}/cmd/sitemgr` with `{"cmd": "delete-site", "name": "..."}`
+    /// `POST /api/s/{site}/cmd/sitemgr` with `{"cmd": "delete-site", "site": "<id>"}`
     pub async fn delete_site(&self, name: &str) -> Result<(), Error> {
+        let id = self.resolve_site_id(name).await?;
         let url = self.site_url("cmd/sitemgr");
         debug!(name, "deleting site");
         let _: Vec<serde_json::Value> = self
@@ -59,7 +76,7 @@ impl SessionClient {
                 url,
                 &json!({
                     "cmd": "delete-site",
-                    "name": name,
+                    "site": id,
                 }),
             )
             .await?;

@@ -2,6 +2,10 @@ use clap::{Args, Subcommand};
 
 use super::ListArgs;
 
+#[path = "devices/switching.rs"]
+mod switching;
+pub use switching::SwitchingCommand;
+
 #[derive(Debug, Args)]
 pub struct DevicesArgs {
     #[command(subcommand)]
@@ -10,6 +14,24 @@ pub struct DevicesArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum DevicesCommand {
+    /// Inspect link aggregation groups (Integration API)
+    Lags {
+        #[command(subcommand)]
+        command: SwitchingCommand,
+    },
+
+    /// Inspect multi-chassis link aggregation domains (Integration API)
+    McLagDomains {
+        #[command(subcommand)]
+        command: SwitchingCommand,
+    },
+
+    /// Inspect switch stacks (Integration API)
+    SwitchStacks {
+        #[command(subcommand)]
+        command: SwitchingCommand,
+    },
+
     /// List adopted devices
     #[command(alias = "ls")]
     List(ListArgs),

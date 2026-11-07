@@ -32,6 +32,10 @@ pub enum NetworksCommand {
         #[arg(long, required_unless_present = "from_file", value_enum)]
         management: Option<NetworkManagement>,
 
+        /// L3 switch Integration device UUID (required for switch management)
+        #[arg(long)]
+        device_id: Option<String>,
+
         /// VLAN ID (1-4009)
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..=4009))]
         vlan: Option<u16>,
@@ -83,7 +87,7 @@ pub enum NetworksCommand {
 
     /// Update an existing network
     Update {
-        /// Network ID (UUID)
+        /// Network ID (UUID) or name
         id: String,
 
         /// Load full update payload from JSON file
@@ -105,7 +109,7 @@ pub enum NetworksCommand {
 
     /// Delete a network
     Delete {
-        /// Network ID (UUID)
+        /// Network ID (UUID) or name
         id: String,
 
         /// Force delete even if referenced
@@ -115,7 +119,7 @@ pub enum NetworksCommand {
 
     /// Show network cross-references (what uses this network)
     Refs {
-        /// Network ID (UUID)
+        /// Network ID (UUID) or name
         id: String,
     },
 }

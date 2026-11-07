@@ -95,3 +95,45 @@ async fn modern_history_refresh_works_with_session_and_api_key_auth() {
         controller.disconnect().await;
     }
 }
+
+#[tokio::test]
+async fn idless_history_keeps_distinct_raw_rows_across_refreshes() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let timestamp = chrono::Utc::now().timestamp_millis() - 1_000;
+    Mock::given(method("POST"))
+        .and(path("/v2/api/site/default/system-log/all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page_number": 0, "total_page_count": 1, "total_element_count": 2,
+            "data": [
+                {"timestamp": timestamp, "message": "same", "future_detail": 1},
+                {"timestamp": timestamp, "message": "same", "future_detail": 2}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).expect("url"),
+        AuthCredentials::Credentials {
+            username: "admin".into(),
+            password: secret("password"),
+        },
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.expect("connect");
+    let ids: std::collections::BTreeSet<_> = controller
+        .events_snapshot()
+        .iter()
+        .map(|event| event.id.clone().expect("content ID").to_string())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    controller.full_refresh().await.expect("refresh");
+    let refreshed_ids = controller
+        .events_snapshot()
+        .iter()
+        .map(|event| event.id.clone().expect("content ID").to_string())
+        .collect();
+    assert_eq!(ids, refreshed_ids);
+    controller.disconnect().await;
+}

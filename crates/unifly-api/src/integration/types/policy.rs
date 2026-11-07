@@ -36,7 +36,7 @@ pub enum SourceTrafficFilter {
             default,
             skip_serializing_if = "Option::is_none"
         )]
-        mac_address_filter: Option<MacAddressFilter>,
+        mac_address_filter: Option<String>,
         #[serde(
             rename = "portFilter",
             default,
@@ -53,7 +53,7 @@ pub enum SourceTrafficFilter {
             default,
             skip_serializing_if = "Option::is_none"
         )]
-        mac_address_filter: Option<MacAddressFilter>,
+        mac_address_filter: Option<String>,
         #[serde(
             rename = "portFilter",
             default,
@@ -81,6 +81,45 @@ pub enum SourceTrafficFilter {
     Region {
         #[serde(rename = "regionFilter")]
         region_filter: RegionFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "VPN_SERVER")]
+    VpnServer {
+        #[serde(rename = "vpnServerFilter")]
+        vpn_server_filter: VpnServerFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "SITE_TO_SITE_VPN_TUNNEL")]
+    SiteToSiteVpnTunnel {
+        #[serde(rename = "siteToSiteVpnTunnelFilter")]
+        site_to_site_vpn_tunnel_filter: SiteToSiteVpnTunnelFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "IPV6_IID")]
+    Ipv6Iid {
+        #[serde(rename = "ipv6IidFilter")]
+        ipv6_iid_filter: Ipv6IidFilter,
+        #[serde(
+            rename = "macAddressFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        mac_address_filter: Option<String>,
         #[serde(
             rename = "portFilter",
             default,
@@ -166,8 +205,61 @@ pub enum DestTrafficFilter {
         )]
         port_filter: Option<PortFilter>,
     },
+    #[serde(rename = "VPN_SERVER")]
+    VpnServer {
+        #[serde(rename = "vpnServerFilter")]
+        vpn_server_filter: VpnServerFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "SITE_TO_SITE_VPN_TUNNEL")]
+    SiteToSiteVpnTunnel {
+        #[serde(rename = "siteToSiteVpnTunnelFilter")]
+        site_to_site_vpn_tunnel_filter: SiteToSiteVpnTunnelFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
+    #[serde(rename = "IPV6_IID")]
+    Ipv6Iid {
+        #[serde(rename = "ipv6IidFilter")]
+        ipv6_iid_filter: Ipv6IidFilter,
+        #[serde(
+            rename = "portFilter",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        port_filter: Option<PortFilter>,
+    },
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnServerFilter {
+    pub vpn_server_ids: Vec<Uuid>,
+    pub match_opposite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteToSiteVpnTunnelFilter {
+    pub site_to_site_vpn_tunnel_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ipv6IidFilter {
+    pub ipv6_iid: String,
+    pub match_opposite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -204,7 +296,7 @@ pub enum IpAddressFilter {
 pub enum IpAddressItem {
     #[serde(rename = "IP_ADDRESS")]
     Address { value: String },
-    #[serde(rename = "RANGE")]
+    #[serde(rename = "IP_ADDRESS_RANGE", alias = "RANGE")]
     Range { start: String, stop: String },
     #[serde(rename = "SUBNET")]
     Subnet { value: String },
@@ -238,29 +330,40 @@ pub enum PortFilter {
 pub enum PortItem {
     #[serde(rename = "PORT_NUMBER")]
     Number {
-        #[serde(deserialize_with = "deserialize_port_value")]
+        #[serde(
+            deserialize_with = "deserialize_port_value",
+            serialize_with = "serialize_port_value"
+        )]
         value: String,
     },
     #[serde(rename = "PORT_NUMBER_RANGE", alias = "PORT_RANGE")]
     Range {
-        // The controller sends `start`/`stop` (per the OpenAPI schema
-        // `Number range port matching`); `startPort`/`endPort` is kept as
-        // the serialization shape the write path has been tested with.
+        // Writes follow the OpenAPI shape; reads also accept older field spellings.
         #[serde(
-            rename = "startPort",
-            alias = "start",
-            deserialize_with = "deserialize_port_value"
+            rename = "start",
+            alias = "startPort",
+            deserialize_with = "deserialize_port_value",
+            serialize_with = "serialize_port_value"
         )]
         start_port: String,
         #[serde(
-            rename = "endPort",
-            alias = "stop",
-            deserialize_with = "deserialize_port_value"
+            rename = "stop",
+            alias = "endPort",
+            deserialize_with = "deserialize_port_value",
+            serialize_with = "serialize_port_value"
         )]
         end_port: String,
     },
     #[serde(other)]
     Unknown,
+}
+
+fn serialize_port_value<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let port = value.parse::<u16>().map_err(serde::ser::Error::custom)?;
+    serializer.serialize_u16(port)
 }
 
 fn deserialize_port_value<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -318,7 +421,7 @@ pub struct RegionFilter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DomainFilter {
-    #[serde(rename = "SPECIFIC")]
+    #[serde(rename = "DOMAINS", alias = "SPECIFIC")]
     Specific { domains: Vec<String> },
     #[serde(other)]
     Unknown,
@@ -339,6 +442,8 @@ pub struct FirewallPolicyResponse {
     pub ip_protocol_scope: Option<Value>,
     #[serde(default)]
     pub logging_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
     pub metadata: Option<Value>,
     #[serde(default)]
     pub source: Option<FirewallPolicySource>,
@@ -359,6 +464,8 @@ pub struct FirewallPolicyCreateUpdate {
     pub destination: Value,
     pub ip_protocol_scope: Value,
     pub logging_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
     pub ipsec_filter: Option<String>,
     pub schedule: Option<Value>,
     pub connection_state_filter: Option<Vec<String>>,
@@ -371,6 +478,8 @@ pub struct FirewallPolicyPatch {
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_flow_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -632,17 +741,23 @@ mod tests {
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(
-            json.get("type").and_then(serde_json::Value::as_str),
-            Some("PORT_NUMBER_RANGE"),
-            "Range must serialize as PORT_NUMBER_RANGE, not PORT_RANGE"
+            json,
+            serde_json::json!({
+                "type": "PORT_NUMBER_RANGE", "start": 49152, "stop": 65535
+            })
         );
+    }
+
+    #[test]
+    fn port_numbers_serialize_as_integers() {
+        let item = PortItem::Number {
+            value: "443".into(),
+        };
         assert_eq!(
-            json.get("startPort").and_then(serde_json::Value::as_str),
-            Some("49152")
-        );
-        assert_eq!(
-            json.get("endPort").and_then(serde_json::Value::as_str),
-            Some("65535")
+            serde_json::to_value(item).unwrap(),
+            serde_json::json!({
+                "type": "PORT_NUMBER", "value": 443
+            })
         );
     }
 

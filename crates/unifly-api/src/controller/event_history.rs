@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use chrono::Utc;
@@ -14,8 +13,10 @@ use super::support::require_session;
 const PAGE_SIZE: u32 = 1_000;
 
 mod progress;
+mod retained;
 
 use progress::RawProgress;
+use retained::RetainedEvents;
 
 /// Bounds and visibility for a newest-first event history query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub(crate) async fn fetch_events(
     loop {
         let page = match session.list_system_log(&page_query).await {
             Ok(page) => page,
-            Err(error) if page_query.page_number == 0 && endpoint_missing(&error) => {
+            Err(error) if page_query.page_number == 0 && error.is_not_found() => {
                 return legacy_events(session, history).await;
             }
             Err(error) => return Err(error),
@@ -159,30 +160,24 @@ fn validate_page(
     }
     let distinct_records = u64::try_from(distinct_records)
         .map_err(|_| invalid_history("system-log record count overflow"))?;
-    if page.total_page_count == 0 {
-        if page.page_number == 0
-            && page.total_element_count == 0
-            && count == 0
-            && !page.has_next
-            && !page.or_more
-        {
+    let continuation = page.has_next || page.or_more;
+    if !continuation && count > page.total_element_count {
+        return Err(invalid_history(
+            "system-log returned inconsistent page totals",
+        ));
+    }
+    if page.total_page_count == 0 && !continuation {
+        if page.total_element_count == 0 && count == 0 {
             return Ok(true);
         }
         return Err(invalid_history(
             "system-log reports no pages for nonempty history",
         ));
     }
-    if page.page_number >= page.total_page_count || count > page.total_element_count {
-        return Err(invalid_history(
-            "system-log returned inconsistent page totals",
-        ));
-    }
-    let done = page.page_number == page.total_page_count - 1;
-    if done && (page.has_next || page.or_more) {
-        return Err(invalid_history(
-            "system-log reports additional history beyond its declared final page",
-        ));
-    }
+    // Continuation flags make reported totals a lower bound. A later page can
+    // exceed that bound, or the total may shrink while the request is in flight.
+    // Stop only after continuation clears and all declared pages are covered.
+    let done = !continuation && page.page_number >= page.total_page_count.saturating_sub(1);
     // Fixed time bounds do not prevent late arrivals or retention deletes.
     // Require the initial inventory, reduced only if the final total shrank.
     let expected_records = initial_total.min(page.total_element_count);
@@ -194,24 +189,11 @@ fn validate_page(
     Ok(done)
 }
 
-/// Only an absent endpoint permits a protocol fallback, never an error body
-/// mentioning NotFound inside an unrelated HTTP failure.
-pub(crate) fn endpoint_missing(error: &Error) -> bool {
-    match error {
-        Error::Transport(error) => error.status() == Some(reqwest::StatusCode::NOT_FOUND),
-        Error::Integration { status: 404, .. } => true,
-        Error::SessionApi { message } => {
-            message == "api.err.NotFound" || message.starts_with("HTTP 404 ")
-        }
-        _ => false,
-    }
-}
-
 struct History {
     query: EventHistoryQuery,
     start: i64,
     end: i64,
-    events: Vec<Event>,
+    events: RetainedEvents,
     ids: HashSet<EntityId>,
 }
 
@@ -222,7 +204,7 @@ impl History {
             query,
             start: (end - i64::from(query.within_hours) * 3_600_000).max(0),
             end,
-            events: Vec::new(),
+            events: RetainedEvents::new(query.limit),
             ids: HashSet::new(),
         }
     }
@@ -247,25 +229,8 @@ impl History {
         self.events.len() >= usize::try_from(self.query.limit).unwrap_or(usize::MAX)
     }
 
-    fn finish(mut self) -> Vec<Event> {
-        self.events.sort_by_cached_key(|event| {
-            (
-                Reverse(event.timestamp),
-                (
-                    event.id.is_none(),
-                    event.id.as_ref().map(ToString::to_string),
-                ),
-                event.event_type.clone(),
-                event.message.clone(),
-                event.raw_key.clone(),
-                event.device_mac.as_ref().map(|mac| mac.as_str().to_owned()),
-                event.client_mac.as_ref().map(|mac| mac.as_str().to_owned()),
-                event.site_id.as_ref().map(ToString::to_string),
-            )
-        });
-        self.events
-            .truncate(usize::try_from(self.query.limit).unwrap_or(usize::MAX));
-        self.events
+    fn finish(self) -> Vec<Event> {
+        self.events.finish()
     }
 }
 
