@@ -68,10 +68,18 @@ impl App {
                 app_list.truncate(10);
                 data.dpi_apps = app_list;
             }
-            if data.dpi_apps.is_empty()
-                && let Ok(raw) = controller.get_dpi_stats("by_app", None).await
-            {
-                data.dpi_apps = parse_session_dpi_apps(&raw);
+            if data.dpi_apps.is_empty() {
+                match controller.get_dpi_stats("by_app", None).await {
+                    Ok(raw) => data.dpi_apps = parse_session_dpi_apps(&raw),
+                    Err(error) => {
+                        if generation_ref.load(Ordering::Relaxed) == generation {
+                            let _ = tx.send(Action::Notify(Notification::error(format!(
+                                "Could not load application traffic: {error}"
+                            ))));
+                        }
+                        return;
+                    }
+                }
             }
 
             if let Ok(categories) = dpi_categories_res
@@ -85,10 +93,18 @@ impl App {
                 category_list.sort_by_key(|item| std::cmp::Reverse(item.1));
                 data.dpi_categories = category_list;
             }
-            if data.dpi_categories.is_empty()
-                && let Ok(raw) = controller.get_dpi_stats("by_cat", None).await
-            {
-                data.dpi_categories = parse_session_dpi_categories(&raw);
+            if data.dpi_categories.is_empty() {
+                match controller.get_dpi_stats("by_cat", None).await {
+                    Ok(raw) => data.dpi_categories = parse_session_dpi_categories(&raw),
+                    Err(error) => {
+                        if generation_ref.load(Ordering::Relaxed) == generation {
+                            let _ = tx.send(Action::Notify(Notification::error(format!(
+                                "Could not load traffic categories: {error}"
+                            ))));
+                        }
+                        return;
+                    }
+                }
             }
 
             if generation_ref.load(Ordering::Relaxed) == generation {

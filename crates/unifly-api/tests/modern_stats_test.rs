@@ -9,6 +9,12 @@ const START: i64 = 1_700_000_000_000;
 const END: i64 = START + 3_600_000;
 const PREFIX: &str = "/proxy/network/v2/api/stats";
 
+fn millis(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .expect("fixture timestamp")
+        .timestamp_millis()
+}
+
 async fn setup() -> (MockServer, SessionClient) {
     let server = MockServer::start().await;
     let client = SessionClient::new(
@@ -139,8 +145,14 @@ async fn explicit_long_window_is_not_capped_and_preserves_controller_error() {
     let start = END - 90 * 86_400_000;
     Mock::given(method("GET"))
         .and(path(format!("{PREFIX}/series")))
-        .and(query_param("start", start.to_string()))
-        .and(query_param("end", END.to_string()))
+        .and(query_param(
+            "start",
+            millis("2022-01-02T00:00:00Z").to_string(),
+        ))
+        .and(query_param(
+            "end",
+            millis("2024-01-02T00:00:00Z").to_string(),
+        ))
         .respond_with(
             ResponseTemplate::new(400).set_body_json(
                 json!({"errorCode":400,"message":"monthly timezone alignment failed"}),
@@ -336,11 +348,19 @@ async fn intervals_select_supported_server_buckets_with_full_explicit_bounds() {
         ("daily", "OF_8_HOURS"),
         ("monthly", "OF_1_MONTH"),
     ] {
+        let (start, end) = if interval == "monthly" {
+            (
+                millis("2022-01-02T00:00:00Z"),
+                millis("2024-01-02T00:00:00Z"),
+            )
+        } else {
+            (START, END)
+        };
         Mock::given(method("GET"))
             .and(path(format!("{PREFIX}/series")))
             .and(query_param("bucket", bucket))
-            .and(query_param("start", START.to_string()))
-            .and(query_param("end", END.to_string()))
+            .and(query_param("start", start.to_string()))
+            .and(query_param("end", end.to_string()))
             .and(query_param("filter", format!("siteId.eq('{SITE}')")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
             .expect(1)
@@ -359,5 +379,59 @@ async fn intervals_select_supported_server_buckets_with_full_explicit_bounds() {
         !requests
             .iter()
             .any(|request| request.url.query_pairs().any(|(key, _)| key == "period"))
+    );
+}
+
+#[tokio::test]
+async fn monthly_padding_keeps_old_native_history_and_excludes_padding_only_rows() {
+    let (server, client) = setup().await;
+    modern(&server).await;
+    let first = millis("2025-11-01T07:00:00Z");
+    let old = millis("2026-01-01T08:00:00Z");
+    let recent = millis("2026-11-01T07:00:00Z");
+    let duration = 31 * 86_400_000_u64;
+    Mock::given(method("GET"))
+        .and(path(format!("{PREFIX}/series")))
+        .and(query_param("schema", "wanBySite"))
+        .and(query_param("bucket", "OF_1_MONTH"))
+        .and(query_param("start", millis("2024-01-02T00:00:00Z").to_string()))
+        .and(query_param("end", millis("2027-01-02T00:00:00Z").to_string()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"siteId":SITE,"series":[
+                {"timestamp":millis("2024-02-01T08:00:00Z"),"duration":duration,"rxBytes":999,"txBytes":999},
+                {"timestamp":first,"duration":duration,"rxBytes":100,"txBytes":200},
+                {"timestamp":old,"duration":duration,"rxBytes":300.5,"txBytes":400.5},
+                {"timestamp":recent,"duration":526_443_348,"rxBytes":500,"txBytes":600},
+                {"timestamp":millis("2026-12-01T08:00:00Z"),"duration":duration,"rxBytes":999,"txBytes":999}
+            ]}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let rows = client
+        .get_gateway_stats(
+            "monthly",
+            Some(millis("2025-11-07T00:00:00Z")),
+            Some(millis("2026-11-07T00:00:00Z")),
+            None,
+        )
+        .await
+        .expect("full monthly history");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["time"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(first), json!(old), json!(recent)]
+    );
+    let old_row = rows
+        .iter()
+        .find(|row| row["time"] == old)
+        .expect("retained old bucket");
+    assert_eq!(old_row["bytes"], 701.0);
+    assert_eq!(old_row["duration"], duration);
+    assert_eq!(
+        rows.last().expect("partial monthly bucket")["duration"],
+        526_443_348
     );
 }

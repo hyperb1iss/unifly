@@ -43,9 +43,10 @@ impl SessionClient {
                 }
                 debug!("v2 response had no DPI app data, trying session");
             }
-            Err(e) => {
-                debug!("v2 traffic flow stats unavailable, trying session: {e}");
+            Err(error) if error.is_not_found() => {
+                debug!("v2 traffic flow stats endpoint absent, trying session");
             }
+            Err(error) => return Err(error),
         }
 
         // Session: site-level filtered endpoint.

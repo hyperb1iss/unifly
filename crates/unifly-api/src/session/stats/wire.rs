@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -66,6 +67,27 @@ impl Window {
             .ok_or_else(|| invalid("Statistics bucket end overflows Unix milliseconds"))?;
         Ok(point.timestamp <= self.end && end > self.start)
     }
+
+    fn wire_bounds(self) -> Result<(i64, i64), Error> {
+        if !matches!(self.bucket, Bucket::Monthly) {
+            return Ok((self.start, self.end));
+        }
+        // The controller's epoch-anchored calendar rounds some month boundaries
+        // inconsistently across time zones. January anchors avoid that clamp;
+        // overlaps() still selects against the caller's original window.
+        Ok((
+            january_anchor(self.start, -1)?,
+            january_anchor(self.end, 1)?,
+        ))
+    }
+}
+
+fn january_anchor(timestamp: i64, year_offset: i32) -> Result<i64, Error> {
+    DateTime::from_timestamp_millis(timestamp)
+        .and_then(|date| date.year().checked_add(year_offset))
+        .and_then(|year| Utc.with_ymd_and_hms(year, 1, 2, 0, 0, 0).single())
+        .map(|date| date.timestamp_millis())
+        .ok_or_else(|| invalid("Monthly statistics bounds exceed the supported calendar range"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,16 +128,77 @@ pub(super) async fn fetch(
     window: Window,
     site_id: &str,
 ) -> Result<Vec<Series>, Error> {
-    let path = series_path(schema, window, site_id);
+    let path = series_path(schema, window, site_id)?;
     decode(&client.raw_get(&path).await?)
 }
 
-fn series_path(schema: &str, window: Window, site_id: &str) -> String {
+fn series_path(schema: &str, window: Window, site_id: &str) -> Result<String, Error> {
+    let (start, end) = window.wire_bounds()?;
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     query.append_pair("schema", schema);
     query.append_pair("bucket", window.bucket.as_str());
-    query.append_pair("start", &window.start.to_string());
-    query.append_pair("end", &window.end.to_string());
+    query.append_pair("start", &start.to_string());
+    query.append_pair("end", &end.to_string());
     query.append_pair("filter", &format!("siteId.eq('{site_id}')"));
-    format!("v2/api/stats/series?{}", query.finish())
+    Ok(format!("v2/api/stats/series?{}", query.finish()))
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+
+    use super::{Bucket, Window};
+
+    fn millis(value: &str) -> i64 {
+        DateTime::parse_from_rfc3339(value)
+            .expect("fixture date")
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn monthly_wire_padding_handles_leap_days_and_year_boundaries() {
+        for (start, end, padded_start, padded_end) in [
+            (
+                "2024-02-29T12:00:00Z",
+                "2024-03-01T00:00:00Z",
+                "2023-01-02T00:00:00Z",
+                "2025-01-02T00:00:00Z",
+            ),
+            (
+                "2025-12-31T23:00:00Z",
+                "2026-01-01T01:00:00Z",
+                "2024-01-02T00:00:00Z",
+                "2027-01-02T00:00:00Z",
+            ),
+        ] {
+            let window = Window {
+                start: millis(start),
+                end: millis(end),
+                bucket: Bucket::Monthly,
+            };
+            assert_eq!(
+                window.wire_bounds().expect("calendar bounds"),
+                (millis(padded_start), millis(padded_end))
+            );
+            assert_eq!(window.start, millis(start));
+            assert_eq!(window.end, millis(end));
+        }
+    }
+
+    #[test]
+    fn monthly_wire_padding_rejects_unrepresentable_calendar_bounds() {
+        for timestamp in [
+            i64::MIN,
+            i64::MAX,
+            DateTime::<Utc>::MIN_UTC.timestamp_millis(),
+            DateTime::<Utc>::MAX_UTC.timestamp_millis(),
+        ] {
+            let window = Window {
+                start: timestamp,
+                end: timestamp,
+                bucket: Bucket::Monthly,
+            };
+            assert!(window.wire_bounds().is_err());
+        }
+    }
 }
