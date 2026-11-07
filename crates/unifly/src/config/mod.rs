@@ -320,7 +320,8 @@ fn default_auth_mode() -> String {
 /// Resolve the config file path.
 ///
 /// Unix (including macOS): `$XDG_CONFIG_HOME/unifly/config.toml` or `~/.config/unifly/config.toml`
-/// Windows: `%APPDATA%\unifly\config.toml` via `ProjectDirs`, with env-var fallback
+/// Windows: an absolute `%APPDATA%` override followed by `unifly/config/config.toml`,
+/// otherwise the Windows known-folder location (with a user-profile fallback).
 ///
 /// On macOS, automatically migrates from the old `~/Library/Application Support/unifly/`
 /// location if it exists and the XDG path does not.
@@ -333,20 +334,31 @@ pub fn config_path() -> PathBuf {
 
 #[cfg(windows)]
 fn config_dir() -> PathBuf {
-    directories::ProjectDirs::from("", "", "unifly").map_or_else(
-        || {
-            std::env::var_os("APPDATA")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("USERPROFILE")
-                        .map(PathBuf::from)
-                        .map(|home| home.join("AppData").join("Roaming"))
-                })
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("unifly")
-        },
-        |dirs| dirs.config_dir().to_owned(),
+    windows_config_dir(
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        directories::ProjectDirs::from("", "", "unifly").map(|dirs| dirs.config_dir().to_owned()),
+        std::env::var_os("USERPROFILE").map(PathBuf::from),
     )
+}
+
+#[cfg(any(windows, test))]
+fn windows_config_dir(
+    appdata: Option<PathBuf>,
+    known_folder: Option<PathBuf>,
+    user_profile: Option<PathBuf>,
+) -> PathBuf {
+    appdata
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("unifly").join("config"))
+        .or(known_folder)
+        .unwrap_or_else(|| {
+            user_profile
+                .map_or_else(
+                    || PathBuf::from("."),
+                    |home| home.join("AppData").join("Roaming"),
+                )
+                .join("unifly")
+        })
 }
 
 #[cfg(not(windows))]
@@ -963,6 +975,27 @@ mod tests {
     use secrecy::ExposeSecret;
     use std::time::Duration;
     use unifly_api::{AuthCredentials, TlsVerification};
+
+    #[test]
+    fn windows_config_override_is_absolute_and_keeps_the_existing_suffix() {
+        let home = tempfile::tempdir().expect("home");
+        let known_folder = home.path().join("known").join("unifly").join("config");
+        let redirected = home.path().join("redirected");
+        assert_eq!(
+            super::windows_config_dir(Some(redirected.clone()), Some(known_folder.clone()), None),
+            redirected.join("unifly").join("config")
+        );
+        for invalid in [None, Some("".into()), Some("relative".into())] {
+            assert_eq!(
+                super::windows_config_dir(invalid, Some(known_folder.clone()), None),
+                known_folder
+            );
+        }
+        assert_eq!(
+            super::windows_config_dir(None, None, Some(home.path().into())),
+            home.path().join("AppData").join("Roaming").join("unifly")
+        );
+    }
 
     fn cloud_profile() -> Profile {
         Profile {

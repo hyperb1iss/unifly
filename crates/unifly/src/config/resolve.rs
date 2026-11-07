@@ -76,6 +76,32 @@ pub fn resolve_profile(
     )
 }
 
+/// Resolve a launch connection, discovering a missing Cloud console once.
+/// Saved and explicit console IDs bypass discovery in both user interfaces.
+pub async fn resolve_startup(
+    cfg: &Config,
+    global: &GlobalOpts,
+    usage: config::ConnectionUsage,
+) -> Result<ControllerConfig, CliError> {
+    let (mut profile, name) = connection_profile(cfg, global)?;
+    if profile.auth_mode == "cloud"
+        && global.host_id.is_none()
+        && config::resolve_host_id(&profile).is_err()
+    {
+        profile.host_id = Some(
+            crate::cli::commands::cloud::discover_profile_host(
+                &profile,
+                name.as_deref().unwrap_or("default"),
+                global,
+                &cfg.defaults,
+            )
+            .await?,
+        );
+        profile.host_id_env = None;
+    }
+    resolve_connection(&profile, name.as_deref(), global, &cfg.defaults, usage)
+}
+
 /// Apply flag overrides before the shared credential and transport resolution.
 pub fn resolve_connection(
     profile: &Profile,
@@ -230,6 +256,41 @@ mod tests {
         profile.insecure = None;
         profile.timeout = None;
         profile
+    }
+
+    #[tokio::test]
+    async fn startup_discovery_reports_missing_and_ambiguous_consoles_for_both_interfaces() {
+        use crate::config::{Config, ConnectionUsage};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for hosts in [
+            serde_json::json!([]),
+            serde_json::json!([{"id":"a"},{"id":"b"}]),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/hosts"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"data":hosts})),
+                )
+                .expect(2)
+                .mount(&server)
+                .await;
+            let mut profile = cloud_profile();
+            profile.controller = server.uri();
+            profile.host_id = None;
+            let mut cfg = Config::default();
+            cfg.profiles.insert("default".into(), profile);
+            for usage in [ConnectionUsage::Command, ConnectionUsage::Interactive] {
+                let error = super::resolve_startup(&cfg, &base_global(), usage)
+                    .await
+                    .expect_err("missing console");
+                assert!(
+                    matches!(error, crate::cli::error::CliError::Validation { field, .. } if field == "host_id")
+                );
+            }
+            server.verify().await;
+        }
     }
 
     #[test]

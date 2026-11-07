@@ -245,21 +245,7 @@ async fn build_controller_config_from(
     global: &GlobalOpts,
     cfg: &unifly::config::Config,
 ) -> Result<unifly_api::ControllerConfig, CliError> {
-    let (mut profile, name) = resolve::connection_profile(cfg, global)?;
-    if profile.auth_mode == "cloud"
-        && global.host_id.is_none()
-        && unifly::config::resolve_host_id(&profile).is_err()
-    {
-        profile.host_id = Some(commands::cloud::auto_resolve_host_id(global).await?);
-        profile.host_id_env = None;
-    }
-    resolve::resolve_connection(
-        &profile,
-        name.as_deref(),
-        global,
-        &cfg.defaults,
-        unifly::config::ConnectionUsage::Command,
-    )
+    resolve::resolve_startup(cfg, global, unifly::config::ConnectionUsage::Command).await
 }
 
 #[cfg(test)]
@@ -272,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn cloud_flags_do_not_send_a_key_to_the_saved_lan_controller() {
-        use clap::Parser;
+        use clap::{CommandFactory, FromArgMatches};
         use unifly::cli::args::Cli;
         use unifly::config::Config;
         let lan = wiremock::MockServer::start().await;
@@ -302,7 +288,11 @@ mod tests {
                     argv.extend(["--controller", "https://custom-cloud.invalid"]);
                 }
                 argv.extend(["system", "info"]);
-                let flags = Cli::try_parse_from(argv).expect("flags").global;
+                let matches = Cli::command()
+                    .mut_args(|arg| arg.env(None::<&str>))
+                    .try_get_matches_from(argv)
+                    .expect("flags");
+                let flags = Cli::from_arg_matches(&matches).expect("flags").global;
                 let resolved = super::build_controller_config_from(&flags, &cfg)
                     .await
                     .expect("cloud");
@@ -362,11 +352,15 @@ mod tests {
 
     #[test]
     fn insecure_reads_boolish_values_and_keeps_its_tri_state() {
-        use clap::Parser;
+        use clap::{CommandFactory, FromArgMatches};
         use unifly::cli::args::Cli;
 
         let parse = |flag: &str| {
-            Cli::try_parse_from(["unifly", flag, "devices", "list"])
+            let matches = Cli::command()
+                .mut_args(|arg| arg.env(None::<&str>))
+                .try_get_matches_from(["unifly", flag, "devices", "list"])
+                .expect("valid arguments");
+            Cli::from_arg_matches(&matches)
                 .expect("valid arguments")
                 .global
                 .insecure

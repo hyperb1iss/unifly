@@ -77,8 +77,8 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     );
 
     let cfg = loaded_config.as_ref();
-    let (controller, demo_fleet) =
-        demo_fleet::select_controller(global, || build_controller_from_config(global, cfg));
+    let resolved = build_controller_from_config(global, cfg).await;
+    let (controller, demo_fleet) = demo_fleet::select_controller(global, || resolved);
 
     // The demo fleet is fictional already; sanitizing it would only scramble it.
     let sanitizer = (!demo_fleet)
@@ -155,21 +155,17 @@ fn setup_tracing(verbosity: u8, log_file: &std::path::Path) -> WorkerGuard {
 }
 
 /// Build the dashboard with the same profile selection and overrides as the CLI.
-fn build_controller_from_config(
+async fn build_controller_from_config(
     global: &GlobalOpts,
     cfg: Option<&config::Config>,
 ) -> Option<Controller> {
+    if global.demo_fleet {
+        return None;
+    }
     let defaults = config::Config::default();
     let cfg = cfg.unwrap_or(&defaults);
-    let result = config::resolve::connection_profile(cfg, global).and_then(|(profile, name)| {
-        config::resolve::resolve_connection(
-            &profile,
-            name.as_deref(),
-            global,
-            &cfg.defaults,
-            config::ConnectionUsage::Interactive,
-        )
-    });
+    let result =
+        config::resolve::resolve_startup(cfg, global, config::ConnectionUsage::Interactive).await;
     match result {
         Ok(config) => Some(Controller::new(config)),
         Err(error) => {
@@ -198,14 +194,20 @@ fn resolve_sanitizer(global: &GlobalOpts, cfg: Option<&config::Config>) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, FromArgMatches};
 
     use super::session_profile_name;
     use crate::cli::args::{Cli, GlobalOpts};
     use crate::config::Config;
 
     fn global(argv: &[&str]) -> GlobalOpts {
-        Cli::try_parse_from(argv).expect("valid arguments").global
+        let matches = Cli::command()
+            .mut_args(|arg| arg.env(None::<&str>))
+            .try_get_matches_from(argv)
+            .expect("valid arguments");
+        Cli::from_arg_matches(&matches)
+            .expect("valid arguments")
+            .global
     }
 
     #[test]
@@ -222,8 +224,59 @@ mod tests {
         assert_eq!(session_profile_name(&plain, None), "default");
     }
 
-    #[test]
-    fn direct_flags_keep_saved_profile_defaults_in_the_dashboard() {
+    #[tokio::test]
+    async fn cloud_startup_discovers_missing_ids_but_preserves_saved_explicit_and_demo_modes() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/hosts"))
+            .and(header("X-API-KEY", "fixture-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id":"discovered-console","isOwner":true}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut cfg = toml::from_str::<Config>(&format!(
+            "[profiles.default]\ncontroller = '{}'\nauth_mode = 'cloud'\napi_key = 'fixture-key'\n",
+            server.uri()
+        ))
+        .expect("fixture");
+        for (saved, explicit, expected) in [
+            (None, None, "discovered-console"),
+            (Some("saved-console"), None, "saved-console"),
+            (
+                Some("saved-console"),
+                Some("explicit-console"),
+                "explicit-console",
+            ),
+        ] {
+            cfg.profiles.get_mut("default").expect("profile").host_id = saved.map(str::to_owned);
+            let mut argv = vec!["unifly", "tui"];
+            if let Some(id) = explicit {
+                argv.extend(["--host-id", id]);
+            }
+            let controller = super::build_controller_from_config(&global(&argv), Some(&cfg))
+                .await
+                .expect("controller");
+            let unifly_api::AuthCredentials::Cloud { host_id, .. } = &controller.config().auth
+            else {
+                panic!("expected cloud auth");
+            };
+            assert_eq!(host_id, expected);
+        }
+        cfg.profiles.get_mut("default").expect("profile").host_id = None;
+        let flags = global(&["unifly", "tui", "--demo-fleet"]);
+        let resolved = super::build_controller_from_config(&flags, Some(&cfg)).await;
+        let (controller, fleet) = super::demo_fleet::select_controller(&flags, || resolved);
+        assert!(fleet);
+        assert!(controller.expect("synthetic controller").is_demo());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn direct_flags_keep_saved_profile_defaults_in_the_dashboard() {
         let mut cfg = toml::from_str::<Config>(
             "[defaults]\ntimeout = 79\ninsecure = true\n\
              [profiles.default]\ncontroller = 'https://saved.local'\n\
@@ -243,8 +296,9 @@ mod tests {
             profile.auth_mode = mode.into();
             profile.username = Some("saved-user".into());
             profile.password = Some("saved-password".into());
-            let controller =
-                super::build_controller_from_config(&flags, Some(&cfg)).expect("controller");
+            let controller = super::build_controller_from_config(&flags, Some(&cfg))
+                .await
+                .expect("controller");
             assert_eq!(controller.config().timeout.as_secs(), 79);
             assert_eq!(controller.config().site, "saved-site");
             assert_eq!(controller.config().url.as_str(), "https://override.local/");
@@ -294,8 +348,9 @@ mod tests {
                     argv.extend(["--controller", "https://custom-cloud.invalid"]);
                 }
                 let flags = global(&argv);
-                let controller =
-                    super::build_controller_from_config(&flags, Some(&cfg)).expect("cloud");
+                let controller = super::build_controller_from_config(&flags, Some(&cfg))
+                    .await
+                    .expect("cloud");
                 let expected = if custom {
                     "https://custom-cloud.invalid/"
                 } else if mode == "cloud" {

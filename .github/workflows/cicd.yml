@@ -46,6 +46,8 @@ jobs:
           cache-on-failure: true
       - name: Build workspace on Windows
         run: cargo build --workspace --locked --target x86_64-pc-windows-msvc
+      - name: Verify Windows config isolation
+        run: cargo test -p unifly --test config_resolution_test --locked --target x86_64-pc-windows-msvc
 
   maintainability:
     name: Maintainability Guardrails

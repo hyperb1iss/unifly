@@ -28,9 +28,38 @@ fn command(home: &Path) -> assert_cmd::Command {
 
 fn fixture(source: &str) -> (TempDir, PathBuf) {
     let home = tempfile::tempdir().expect("isolated config");
+    #[cfg(not(windows))]
     let path = home.path().join("unifly/config.toml");
+    #[cfg(windows)]
+    let path = home.path().join("unifly/config/config.toml");
     std::fs::create_dir_all(path.parent().expect("parent")).expect("config directory");
-    std::fs::write(&path, source).expect("config fixture");
+    let marker = home
+        .path()
+        .file_name()
+        .expect("unique directory")
+        .to_string_lossy();
+    std::fs::write(
+        &path,
+        format!(
+            "{source}\n[profiles.'isolation-{marker}']\ncontroller = 'https://isolation.invalid'\n"
+        ),
+    )
+    .expect("config fixture");
+    // Refuse all later commands unless this binary reads our unique fixture.
+    let output = command(home.path())
+        .args(["config", "show", "-o", "json"])
+        .output()
+        .expect("config isolation preflight");
+    assert!(
+        output.status.success(),
+        "fixture preflight failed before mutation"
+    );
+    let config: serde_json::Value = serde_json::from_slice(&output.stdout).expect("config JSON");
+    assert_eq!(
+        config["profiles"][format!("isolation-{marker}")]["controller"],
+        "https://isolation.invalid",
+        "binary is not reading the temporary config; no mutations permitted"
+    );
     (home, path)
 }
 
@@ -95,6 +124,60 @@ fn malformed_userinfo_is_hidden_in_config_output_and_errors() {
         assert!(!error.contains("fixturesecret"));
         assert!(error.contains("****@host:99999"));
     }
+}
+
+#[tokio::test]
+async fn cloud_cli_discovers_one_console_and_skips_discovery_for_saved_or_explicit_ids() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/hosts"))
+        .and(header("X-API-KEY", "fixture-key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"data":[{"id":"console"}]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/connector/consoles/console/proxy/network/integration/v1/sites"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "offset":0,"limit":50,"count":1,"totalCount":1,
+            "data":[{"id":"550e8400-e29b-41d4-a716-446655440000","internalReference":"default","name":"Fixture"}]
+        }))).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/connector/consoles/console/proxy/network/integration/v1/info",
+        ))
+        .and(header("X-API-KEY", "fixture-key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"applicationVersion":"11.0.99"})),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    for source in ["discovered", "saved", "explicit"] {
+        let saved = if source == "saved" {
+            "host_id = 'console'\n"
+        } else {
+            ""
+        };
+        let (home, _) = fixture(&format!(
+            "[profiles.default]\ncontroller = '{}'\nauth_mode = 'cloud'\napi_key = 'fixture-key'\n{saved}",
+            server.uri()
+        ));
+        let mut cli = command(home.path());
+        if source == "explicit" {
+            cli.args(["--host-id", "console"]);
+        }
+        cli.args(["system", "info", "-o", "json"])
+            .assert()
+            .success();
+    }
+    server.verify().await;
 }
 
 #[tokio::test]
