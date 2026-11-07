@@ -253,6 +253,7 @@ async fn expired_session_replays_both_read_only_posts_after_login() {
 
 #[tokio::test]
 async fn api_key_read_post_keeps_key_header_and_classifies_401() {
+    unifly_api::transport::ensure_crypto_provider();
     let server = MockServer::start().await;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("X-API-KEY", "synthetic-key".parse().unwrap());
