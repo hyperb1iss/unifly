@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod client;
 pub mod clients;
+pub mod critical_alerts;
 pub mod devices;
 pub mod events;
 pub mod firewallgroup;

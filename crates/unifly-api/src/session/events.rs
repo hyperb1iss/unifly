@@ -11,6 +11,28 @@ use crate::session::client::SessionClient;
 use crate::session::models::{SessionAlarm, SessionEvent};
 
 impl SessionClient {
+    /// Read one page of legacy events, newest first, within the specified number of hours.
+    ///
+    /// `POST /api/s/{site}/stat/event`; `start` is the raw record offset.
+    pub async fn list_events_page(
+        &self,
+        within_hours: u32,
+        start: u32,
+        limit: u32,
+    ) -> Result<Vec<SessionEvent>, Error> {
+        self.post_read(
+            self.site_url("stat/event"),
+            &json!({
+                "_sort": "-time",
+                "within": within_hours,
+                "type": null,
+                "_start": start,
+                "_limit": limit,
+            }),
+        )
+        .await
+    }
+
     /// List recent events.
     ///
     /// `GET /api/s/{site}/stat/event`

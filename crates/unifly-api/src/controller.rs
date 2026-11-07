@@ -17,9 +17,11 @@ use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+mod alarms;
 mod commands;
 #[cfg(feature = "demo")]
 mod demo;
+pub(crate) mod event_history;
 mod lifecycle;
 mod payloads;
 pub(crate) mod ports;
@@ -30,6 +32,7 @@ mod session_queries;
 mod subscriptions;
 mod support;
 
+pub use event_history::EventHistoryQuery;
 pub use ports::{ApplyPortsSummary, PortProfileUpdate};
 
 use self::support::{

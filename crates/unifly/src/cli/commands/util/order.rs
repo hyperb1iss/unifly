@@ -13,8 +13,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use unifly_api::model::{
-    AclRule, Client, Device, DnsPolicy, EntityId, Event, FirewallGroup, FirewallPolicy,
-    FirewallZone, NatPolicy, Network, Site, TrafficMatchingList, Voucher, WifiBroadcast,
+    AclRule, Client, Device, DnsPolicy, EntityId, FirewallGroup, FirewallPolicy, FirewallZone,
+    NatPolicy, Network, Site, TrafficMatchingList, Voucher, WifiBroadcast,
 };
 
 /// Sort key for a display name: named items first, compared
@@ -179,24 +179,6 @@ pub fn acl_rules(items: &[Arc<AclRule>]) -> Vec<Arc<AclRule>> {
             present_first(rule.index),
             name_key(Some(&rule.name)),
             rule.id.to_string(),
-        )
-    })
-}
-
-/// Events newest first, so `--limit N` keeps the N most recent. Same-instant
-/// events fall back to ID, type, message, and then the fields the store keys
-/// an ID-less event by, so distinct records never compare equal.
-pub fn events(items: &[Arc<Event>]) -> Vec<Arc<Event>> {
-    sorted(items, |event| {
-        (
-            Reverse(event.timestamp),
-            present_first(event.id.as_ref().map(ToString::to_string)),
-            event.event_type.clone(),
-            event.message.clone(),
-            event.raw_key.clone(),
-            event.device_mac.as_ref().map(|mac| mac.as_str().to_owned()),
-            event.client_mac.as_ref().map(|mac| mac.as_str().to_owned()),
-            event.site_id.as_ref().map(ToString::to_string),
         )
     })
 }

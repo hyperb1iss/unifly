@@ -146,15 +146,17 @@ unifly -p home events watch --types 'Client,Firewall' -o json
 ```
 
 The stream uses JSON Lines. Event filters take categories such as `Client`
-and `Firewall`, not `EVT_*` globs. To inspect recent stored events for a MAC:
+and `Firewall`, not `EVT_*` globs. To query recent history for a MAC, including
+firewall blocks:
 
 ```bash
-unifly -p home events list --within 1 --limit 500 -o json |
+unifly -p home events list --within 1 --limit 500 --include-firewall -o json |
   jq --arg mac 'aa:bb:cc:dd:ee:ff' '.[] | select(.client_mac == $mac)'
 ```
 
-The event list is a bounded snapshot. An empty result does not prove the
-absence of an incident. Historical stats retain endpoint-specific fields;
+The event list queries the controller within the requested time window and
+result limit. An empty result does not prove the absence of an incident.
+Historical stats retain endpoint-specific fields;
 inspect their output before aggregating. A reporting interval such as
 `daily` selects bucket size, not a guaranteed last-24-hours window.
 
