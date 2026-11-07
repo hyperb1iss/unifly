@@ -314,6 +314,12 @@ fn session_profile_lists_pending_devices() {
 
     let payload = stdout_json(&output);
     let pending = json_array(&payload, "devices pending");
+    if !ctx.modern_stats() {
+        assert!(
+            !pending.is_empty(),
+            "legacy simulation fixture must expose a pending device"
+        );
+    }
     let inventory = ctx.run(&["devices", "list", "--all", "-o", "json"]);
     assert_success(&inventory, "device inventory for pending comparison");
     let inventory_payload = stdout_json(&inventory);
