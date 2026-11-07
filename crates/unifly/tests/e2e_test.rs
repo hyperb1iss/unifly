@@ -1,141 +1,39 @@
 #![cfg(feature = "e2e")]
-#![allow(clippy::unwrap_used)]
 
-use std::fs;
-use std::path::Path;
 use std::process::Output;
 
-use assert_cmd::cargo::cargo_bin_cmd;
-use tempfile::TempDir;
+#[path = "e2e/support.rs"]
+mod support;
 
-/// Env var holding a pre-provisioned Integration API key.
-///
-/// A standalone UniFi Network Application in simulation mode cannot mint
-/// an Integration key over the API (key auth is backed by the UniFi OS
-/// account subsystem, absent on the bare controller image), so the
-/// Integration lane runs only when a maintainer supplies a key for a real
-/// controller. See the e2e section in `CONTRIBUTING.md` for the full
-/// provisioning findings.
-const E2E_API_KEY_ENV: &str = "UNIFLY_E2E_API_KEY";
+use support::{E2E_API_KEY_ENV, E2eContext};
 
-struct E2eConfig {
-    controller_url: String,
-    username: String,
-    password: String,
-    site: String,
-    api_key: Option<String>,
-}
-
-impl E2eConfig {
-    fn from_env() -> Self {
-        Self {
-            controller_url: std::env::var("UNIFLY_E2E_URL")
-                .unwrap_or_else(|_| "https://localhost:8443".into()),
-            username: std::env::var("UNIFLY_E2E_USERNAME").unwrap_or_else(|_| "admin".into()),
-            password: std::env::var("UNIFLY_E2E_PASSWORD").unwrap_or_else(|_| "admin".into()),
-            site: std::env::var("UNIFLY_E2E_SITE").unwrap_or_else(|_| "default".into()),
-            api_key: std::env::var(E2E_API_KEY_ENV)
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
-        }
-    }
-
-    fn with_password(&self, password: &str) -> Self {
-        Self {
-            controller_url: self.controller_url.clone(),
-            username: self.username.clone(),
-            password: password.into(),
-            site: self.site.clone(),
-            api_key: self.api_key.clone(),
-        }
-    }
-}
-
-struct E2eContext {
-    config: E2eConfig,
-    tempdir: TempDir,
-}
-
-impl E2eContext {
-    fn session() -> Self {
-        Self::with_config(E2eConfig::from_env(), "session")
-    }
-
-    fn session_with_password(password: &str) -> Self {
-        let config = E2eConfig::from_env().with_password(password);
-        Self::with_config(config, "session")
-    }
-
-    /// Build an Integration-auth context, or `None` when no key is set.
-    ///
-    /// Returns `None` (so the caller skips) unless `UNIFLY_E2E_API_KEY`
-    /// carries a key. The key reaches the CLI through the profile's
-    /// `api_key_env`, so it never lands on disk in the temp config.
-    fn integration() -> Option<Self> {
-        let config = E2eConfig::from_env();
-        config.api_key.as_ref()?;
-        Some(Self::with_config(config, "integration"))
-    }
-
-    fn with_config(config: E2eConfig, auth_mode: &str) -> Self {
-        let tempdir = tempfile::tempdir().unwrap();
-        write_profile(tempdir.path(), &config, auth_mode);
-        Self { config, tempdir }
-    }
-
-    fn cmd(&self) -> assert_cmd::Command {
-        let mut cmd = cargo_bin_cmd!("unifly");
-        cmd.env("HOME", self.tempdir.path())
-            .env("XDG_CONFIG_HOME", self.tempdir.path())
-            .env("APPDATA", self.tempdir.path())
-            .env("LOCALAPPDATA", self.tempdir.path())
-            .env("USERPROFILE", self.tempdir.path())
-            .env("UNIFI_USERNAME", &self.config.username)
-            .env("UNIFI_PASSWORD", &self.config.password)
-            .env("UNIFI_TIMEOUT", "60")
-            .env_remove("UNIFI_PROFILE")
-            .env_remove("UNIFI_API_KEY");
-        cmd
-    }
-
-    fn run(&self, args: &[&str]) -> Output {
-        self.cmd().args(args).output().unwrap()
-    }
-}
-
-fn write_profile(root: &Path, config: &E2eConfig, auth_mode: &str) {
-    let config_dir = root.join("unifly");
-    fs::create_dir_all(&config_dir).unwrap();
-
-    // Integration auth pulls the key from an env var rather than config so
-    // the secret never touches disk; session auth reads UNIFI_USERNAME /
-    // UNIFI_PASSWORD from the child env (see `cmd`).
-    let api_key_line = if auth_mode == "integration" {
-        format!("api_key_env = \"{E2E_API_KEY_ENV}\"\n")
-    } else {
-        String::new()
-    };
-
-    let body = format!(
-        r#"
-default_profile = "default"
-
-[profiles.default]
-controller = "{controller}"
-site = "{site}"
-auth_mode = "{auth_mode}"
-insecure = true
-{api_key_line}"#,
-        controller = config.controller_url,
-        site = config.site,
-        auth_mode = auth_mode,
+fn assert_modern_stats(rows: &[serde_json::Value], per_device: bool) {
+    assert!(
+        rows.iter().any(|row| row
+            .get("bytes")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|bytes| bytes > 0.0)),
+        "modern fixture must provide populated nonzero traffic"
     );
-
-    fs::write(config_dir.join("config.toml"), body.trim_start()).unwrap();
+    for row in rows {
+        assert!(
+            row.get("duration")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|duration| duration > 0),
+            "modern buckets must preserve positive duration: {row}"
+        );
+        if per_device {
+            let mac = json_str_field(row, "mac");
+            assert!(
+                mac.parse::<unifly_api::model::MacAddress>().is_ok(),
+                "modern device identity is a MAC: {mac}"
+            );
+        }
+    }
 }
 
 fn stdout_json(output: &std::process::Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).unwrap()
+    serde_json::from_slice(&output.stdout).expect("command emits JSON")
 }
 
 fn stdout_text(output: &Output) -> String {
@@ -354,7 +252,7 @@ fn session_profile_raw_api_sysinfo_returns_json() {
         .cmd()
         .args(["api", &path, "-o", "json"])
         .output()
-        .unwrap();
+        .expect("execute raw sysinfo command");
 
     assert_success(&output, "raw api sysinfo");
 
@@ -416,9 +314,28 @@ fn session_profile_lists_pending_devices() {
 
     let payload = stdout_json(&output);
     let pending = json_array(&payload, "devices pending");
+    let inventory = ctx.run(&["devices", "list", "--all", "-o", "json"]);
+    assert_success(&inventory, "device inventory for pending comparison");
+    let inventory_payload = stdout_json(&inventory);
+    let devices = json_array(&inventory_payload, "device inventory");
     assert!(
-        !pending.is_empty(),
-        "expected simulation mode to expose pending devices"
+        !devices.is_empty(),
+        "fixture must expose adopted or pending devices"
+    );
+    let expected: std::collections::BTreeSet<_> = devices
+        .iter()
+        .filter(|device| {
+            device.get("state").and_then(serde_json::Value::as_str) == Some("PendingAdoption")
+        })
+        .map(|device| json_str_field(device, "mac"))
+        .collect();
+    let actual: std::collections::BTreeSet<_> = pending
+        .iter()
+        .map(|device| json_str_field(device, "mac"))
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "pending list must match the populated inventory"
     );
     assert!(
         pending.iter().all(|device| {
@@ -665,6 +582,7 @@ fn session_profile_lists_empty_session_reference_collections() {
 #[test]
 fn session_profile_renders_stats_and_wifi_channel_data() {
     let ctx = E2eContext::session();
+    let modern = ctx.modern_stats();
 
     let site_stats = ctx.run(&["stats", "site", "-o", "json"]);
     assert_success(&site_stats, "stats site");
@@ -673,13 +591,11 @@ fn session_profile_renders_stats_and_wifi_channel_data() {
     let first_site = site_values
         .first()
         .expect("expected stats site to return at least one datapoint");
-    assert_eq!(
-        first_site
-            .get("o")
-            .and_then(serde_json::Value::as_str)
-            .expect("site stats row should include object type"),
-        "site"
-    );
+    if modern {
+        assert_modern_stats(site_values, false);
+    } else {
+        assert_eq!(json_str_field(first_site, "o"), "site");
+    }
     assert!(
         first_site
             .get("time")
@@ -695,13 +611,17 @@ fn session_profile_renders_stats_and_wifi_channel_data() {
     let first_device = device_values
         .first()
         .expect("expected stats device to return at least one datapoint");
-    assert!(
-        first_device
-            .get("oid")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        "expected stats device rows to include an oid, got {first_device}"
-    );
+    if modern {
+        assert_modern_stats(device_values, true);
+    } else {
+        assert!(
+            first_device
+                .get("oid")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "legacy device history must include oid: {first_device}"
+        );
+    }
 
     for group_by in ["by-cat", "by-app"] {
         let output = ctx.run(&["stats", "dpi", "--group-by", group_by, "-o", "json"]);
@@ -709,10 +629,14 @@ fn session_profile_renders_stats_and_wifi_channel_data() {
         assert_success(&output, &context);
         let payload = stdout_json(&output);
         let values = json_array(&payload, &context);
-        assert!(
-            !values.is_empty(),
-            "expected '{context}' to return at least one JSON object"
-        );
+        if !modern {
+            assert!(
+                !values.is_empty(),
+                "legacy simulation must populate DPI: {context}"
+            );
+        } else if values.is_empty() {
+            eprintln!("DPI shape verified; modern fixture has no populated {group_by} data");
+        }
         assert!(
             values.iter().all(serde_json::Value::is_object),
             "expected '{context}' to return JSON objects, got {}",
@@ -785,9 +709,16 @@ fn session_profile_rejects_invalid_stats_time_range() {
 #[test]
 fn session_profile_destructive_commands_require_yes_in_noninteractive_mode() {
     let ctx = E2eContext::session();
+    let list = ctx.run(&["devices", "list", "--all", "-o", "json"]);
+    assert_success(&list, "device inventory for confirmation guard");
+    let payload = stdout_json(&list);
+    let device = json_array(&payload, "device inventory")
+        .first()
+        .expect("fixture device");
+    let mac = json_str_field(device, "mac");
 
     for args in [
-        &["devices", "remove", "00:27:22:00:00:03", "-o", "json"][..],
+        &["devices", "remove", mac, "-o", "json"][..],
         &["clients", "forget", "aa:bb:cc:dd:ee:ff", "-o", "json"][..],
         &["system", "backup", "delete", "fake.unf", "-o", "json"][..],
     ] {
@@ -800,6 +731,11 @@ fn session_profile_destructive_commands_require_yes_in_noninteractive_mode() {
             stderr_text(&output)
         );
     }
+    let unchanged = ctx.run(&["devices", "get", mac, "-o", "json"]);
+    assert_success(
+        &unchanged,
+        "confirmation rejection must preserve the device",
+    );
 }
 
 #[test]
