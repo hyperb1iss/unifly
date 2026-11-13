@@ -1,23 +1,24 @@
-use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::core_error::CoreError;
 use crate::model::Event;
-use crate::store::{DataStore, RefreshSnapshot, event_storage_key};
+use crate::store::RefreshSnapshot;
 
 use super::Controller;
 
 mod carry;
+mod events;
 mod integration;
 mod merge;
 mod optional;
+mod periodic;
 mod poll;
 mod session;
 
+use events::unseen_events;
+pub(super) use periodic::refresh_task;
 pub(super) use poll::stats_poll_task;
 
 #[derive(Clone, Copy)]
@@ -160,47 +161,4 @@ impl Controller {
             let _ = self.inner.event_tx.send(Arc::new(event));
         }
     }
-}
-
-/// Periodically refresh data from the controller.
-pub(super) async fn refresh_task(
-    controller: Controller,
-    interval_secs: u64,
-    cancel: CancellationToken,
-) {
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval.tick().await;
-
-    loop {
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => break,
-            _ = interval.tick() => {
-                tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => break,
-                    result = controller.full_refresh() => {
-                        if let Err(error) = result {
-                            warn!(error = %error, "periodic refresh failed");
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn unseen_events(store: &DataStore, events: &[Event]) -> Vec<Event> {
-    let mut seen: HashSet<String> = store
-        .events_snapshot()
-        .iter()
-        .map(|event| event_storage_key(event))
-        .collect();
-
-    events
-        .iter()
-        .filter(|event| seen.insert(event_storage_key(event)))
-        .cloned()
-        .collect()
 }
