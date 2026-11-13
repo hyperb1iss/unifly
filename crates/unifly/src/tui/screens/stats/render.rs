@@ -207,11 +207,9 @@ impl StatsScreen {
         self.render_top_apps(frame, bottom[1]);
 
         let hints = click::key_hints(&[
-            Hint::button("h", "1h", click::char_key('h')),
-            Hint::button("d", "24h", click::char_key('d')),
-            Hint::button("w", "7d", click::char_key('w')),
-            Hint::button("m", "30d", click::char_key('m')),
-            Hint::button("r", "refresh", click::char_key('r')),
+            Hint::button("h", "shorter", click::char_key('h')),
+            Hint::button("l", "longer", click::char_key('l')),
+            Hint::button("r", "reload", click::char_key('r')),
         ]);
         let line = hints.draw(layout[3], &mut self.hits.borrow_mut());
         frame.render_widget(Paragraph::new(line), layout[3]);

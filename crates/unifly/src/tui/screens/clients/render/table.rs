@@ -74,7 +74,7 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
     let hints = click::key_hints(&[
         Hint::info("j/k", "navigate"),
         Hint::button("Enter", "detail", KeyCode::Enter),
-        Hint::button("Tab", "filter", KeyCode::Tab),
+        Hint::button("h/l", "filter", click::char_key('l')),
         Hint::button("b", "block", click::char_key('b')),
         Hint::button("x", "kick", click::char_key('x')),
     ]);

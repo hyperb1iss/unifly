@@ -31,11 +31,11 @@ impl WifiScreen {
                 self.move_selection(-10);
                 Some(Action::PageUp)
             }
-            KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 self.sub_tab = self.sub_tab.next();
                 Some(Action::WifiSubTab(self.sub_tab))
             }
-            KeyCode::BackTab => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 self.sub_tab = self.sub_tab.prev();
                 Some(Action::WifiSubTab(self.sub_tab))
             }

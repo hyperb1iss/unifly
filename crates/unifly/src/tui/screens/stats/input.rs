@@ -7,10 +7,8 @@ use crate::tui::widgets::click::Click;
 impl StatsScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Char('h') => Some(self.set_period(StatsPeriod::OneHour)),
-            KeyCode::Char('d') => Some(self.set_period(StatsPeriod::TwentyFourHours)),
-            KeyCode::Char('w') => Some(self.set_period(StatsPeriod::SevenDays)),
-            KeyCode::Char('m') => Some(self.set_period(StatsPeriod::ThirtyDays)),
+            KeyCode::Char('l') | KeyCode::Right => Some(self.step_period(1)),
+            KeyCode::Char('h') | KeyCode::Left => Some(self.step_period(-1)),
             KeyCode::Char('r') => Some(Action::RequestStats(self.period)),
             _ => None,
         }
@@ -28,6 +26,15 @@ impl StatsScreen {
             Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
+    }
+
+    /// Load the period `step` places along the period bar, wrapping.
+    fn step_period(&mut self, step: isize) -> Action {
+        let all = StatsPeriod::ALL;
+        let at = all.iter().position(|period| *period == self.period);
+        let len = isize::try_from(all.len()).unwrap_or(1);
+        let next = (isize::try_from(at.unwrap_or(0)).unwrap_or(0) + step).rem_euclid(len);
+        self.set_period(all[usize::try_from(next).unwrap_or(0)])
     }
 
     /// Load `period`. A different period shares neither scale nor peak

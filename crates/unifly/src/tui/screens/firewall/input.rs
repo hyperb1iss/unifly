@@ -37,7 +37,7 @@ impl FirewallScreen {
                 self.move_selection(-10);
                 Some(Action::PageUp)
             }
-            KeyCode::Char('l') => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 self.sub_tab = match self.sub_tab {
                     FirewallSubTab::Policies => FirewallSubTab::Zones,
                     FirewallSubTab::Zones => FirewallSubTab::AclRules,
@@ -46,7 +46,7 @@ impl FirewallScreen {
                 };
                 Some(Action::FirewallSubTab(self.sub_tab))
             }
-            KeyCode::Char('h') => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 self.sub_tab = match self.sub_tab {
                     FirewallSubTab::Policies => FirewallSubTab::NatPolicies,
                     FirewallSubTab::Zones => FirewallSubTab::Policies,

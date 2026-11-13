@@ -180,11 +180,25 @@ mod tests {
         screen.focused = true;
         screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 650.0)));
 
-        let request = screen.handle_key_input(KeyEvent::from(KeyCode::Char('w')));
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('l')));
+        let request = screen.handle_key_input(KeyEvent::from(KeyCode::Right));
         assert!(matches!(
             request,
             Some(Action::RequestStats(StatsPeriod::SevenDays))
         ));
+        // The periods wrap in both directions.
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('l')));
+        let wrapped = screen.handle_key_input(KeyEvent::from(KeyCode::Char('l')));
+        assert!(matches!(
+            wrapped,
+            Some(Action::RequestStats(StatsPeriod::OneHour))
+        ));
+        let back = screen.handle_key_input(KeyEvent::from(KeyCode::Char('h')));
+        assert!(matches!(
+            back,
+            Some(Action::RequestStats(StatsPeriod::ThirtyDays))
+        ));
+        screen.handle_key_input(KeyEvent::from(KeyCode::Left));
 
         let carried = axis::stable_upper_bound(screen.client_y_max, 420.0, CLIENT_TICK_COUNT, 1.0);
         let pulse =
@@ -209,9 +223,7 @@ mod tests {
         screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 120.0)));
         let carried = axis::stable_upper_bound(screen.client_y_max, 100.0, CLIENT_TICK_COUNT, 1.0);
 
-        for key in ['r', 'h'] {
-            screen.handle_key_input(KeyEvent::from(KeyCode::Char(key)));
-        }
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('r')));
         let pulse =
             screen.apply_action(&Action::StatsUpdated(sample_stats_data(8_000_000.0, 100.0)));
 

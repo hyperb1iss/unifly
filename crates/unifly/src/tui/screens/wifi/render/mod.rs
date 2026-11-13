@@ -485,7 +485,7 @@ impl WifiScreen {
         let hints = match self.sub_tab {
             WifiSubTab::Overview => vec![
                 Hint::info("j/k", "select"),
-                Hint::button("Tab", "sub-tab", KeyCode::Tab),
+                Hint::button("h/l", "sub-tab", click::char_key('l')),
                 Hint::button("Enter", "detail", KeyCode::Enter),
                 Hint::button("c", "channels", click::char_key('c')),
                 Hint::button("R", "restart", click::char_key('R')),

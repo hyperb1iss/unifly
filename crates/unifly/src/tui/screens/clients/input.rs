@@ -39,8 +39,12 @@ impl ClientsScreen {
                 self.move_selection(-10);
                 Some(Action::PageUp)
             }
-            KeyCode::Tab => {
-                self.cycle_filter();
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.cycle_filter(1);
+                Some(Action::FilterClientType(self.filter))
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.cycle_filter(-1);
                 Some(Action::FilterClientType(self.filter))
             }
             KeyCode::Enter => self.open_selected_detail(),
@@ -137,10 +141,8 @@ impl ClientsScreen {
     fn handle_detail_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
             // The filter changes what the list holds, so the detail closes.
-            KeyCode::Tab => {
-                self.cycle_filter();
-                Some(self.apply_filter(self.filter))
-            }
+            KeyCode::Char('l') | KeyCode::Right => Some(self.apply_filter(self.filter_after(1))),
+            KeyCode::Char('h') | KeyCode::Left => Some(self.apply_filter(self.filter_after(-1))),
             KeyCode::Esc => {
                 self.detail_open = false;
                 self.detail_client_id = None;
@@ -193,19 +195,42 @@ mod tests {
     }
 
     #[test]
-    fn tab_in_a_detail_cycles_the_filter_and_closes_the_detail() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    fn changing_the_filter_in_a_detail_closes_the_detail() {
+        use crossterm::event::{KeyCode, KeyEvent};
 
         let mut screen = ClientsScreen::new();
         screen.detail_open = true;
 
-        let action = screen.handle_key_input(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let action = screen.handle_key_input(KeyEvent::from(KeyCode::Char('l')));
 
         assert!(matches!(
             action,
             Some(Action::FilterClientType(ClientTypeFilter::Wireless))
         ));
         assert!(!screen.detail_open);
+    }
+
+    #[test]
+    fn the_filter_steps_both_ways_and_leaves_tab_to_the_app() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut screen = ClientsScreen::new();
+        let back = screen.handle_key_input(KeyEvent::from(KeyCode::Left));
+        assert!(matches!(
+            back,
+            Some(Action::FilterClientType(ClientTypeFilter::Guest))
+        ));
+        let forward = screen.handle_key_input(KeyEvent::from(KeyCode::Char('l')));
+        assert!(matches!(
+            forward,
+            Some(Action::FilterClientType(ClientTypeFilter::All))
+        ));
+        assert!(
+            screen
+                .handle_key_input(KeyEvent::from(KeyCode::Tab))
+                .is_none(),
+            "Tab switches screens everywhere"
+        );
     }
 
     #[test]

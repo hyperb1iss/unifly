@@ -105,14 +105,17 @@ impl ClientsScreen {
         self.select(next as usize);
     }
 
-    pub(super) fn cycle_filter(&mut self) {
-        self.set_filter(match self.filter {
-            ClientTypeFilter::All => ClientTypeFilter::Wireless,
-            ClientTypeFilter::Wireless => ClientTypeFilter::Wired,
-            ClientTypeFilter::Wired => ClientTypeFilter::Vpn,
-            ClientTypeFilter::Vpn => ClientTypeFilter::Guest,
-            ClientTypeFilter::Guest => ClientTypeFilter::All,
-        });
+    /// The filter `step` places along the filter bar, wrapping.
+    pub(super) fn filter_after(&self, step: isize) -> ClientTypeFilter {
+        let all = ClientTypeFilter::ALL;
+        let at = all.iter().position(|filter| *filter == self.filter);
+        let len = isize::try_from(all.len()).unwrap_or(1);
+        let next = (isize::try_from(at.unwrap_or(0)).unwrap_or(0) + step).rem_euclid(len);
+        all[usize::try_from(next).unwrap_or(0)]
+    }
+
+    pub(super) fn cycle_filter(&mut self, step: isize) {
+        self.set_filter(self.filter_after(step));
     }
 
     pub(super) fn set_filter(&mut self, filter: ClientTypeFilter) {
