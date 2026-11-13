@@ -17,6 +17,7 @@
 
 mod catalog;
 mod commands;
+mod config;
 mod diagnostics;
 pub(crate) mod fleet;
 mod ports;

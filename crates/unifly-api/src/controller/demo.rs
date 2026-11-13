@@ -110,7 +110,16 @@ impl Controller {
         if self.inner.task_handles.lock().await.is_empty() {
             return Err(CoreError::ControllerDisconnected);
         }
-        let (result, delta) = runtime.with(|sim| sim.apply_command(command, Utc::now()))?;
+        let (result, delta, config) = runtime.with(|sim| {
+            sim.apply_command(command, Utc::now())
+                .map(|(result, delta)| {
+                    let config = delta.config_changed.then(|| sim.config_snapshot());
+                    (result, delta, config)
+                })
+        })?;
+        if let Some(config) = config {
+            self.inner.store.apply_integration_snapshot(config);
+        }
         apply_delta(&self.inner.store, &self.inner.event_tx, delta);
         Ok(result)
     }

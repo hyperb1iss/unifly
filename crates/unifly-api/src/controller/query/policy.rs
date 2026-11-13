@@ -9,6 +9,10 @@ impl Controller {
         source_zone_id: &EntityId,
         destination_zone_id: &EntityId,
     ) -> Result<crate::integration_types::FirewallPolicyOrdering, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.policy_ordering(source_zone_id, destination_zone_id)));
+        }
         let (client, site_id) =
             integration_site_context(self, "get_firewall_policy_ordering").await?;
         let source_zone_uuid = require_uuid(source_zone_id)?;

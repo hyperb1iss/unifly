@@ -325,13 +325,13 @@ fn commands_simulate_or_refuse() {
 
     let error = sim
         .apply_command(
-            Command::DeleteNetwork {
-                id: sim.fleet.networks[1].id.clone(),
+            Command::DeleteWifiBroadcast {
+                id: sim.fleet.wifi[0].id.clone(),
                 force: false,
             },
             now,
         )
-        .expect_err("CRUD is refused");
+        .expect_err("WiFi CRUD is refused");
     assert!(matches!(error, CoreError::Unsupported { .. }));
     assert!(error.to_string().contains("demo mode"), "{error}");
 }

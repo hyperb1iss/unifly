@@ -110,6 +110,11 @@ async fn move_policy(
 /// Fetch the controller's data now rather than at the next periodic
 /// refresh, so the table shows the order the controller has.
 async fn refresh(controller: &Controller) -> bool {
+    // The demo fleet applies a write to the store as it accepts it, and
+    // has no controller to fetch from.
+    if controller.is_demo() {
+        return true;
+    }
     match controller.full_refresh().await {
         Ok(()) => true,
         Err(error) => {
@@ -680,23 +685,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_demo_fleet_refuses_a_move() {
+    async fn the_demo_fleet_moves_a_policy() {
         let demo = Controller::demo(unifly_api::DemoFleetOptions::default());
         demo.connect().await.expect("demo fleet connects");
-        let mut app = App::new(Some(demo), None, false, true);
+        let zones = demo.firewall_zones_snapshot();
+        let ordered = |demo: &Controller| {
+            crate::cli::commands::util::order::firewall_policies(
+                &demo.firewall_policies_snapshot(),
+                &zones,
+            )
+        };
+        let user = |policy: &FirewallPolicy| {
+            policy.origin == Some(unifly_api::model::EntityOrigin::UserDefined)
+        };
+        let before = ordered(&demo);
+        let second = before
+            .windows(2)
+            .find(|pair| {
+                user(&pair[0])
+                    && user(&pair[1])
+                    && pair[0].source.zone_id == pair[1].source.zone_id
+                    && pair[0].destination.zone_id == pair[1].destination.zone_id
+            })
+            .map(|pair| Arc::clone(&pair[1]))
+            .expect("two user policies next to each other in a zone pair");
+        let place = |policies: &[Arc<FirewallPolicy>]| {
+            policies.iter().position(|policy| policy.id == second.id)
+        };
+        let mut app = App::new(Some(demo.clone()), None, false, true);
 
-        app.process_action(&Action::ReorderPolicy(
-            policy(2, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Up,
-        ))
-        .expect("reorder handling");
+        app.process_action(&Action::ReorderPolicy(Arc::clone(&second), Direction::Up))
+            .expect("reorder handling");
 
         let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        assert!(
-            notification.message.contains("Integration API"),
-            "{}",
-            notification.message
+        assert_eq!(notification.level, NotificationLevel::Success);
+        assert_eq!(
+            place(&ordered(&demo)),
+            place(&before).map(|at| at - 1),
+            "the policy is one place earlier"
         );
     }
 

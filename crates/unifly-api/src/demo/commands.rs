@@ -1,9 +1,10 @@
 // ── Demo command handling ──
 //
-// Harmless device and client actions succeed against the simulation and
-// emit the event a real controller would. Anything that would need a real
-// controller to mean something (CRUD, adoption, site admin) is refused with
-// a clear error instead of pretending.
+// Device and client actions succeed against the simulation and emit the
+// event a real controller would, and so do the network and firewall edits
+// in `config.rs`. Anything else that would need a real controller to mean
+// something (adoption, WiFi and VPN CRUD, site admin) is refused with a
+// clear error instead of pretending.
 
 use chrono::{DateTime, Utc};
 
@@ -15,7 +16,8 @@ use crate::model::{ClientType, DeviceState, EntityId, EventCategory, EventSeveri
 
 const DEVICE_INFO: (EventCategory, EventSeverity) = (EventCategory::Device, EventSeverity::Info);
 const CLIENT_INFO: (EventCategory, EventSeverity) = (EventCategory::Client, EventSeverity::Info);
-const ADMIN_INFO: (EventCategory, EventSeverity) = (EventCategory::Admin, EventSeverity::Info);
+pub(super) const ADMIN_INFO: (EventCategory, EventSeverity) =
+    (EventCategory::Admin, EventSeverity::Info);
 
 /// Ticks a restart takes before the device reports back.
 const RESTART_TICKS: u64 = 20;
@@ -39,7 +41,8 @@ fn command_name(command: &Command) -> String {
 fn unavailable(operation: &str) -> CoreError {
     CoreError::Unsupported {
         operation: format!("{operation} in demo mode"),
-        required: "a real controller; the demo fleet only simulates device and client actions"
+        required: "a real controller; the demo fleet simulates device and client actions \
+                   and network and firewall edits"
             .into(),
     }
 }
@@ -104,6 +107,34 @@ impl Simulation {
                 logging,
                 report_flow_enabled,
             } => self.patch_policy(&id, enabled, logging, report_flow_enabled, now, &mut delta)?,
+            Command::CreateNetwork(request) => {
+                let network = self.create_network(request, now, &mut delta)?;
+                return Ok((CommandResult::Network(network), delta));
+            }
+            Command::UpdateNetwork { id, update } => {
+                self.update_network(&id, update, now, &mut delta)?;
+            }
+            Command::DeleteNetwork { id, .. } => self.delete_network(&id, now, &mut delta)?,
+            Command::DeleteFirewallPolicy { id } => self.delete_policy(&id, now, &mut delta)?,
+            Command::ReorderFirewallPolicies {
+                zone_pair,
+                before_system_ids,
+                after_system_ids,
+            } => self.reorder_policies(
+                &zone_pair,
+                &before_system_ids,
+                &after_system_ids,
+                now,
+                &mut delta,
+            )?,
+            Command::UpdateAclRule { id, update } => {
+                self.update_acl(&id, update, now, &mut delta)?;
+            }
+            Command::DeleteAclRule { id } => self.delete_acl(&id, now, &mut delta)?,
+            Command::UpdateNatPolicy { id, update } => {
+                self.update_nat(&id, update, now, &mut delta)?;
+            }
+            Command::DeleteNatPolicy { id } => self.delete_nat(&id, now, &mut delta)?,
             other => return Err(unavailable(&command_name(&other))),
         }
         Ok((CommandResult::Ok, delta))

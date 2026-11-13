@@ -29,6 +29,9 @@ pub(crate) struct Delta {
     pub policies: Vec<FirewallPolicy>,
     pub events: Vec<Event>,
     pub health: Option<Vec<HealthSummary>>,
+    /// A command changed the configuration (networks, policies, rules):
+    /// the store resyncs from the fleet, so removals land too.
+    pub config_changed: bool,
 }
 
 /// A device transition that completes on a later tick.

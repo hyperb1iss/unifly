@@ -223,6 +223,10 @@ impl Controller {
         &self,
         network_id: &EntityId,
     ) -> Result<serde_json::Value, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.network_references(network_id)));
+        }
         let (client, site_id) = integration_site_context(self, "get_network_references").await?;
         let uuid = require_uuid(network_id)?;
         let refs = client.get_network_references(&site_id, &uuid).await?;
