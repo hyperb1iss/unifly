@@ -1,6 +1,5 @@
 //! All possible UI actions. Actions are the sole mechanism for state mutation.
 
-use std::fmt;
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
@@ -9,9 +8,7 @@ use unifly_api::model::{
     AclRule, EventCategory, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast,
 };
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
-use unifly_api::{
-    Client, Device, EntityId, Event, MacAddress, Network, Site, UpdateNetworkRequest,
-};
+use unifly_api::{Client, Device, EntityId, Event, Network, Site, UpdateNetworkRequest};
 
 use crate::tui::screen::ScreenId;
 
@@ -308,44 +305,68 @@ impl Notification {
             level: NotificationLevel::Info,
         }
     }
-}
 
-/// Pending confirmation action.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum ConfirmAction {
-    RestartDevice { id: EntityId, name: String },
-    UpgradeDevice { mac: MacAddress, name: String },
-    UnadoptDevice { id: EntityId, name: String },
-    AdoptDevice { mac: String },
-    PowerCyclePort { device_id: EntityId, port_idx: u32 },
-    BlockClient { id: EntityId, name: String },
-    UnblockClient { id: EntityId, name: String },
-    ForgetClient { id: EntityId, name: String },
-    KickClient { id: EntityId, name: String },
-    DeleteFirewallPolicy { id: EntityId, name: String },
-}
-
-impl fmt::Display for ConfirmAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RestartDevice { name, .. } => write!(f, "Restart {name}?"),
-            Self::UpgradeDevice { name, .. } => write!(f, "Upgrade firmware on {name}?"),
-            Self::UnadoptDevice { name, .. } => {
-                write!(f, "Remove {name}? This cannot be undone.")
-            }
-            Self::AdoptDevice { mac } => write!(f, "Adopt device {mac}?"),
-            Self::PowerCyclePort { port_idx, .. } => write!(f, "Power cycle port {port_idx}?"),
-            Self::BlockClient { name, .. } => write!(f, "Block {name}?"),
-            Self::UnblockClient { name, .. } => write!(f, "Unblock {name}?"),
-            Self::KickClient { name, .. } => {
-                write!(f, "Disconnect {name}?")
-            }
-            Self::ForgetClient { name, .. } => {
-                write!(f, "Forget {name}? History will be lost.")
-            }
-            Self::DeleteFirewallPolicy { name, .. } => write!(f, "Delete policy {name}?"),
+    pub fn warning(msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            level: NotificationLevel::Warning,
         }
+    }
+}
+
+/// What the connected controller can reach. Screens use it to say why
+/// something is empty instead of drawing a bare table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Access {
+    /// The Integration API (networks, WiFi, firewall, ACL, DNS).
+    pub integration: bool,
+    /// Session HTTP (stats, events, WiFi observability, NAT, ports).
+    pub session: bool,
+    /// The live event WebSocket.
+    pub live_events: bool,
+}
+
+/// The toasts for one command: what shows while it runs, and what
+/// replaces that once the controller has accepted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub pending: String,
+    pub done: String,
+}
+
+impl Notice {
+    pub fn new(pending: impl Into<String>, done: impl Into<String>) -> Self {
+        Self {
+            pending: pending.into(),
+            done: done.into(),
+        }
+    }
+}
+
+/// A question the user answers before `action` is dispatched.
+#[derive(Debug, Clone)]
+pub struct ConfirmRequest {
+    /// The question, such as `Restart sw-core?`.
+    pub prompt: String,
+    /// What saying yes costs, on its own line.
+    pub detail: Option<String>,
+    /// Dispatched on yes.
+    pub action: Box<Action>,
+}
+
+impl ConfirmRequest {
+    pub fn new(prompt: impl Into<String>, action: Action) -> Self {
+        Self {
+            prompt: prompt.into(),
+            detail: None,
+            action: Box::new(action),
+        }
+    }
+
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 }
 
@@ -363,6 +384,14 @@ pub enum Action {
 
     // ── Navigation ────────────────────────────────────────────────
     SwitchScreen(ScreenId),
+    /// Clear the terminal and draw the whole frame again.
+    Repaint,
+    /// Fetch the controller's data now, or retry a failed connection.
+    Refresh,
+    /// Switch to the Devices screen with this device's detail open.
+    ShowDevice(EntityId),
+    /// Switch to the Clients screen with this client's detail open.
+    ShowClient(EntityId),
     /// Press a key as if it were typed, for a tapped key hint.
     PressKey(KeyEvent),
     GoBack,
@@ -408,6 +437,11 @@ pub enum Action {
         attempt: u32,
     },
     RetryConnect,
+    /// What the controller can reach, sent once it has connected.
+    AccessUpdated(Access),
+    /// A different controller is about to connect: every screen drops the
+    /// data it holds, so nothing from the old one stays on screen.
+    ControllerChanged,
 
     // ── Device Selection ──────────────────────────────────────────
     SelectDevice(usize),
@@ -460,7 +494,7 @@ pub enum Action {
     },
 
     // ── Confirm Dialog ────────────────────────────────────────────
-    ShowConfirm(ConfirmAction),
+    ShowConfirm(ConfirmRequest),
     ConfirmYes,
     ConfirmNo,
 
@@ -476,7 +510,23 @@ pub enum Action {
 
     // ── Notifications ─────────────────────────────────────────────
     Notify(Notification),
+    /// Dismiss every warning and error toast.
     DismissNotification,
+    /// Dismiss one toast, by its id.
+    DismissToast(u64),
+    /// Show or hide the list of past notifications.
+    ToggleNotices,
+    /// Run a command on the controller, with toasts for its progress.
+    Run {
+        command: Box<unifly_api::Command>,
+        notice: Notice,
+    },
+    /// A command or other controller operation finished: its progress
+    /// toast, when it has one, becomes this notification.
+    OpFinished {
+        progress: Option<u64>,
+        notification: Notification,
+    },
 
     // ── Stats ─────────────────────────────────────────────────────
     RequestStats(StatsPeriod),

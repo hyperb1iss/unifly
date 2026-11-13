@@ -7,6 +7,13 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tui::action::Action;
 
+/// The keys every list in the app takes, for a screen's [`Component::help`].
+pub const LIST_HELP: &[(&str, &str)] = &[
+    ("j/k \u{2191}/\u{2193}", "Move up / down"),
+    ("g/G", "Top / bottom"),
+    ("PgUp/PgDn", "Page up / down"),
+];
+
 /// Every UI element implements Component.
 ///
 /// Lifecycle: `init` → (`handle_key_event` | `handle_mouse_event` | `update` | `render`)*
@@ -25,6 +32,11 @@ pub trait Component: Send {
     /// Handle a mouse event. Return an Action to dispatch, or None.
     fn handle_mouse_event(&mut self, _mouse: MouseEvent) -> Result<Option<Action>> {
         Ok(None)
+    }
+
+    /// Take pasted text. Only called while the component captures input.
+    fn handle_paste(&mut self, _text: &str) -> Option<Action> {
+        None
     }
 
     /// Process a dispatched action. May return a follow-up action.
@@ -46,6 +58,13 @@ pub trait Component: Send {
     /// filters nothing here. Search only opens where it filters.
     fn search_query(&self) -> Option<&str> {
         None
+    }
+
+    /// Every key this component takes in its current mode, for the help
+    /// overlay: `(keys, what they do)`. A list screen starts from
+    /// [`LIST_HELP`].
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
     }
 
     /// Whether this component currently holds input focus.

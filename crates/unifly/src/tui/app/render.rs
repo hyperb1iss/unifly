@@ -10,10 +10,14 @@ use ratatui::{
 };
 
 use super::{App, ConnectionStatus};
-use crate::tui::action::{Action, Notification, NotificationLevel};
+use crate::tui::action::Action;
 use crate::tui::screen::ScreenId;
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, ClickLine, Hint, HitMap};
+use crate::tui::widgets::wrap::wrap;
+
+/// Columns the sponsor button takes: ` ♥ Sponsor `.
+const DONATE_WIDTH: u16 = 11;
 
 impl App {
     /// Render the full application frame.
@@ -39,6 +43,9 @@ impl App {
             if self.effects_enabled && self.effects.is_active() {
                 self.effects.process(delta, frame.buffer_mut(), area);
             }
+            // Setup and Settings draw the whole frame, and what they report
+            // (a keyring fallback, a failed save) still has to be seen.
+            self.render_toasts(frame, area);
             return;
         }
 
@@ -74,13 +81,16 @@ impl App {
             self.effects.process(delta, frame.buffer_mut(), area);
         }
 
-        if let Some((notification, _)) = &self.notification {
-            Self::render_notification(frame, area, notification, &mut self.hits);
-        }
+        self.render_toasts(frame, content_area);
 
         if let Some(confirm) = &self.pending_confirm {
-            let prompt = self.shown_text(&confirm.to_string());
-            Self::render_confirm_dialog(frame, area, &prompt, &mut self.hits);
+            let prompt = self.shown_text(&confirm.prompt);
+            let detail = confirm.detail.as_deref().map(|text| self.shown_text(text));
+            Self::render_confirm_dialog(frame, area, &prompt, detail.as_deref(), &mut self.hits);
+        }
+
+        if self.notices_visible {
+            self.render_notices_overlay(frame, area);
         }
 
         if self.about_visible {
@@ -88,14 +98,25 @@ impl App {
         }
 
         if self.help_visible {
-            Self::render_help_overlay(frame, area, &mut self.hits);
+            let screen_keys = self
+                .screens
+                .get(&self.active_screen)
+                .map(|screen| screen.help())
+                .unwrap_or_default();
+            Self::render_help_overlay(
+                frame,
+                area,
+                self.active_screen,
+                &screen_keys,
+                &mut self.hits,
+            );
         }
     }
 
     /// Register a modal's click targets: a tap outside it presses `Esc`
     /// (which closes it or answers no), and a tap inside that misses its
     /// buttons does nothing.
-    fn register_modal(hits: &mut HitMap<Click>, screen: Rect, modal: Rect) {
+    pub(super) fn register_modal(hits: &mut HitMap<Click>, screen: Rect, modal: Rect) {
         hits.push(screen, Click::Key(KeyCode::Esc.into()));
         hits.push(modal, Click::Absorb);
     }
@@ -159,14 +180,17 @@ impl App {
                 " / ",
                 Style::default().fg(theme::accent_primary()),
             ));
-            line.push_gap(Span::styled(
-                self.search_query.clone(),
+            // The query takes what the hints leave, scrolling under the
+            // cursor when it is longer.
+            let room = usize::from(area.width).saturating_sub(3 + 2 + 24).max(8);
+            for span in self.search_input.spans(
+                room,
+                true,
+                None,
                 Style::default().fg(theme::accent_secondary()),
-            ));
-            line.push_gap(Span::styled(
-                "█",
-                Style::default().fg(theme::accent_secondary()),
-            ));
+            ) {
+                line.push_gap(span);
+            }
             line.push_gap(Span::raw("  "));
             line.push_hints(
                 &[
@@ -205,19 +229,24 @@ impl App {
         hints.push_gap(Span::styled(" │ ", theme::key_hint()));
         // App-wide buttons dispatch their action directly: as keys they
         // would reach the screen first, which may use the same letter.
-        let retry = Hint::action("^r", "retry", Action::RetryConnect);
+        let refresh = if self.connection_status == ConnectionStatus::Disconnected {
+            Hint::action("^r", "retry", Action::RetryConnect)
+        } else {
+            Hint::action("^r", "refresh", Action::Refresh)
+        };
         let search = self
             .active_screen_searches()
             .then(|| Hint::action("/", "search", Action::OpenSearch));
-        let global = [
+        let shown: Vec<Hint> = [
             Some(Hint::action("?", "help", Action::ToggleHelp)),
-            Some(Hint::action("a", "about", Action::ToggleAbout)),
             search,
+            Some(refresh),
             Some(Hint::action(",", "settings", Action::OpenSettings)),
             Some(Hint::action("q", "quit", Action::Quit)),
-        ];
-        let retry = (self.connection_status == ConnectionStatus::Disconnected).then_some(retry);
-        let shown: Vec<Hint> = std::iter::once(retry).chain(global).flatten().collect();
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         hints.push_hints(&shown, theme::key_hint_key(), theme::key_hint());
         let mut spans = vec![Span::raw(" "), connection_indicator];
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
@@ -226,7 +255,11 @@ impl App {
             // The reason is best-effort context: it must never displace the
             // key hints or run under the sponsor button. Budget from the
             // actual fixed-span widths and drop it when it cannot fit.
-            let donate_width = if self.show_donate { 12 } else { 0 };
+            let donate_width = if self.show_donate {
+                usize::from(DONATE_WIDTH)
+            } else {
+                0
+            };
             let fixed: usize =
                 spans.iter().map(Span::width).sum::<usize>() + hints.width() + 3 + donate_width;
             let budget = usize::from(area.width).saturating_sub(fixed);
@@ -243,19 +276,21 @@ impl App {
             line.push_gap(span);
         }
         line.append(hints);
+        // The sponsor button only takes room the hints leave it, so it
+        // can never sit on top of one.
+        let hints_end = line.width();
         let line = line.draw(area, &mut self.hits);
         frame.render_widget(Paragraph::new(line), area);
 
-        if self.show_donate {
+        if self.show_donate && hints_end + usize::from(DONATE_WIDTH) < usize::from(area.width) {
             Self::render_donate_button(frame, area, &mut self.hits);
         }
     }
 
     /// Render a clickable sponsor button at the right edge of the status bar.
     fn render_donate_button(frame: &mut Frame, area: Rect, hits: &mut HitMap<Click>) {
-        let button_width = 12u16;
-        let x = area.x + area.width.saturating_sub(button_width);
-        let button_rect = Rect::new(x, area.y, button_width, 1).intersection(area);
+        let x = area.x + area.width.saturating_sub(DONATE_WIDTH);
+        let button_rect = Rect::new(x, area.y, DONATE_WIDTH, 1).intersection(area);
         hits.push(button_rect, Click::Action(Action::OpenDonate));
 
         let line = Line::from(vec![
@@ -317,137 +352,123 @@ impl App {
         );
     }
 
-    /// Render the help overlay centered on screen. The underlying screen
-    /// stays visible around the modal — we only clear the overlay's own
-    /// rect so the rest of the TUI shows through.
-    fn render_help_overlay(frame: &mut Frame, area: Rect, hits: &mut HitMap<Click>) {
-        let help_width = 60u16.min(area.width.saturating_sub(4));
-        let help_height = 23u16.min(area.height.saturating_sub(4));
+    /// Render the help overlay centered on screen: the active screen's own
+    /// keys first, then the keys that work everywhere, side by side so
+    /// the whole thing fits a 24-row terminal.
+    fn render_help_overlay(
+        frame: &mut Frame,
+        area: Rect,
+        screen: ScreenId,
+        screen_keys: &[(&'static str, &'static str)],
+        hits: &mut HitMap<Click>,
+    ) {
+        let left = help_column(&format!("{screen} screen"), screen_keys);
+        let right = help_column("Everywhere", GLOBAL_KEYS);
+        let rows = left.len().max(right.len());
+
+        let help_width = 78u16.min(area.width.saturating_sub(2));
+        let help_height = u16::try_from(rows + 4)
+            .unwrap_or(u16::MAX)
+            .min(area.height.saturating_sub(2));
         let x = (area.width.saturating_sub(help_width)) / 2;
         let y = (area.height.saturating_sub(help_height)) / 2;
         let help_area = Rect::new(area.x + x, area.y + y, help_width, help_height);
         Self::register_modal(hits, area, help_area);
 
         frame.render_widget(Clear, help_area);
-        frame.render_widget(
-            Block::default().style(Style::default().bg(theme::bg_base())),
-            help_area,
-        );
-
+        let close = close_button(" Esc or ? to close ");
+        let close_row = Rect {
+            x: help_area.x.saturating_add(2),
+            y: help_area.bottom().saturating_sub(1),
+            width: help_area.width.saturating_sub(4),
+            height: 1,
+        }
+        .intersection(help_area);
+        close.register(close_row, hits);
         let block = Block::default()
             .title(" Keyboard Shortcuts ")
             .title_style(theme::title_style())
+            .title_bottom(close.into_line())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(theme::border_focused());
+            .border_style(theme::border_focused())
+            .style(Style::default().bg(theme::bg_base()));
 
         let inner = block.inner(help_area);
         frame.render_widget(block, help_area);
 
-        let mut help_text = help_lines();
-        let mut close = ClickLine::default();
-        close.push_gap(Span::raw("                         "));
-        close.append(close_button("Esc or ? to close"));
-        help_text.push(close.draw(click::paragraph_row(inner, help_text.len()), hits));
-
-        frame.render_widget(Paragraph::new(help_text), inner);
+        let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(Rect {
+                y: inner.y.saturating_add(1),
+                height: inner.height.saturating_sub(1),
+                ..inner
+            });
+        frame.render_widget(Paragraph::new(left), columns[0]);
+        frame.render_widget(Paragraph::new(right), columns[1]);
     }
 
-    /// Render a centered confirmation dialog. The underlying screen
-    /// stays visible around the dialog — only the dialog's own rect is
-    /// cleared so context behind the prompt remains legible.
+    /// Render a centered confirmation dialog, sized to its text: the
+    /// question, what saying yes costs, and the two answers. The screen
+    /// stays visible around it.
     fn render_confirm_dialog(
         frame: &mut Frame,
         area: Rect,
         prompt: &str,
+        detail: Option<&str>,
         hits: &mut HitMap<Click>,
     ) {
-        let width = 50u16.min(area.width.saturating_sub(4));
-        let height = 5u16;
+        let width = 56u16.min(area.width.saturating_sub(4));
+        let text_width = usize::from(width.saturating_sub(6));
+        let prompt_lines = wrap(prompt, text_width);
+        let detail_lines = detail
+            .map(|text| wrap(text, text_width))
+            .unwrap_or_default();
+        let text_rows = prompt_lines.len() + detail_lines.len();
+        let height = u16::try_from(text_rows + 4)
+            .unwrap_or(u16::MAX)
+            .min(area.height);
         let x = (area.width.saturating_sub(width)) / 2;
         let y = (area.height.saturating_sub(height)) / 2;
         let dialog_area = Rect::new(area.x + x, area.y + y, width, height).intersection(area);
         Self::register_modal(hits, area, dialog_area);
 
         frame.render_widget(Clear, dialog_area);
-        frame.render_widget(
-            Block::default().style(Style::default().bg(theme::bg_base())),
-            dialog_area,
-        );
-
         let block = Block::default()
             .title(" Confirm ")
             .title_style(theme::title_style())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme::warning()));
+            .border_style(Style::default().fg(theme::warning()))
+            .style(Style::default().bg(theme::bg_base()));
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
+        let mut text: Vec<Line> = prompt_lines
+            .into_iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default()
+                        .fg(theme::text_secondary())
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        text.extend(
+            detail_lines
+                .into_iter()
+                .map(|line| Line::from(Span::styled(format!("  {line}"), theme::key_hint()))),
+        );
+        text.push(Line::from(""));
         let mut answers = click::key_hints(&[
             Hint::button("y", "confirm", click::char_key('y')),
             Hint::button("n", "cancel", click::char_key('n')),
         ]);
-        let answer_row = Rect {
-            y: inner.y.saturating_add(2),
-            height: 1,
-            ..inner
-        }
-        .intersection(inner);
-        let text = vec![
-            Line::from(Span::styled(
-                format!("  {prompt}"),
-                Style::default().fg(theme::text_secondary()),
-            )),
-            Line::from(""),
-            std::mem::take(&mut answers).draw(answer_row, hits),
-        ];
+        let answer_row = click::paragraph_row(inner, text.len());
+        text.push(std::mem::take(&mut answers).draw(answer_row, hits));
 
         frame.render_widget(Paragraph::new(text), inner);
-    }
-
-    /// Render a notification toast in the bottom-right corner. A tap on it
-    /// dismisses it.
-    fn render_notification(
-        frame: &mut Frame,
-        area: Rect,
-        notif: &Notification,
-        hits: &mut HitMap<Click>,
-    ) {
-        let msg_len = u16::try_from(notif.message.len()).unwrap_or(u16::MAX);
-        let width = (msg_len + 6).clamp(20, 60);
-        let height = 3u16;
-        let x = area.width.saturating_sub(width + 1);
-        let y = area.height.saturating_sub(height + 2);
-        let toast_area = Rect::new(area.x + x, area.y + y, width, height).intersection(area);
-        hits.push(toast_area, Click::Action(Action::DismissNotification));
-
-        let (border_color, icon) = match notif.level {
-            NotificationLevel::Success => (theme::success(), "✓"),
-            NotificationLevel::Error => (theme::error(), "✗"),
-            NotificationLevel::Warning => (theme::warning(), "!"),
-            NotificationLevel::Info => (theme::accent_secondary(), "·"),
-        };
-
-        frame.render_widget(
-            Block::default().style(Style::default().bg(theme::bg_base())),
-            toast_area,
-        );
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(border_color));
-
-        let inner = block.inner(toast_area);
-        frame.render_widget(block, toast_area);
-
-        let line = Line::from(vec![
-            Span::styled(format!(" {icon} "), Style::default().fg(border_color)),
-            Span::styled(&notif.message, Style::default().fg(theme::text_secondary())),
-        ]);
-        frame.render_widget(Paragraph::new(line), inner);
     }
 }
 
@@ -526,86 +547,43 @@ fn close_button(text: &'static str) -> ClickLine<'static, Click> {
     close
 }
 
-/// The help overlay's shortcut table, above its close hint.
-fn help_lines() -> Vec<Line<'static>> {
-    vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Navigation",
-            Style::default().fg(theme::accent_secondary()),
-        )]),
-        Line::from(Span::styled("  ─────────────", theme::key_hint())),
+/// Keys that work on every screen.
+const GLOBAL_KEYS: &[(&str, &str)] = &[
+    ("1-9", "Jump to screen"),
+    ("Tab", "Next screen"),
+    ("Shift+Tab", "Previous screen"),
+    ("Esc", "Close / clear filter / back"),
+    ("/", "Search the list"),
+    ("^r", "Refresh now, or retry"),
+    ("n", "Notifications"),
+    (",", "Settings"),
+    ("a", "About"),
+    ("?", "This help"),
+    ("q  ^c", "Quit"),
+    ("^l", "Redraw"),
+    ("Mouse", "Tap tabs, rows, hints"),
+    ("Shift+drag", "Select text"),
+];
+
+/// One column of the help overlay: a heading over its keys.
+fn help_column(heading: &str, keys: &[(&'static str, &'static str)]) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("  {heading}"),
+        Style::default()
+            .fg(theme::accent_secondary())
+            .add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(keys.iter().map(|(key, label)| {
         Line::from(vec![
-            Span::styled("  1-9         ", theme::key_hint_key()),
-            Span::styled("Jump to screen", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  Tab         ", theme::key_hint_key()),
-            Span::styled("Next screen", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  Shift+Tab   ", theme::key_hint_key()),
-            Span::styled("Previous screen", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  j/k ↑/↓     ", theme::key_hint_key()),
-            Span::styled("Move up/down", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter       ", theme::key_hint_key()),
-            Span::styled("Select / expand", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  Esc         ", theme::key_hint_key()),
-            Span::styled("Back / close", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  g/G         ", theme::key_hint_key()),
-            Span::styled("Top / bottom", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+d/u    ", theme::key_hint_key()),
-            Span::styled("Page down / up", theme::key_hint()),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Global",
-            Style::default().fg(theme::accent_secondary()),
-        )]),
-        Line::from(Span::styled("  ──────────────", theme::key_hint())),
-        Line::from(vec![
-            Span::styled("  /           ", theme::key_hint_key()),
-            Span::styled("Search lists       ", theme::key_hint()),
-            Span::styled("?  ", theme::key_hint_key()),
-            Span::styled("This help", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ,           ", theme::key_hint_key()),
-            Span::styled("Settings           ", theme::key_hint()),
-            Span::styled("a  ", theme::key_hint_key()),
-            Span::styled("About", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  q           ", theme::key_hint_key()),
-            Span::styled("Quit               ", theme::key_hint()),
-            Span::styled("^r ", theme::key_hint_key()),
-            Span::styled("Retry connect", theme::key_hint()),
-        ]),
-        Line::from(vec![
-            Span::styled("  Mouse       ", theme::key_hint_key()),
-            Span::styled(
-                "Tap tabs, rows, and key hints; wheel scrolls",
-                theme::key_hint(),
-            ),
-        ]),
-        // Keys that work on one screen only live in that screen's hints.
-        Line::from(vec![
-            Span::styled("  Screens     ", theme::key_hint_key()),
-            Span::styled(
-                "Each screen's own keys sit in its hint bar",
-                theme::key_hint(),
-            ),
-        ]),
-        Line::from(""),
-    ]
+            Span::styled(format!("  {key:<12}"), theme::key_hint_key()),
+            Span::styled(*label, theme::key_hint()),
+        ])
+    }));
+    if keys.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Tap a panel to open its screen",
+            theme::key_hint(),
+        )));
+    }
+    lines
 }

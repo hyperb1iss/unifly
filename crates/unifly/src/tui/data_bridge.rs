@@ -107,6 +107,11 @@ pub async fn spawn_data_bridge(
     }
 
     let _ = action_tx.send(Action::Connected);
+    let _ = action_tx.send(Action::AccessUpdated(crate::tui::action::Access {
+        integration: controller.has_integration_access().await,
+        session: controller.has_session_access().await,
+        live_events: controller.has_live_event_access().await,
+    }));
 
     // Surface any warnings from connect (e.g. Session auth failure)
     for warning in controller.take_warnings().await {

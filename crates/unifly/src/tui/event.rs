@@ -17,6 +17,10 @@ pub enum Event {
     Key(KeyEvent),
     /// A mouse action occurred.
     Mouse(MouseEvent),
+    /// Text was pasted (bracketed paste).
+    Paste(String),
+    /// The terminal went away or the process was asked to stop.
+    Quit,
     /// Terminal was resized to (cols, rows).
     Resize(u16, u16),
     /// Periodic tick for data refresh / animation (4 Hz).
@@ -50,29 +54,42 @@ impl EventReader {
             tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             render_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+            let mut stop = stop_signal();
+
             loop {
                 let event = tokio::select! {
                     () = task_cancel.cancelled() => break,
+
+                    () = &mut stop => Event::Quit,
 
                     _ = tick_interval.tick() => Event::Tick,
 
                     _ = render_interval.tick() => Event::Render,
 
-                    Some(Ok(crossterm_event)) = event_stream.next() => {
-                        match crossterm_event {
-                            CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
+                    next = event_stream.next() => {
+                        match next {
+                            // A held key repeats as `Repeat` on terminals
+                            // that report event types; only a release is
+                            // not a press.
+                            Some(Ok(CrosstermEvent::Key(key)))
+                                if key.kind != KeyEventKind::Release =>
+                            {
                                 Event::Key(key)
                             }
-                            CrosstermEvent::Mouse(mouse) => Event::Mouse(mouse),
-                            CrosstermEvent::Resize(w, h) => Event::Resize(w, h),
-                            // Ignore key release/repeat and other event types
-                            _ => continue,
+                            Some(Ok(CrosstermEvent::Mouse(mouse))) => Event::Mouse(mouse),
+                            Some(Ok(CrosstermEvent::Paste(text))) => Event::Paste(text),
+                            Some(Ok(CrosstermEvent::Resize(w, h))) => Event::Resize(w, h),
+                            Some(_) => continue,
+                            // The input stream ended: the terminal is gone.
+                            None => Event::Quit,
                         }
                     }
                 };
 
+                let quitting = matches!(event, Event::Quit);
+
                 // If the receiver is dropped, stop.
-                if tx.send(event).is_err() {
+                if tx.send(event).is_err() || quitting {
                     break;
                 }
             }
@@ -89,6 +106,32 @@ impl EventReader {
     /// Signal the background reader to stop.
     pub fn stop(&self) {
         self.cancel.cancel();
+    }
+}
+
+/// Resolves when the process is asked to stop (SIGTERM, SIGHUP), so the
+/// app can restore the terminal on its way out. Never resolves where
+/// those signals do not exist.
+fn stop_signal() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(mut term), Ok(mut hangup)) => Box::pin(async move {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = hangup.recv() => {}
+                }
+            }),
+            _ => Box::pin(std::future::pending()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Box::pin(std::future::pending())
     }
 }
 

@@ -5,12 +5,13 @@ mod dispatch;
 mod firewall;
 mod lifecycle;
 mod navigation;
+mod notify;
 mod render;
 mod screens;
 mod stats;
 mod wifi;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use tracing::info;
 use unifly_api::Controller;
 
 use crate::sanitizer::Sanitizer;
-use crate::tui::action::{Action, ConfirmAction, Notification, StatsPeriod};
+use crate::tui::action::{Access, Action, ConfirmRequest, StatsPeriod};
 use crate::tui::component::Component;
 use crate::tui::effects::EffectStack;
 use crate::tui::event::{Event, EventReader};
@@ -30,6 +31,7 @@ use crate::tui::screen::ScreenId;
 use crate::tui::screens::create_screens;
 use crate::tui::terminal::Tui;
 use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::line_input::LineInput;
 
 /// Connection status as seen by the TUI.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -64,8 +66,10 @@ pub struct App {
     about_visible: bool,
     /// Search overlay visibility.
     search_active: bool,
-    /// Current search query.
-    search_query: String,
+    /// The search bar's text and cursor.
+    search_input: LineInput,
+    /// Notification history overlay visibility.
+    notices_visible: bool,
     /// Terminal size for responsive layout.
     terminal_size: (u16, u16),
     /// What the last frame's app chrome (tab bar, status bar, overlays)
@@ -85,9 +89,15 @@ pub struct App {
     /// bridge lifetimes never overlap on the same controller.
     bridge_handle: Option<tokio::task::JoinHandle<()>>,
     /// Pending confirmation dialog (blocks other input while active).
-    pending_confirm: Option<ConfirmAction>,
-    /// Active notification toast with display timestamp.
-    notification: Option<(Notification, Instant)>,
+    pending_confirm: Option<ConfirmRequest>,
+    /// Toasts on screen and the history of everything shown.
+    notices: notify::Notices,
+    /// Devices whose locate LED this session switched on.
+    locating: HashSet<unifly_api::EntityId>,
+    /// What the connected controller can reach.
+    access: Access,
+    /// Set when the next frame must clear the terminal first.
+    repaint: bool,
     /// Generation counter for stats requests — prevents stale responses from
     /// overwriting fresh data when the user rapidly switches periods.
     stats_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -145,7 +155,8 @@ impl App {
             help_visible: false,
             about_visible: false,
             search_active: false,
-            search_query: String::new(),
+            search_input: LineInput::default(),
+            notices_visible: false,
             terminal_size: (0, 0),
             hits: HitMap::default(),
             action_tx,
@@ -155,7 +166,10 @@ impl App {
             data_cancel: CancellationToken::new(),
             bridge_handle: None,
             pending_confirm: None,
-            notification: None,
+            notices: notify::Notices::default(),
+            locating: HashSet::new(),
+            access: Access::default(),
+            repaint: false,
             stats_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_stats_fetch: None,
             stats_period: StatsPeriod::default(),
@@ -251,6 +265,14 @@ impl App {
                         self.action_tx.send(action)?;
                     }
                 }
+                Event::Paste(text) => {
+                    if let Some(action) = self.handle_paste(&text) {
+                        self.action_tx.send(action)?;
+                    }
+                }
+                Event::Quit => {
+                    self.action_tx.send(Action::Quit)?;
+                }
                 Event::Resize(w, h) => {
                     self.action_tx.send(Action::Resize(w, h))?;
                 }
@@ -272,6 +294,9 @@ impl App {
                 if let Action::Render = action
                     && self.should_draw()
                 {
+                    if std::mem::take(&mut self.repaint) {
+                        tui.terminal.clear()?;
+                    }
                     tui.draw(|frame| self.render(frame))?;
                     self.needs_redraw = false;
                 }
@@ -280,6 +305,12 @@ impl App {
 
         self.data_cancel.cancel();
         events.stop();
+        // Leave the terminal first, then give the bridge a moment to log a
+        // session out before the runtime goes away under it.
+        tui.exit();
+        if let Some(bridge) = self.bridge_handle.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), bridge).await;
+        }
         info!("TUI event loop ended");
         Ok(())
     }
