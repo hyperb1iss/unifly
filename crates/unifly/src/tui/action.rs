@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
 use serde_json::Value;
-use unifly_api::model::{
-    AclRule, EventCategory, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast,
-};
+use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast};
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
     Client, CreateNetworkRequest, Device, EntityId, Event, Network, Site, UpdateNetworkRequest,
@@ -558,9 +556,8 @@ pub enum Action {
     TopologyReset,
 
     // ── Events Screen ─────────────────────────────────────────────
+    /// Pause the live event feed, or resume it.
     ToggleEventPause,
-    FilterEventType(Option<String>),
-    FilterEventCategory(Option<EventCategory>),
 
     // ── Table Operations ──────────────────────────────────────────
     SortColumn(SortField),
@@ -613,4 +610,18 @@ pub enum Action {
     WifiNeighborsFailed(String),
     /// The regulatory channel list could not be read.
     WifiChannelsFailed(String),
+    // ── monitor ───────────────────────────────────────────────────
+    /// Fetch events from further back than the feed holds.
+    RequestEventHistory {
+        within_hours: u32,
+        limit: u32,
+        include_firewall: bool,
+    },
+    /// The events a history fetch returned, for the Events screen to merge.
+    EventHistoryLoaded {
+        within_hours: u32,
+        include_firewall: bool,
+        events: Arc<Vec<Arc<Event>>>,
+    },
+    EventHistoryFailed(String),
 }

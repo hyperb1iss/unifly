@@ -13,10 +13,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
 
-use unifly_api::{Client, Device, Event, HealthSummary, Network};
+use unifly_api::{Client, Device, HealthSummary, Network};
 
 use crate::tui::action::Action;
 use crate::tui::component::Component;
+use crate::tui::screens::events::feed::Feed;
 use crate::tui::widgets::click::{Click, HitMap};
 mod helpers;
 mod render;
@@ -33,6 +34,8 @@ mod state;
 pub(super) const LIVE_CHART_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// Samples kept in the ring: a one-minute window at 1 Hz.
 pub(super) const LIVE_CHART_WINDOW_SAMPLES: usize = 60;
+/// Events the Recent Events panel keeps.
+const RECENT_EVENTS: usize = 100;
 pub(super) const BANDWIDTH_TICK_COUNT: usize = 4;
 pub(super) const BANDWIDTH_LABEL_WIDTH: usize = 6;
 pub(super) const BANDWIDTH_GUTTER_WIDTH: u16 = 7;
@@ -55,7 +58,8 @@ pub struct DashboardScreen {
     devices: Arc<Vec<Arc<Device>>>,
     clients: Arc<Vec<Arc<Client>>>,
     networks: Arc<Vec<Arc<Network>>>,
-    events: Vec<Arc<Event>>,
+    /// The newest events, for the Recent Events panel.
+    events: Feed,
     health: Arc<Vec<HealthSummary>>,
     /// Chart data: `(sample_counter, bytes_per_sec)` for the Chart widget.
     bandwidth_tx: Vec<(f64, f64)>,
@@ -89,7 +93,7 @@ impl DashboardScreen {
             devices: Arc::new(Vec::new()),
             clients: Arc::new(Vec::new()),
             networks: Arc::new(Vec::new()),
-            events: Vec::new(),
+            events: Feed::new(RECENT_EVENTS),
             health: Arc::new(Vec::new()),
             bandwidth_tx: Vec::new(),
             bandwidth_rx: Vec::new(),

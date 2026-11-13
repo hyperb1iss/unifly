@@ -47,7 +47,7 @@ impl DashboardScreen {
                 Style::default().fg(theme::border_unfocused()),
             )));
         } else {
-            for evt in self.events.iter().rev().take(max_rows) {
+            for evt in self.events.events().iter().rev().take(max_rows) {
                 let time_str = evt
                     .timestamp
                     .with_timezone(&chrono::Local)

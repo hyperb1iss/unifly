@@ -188,10 +188,13 @@ impl DashboardScreen {
                 self.networks = Arc::clone(networks);
             }
             Action::EventReceived(event) => {
-                self.events.push(Arc::clone(event));
-                if self.events.len() > 100 {
-                    self.events.remove(0);
-                }
+                self.events.insert(Arc::clone(event));
+            }
+            Action::ControllerChanged => {
+                *self = Self {
+                    focused: self.focused,
+                    ..Self::new()
+                };
             }
             Action::HealthUpdated(health) => {
                 self.health = Arc::clone(health);
@@ -225,6 +228,53 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn a_replayed_backlog_leaves_one_copy_of_each_recent_event() {
+        use crate::tui::screens::events::feed::tests::event;
+        use crate::tui::table::render_lines;
+
+        let mut screen = DashboardScreen::new();
+        // Twice over, and newest first, as a reconnect and a refresh
+        // batch deliver them.
+        for _ in 0..2 {
+            for minute in (0..4).rev() {
+                screen.apply_action(&Action::EventReceived(event(minute)));
+            }
+        }
+
+        assert_eq!(screen.events.len(), 4);
+        let rows = render_lines(140, 60, |frame, area| screen.render_dashboard(frame, area));
+        let shown: Vec<_> = rows
+            .iter()
+            .filter(|row| row.contains(" connected"))
+            .collect();
+        assert_eq!(shown.len(), 4, "{shown:?}");
+        assert!(shown[0].contains("client-03"), "newest first: {shown:?}");
+        assert!(shown[3].contains("client-00"), "{shown:?}");
+    }
+
+    #[test]
+    fn switching_controllers_drops_everything_the_old_one_reported() {
+        use crate::tui::screens::events::feed::tests::event;
+
+        let mut screen = DashboardScreen::new();
+        screen.focused = true;
+        screen.apply_action(&Action::EventReceived(event(1)));
+        screen.push_bandwidth_sample(10_000, 20_000);
+        screen.health_bandwidth = Some(BandwidthSample {
+            tx_bps: 1,
+            rx_bps: 2,
+            captured_at: Instant::now(),
+        });
+
+        screen.apply_action(&Action::ControllerChanged);
+
+        assert!(screen.events.is_empty());
+        assert!(screen.bandwidth_tx.is_empty() && screen.health_bandwidth.is_none());
+        assert_eq!(screen.peak_rx, 0);
+        assert!(screen.focused, "focus is the app's, not the controller's");
+    }
 
     #[test]
     fn current_bandwidth_prefers_most_recent_sample() {

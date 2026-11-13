@@ -12,7 +12,10 @@ impl App {
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub(super) fn process_action(&mut self, action: &Action) -> Result<()> {
         let invalidates = action_invalidates(action);
-        if self.handle_command_action(action)? || self.handle_networks_firewall_action(action)? {
+        if self.handle_monitor_action(action)?
+            || self.handle_command_action(action)?
+            || self.handle_networks_firewall_action(action)?
+        {
             if invalidates {
                 self.needs_redraw = true;
             }

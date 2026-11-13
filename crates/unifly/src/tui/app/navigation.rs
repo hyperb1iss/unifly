@@ -522,7 +522,7 @@ mod tests {
         let rows = render(&mut app, 120);
 
         let action = app
-            .handle_mouse_event(click_label(&rows, "pause/resume", "pause/resume"))
+            .handle_mouse_event(click_label(&rows, "Space pause", "pause"))
             .expect("click handling");
         let Some(Action::PressKey(key)) = action else {
             panic!("expected a key press, got {action:?}");
