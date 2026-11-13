@@ -89,6 +89,11 @@ impl App {
             Self::render_confirm_dialog(frame, area, &prompt, detail.as_deref(), &mut self.hits);
         }
 
+        if let Some((request, input)) = &self.prompt {
+            let title = self.shown_text(&request.title);
+            Self::render_prompt(frame, area, &title, request, input, &mut self.hits);
+        }
+
         if self.notices_visible {
             self.render_notices_overlay(frame, area);
         }
@@ -405,6 +410,71 @@ impl App {
             });
         frame.render_widget(Paragraph::new(left), columns[0]);
         frame.render_widget(Paragraph::new(right), columns[1]);
+    }
+
+    /// Render the one-line prompt: what is asked, the field, guidance, and
+    /// the two ways out.
+    fn render_prompt(
+        frame: &mut Frame,
+        area: Rect,
+        title: &str,
+        request: &crate::tui::action::PromptRequest,
+        input: &crate::tui::widgets::line_input::LineInput,
+        hits: &mut HitMap<Click>,
+    ) {
+        let width = 60u16.min(area.width.saturating_sub(4));
+        let text_width = usize::from(width.saturating_sub(6));
+        let hint_lines = request
+            .hint
+            .as_deref()
+            .map(|hint| wrap(hint, text_width))
+            .unwrap_or_default();
+        let height = u16::try_from(hint_lines.len() + 6)
+            .unwrap_or(u16::MAX)
+            .min(area.height);
+        let x = (area.width.saturating_sub(width)) / 2;
+        let y = (area.height.saturating_sub(height)) / 2;
+        let dialog = Rect::new(area.x + x, area.y + y, width, height).intersection(area);
+        Self::register_modal(hits, area, dialog);
+
+        frame.render_widget(Clear, dialog);
+        let block = Block::default()
+            .title(format!(" {title} "))
+            .title_style(theme::title_style())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::border_focused())
+            .style(Style::default().bg(theme::bg_base()));
+        let inner = block.inner(dialog);
+        frame.render_widget(block, dialog);
+
+        let mut field = vec![Span::styled("  \u{203A} ", theme::key_hint_key())];
+        field.extend(input.spans(
+            text_width.saturating_sub(2),
+            true,
+            request.secret.then_some('\u{25CF}'),
+            Style::default().fg(theme::accent_secondary()),
+        ));
+        let mut text = vec![
+            Line::from(Span::styled(
+                format!("  {}", request.label),
+                Style::default().fg(theme::text_secondary()),
+            )),
+            Line::from(field),
+        ];
+        text.extend(
+            hint_lines
+                .into_iter()
+                .map(|line| Line::from(Span::styled(format!("  {line}"), theme::key_hint()))),
+        );
+        text.push(Line::from(""));
+        let mut buttons = click::key_hints(&[
+            Hint::button("Enter", "save", KeyCode::Enter),
+            Hint::button("Esc", "cancel", KeyCode::Esc),
+        ]);
+        let button_row = click::paragraph_row(inner, text.len());
+        text.push(std::mem::take(&mut buttons).draw(button_row, hits));
+        frame.render_widget(Paragraph::new(text), inner);
     }
 
     /// Render a centered confirmation dialog, sized to its text: the

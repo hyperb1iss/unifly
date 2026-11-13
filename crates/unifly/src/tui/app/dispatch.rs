@@ -40,6 +40,11 @@ impl App {
                     self.previous_screen = None;
                 }
             }
+            Action::OpenPrompt(request) => {
+                let input =
+                    crate::tui::widgets::line_input::LineInput::new(request.initial.clone());
+                self.prompt = Some((request.clone(), input));
+            }
             Action::Repaint => {
                 self.repaint = true;
             }

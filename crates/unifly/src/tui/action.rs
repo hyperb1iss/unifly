@@ -343,6 +343,22 @@ impl Notice {
     }
 }
 
+/// A one-line question. The answer goes back to the screen that asked as
+/// [`Action::PromptSubmitted`]; the screen remembers what it asked for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptRequest {
+    /// The dialog title, such as `Fixed IP for nas-vault`.
+    pub title: String,
+    /// What to type, shown above the field.
+    pub label: String,
+    /// The value the field starts with.
+    pub initial: String,
+    /// A line of guidance under the field.
+    pub hint: Option<String>,
+    /// Whether the typed value is drawn masked.
+    pub secret: bool,
+}
+
 /// A question the user answers before `action` is dispatched.
 #[derive(Debug, Clone)]
 pub struct ConfirmRequest {
@@ -495,6 +511,10 @@ pub enum Action {
 
     // ── Confirm Dialog ────────────────────────────────────────────
     ShowConfirm(ConfirmRequest),
+    /// Ask for one line of text.
+    OpenPrompt(PromptRequest),
+    /// The prompt's answer, delivered to the active screen.
+    PromptSubmitted(String),
     ConfirmYes,
     ConfirmNo,
 

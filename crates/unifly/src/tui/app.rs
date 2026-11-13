@@ -23,7 +23,7 @@ use tracing::info;
 use unifly_api::Controller;
 
 use crate::sanitizer::Sanitizer;
-use crate::tui::action::{Access, Action, ConfirmRequest, StatsPeriod};
+use crate::tui::action::{Access, Action, ConfirmRequest, PromptRequest, StatsPeriod};
 use crate::tui::component::Component;
 use crate::tui::effects::EffectStack;
 use crate::tui::event::{Event, EventReader};
@@ -90,6 +90,8 @@ pub struct App {
     bridge_handle: Option<tokio::task::JoinHandle<()>>,
     /// Pending confirmation dialog (blocks other input while active).
     pending_confirm: Option<ConfirmRequest>,
+    /// Open one-line prompt and the text typed into it.
+    prompt: Option<(PromptRequest, LineInput)>,
     /// Toasts on screen and the history of everything shown.
     notices: notify::Notices,
     /// Devices whose locate LED this session switched on.
@@ -166,6 +168,7 @@ impl App {
             data_cancel: CancellationToken::new(),
             bridge_handle: None,
             pending_confirm: None,
+            prompt: None,
             notices: notify::Notices::default(),
             locating: HashSet::new(),
             access: Access::default(),

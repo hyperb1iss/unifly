@@ -61,6 +61,10 @@ impl App {
             });
         }
 
+        if self.prompt.is_some() {
+            return Ok(self.handle_prompt_key_event(key));
+        }
+
         if self.search_active {
             return self.handle_search_key_event(key);
         }
@@ -129,6 +133,10 @@ impl App {
         if self.pending_confirm.is_some() {
             return None;
         }
+        if let Some((_, input)) = &mut self.prompt {
+            input.paste(text, |_| true);
+            return None;
+        }
         if self.search_active {
             return self
                 .search_input
@@ -167,6 +175,7 @@ impl App {
 
         // Overlays hold wheel turns and drags too, as they do for keys.
         if self.pending_confirm.is_some()
+            || self.prompt.is_some()
             || self.search_active
             || self.help_visible
             || self.about_visible
@@ -221,6 +230,27 @@ impl App {
         self.screens
             .get(&self.active_screen)
             .is_some_and(|screen| screen.captures_input())
+    }
+
+    /// Keys while a prompt is open: Enter hands its text to the active
+    /// screen, Esc drops it, and everything else edits the line.
+    fn handle_prompt_key_event(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Esc => {
+                self.prompt = None;
+                None
+            }
+            KeyCode::Enter => self
+                .prompt
+                .take()
+                .map(|(_, input)| Action::PromptSubmitted(input.text().trim().to_owned())),
+            _ => {
+                if let Some((_, input)) = &mut self.prompt {
+                    input.handle_key(key);
+                }
+                None
+            }
+        }
     }
 
     fn handle_search_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
@@ -910,6 +940,48 @@ mod tests {
         // Back does not arm another back: Esc would bounce otherwise.
         app.process_action(&Action::GoBack).expect("back again");
         assert_eq!(app.active_screen, ScreenId::Dashboard);
+    }
+
+    #[test]
+    fn a_prompt_takes_typed_and_pasted_text_and_hands_it_to_the_screen() {
+        let mut app = dashboard_app();
+        app.process_action(&Action::OpenPrompt(crate::tui::action::PromptRequest {
+            title: "Fixed IP for nas-vault".into(),
+            label: "IPv4 address".into(),
+            initial: "10.40.20.".into(),
+            ..Default::default()
+        }))
+        .expect("open");
+        let rows = render(&mut app, 100);
+        let text = rows.join("\n");
+        assert!(text.contains("Fixed IP for nas-vault"), "{text}");
+        assert!(text.contains("10.40.20."), "{text}");
+
+        // `q` types; it does not quit. A paste goes into the field.
+        let typed = app
+            .handle_key_event(key(KeyCode::Char('q'), KeyModifiers::NONE))
+            .expect("key");
+        assert!(typed.is_none());
+        app.handle_key_event(key(KeyCode::Backspace, KeyModifiers::NONE))
+            .expect("key");
+        assert!(app.handle_paste("5\n").is_none());
+        let submitted = app
+            .handle_key_event(key(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("key");
+        assert!(
+            matches!(submitted, Some(Action::PromptSubmitted(ref text)) if text == "10.40.20.5"),
+            "{submitted:?}"
+        );
+        assert!(app.prompt.is_none());
+
+        app.process_action(&Action::OpenPrompt(
+            crate::tui::action::PromptRequest::default(),
+        ))
+        .expect("open");
+        let cancelled = app
+            .handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("key");
+        assert!(cancelled.is_none() && app.prompt.is_none());
     }
 
     #[test]
