@@ -75,6 +75,9 @@ struct ControllerInner {
     /// Created without a receiver; publish with `send_replace`, since
     /// `send` drops the value while nobody is subscribed.
     connection_state: watch::Sender<ConnectionState>,
+    /// Held for the length of a full refresh, so refreshes apply in the
+    /// order they started.
+    refresh_gate: tokio::sync::Mutex<()>,
     event_tx: broadcast::Sender<Arc<Event>>,
     /// Feeds the command processor of the current connection. `None`
     /// whenever no processor is running, so a command fails at once
@@ -117,6 +120,7 @@ impl Controller {
                 config,
                 store,
                 connection_state,
+                refresh_gate: tokio::sync::Mutex::new(()),
                 event_tx,
                 command_tx: Mutex::new(None),
                 cancel,

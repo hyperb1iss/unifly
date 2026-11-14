@@ -41,7 +41,14 @@ impl Controller {
         if self.demo_runtime().is_some() {
             return Ok(());
         }
-        self.refresh_with_scope(RefreshScope::All).await
+        // One refresh at a time: a snapshot fetched before a write must
+        // not be applied after the one fetched to show that write.
+        let _one_at_a_time = self.inner.refresh_gate.lock().await;
+        let result = self.refresh_with_scope(RefreshScope::All).await;
+        if result.is_ok() {
+            self.note_refresh_succeeded();
+        }
+        result
     }
 
     pub(super) async fn refresh_with_scope(&self, scope: RefreshScope) -> Result<(), CoreError> {

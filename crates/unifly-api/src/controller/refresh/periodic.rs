@@ -43,52 +43,96 @@ pub(in crate::controller) async fn refresh_task(
 
 impl Controller {
     /// Record how a periodic refresh went in the connection state, and
-    /// return the new count of failures in a row.
+    /// return the new count of failures in a row. One failed refresh is a
+    /// slow answer or a hiccup; the state says `Reconnecting` from the
+    /// second, and any refresh that succeeds says `Connected` again.
     fn note_refresh(&self, result: &Result<(), CoreError>, failures: u32) -> u32 {
         match result {
-            Ok(()) => {
-                if failures > 0 {
-                    self.inner
-                        .connection_state
-                        .send_replace(ConnectionState::Connected);
-                }
-                0
-            }
+            Ok(()) => 0,
             Err(error) => {
                 let failures = failures.saturating_add(1);
                 warn!(error = %error, failures, "periodic refresh failed");
-                self.inner
-                    .connection_state
-                    .send_replace(ConnectionState::Reconnecting { attempt: failures });
+                if failures >= FAILURES_BEFORE_RECONNECTING {
+                    self.inner
+                        .connection_state
+                        .send_if_modified(|state| match state {
+                            ConnectionState::Connected | ConnectionState::Reconnecting { .. } => {
+                                *state = ConnectionState::Reconnecting { attempt: failures };
+                                true
+                            }
+                            // A connect or disconnect in progress owns the
+                            // state; a late refresh result must not undo it.
+                            _ => false,
+                        });
+                }
                 failures
             }
         }
     }
+
+    /// A refresh fetched everything: the controller is answering, whatever
+    /// earlier refreshes reported.
+    pub(in crate::controller) fn note_refresh_succeeded(&self) {
+        self.inner.connection_state.send_if_modified(|state| {
+            let recovering = matches!(state, ConnectionState::Reconnecting { .. });
+            if recovering {
+                *state = ConnectionState::Connected;
+            }
+            recovering
+        });
+    }
 }
+
+/// Failed periodic refreshes in a row before the state reads
+/// `Reconnecting`.
+const FAILURES_BEFORE_RECONNECTING: u32 = 2;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_failed_refresh_shows_in_the_connection_state_until_one_succeeds() {
+    fn two_failed_refreshes_read_as_reconnecting_until_any_refresh_succeeds() {
         let controller = Controller::new(crate::ControllerConfig::default());
         let state = controller.connection_state();
+        controller
+            .inner
+            .connection_state
+            .send_replace(ConnectionState::Connected);
         let failed = Err(CoreError::ControllerDisconnected);
 
         let failures = controller.note_refresh(&failed, 0);
         assert_eq!(failures, 1);
         assert_eq!(
             *state.borrow(),
-            ConnectionState::Reconnecting { attempt: 1 }
+            ConnectionState::Connected,
+            "one failed refresh is not a lost connection"
         );
         let failures = controller.note_refresh(&failed, failures);
         assert_eq!(
             *state.borrow(),
             ConnectionState::Reconnecting { attempt: 2 }
         );
+        let failures = controller.note_refresh(&failed, failures);
+        assert_eq!(
+            *state.borrow(),
+            ConnectionState::Reconnecting { attempt: 3 }
+        );
 
-        assert_eq!(controller.note_refresh(&Ok(()), failures), 0);
+        // Any refresh that succeeds recovers it, not only the periodic one.
+        controller.note_refresh_succeeded();
         assert_eq!(*state.borrow(), ConnectionState::Connected);
+        assert_eq!(controller.note_refresh(&Ok(()), failures), 0);
+    }
+
+    #[test]
+    fn a_late_refresh_result_never_overrides_a_disconnect() {
+        let controller = Controller::new(crate::ControllerConfig::default());
+        let state = controller.connection_state();
+        let failed = Err(CoreError::ControllerDisconnected);
+        controller.note_refresh(&failed, 5);
+        assert_eq!(*state.borrow(), ConnectionState::Disconnected);
+        controller.note_refresh_succeeded();
+        assert_eq!(*state.borrow(), ConnectionState::Disconnected);
     }
 }
