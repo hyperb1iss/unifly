@@ -268,11 +268,20 @@ impl App {
             let action = match controller.list_users().await {
                 Ok(users) => {
                     let store = controller.store();
+                    // A blocked client the connected list already marks
+                    // is listed from there. One that is connected but not
+                    // marked (a wired client the station list does not
+                    // flag) still has to be reachable for unblocking.
+                    let listed = |client: &Client| {
+                        store
+                            .client_by_mac(&client.mac)
+                            .is_some_and(|connected| connected.blocked)
+                    };
                     let blocked = users
                         .into_iter()
                         .filter(|user| user.blocked == Some(true))
                         .map(Client::from)
-                        .filter(|client| store.client_by_mac(&client.mac).is_none())
+                        .filter(|client| !listed(client))
                         .map(Arc::new)
                         .collect();
                     Action::BlockedClientsLoaded(Arc::new(blocked))
