@@ -240,6 +240,8 @@ impl StatsPeriod {
 /// Historical stats data fetched from the controller.
 #[derive(Debug, Clone, Default)]
 pub struct StatsData {
+    /// The period the series cover.
+    pub period: StatsPeriod,
     /// WAN TX bandwidth: `(epoch_secs, bytes_per_sec)`
     pub bandwidth_tx: Vec<(f64, f64)>,
     /// WAN RX bandwidth: `(epoch_secs, bytes_per_sec)`
@@ -250,6 +252,8 @@ pub struct StatsData {
     pub dpi_apps: Vec<(String, u64)>,
     /// Top DPI categories: `(name, total_bytes)`
     pub dpi_categories: Vec<(String, u64)>,
+    /// Why application or category traffic could not be read.
+    pub dpi_error: Option<String>,
 }
 
 /// Sort field for table columns.
@@ -624,4 +628,11 @@ pub enum Action {
         events: Arc<Vec<Arc<Event>>>,
     },
     EventHistoryFailed(String),
+    /// A stats fetch for this period is under way.
+    StatsLoading(StatsPeriod),
+    /// A stats fetch for this period failed.
+    StatsFailed {
+        period: StatsPeriod,
+        message: String,
+    },
 }

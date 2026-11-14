@@ -1,6 +1,6 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
@@ -15,7 +15,7 @@ use crate::tui::widgets::hyperchart::{
     Baseline, ChartGradient, Denominator, Domain, FillStyle, HyperBars, HyperChart, Renderer, Row,
     Series, SeriesData, SeriesDirection, ValueFormat, XAxis,
 };
-use crate::tui::widgets::sub_tabs;
+use crate::tui::widgets::{sub_tabs, wrap};
 
 const STATS_BANDWIDTH_GUTTER: u16 = 7;
 const STATS_CLIENT_GUTTER: u16 = 6;
@@ -138,12 +138,21 @@ impl StatsScreen {
                 value: *bytes,
             })
             .collect();
+        // Wide enough for the longest name, so two applications never
+        // read the same, within a third of the panel.
+        let longest = rows
+            .iter()
+            .map(|row| Span::raw(row.label).width())
+            .max()
+            .unwrap_or(0);
+        let label_width = longest.clamp(8, usize::from(area.width / 3).max(8));
+        let empty = self.dpi_empty_message("No application traffic recorded");
 
-        let widget = HyperBars::new(Line::from(" Top Applications "), &rows)
+        let widget = HyperBars::new(Line::from(" Top Applications \u{00B7} all time "), &rows)
             .denominator(Denominator::MaxObserved)
             .value_format(ValueFormat::Bytes)
-            .label_width(14)
-            .empty_message("No DPI data available");
+            .label_width(label_width)
+            .empty_message(&empty);
 
         frame.render_widget(widget, area);
     }
@@ -157,14 +166,24 @@ impl StatsScreen {
                 value: *bytes,
             })
             .collect();
+        let empty = self.dpi_empty_message("No category traffic recorded");
 
-        let widget = HyperBars::new(Line::from(" Traffic by Category "), &rows)
+        let widget = HyperBars::new(Line::from(" Categories \u{00B7} all time "), &rows)
             .denominator(Denominator::Total)
             .value_format(ValueFormat::Percent)
             .label_width(12)
-            .empty_message("No category data");
+            .empty_message(&empty);
 
         frame.render_widget(widget, area);
+    }
+
+    /// What an empty DPI panel says: the reason the read failed, or that
+    /// the controller has counted nothing.
+    fn dpi_empty_message(&self, nothing: &str) -> String {
+        self.dpi_error.as_ref().map_or_else(
+            || nothing.to_owned(),
+            |error| format!("Unavailable: {error}"),
+        )
     }
 
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
@@ -185,35 +204,111 @@ impl StatsScreen {
 
         let layout = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Percentage(45),
-            Constraint::Min(8),
+            Constraint::Min(1),
             Constraint::Length(1),
         ])
         .split(inner);
 
-        let strip = sub_tabs::sub_tab_strip(&["1h", "24h", "7d", "30d"], self.period_index());
+        let mut strip = sub_tabs::sub_tab_strip(&PERIOD_LABELS, self.period_index());
+        if let Some(status) = self.status_span(usize::from(layout[0].width)) {
+            strip.push_gap(Span::raw("   "));
+            strip.push_gap(status);
+        }
         let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
         frame.render_widget(Paragraph::new(line), layout[0]);
 
-        self.render_bandwidth_chart(frame, layout[1]);
-
-        let bottom = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(layout[2]);
-        let left_col = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(bottom[0]);
-
-        self.render_client_chart(frame, left_col[0]);
-        self.render_categories(frame, left_col[1]);
-        self.render_top_apps(frame, bottom[1]);
+        match self.body_notice() {
+            Some((message, color)) => render_notice(frame, layout[1], &message, color),
+            None => self.render_charts(frame, layout[1]),
+        }
 
         let hints = click::key_hints(&[
             Hint::button("h", "shorter", click::char_key('h')),
             Hint::button("l", "longer", click::char_key('l')),
             Hint::button("r", "reload", click::char_key('r')),
         ]);
-        let line = hints.draw(layout[3], &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[3]);
+        let line = hints.draw(layout[2], &mut self.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[2]);
     }
+
+    fn render_charts(&self, frame: &mut Frame, area: Rect) {
+        let layout = Layout::vertical([Constraint::Percentage(47), Constraint::Min(8)]).split(area);
+        self.render_bandwidth_chart(frame, layout[0]);
+
+        let bottom = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(layout[1]);
+        let left_col = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(bottom[0]);
+
+        self.render_client_chart(frame, left_col[0]);
+        self.render_categories(frame, left_col[1]);
+        self.render_top_apps(frame, bottom[1]);
+    }
+
+    /// What stands in for the charts while they would mislead: why nothing
+    /// can load, or that the period on the chip is loading or failed.
+    fn body_notice(&self) -> Option<(String, Color)> {
+        let label = PERIOD_LABELS[self.period_index()];
+        if let Some(reason) = self.blocked() {
+            return Some((reason.to_owned(), theme::text_muted()));
+        }
+        if self.shown == Some(self.period) {
+            return None;
+        }
+        Some(match &self.error {
+            Some(error) => (
+                format!("Could not load {label}: {error}. Press r to try again."),
+                theme::error(),
+            ),
+            None => (format!("Loading {label}\u{2026}"), theme::text_muted()),
+        })
+    }
+
+    /// The note beside the period chips while charts are on screen: a
+    /// reload in flight, or one that failed and left older data showing.
+    fn status_span(&self, width: usize) -> Option<Span<'static>> {
+        if self.blocked().is_some() || self.shown != Some(self.period) {
+            return None;
+        }
+        if let Some(error) = &self.error {
+            let text = format!("\u{2717} reload failed, showing older data: {error}");
+            let room = width.saturating_sub(24).max(8);
+            let lines = wrap::wrap_clamped(&text, room, 1);
+            return Some(Span::styled(
+                lines.into_iter().next().unwrap_or_default(),
+                Style::default().fg(theme::error()),
+            ));
+        }
+        self.loading.then(|| {
+            Span::styled(
+                "\u{25D0} reloading\u{2026}",
+                Style::default().fg(theme::warning()),
+            )
+        })
+    }
+}
+
+/// The period chips, in [`crate::tui::action::StatsPeriod::ALL`] order.
+const PERIOD_LABELS: [&str; 4] = ["1h", "24h", "7d", "30d"];
+
+/// A notice centered in `area`, wrapped to its width.
+fn render_notice(frame: &mut Frame, area: Rect, message: &str, color: Color) {
+    let lines = wrap::wrap(message, usize::from(area.width.saturating_sub(4)).max(1));
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let rows = Rect {
+        y: area.y + (area.height - height) / 2,
+        height,
+        ..area
+    };
+    let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(color))
+            .alignment(Alignment::Center),
+        rows,
+    );
 }
 
 /// Compute safe x-axis bounds from two datasets, avoiding collapse when

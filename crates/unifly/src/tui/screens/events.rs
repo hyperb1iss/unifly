@@ -24,6 +24,7 @@ use unifly_api::{Client, Device};
 
 use crate::tui::action::{Access, Action};
 use crate::tui::component::Component;
+use crate::tui::screens::link::Link;
 use crate::tui::widgets::click::{Click, HitMap};
 
 use feed::{EventKey, Feed};
@@ -46,15 +47,6 @@ const CATEGORIES: [EventCategory; 8] = [
 /// How far back each press of `o` reaches, in hours, and how many events
 /// it asks for.
 const HISTORY_STEPS: [(u32, u32); 4] = [(24, 500), (72, 1_000), (168, 2_500), (720, 5_000)];
-
-/// Whether the controller is reachable, as the app last reported it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Link {
-    #[default]
-    Connecting,
-    Up,
-    Down,
-}
 
 /// The history window the feed has been filled from.
 #[derive(Debug, Default)]

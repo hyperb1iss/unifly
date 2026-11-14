@@ -2,8 +2,10 @@
 //! and Stats.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use color_eyre::eyre::Result;
+use tokio::task::AbortHandle;
 
 use unifly_api::EventHistoryQuery;
 
@@ -27,6 +29,15 @@ const DEMO_ACCESS: Access = Access {
     live_events: true,
 };
 
+/// In-flight work and caches for the monitoring screens.
+#[derive(Default)]
+pub(super) struct MonitorState {
+    /// The stats fetch in flight, aborted when a newer one replaces it.
+    pub(super) stats_task: Option<AbortHandle>,
+    /// The last DPI totals fetched, and when.
+    pub(super) dpi: Option<(Instant, super::stats::DpiSnapshot)>,
+}
+
 impl App {
     /// Handle the monitoring screens' actions. Returns whether `action`
     /// was consumed.
@@ -45,7 +56,32 @@ impl App {
                 for screen in MONITOR_SCREENS {
                     self.forward_to_screen(screen, action)?;
                 }
+                // A link that came back reloads the statistics on screen.
+                if matches!(action, Action::Connected) && self.access.session {
+                    self.reload_visible_stats()?;
+                }
                 return Ok(false);
+            }
+            // Statistics wait for session access, which is known only now.
+            Action::AccessUpdated(access) => {
+                if access.session {
+                    self.reload_visible_stats()?;
+                }
+                return Ok(false);
+            }
+            Action::ControllerChanged => {
+                if let Some(task) = self.monitor.stats_task.take() {
+                    task.abort();
+                }
+                self.monitor.dpi = None;
+                return Ok(false);
+            }
+            Action::StatsUpdated(data) => {
+                self.remember_dpi(data);
+                return Ok(false);
+            }
+            Action::StatsLoading(_) | Action::StatsFailed { .. } => {
+                self.forward_to_screen(ScreenId::Stats, action)?;
             }
             Action::RequestEventHistory {
                 within_hours,
@@ -62,6 +98,16 @@ impl App {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Queue a reload of the Stats screen's period when it is on screen.
+    /// Queued, so it runs once the action being handled has settled.
+    fn reload_visible_stats(&self) -> Result<()> {
+        if self.active_screen == ScreenId::Stats {
+            self.action_tx
+                .send(Action::RequestStats(self.stats_period))?;
+        }
+        Ok(())
     }
 
     /// Fetch a window of event history and hand it to the Events screen.

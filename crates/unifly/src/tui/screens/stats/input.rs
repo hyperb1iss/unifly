@@ -19,10 +19,8 @@ impl StatsScreen {
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         let target = self.hits.borrow().clicked(mouse)?;
         match target {
-            Click::Tab(index) => {
-                let period = *StatsPeriod::ALL.get(index)?;
-                (period != self.period).then(|| self.set_period(period))
-            }
+            // The active chip reloads, as its key does.
+            Click::Tab(index) => Some(self.set_period(*StatsPeriod::ALL.get(index)?)),
             Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
@@ -37,13 +35,13 @@ impl StatsScreen {
         self.set_period(all[usize::try_from(next).unwrap_or(0)])
     }
 
-    /// Load `period`. A different period shares neither scale nor peak
-    /// with the one on screen, so its first snapshot sizes the charts from
-    /// scratch instead of easing out of the old range or pulsing as a peak.
+    /// Show `period` and ask for its data. The charts stay blank until
+    /// that data arrives, and an error for the old period goes with it.
     fn set_period(&mut self, period: StatsPeriod) -> Action {
         if period != self.period {
             self.period = period;
-            self.fresh_scale = true;
+            self.loading = false;
+            self.error = None;
         }
         Action::RequestStats(period)
     }
@@ -77,6 +75,9 @@ mod tests {
 
         let rows = render_lines(100, 30, |frame, area| screen.render(frame, area));
         let action = screen.handle_mouse_input(click_label(&rows, "30d", "1h"));
-        assert!(action.is_none(), "the active period is already loaded");
+        assert!(
+            matches!(action, Some(Action::RequestStats(StatsPeriod::OneHour))),
+            "the active period reloads: {action:?}"
+        );
     }
 }

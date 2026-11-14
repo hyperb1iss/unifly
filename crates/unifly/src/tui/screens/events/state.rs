@@ -6,8 +6,9 @@ use unifly_api::Event;
 use unifly_api::model::EventCategory;
 
 use super::feed::{EventKey, Feed};
-use super::{CAPACITY, EventsScreen, HISTORY_STEPS, History, Link};
+use super::{CAPACITY, EventsScreen, HISTORY_STEPS, History};
 use crate::tui::action::Action;
+use crate::tui::screens::link::Link;
 
 impl EventsScreen {
     pub fn new() -> Self {
@@ -230,9 +231,10 @@ impl EventsScreen {
                 self.refilter();
             }
             Action::AccessUpdated(access) => self.access = Some(*access),
-            Action::Connecting | Action::Reconnecting { .. } => self.link = Link::Connecting,
-            Action::Connected => self.link = Link::Up,
-            Action::Disconnected(_) => self.link = Link::Down,
+            Action::Connecting
+            | Action::Connected
+            | Action::Reconnecting { .. }
+            | Action::Disconnected(_) => self.link.follow(action),
             Action::DevicesUpdated(devices) => self.devices = Arc::clone(devices),
             Action::ClientsUpdated(clients) => self.clients = Arc::clone(clients),
             Action::ControllerChanged => {

@@ -6,7 +6,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{Action, App, StatsPeriod};
-use crate::tui::action::NotificationLevel;
+use crate::tui::action::Access;
+use crate::tui::app::ConnectionStatus;
 
 async fn controller(server: &MockServer) -> Controller {
     for (route, status) in [("/api/auth/login", 401), ("/api/login", 404)] {
@@ -44,7 +45,7 @@ async fn controller(server: &MockServer) -> Controller {
 }
 
 #[tokio::test]
-async fn dpi_failures_notify_without_discarding_loaded_history_or_other_dpi() {
+async fn dpi_failures_ride_inline_without_discarding_loaded_history_or_other_dpi() {
     for (apps_fail, categories_fail) in [(true, false), (false, true), (true, true)] {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -95,45 +96,106 @@ async fn dpi_failures_notify_without_discarding_loaded_history_or_other_dpi() {
             .mount(&server)
             .await;
         let controller = controller(&server).await;
-        let mut app = App::new(Some(controller.clone()), None, false, false);
-        app.fetch_stats(StatsPeriod::OneHour);
-        let mut notices = Vec::new();
-        let data = loop {
-            let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
-                .await
-                .expect("history must publish even when DPI fails")
-                .expect("action channel remains open");
-            match action {
-                Action::Notify(notice) => {
-                    assert_eq!(notice.level, NotificationLevel::Error);
-                    notices.push(notice.message);
-                }
-                Action::StatsUpdated(data) => break data,
-                other => panic!("unexpected action: {other:?}"),
-            }
+        let app = App::new(Some(controller.clone()), None, false, false);
+        let mut app = app;
+        let _task = app.fetch_stats(StatsPeriod::OneHour);
+        let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
+            .await
+            .expect("history must publish even when DPI fails")
+            .expect("action channel remains open");
+        // A DPI failure rides along with the history, so a timed reload
+        // cannot stack a toast for it every minute.
+        let Action::StatsUpdated(data) = action else {
+            panic!("unexpected action: {action:?}");
         };
+        assert_eq!(data.period, StatsPeriod::OneHour);
         assert_eq!(data.bandwidth_tx, vec![(1.0, 1000.0)]);
         assert_eq!(data.bandwidth_rx, vec![(1.0, 2000.0)]);
         assert_eq!(data.client_counts, vec![(1.0, 4.0)]);
         assert_eq!(data.dpi_apps.is_empty(), apps_fail);
         assert_eq!(data.dpi_categories.is_empty(), categories_fail);
-        assert_eq!(
-            notices.len(),
-            usize::from(apps_fail) + usize::from(categories_fail)
-        );
-        assert_eq!(
-            notices
-                .iter()
-                .any(|message| message.contains("application traffic")),
-            apps_fail
-        );
-        assert_eq!(
-            notices
-                .iter()
-                .any(|message| message.contains("traffic categories")),
-            categories_fail
-        );
+        let error = data.dpi_error.unwrap_or_default();
+        assert_eq!(error.contains("applications:"), apps_fail, "{error}");
+        assert_eq!(error.contains("categories:"), categories_fail, "{error}");
         controller.disconnect().await;
         server.verify().await;
     }
+}
+
+async fn demo_app(session: bool) -> App {
+    let demo = Controller::demo(unifly_api::DemoFleetOptions::default());
+    demo.connect().await.expect("demo fleet connects");
+    let mut app = App::new(Some(demo), None, false, false);
+    app.connection_status = ConnectionStatus::Connected;
+    app.access = Access {
+        integration: true,
+        session,
+        live_events: session,
+    };
+    app
+}
+
+#[tokio::test]
+async fn statistics_are_not_requested_without_session_access() {
+    let mut app = demo_app(false).await;
+
+    app.process_action(&Action::RequestStats(StatsPeriod::SevenDays))
+        .expect("request");
+
+    assert!(app.monitor.stats_task.is_none(), "nothing was fetched");
+    assert_eq!(app.stats_period, StatsPeriod::SevenDays);
+    assert!(app.action_rx.try_recv().is_err(), "and nothing was toasted");
+}
+
+#[tokio::test]
+async fn statistics_are_not_requested_while_disconnected() {
+    let mut app = demo_app(true).await;
+    app.connection_status = ConnectionStatus::Reconnecting { attempt: 2 };
+
+    app.process_action(&Action::RequestStats(StatsPeriod::OneHour))
+        .expect("request");
+
+    assert!(app.monitor.stats_task.is_none());
+}
+
+#[tokio::test]
+async fn a_newer_request_aborts_the_one_in_flight() {
+    let mut app = demo_app(true).await;
+
+    app.process_action(&Action::RequestStats(StatsPeriod::OneHour))
+        .expect("first request");
+    let first = app.monitor.stats_task.clone().expect("a fetch started");
+    app.process_action(&Action::RequestStats(StatsPeriod::SevenDays))
+        .expect("second request");
+
+    let data = loop {
+        let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
+            .await
+            .expect("the newer fetch reports")
+            .expect("action channel remains open");
+        if let Action::StatsUpdated(data) = action {
+            break data;
+        }
+    };
+    assert_eq!(data.period, StatsPeriod::SevenDays);
+    assert!(first.is_finished(), "the superseded fetch was stopped");
+    assert!(app.action_rx.try_recv().is_err(), "and never reported");
+}
+
+#[tokio::test]
+async fn regaining_access_reloads_the_statistics_on_screen() {
+    use crate::tui::screen::ScreenId;
+
+    let mut app = demo_app(true).await;
+    app.active_screen = ScreenId::Stats;
+    app.stats_period = StatsPeriod::ThirtyDays;
+
+    app.process_action(&Action::AccessUpdated(app.access))
+        .expect("access");
+
+    let queued = app.action_rx.try_recv().expect("a reload is queued");
+    assert!(
+        matches!(queued, Action::RequestStats(StatsPeriod::ThirtyDays)),
+        "{queued:?}"
+    );
 }

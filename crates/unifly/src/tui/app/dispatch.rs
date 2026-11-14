@@ -155,11 +155,7 @@ impl App {
                 self.access = *access;
                 self.forward_to_all_screens(action)?;
             }
-            Action::RequestStats(period) => {
-                self.stats_period = *period;
-                self.last_stats_fetch = Some(std::time::Instant::now());
-                self.fetch_stats(*period);
-            }
+            Action::RequestStats(period) => self.request_stats(*period)?,
             Action::OnboardingComplete { config, .. } => {
                 self.handle_onboarding_complete(config)?;
             }

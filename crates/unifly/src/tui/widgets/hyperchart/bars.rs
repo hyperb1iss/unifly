@@ -130,19 +130,6 @@ impl Widget for HyperBars<'_> {
             return;
         }
 
-        // Column widths: leading gap (2) + optional rank (3) + label + space (1) + bar + space (1) + value
-        let value_width: usize = match self.value_format {
-            ValueFormat::Bytes => 6,
-            ValueFormat::Percent => 4,
-            ValueFormat::Count => 7,
-        };
-        let rank_width: usize = if self.show_rank { 3 } else { 0 };
-        let gutter = 2 + rank_width + self.label_width + 1 + 1 + value_width;
-        let bar_budget = usize::from(inner.width).saturating_sub(gutter);
-
-        let colors = theme::chart_series();
-        let max_rows = usize::from(inner.height);
-
         let denom_value: u64 = match self.denominator {
             Denominator::MaxObserved => self
                 .rows
@@ -156,6 +143,38 @@ impl Widget for HyperBars<'_> {
                 total.max(1)
             }
         };
+        let max_rows = usize::from(inner.height);
+        let values: Vec<String> = self
+            .rows
+            .iter()
+            .take(max_rows)
+            .map(|row| match self.value_format {
+                ValueFormat::Bytes => bytes_fmt::fmt_bytes_short(row.value),
+                ValueFormat::Percent => {
+                    let pct = (row.value as f64 / denom_value as f64) * 100.0;
+                    format!("{pct:.0}%")
+                }
+                ValueFormat::Count => row.value.to_string(),
+            })
+            .collect();
+
+        // Column widths: leading gap (2) + optional rank (3) + label + space (1) + bar + space (1) + value.
+        // The value column grows to its widest value, so a large one keeps
+        // its unit instead of losing it to the border.
+        let nominal_width: usize = match self.value_format {
+            ValueFormat::Bytes => 6,
+            ValueFormat::Percent => 4,
+            ValueFormat::Count => 7,
+        };
+        let value_width = values
+            .iter()
+            .map(|value| Span::raw(value.as_str()).width())
+            .fold(nominal_width, usize::max);
+        let rank_width: usize = if self.show_rank { 3 } else { 0 };
+        let gutter = 2 + rank_width + self.label_width + 1 + 1 + value_width;
+        let bar_budget = usize::from(inner.width).saturating_sub(gutter);
+
+        let colors = theme::chart_series();
 
         let mut lines: Vec<Line> = Vec::with_capacity(max_rows);
         for (idx, row) in self.rows.iter().enumerate().take(max_rows) {
@@ -165,20 +184,10 @@ impl Widget for HyperBars<'_> {
 
             let display_label: String = row.label.chars().take(self.label_width).collect();
 
-            let value_str = match self.value_format {
-                ValueFormat::Bytes => format!(
-                    "{:>width$}",
-                    bytes_fmt::fmt_bytes_short(row.value),
-                    width = value_width
-                ),
-                ValueFormat::Percent => {
-                    let pct = (row.value as f64 / denom_value as f64) * 100.0;
-                    format!("{pct:>width$.0}%", width = value_width.saturating_sub(1))
-                }
-                ValueFormat::Count => {
-                    format!("{:>width$}", row.value, width = value_width)
-                }
-            };
+            let value_str = format!(
+                "{:>value_width$}",
+                values.get(idx).map_or("", String::as_str)
+            );
 
             let label_width = self.label_width;
             let mut spans: Vec<Span> = Vec::with_capacity(4);

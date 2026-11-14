@@ -3,7 +3,9 @@
 /// Format bytes into a compact human-readable string (e.g., "245M", "1.2G").
 #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
 pub fn fmt_bytes_short(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
+    if bytes >= 1_000_000_000_000 {
+        format!("{:.1}T", bytes as f64 / 1_000_000_000_000.0)
+    } else if bytes >= 1_000_000_000 {
         format!("{:.1}G", bytes as f64 / 1_000_000_000.0)
     } else if bytes >= 1_000_000 {
         format!("{}M", bytes / 1_000_000)

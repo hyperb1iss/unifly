@@ -122,6 +122,8 @@ pub struct App {
     needs_redraw: bool,
     /// Set while a firewall policy move is in flight.
     policy_move: Arc<std::sync::atomic::AtomicBool>,
+    /// In-flight work and caches for the monitoring screens.
+    monitor: monitor::MonitorState,
 }
 
 impl App {
@@ -184,6 +186,7 @@ impl App {
             last_frame: Instant::now(),
             needs_redraw: true,
             policy_move: Arc::default(),
+            monitor: monitor::MonitorState::default(),
         }
     }
 

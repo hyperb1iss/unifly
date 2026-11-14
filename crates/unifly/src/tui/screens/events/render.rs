@@ -10,7 +10,8 @@ use unifly_api::model::{EventCategory, EventSeverity};
 
 use super::punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
 use super::state::window_label;
-use super::{CATEGORIES, EventsScreen, Link};
+use super::{CATEGORIES, EventsScreen};
+use crate::tui::screens::link::Link;
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, Hint};
 use crate::tui::widgets::sub_tabs;
@@ -338,12 +339,10 @@ impl EventsScreen {
     fn render_empty(&self, frame: &mut Frame, area: Rect) {
         let message = if !self.feed.is_empty() {
             "No events match the filter"
-        } else if self.link != Link::Up || self.access.is_none() {
-            if self.link == Link::Down {
-                "Not connected"
-            } else {
-                "Connecting\u{2026}"
-            }
+        } else if let Some(waiting) = self.link.waiting() {
+            waiting
+        } else if self.access.is_none() {
+            "Connecting\u{2026}"
         } else if !self.access.is_some_and(|access| access.session) {
             "Events need a direct controller session; cloud profiles cannot read them"
         } else {
