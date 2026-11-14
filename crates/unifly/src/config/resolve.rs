@@ -165,36 +165,114 @@ pub fn controller_points_to_cloud(controller: Option<&str>) -> bool {
 /// Normalize auth and its target together before discovery or connection setup.
 /// Applying the same flags again leaves the selected connection unchanged.
 fn normalized_profile(profile: &Profile, global: &GlobalOpts) -> Profile {
-    let mut effective = profile.clone();
-    if global.api_key.is_some() {
-        if global.host_id.is_some() || controller_points_to_cloud(global.controller.as_deref()) {
-            if profile.auth_mode != "cloud" && global.controller.is_none() {
-                effective.controller = config::DEFAULT_CLOUD_CONTROLLER_URL.into();
-            }
-            effective.auth_mode = "cloud".into();
-        } else if global.controller.is_some()
-            || matches!(profile.auth_mode.as_str(), "session" | "legacy")
-        {
-            effective.auth_mode = "integration".into();
+    ConnectionOverrides::from_flags(global).apply(profile)
+}
+
+/// The launch flags that change which controller a profile connects to
+/// and how. The dashboard keeps them for the whole session, so a
+/// connection rebuilt from an edited profile still honors them.
+#[derive(Clone, Default)]
+pub struct ConnectionOverrides {
+    pub controller: Option<String>,
+    pub site: Option<String>,
+    pub api_key: Option<String>,
+    pub host_id: Option<String>,
+    pub insecure: Option<bool>,
+    pub timeout: Option<u64>,
+    pub no_cache: bool,
+}
+
+impl std::fmt::Debug for ConnectionOverrides {
+    /// The API key is a secret, so only its presence is printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionOverrides")
+            .field("controller", &self.controller)
+            .field("site", &self.site)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<set>"))
+            .field("host_id", &self.host_id)
+            .field("insecure", &self.insecure)
+            .field("timeout", &self.timeout)
+            .field("no_cache", &self.no_cache)
+            .finish()
+    }
+}
+
+impl ConnectionOverrides {
+    pub fn from_flags(global: &GlobalOpts) -> Self {
+        Self {
+            controller: global.controller.clone(),
+            site: global.site.clone(),
+            api_key: global.api_key.clone(),
+            host_id: global.host_id.clone(),
+            insecure: global.insecure,
+            timeout: global.timeout,
+            no_cache: global.no_cache,
         }
     }
-    if let Some(url) = &global.controller {
-        effective.controller.clone_from(url);
+
+    /// `profile` as it connects with these overrides on top.
+    pub fn apply(&self, profile: &Profile) -> Profile {
+        let mut effective = profile.clone();
+        if self.api_key.is_some() {
+            if self.host_id.is_some() || controller_points_to_cloud(self.controller.as_deref()) {
+                if profile.auth_mode != "cloud" && self.controller.is_none() {
+                    effective.controller = config::DEFAULT_CLOUD_CONTROLLER_URL.into();
+                }
+                effective.auth_mode = "cloud".into();
+            } else if self.controller.is_some()
+                || matches!(profile.auth_mode.as_str(), "session" | "legacy")
+            {
+                effective.auth_mode = "integration".into();
+            }
+        }
+        if let Some(url) = &self.controller {
+            effective.controller.clone_from(url);
+        }
+        if let Some(site) = &self.site {
+            effective.site.clone_from(site);
+        }
+        if let Some(key) = &self.api_key {
+            effective.api_key = Some(key.clone());
+            effective.api_key_env = None;
+        }
+        if let Some(host_id) = &self.host_id {
+            effective.host_id = Some(host_id.clone());
+            effective.host_id_env = None;
+        }
+        effective.insecure = self.insecure.or(profile.insecure);
+        effective.timeout = self.timeout.or(profile.timeout);
+        effective
     }
-    if let Some(site) = &global.site {
-        effective.site.clone_from(site);
+}
+
+/// Resolve `profile` for the dashboard with the session's launch overrides
+/// on top. A password written in the profile is used as it stands: this is
+/// the path that tests what a form holds, so `UNIFI_PASSWORD` must not
+/// stand in for the value under test.
+pub fn resolve_session_connection(
+    profile: &Profile,
+    profile_name: &str,
+    overrides: &ConnectionOverrides,
+    defaults: &Defaults,
+) -> Result<ControllerConfig, ConfigError> {
+    let effective = overrides.apply(profile);
+    let mut resolved = config::controller::build(
+        &effective,
+        Some(profile_name),
+        defaults,
+        config::ConnectionUsage::Interactive,
+    )?;
+    if let Some(typed) = &effective.password {
+        match &mut resolved.auth {
+            unifly_api::AuthCredentials::Credentials { password, .. }
+            | unifly_api::AuthCredentials::Hybrid { password, .. } => {
+                *password = SecretString::from(typed.clone());
+            }
+            unifly_api::AuthCredentials::ApiKey(_) | unifly_api::AuthCredentials::Cloud { .. } => {}
+        }
     }
-    if let Some(key) = &global.api_key {
-        effective.api_key = Some(key.clone());
-        effective.api_key_env = None;
-    }
-    if let Some(host_id) = &global.host_id {
-        effective.host_id = Some(host_id.clone());
-        effective.host_id_env = None;
-    }
-    effective.insecure = global.insecure.or(profile.insecure);
-    effective.timeout = global.timeout.or(profile.timeout);
-    effective
+    resolved.no_session_cache |= overrides.no_cache;
+    Ok(resolved)
 }
 
 #[cfg(test)]
