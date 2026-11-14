@@ -272,7 +272,6 @@ fn launch_save(tx: Option<&UnboundedSender<Action>>, generation: u64, tested: Te
 /// Connect with `request` and report how it went, or `None` when the test
 /// was cancelled.
 async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeResult> {
-    let mode = AuthMode::parse(&request.profile.auth_mode).unwrap_or(AuthMode::ApiKey);
     let site = request.profile.site.clone();
     let totp = request.totp.clone();
 
@@ -311,6 +310,14 @@ async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeRe
     }
     let mut probe = probe_config(&live);
     probe.no_session_cache |= !hands_over;
+    // What the connection signs in with once launch flags are applied,
+    // which can differ from the mode the profile names.
+    let mode = match &live.auth {
+        AuthCredentials::ApiKey(_) => AuthMode::ApiKey,
+        AuthCredentials::Credentials { .. } => AuthMode::Session,
+        AuthCredentials::Hybrid { .. } => AuthMode::Hybrid,
+        AuthCredentials::Cloud { .. } => AuthMode::Cloud,
+    };
     let context = Context {
         mode,
         target: crate::config::redact_url_userinfo(live.url.as_str()),
@@ -328,20 +335,20 @@ async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeRe
     let result = match connected {
         Ok(()) => {
             let warnings = controller.take_warnings().await;
-            let sites = controller
-                .sites_snapshot()
-                .iter()
-                .map(|site| SiteHint {
-                    internal_reference: site.internal_name.clone(),
-                    display_name: site.name.clone(),
+            if let Some(failure) = half_connected(mode, &warnings) {
+                Err(failure)
+            } else {
+                if !hands_over {
+                    // The dashboard must sign in as what was just tested,
+                    // not ride a cookie an earlier account or password
+                    // earned.
+                    forget_cached_session(&live);
+                }
+                Ok(ProbePass {
+                    sites: sites_of(&controller),
+                    config: Box::new(live),
                 })
-                .collect();
-            if !hands_over {
-                // The dashboard must sign in as what was just tested, not
-                // ride a cookie an earlier account or password earned.
-                forget_cached_session(&live);
             }
-            grade(mode, &warnings, sites, live)
         }
         Err(error) => Err(explain(&error, &context)),
     };
@@ -349,29 +356,35 @@ async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeRe
     (!cancel.is_cancelled()).then_some(result)
 }
 
-/// A connection that passed, unless it only half did: a hybrid connect
-/// carries on without its session login, and reports that as a warning.
-fn grade(
-    mode: AuthMode,
-    warnings: &[String],
-    sites: Vec<SiteHint>,
-    live: ControllerConfig,
-) -> ProbeResult {
-    if mode == AuthMode::Hybrid
-        && let Some(warning) = warnings.first()
-    {
-        return Err(ProbeFailure::new(
+/// The sites the connected `controller` read.
+fn sites_of(controller: &Controller) -> Vec<SiteHint> {
+    controller
+        .sites_snapshot()
+        .iter()
+        .map(|site| SiteHint {
+            internal_reference: site.internal_name.clone(),
+            display_name: site.name.clone(),
+        })
+        .collect()
+}
+
+/// Why a connect that returned without an error still fails the test: a
+/// hybrid connect carries on without its session login and only reports
+/// that as a warning, which would let a wrong password pass as tested.
+fn half_connected(mode: AuthMode, warnings: &[String]) -> Option<ProbeFailure> {
+    if mode != AuthMode::Hybrid {
+        return None;
+    }
+    let warning = warnings.first()?;
+    let failure = second_factor_problem(&warning.to_lowercase()).unwrap_or_else(|| {
+        ProbeFailure::new(
             FailureKind::Credentials,
             "The API key works, but the username and password were not accepted.",
             "Correct them, or switch the auth mode to API Key if you do not need live events.",
         )
         .at(DraftField::Password)
-        .with_detail(warning.clone()));
-    }
-    Ok(ProbePass {
-        config: Box::new(live),
-        sites,
-    })
+    });
+    Some(failure.with_detail(warning.clone()))
 }
 
 /// `live` as the test runs it: one connect and one read, no background
@@ -579,24 +592,32 @@ fn explain_unreachable(reason: &str, context: &Context) -> ProbeFailure {
     ProbeFailure::new(FailureKind::Unreachable, summary, next_step).at(DraftField::Url)
 }
 
-fn explain_rejected(message: &str, context: &Context) -> ProbeFailure {
-    let lower = message.to_lowercase();
-    if lower.contains("two-factor") {
-        return ProbeFailure::new(
+/// A sign-in that failed on its second factor, told from the lowercased
+/// error: a code was needed and none given, or the one given was refused.
+fn second_factor_problem(lower: &str) -> Option<ProbeFailure> {
+    let failure = if lower.contains("two-factor") {
+        ProbeFailure::new(
             FailureKind::Mfa,
             "This account signs in with a second factor.",
             "Enter the current 6-digit code from your authenticator app in One-time code and \
              press Enter.",
         )
-        .at(DraftField::Totp);
-    }
-    if lower.contains("totp") {
-        return ProbeFailure::new(
+    } else if lower.contains("totp") {
+        ProbeFailure::new(
             FailureKind::Mfa,
             "The one-time code was not accepted.",
             "Codes change every 30 seconds and work once. Enter a fresh one and press Enter.",
         )
-        .at(DraftField::Totp);
+    } else {
+        return None;
+    };
+    Some(failure.at(DraftField::Totp))
+}
+
+fn explain_rejected(message: &str, context: &Context) -> ProbeFailure {
+    let lower = message.to_lowercase();
+    if let Some(failure) = second_factor_problem(&lower) {
+        return failure;
     }
     if lower.contains("cloud console") {
         return ProbeFailure::new(
@@ -633,7 +654,7 @@ fn explain_rejected(message: &str, context: &Context) -> ProbeFailure {
 mod tests {
     use unifly_api::{CoreError, SiteHint};
 
-    use super::{Context, FailureKind, ProbeSlot, Tone, explain, grade};
+    use super::{Context, FailureKind, ProbeSlot, Tone, explain, half_connected};
     use crate::tui::forms::controller_profile::{AuthMode, ControllerProfileDraft, DraftField};
 
     fn context(mode: AuthMode) -> Context {
@@ -784,18 +805,23 @@ mod tests {
     /// would be saved as tested.
     #[test]
     fn a_hybrid_connect_that_only_half_worked_fails_the_test() {
-        let live = unifly_api::ControllerConfig::default();
         let warning = ["Session login failed: Authentication failed".to_owned()];
 
-        let failure = grade(AuthMode::Hybrid, &warning, Vec::new(), live.clone())
-            .expect_err("a failed session login is a failed test");
+        let failure = half_connected(AuthMode::Hybrid, &warning)
+            .expect("a failed session login is a failed test");
         assert_eq!(failure.kind, FailureKind::Credentials);
         assert_eq!(failure.field, Some(DraftField::Password));
         assert!(failure.detail.is_some());
 
+        // A missing second factor is not a wrong password.
+        let mfa = ["Session login failed: Two-factor authentication token required".to_owned()];
+        let failure = half_connected(AuthMode::Hybrid, &mfa).expect("fails");
+        assert_eq!(failure.kind, FailureKind::Mfa);
+        assert_eq!(failure.field, Some(DraftField::Totp));
+
         // Cloud always notes what it cannot do; that is not a failure.
-        assert!(grade(AuthMode::Cloud, &warning, Vec::new(), live.clone()).is_ok());
-        assert!(grade(AuthMode::Hybrid, &[], Vec::new(), live).is_ok());
+        assert!(half_connected(AuthMode::Cloud, &warning).is_none());
+        assert!(half_connected(AuthMode::Hybrid, &[]).is_none());
     }
 
     #[test]
