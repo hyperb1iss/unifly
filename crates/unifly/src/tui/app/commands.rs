@@ -201,15 +201,6 @@ impl App {
             Action::ReorderPolicy(policy, direction) => {
                 self.reorder_policy(policy, *direction);
             }
-            Action::NetworkSave(id, update) => {
-                self.run_command(
-                    Command::UpdateNetwork {
-                        id: id.clone(),
-                        update: *update.clone(),
-                    },
-                    &Notice::new("Saving the network\u{2026}", "Updated network"),
-                );
-            }
             _ => return Ok(false),
         }
 

@@ -5,6 +5,7 @@ mod dispatch;
 mod firewall;
 mod lifecycle;
 mod navigation;
+mod networks_firewall;
 mod notify;
 mod render;
 mod screens;

@@ -10,9 +10,14 @@ use crate::tui::screens::networks::NetworksScreen;
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Hint};
+use crate::tui::widgets::detail_grid::{NONE, render_empty, render_panel, split_detail};
 
-use super::detail::render_detail;
-use super::edit::render_edit_overlay;
+use super::detail::{detail_grid, management_label};
+use super::edit::render_form;
+
+/// Rows the table keeps when the detail panel opens: its header and three
+/// networks.
+const MIN_TABLE_ROWS: u16 = 4;
 
 pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Rect) {
     screen.hits.borrow_mut().clear();
@@ -31,17 +36,77 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
 
-    let (table_area, detail_area) = if screen.detail_open {
-        let chunks =
-            Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).split(inner);
-        (chunks[0], Some(chunks[1]))
+    if screen.networks.is_empty() {
+        render_empty(frame, layout[0], empty_reason(screen));
     } else {
-        (inner, None)
+        let detail = screen
+            .selected_network()
+            .filter(|_| screen.detail_open)
+            .map(|network| {
+                let lines =
+                    detail_grid(network, &screen.zones).lines(layout[0].width.saturating_sub(2));
+                (network.name.clone(), lines)
+            });
+        let (table_area, panel) = match &detail {
+            Some((_, lines)) => split_detail(layout[0], lines.len(), MIN_TABLE_ROWS),
+            None => (layout[0], Rect::default()),
+        };
+        render_table(screen, frame, table_area);
+        if let Some((name, lines)) = detail {
+            render_panel(frame, panel, &name, lines);
+        }
+    }
+
+    // The form shows its own keys; the list's do nothing while it is open.
+    if let Some(form) = screen.form.as_ref() {
+        render_form(frame, area, form, &mut screen.hits.borrow_mut());
+    } else {
+        let line = hint_bar(screen).draw(layout[1], &mut screen.hits.borrow_mut());
+        frame.render_widget(Paragraph::new(line), layout[1]);
+    }
+}
+
+/// Why the table has nothing in it.
+fn empty_reason(screen: &NetworksScreen) -> &'static str {
+    match screen.access {
+        None => "Waiting for the controller\u{2026}",
+        Some(access) if !access.integration => {
+            "Networks come from the Integration API, which this profile cannot reach. \
+             Add an API key to it to see them."
+        }
+        Some(_) => "No networks on this site. Press c to create one.",
+    }
+}
+
+/// The keys that work right now: nothing acts on a network when there is
+/// none, and creating one needs the Integration API.
+fn hint_bar(screen: &NetworksScreen) -> click::ClickLine<'static, click::Click> {
+    let create = Hint::button("c", "new", click::char_key('c'));
+    if screen.networks.is_empty() {
+        let can_create = screen.access.is_some_and(|access| access.integration);
+        return click::key_hints(if can_create {
+            std::slice::from_ref(&create)
+        } else {
+            &[]
+        });
+    }
+    let toggle = if screen.detail_open {
+        Hint::button("Esc", "close", KeyCode::Esc)
+    } else {
+        Hint::button("Enter", "detail", KeyCode::Enter)
     };
+    click::key_hints(&[
+        Hint::info("j/k", "navigate"),
+        toggle,
+        Hint::button("e", "edit", click::char_key('e')),
+        create,
+        Hint::button("D", "delete", click::char_key('D')),
+    ])
+}
 
-    let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(table_area);
-
+fn render_table(screen: &NetworksScreen, frame: &mut Frame, area: Rect) {
     let selected_idx = screen.selected_index();
     let cells: Vec<NetworkCells> = screen
         .networks
@@ -56,7 +121,7 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         Column::fit("Gateway", cells.iter().map(|c| &c.gateway), 39).shrink_to(15),
         Column::fit("Subnet", cells.iter().map(|c| &c.subnet), 43).shrink_to(18),
         Column::fit("DHCP", cells.iter().map(|c| c.dhcp), 4),
-        Column::fit("Type", cells.iter().map(|c| &c.management), 12),
+        Column::fit("Type", cells.iter().map(|c| c.management), 12),
         Column::fit("IPv6", cells.iter().map(|c| &c.ipv6), 18),
     ];
     let header = Row::new(
@@ -71,51 +136,26 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         .collect();
 
     let len = rows.len();
-    let table = Table::new(rows, plan_columns(&columns, layout[0].width))
+    let table = Table::new(rows, plan_columns(&columns, area.width))
         .header(header)
         .row_highlight_style(theme::table_selected());
 
     let state = screen
         .table_scroll
-        .render(frame, table, layout[0], &screen.table_state, len);
-    screen
-        .hits
-        .borrow_mut()
-        .push_table_rows(layout[0], &state, len);
-
-    let toggle = if screen.detail_open {
-        Hint::button("Esc", "collapse", KeyCode::Esc)
-    } else {
-        Hint::button("Enter", "expand", KeyCode::Enter)
-    };
-    let hints = click::key_hints(&[
-        Hint::info("j/k", "navigate"),
-        toggle,
-        Hint::button("e", "edit", click::char_key('e')),
-    ]);
-    let line = hints.draw(layout[1], &mut screen.hits.borrow_mut());
-    frame.render_widget(Paragraph::new(line), layout[1]);
-
-    if let Some(detail_area) = detail_area
-        && let Some(network) = screen.networks.get(selected_idx)
-    {
-        render_detail(frame, detail_area, network);
-    }
-
-    if let Some(edit) = screen.edit_state.as_ref() {
-        render_edit_overlay(frame, area, edit, &mut screen.hits.borrow_mut());
-    }
+        .render(frame, table, area, &screen.table_state, len);
+    screen.hits.borrow_mut().push_table_rows(area, &state, len);
 }
 
 /// One network's table cells as text, measured once for column sizing and
 /// then styled into a row.
 struct NetworkCells {
     name: String,
+    enabled: bool,
     vlan: String,
     gateway: String,
     subnet: String,
     dhcp: &'static str,
-    management: String,
+    management: &'static str,
     ipv6: String,
 }
 
@@ -123,21 +163,19 @@ impl NetworkCells {
     fn new(network: &Network) -> Self {
         Self {
             name: network.name.clone(),
+            enabled: network.enabled,
             vlan: network
                 .vlan_id
-                .map_or_else(|| "─".into(), |value| value.to_string()),
+                .map_or_else(|| NONE.into(), |value| value.to_string()),
             gateway: network
                 .gateway_ip
-                .map_or_else(|| "─".into(), |ip| ip.to_string()),
-            subnet: network.subnet.clone().unwrap_or_else(|| "─".into()),
+                .map_or_else(|| NONE.into(), |ip| ip.to_string()),
+            subnet: network.subnet.clone().unwrap_or_else(|| NONE.into()),
             dhcp: network
                 .dhcp
                 .as_ref()
-                .map_or("─", |dhcp| if dhcp.enabled { "On" } else { "Off" }),
-            management: network
-                .management
-                .as_ref()
-                .map_or_else(|| "─".into(), |value| format!("{value:?}")),
+                .map_or(NONE, |dhcp| if dhcp.enabled { "On" } else { "Off" }),
+            management: management_label(network.management),
             ipv6: if network.ipv6_enabled {
                 network
                     .ipv6_mode
@@ -152,28 +190,41 @@ impl NetworkCells {
 
 fn render_table_row(is_selected: bool, cells: NetworkCells) -> Row<'static> {
     let prefix = if is_selected { "▸" } else { " " };
+    // A network that is switched off carries no traffic, so its row steps
+    // back.
+    let color = |color| {
+        if cells.enabled {
+            color
+        } else {
+            theme::text_muted()
+        }
+    };
     let name_style = Style::default()
-        .fg(theme::accent_secondary())
+        .fg(color(theme::accent_secondary()))
         .add_modifier(if is_selected {
             Modifier::BOLD
         } else {
             Modifier::empty()
         });
+    let address = Style::default().fg(color(theme::accent_tertiary()));
+    let row_style = if is_selected {
+        theme::table_selected()
+    } else if cells.enabled {
+        theme::table_row()
+    } else {
+        Style::default().fg(theme::text_muted())
+    };
 
     Row::new(vec![
         Cell::from(format!("{prefix}{}", cells.name)).style(name_style),
         Cell::from(cells.vlan),
-        Cell::from(cells.gateway).style(Style::default().fg(theme::accent_tertiary())),
-        Cell::from(cells.subnet).style(Style::default().fg(theme::accent_tertiary())),
+        Cell::from(cells.gateway).style(address),
+        Cell::from(cells.subnet).style(address),
         Cell::from(cells.dhcp),
         Cell::from(cells.management),
         Cell::from(cells.ipv6),
     ])
-    .style(if is_selected {
-        theme::table_selected()
-    } else {
-        theme::table_row()
-    })
+    .style(row_style)
 }
 
 #[cfg(test)]

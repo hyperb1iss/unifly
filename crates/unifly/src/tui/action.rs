@@ -8,7 +8,9 @@ use unifly_api::model::{
     AclRule, EventCategory, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast,
 };
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
-use unifly_api::{Client, Device, EntityId, Event, Network, Site, UpdateNetworkRequest};
+use unifly_api::{
+    Client, CreateNetworkRequest, Device, EntityId, Event, Network, Site, UpdateNetworkRequest,
+};
 
 use crate::tui::screen::ScreenId;
 
@@ -484,7 +486,6 @@ pub enum Action {
     FirewallSubTab(FirewallSubTab),
 
     // ── Network Editing ──────────────────────────────────────────
-    NetworkEdit(EntityId),
     NetworkSave(EntityId, Box<UpdateNetworkRequest>),
     NetworkEditResult(Result<(), String>),
 
@@ -591,4 +592,10 @@ pub enum Action {
     // ── Donate ───────────────────────────────────────────────────
     OpenDonate,
     SetShowDonate(bool),
+
+    // ── networks-firewall ──
+    /// Create the network the form describes.
+    NetworkCreate(Box<CreateNetworkRequest>),
+    /// Check what uses a network, then ask before deleting it.
+    RequestDeleteNetwork(EntityId),
 }
