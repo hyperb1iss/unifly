@@ -68,9 +68,10 @@ impl App {
         Ok(true)
     }
 
-    /// Where a WiFi fetch started now reports back. The answer is checked
-    /// when it is handled, after any controller change queued ahead of it,
-    /// so nothing from the old controller lands on the cleared screen.
+    /// The way back for a WiFi fetch started under the current controller.
+    /// The answer is checked when it is handled, after any controller
+    /// change queued ahead of it, so nothing from the old controller lands
+    /// on the cleared screen.
     fn wifi_reply(&self) -> impl Fn(Action) + Send + 'static {
         let tx = self.action_tx.clone();
         let generation = self.wifi.generation;

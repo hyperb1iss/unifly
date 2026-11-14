@@ -291,7 +291,7 @@ impl App {
 }
 
 /// Run one SSID write, refresh the controller's data, and compare what the
-/// controller now reports with what was asked for. Returns the toast, and
+/// controller reports afterwards with what was asked for. Returns the toast, and
 /// the record read back when there is one.
 async fn apply(
     controller: &Controller,
@@ -343,11 +343,17 @@ async fn apply(
     };
     match controller.get_wifi_broadcast_detail(id).await {
         Ok(detail) => {
-            let notification = match unapplied(&update, &detail) {
-                Some(still) => Notification::error(format!(
+            let notification = if let Some(still) = unapplied(&update, &detail) {
+                Notification::error(format!(
                     "The controller accepted the change to {name} but still reports {still}"
-                )),
-                None => Notification::success(done),
+                ))
+            } else if update.hide_ssid.is_some() && detail.hidden.is_none() {
+                // Nothing contradicts the write, and nothing confirms it.
+                Notification::warning(format!(
+                    "{done}, but the controller's record does not say whether the name is hidden"
+                ))
+            } else {
+                Notification::success(done)
             };
             (notification, Some(detail))
         }
@@ -370,13 +376,14 @@ fn unapplied(update: &UpdateWifiBroadcastRequest, detail: &WifiBroadcast) -> Opt
         return Some(format!("it {}", if detail.enabled { "on" } else { "off" }));
     }
     if let Some(hidden) = update.hide_ssid
-        && detail.hidden != Some(hidden)
+        && let Some(reported) = detail.hidden
+        && reported != hidden
     {
         return Some(
-            match detail.hidden {
-                Some(true) => "its name hidden",
-                Some(false) => "its name announced",
-                None => "nothing about its visibility",
+            if reported {
+                "its name hidden"
+            } else {
+                "its name announced"
             }
             .to_owned(),
         );
@@ -893,6 +900,13 @@ mod tests {
         let update = |json: serde_json::Value| -> UpdateWifiBroadcastRequest {
             serde_json::from_value(json).expect("update")
         };
+        let mut unsaid = detail.clone();
+        unsaid.hidden = None;
+        assert_eq!(
+            unapplied(&update(serde_json::json!({"hide_ssid": true})), &unsaid),
+            None,
+            "a record that does not say is not a contradiction"
+        );
         for (asked, still) in [
             (serde_json::json!({"enabled": false}), Some("it on")),
             (serde_json::json!({"enabled": true}), None),

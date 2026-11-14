@@ -66,7 +66,7 @@ impl SsidDetails {
     }
 
     /// Keep step with a new list: forget SSIDs that left, and expire a
-    /// record the summary now disagrees with, since something changed it.
+    /// record the summary disagrees with, since something changed it.
     pub(super) fn follow(&mut self, listed: &[Arc<WifiBroadcast>]) {
         let ids: HashSet<&EntityId> = listed.iter().map(|ssid| &ssid.id).collect();
         self.known.retain(|id, _| ids.contains(id));
