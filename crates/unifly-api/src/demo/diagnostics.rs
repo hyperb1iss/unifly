@@ -115,6 +115,9 @@ impl Simulation {
                 }),
         );
 
+        for alarm in &mut alarms {
+            alarm.archived |= self.archived_alarms.contains(&alarm.id.to_string());
+        }
         alarms.sort_by_key(|alarm| std::cmp::Reverse(alarm.timestamp));
         alarms
     }
@@ -203,6 +206,36 @@ mod tests {
             lost.device_mac.as_ref(),
             Some(&sim.fleet.devices[AP_BASE + OFFLINE_AP].mac)
         );
+    }
+
+    #[test]
+    fn archiving_clears_one_alarm_or_all_of_them() {
+        use crate::command::Command;
+
+        let mut sim = sim(DEFAULT_DEMO_SEED);
+        let now = sim.fleet.anchor;
+        let first = sim.alarms()[0].id.clone();
+
+        sim.apply_command(Command::ArchiveAlarm { id: first.clone() }, now)
+            .expect("archive one");
+        let alarms = sim.alarms();
+        assert_eq!(alarms.iter().filter(|alarm| alarm.archived).count(), 1);
+        assert!(
+            alarms
+                .iter()
+                .find(|alarm| alarm.id == first)
+                .is_some_and(|alarm| alarm.archived)
+        );
+
+        let unknown = crate::model::EntityId::Legacy("no-such-alarm".into());
+        assert!(
+            sim.apply_command(Command::ArchiveAlarm { id: unknown }, now)
+                .is_err()
+        );
+
+        sim.apply_command(Command::ArchiveAllAlarms, now)
+            .expect("archive all");
+        assert!(sim.alarms().iter().all(|alarm| alarm.archived));
     }
 
     #[test]

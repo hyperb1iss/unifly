@@ -139,9 +139,31 @@ impl Simulation {
             Command::UpdateWifiBroadcast { id, update } => {
                 self.update_wifi(&id, &update, now, &mut delta)?;
             }
+            Command::ArchiveAlarm { id } => self.archive_alarm(&id)?,
+            Command::ArchiveAllAlarms => self.archive_all_alarms(),
             other => return Err(unavailable(&command_name(&other))),
         }
         Ok((CommandResult::Ok, delta))
+    }
+
+    fn archive_alarm(&mut self, id: &EntityId) -> Result<(), CoreError> {
+        let id = id.to_string();
+        if !self.alarms().iter().any(|alarm| alarm.id.to_string() == id) {
+            return Err(CoreError::Rejected {
+                message: format!("no alarm {id}"),
+            });
+        }
+        self.archived_alarms.insert(id);
+        Ok(())
+    }
+
+    fn archive_all_alarms(&mut self) {
+        let ids: Vec<String> = self
+            .alarms()
+            .iter()
+            .map(|alarm| alarm.id.to_string())
+            .collect();
+        self.archived_alarms.extend(ids);
     }
 
     fn require_device(&self, mac: &MacAddress) -> Result<usize, CoreError> {

@@ -94,6 +94,8 @@ pub(crate) struct Simulation {
     /// name)`. Clients join under the generated name, so each tick maps
     /// them to the current one.
     pub(crate) ssid_renames: Vec<(String, String)>,
+    /// IDs of the alarms an admin archived this session.
+    pub(crate) archived_alarms: std::collections::HashSet<String>,
     initial_clients: usize,
 }
 
@@ -127,6 +129,7 @@ impl Simulation {
             live_roams: Vec::new(),
             wan,
             ssid_renames: Vec::new(),
+            archived_alarms: std::collections::HashSet::new(),
             initial_clients,
         }
     }
