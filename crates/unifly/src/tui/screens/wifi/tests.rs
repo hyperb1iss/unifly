@@ -12,7 +12,7 @@ use unifly_api::{Client, Device};
 use super::fetch::{CLIENT_DETAIL_REFRESH_INTERVAL, CURSOR_SETTLE, RETRY_INTERVAL};
 use super::{OverviewPanel, WifiScreen};
 use crate::tui::action::{Access, Action, WifiBand, WifiSortField, WifiSubTab};
-use crate::tui::component::Component;
+use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::render_lines;
 
 fn access_point(id: &str, name: &str) -> Arc<Device> {
@@ -1325,20 +1325,6 @@ fn every_empty_table_says_which_kind_of_empty_it_is() {
     assert!(rendered(&screen).contains("No neighbors heard on 2.4 GHz"));
 }
 
-/// The key a hint stands for, as its click presses it.
-fn hinted_key(label: &str) -> KeyEvent {
-    match label {
-        "Enter" => key(KeyCode::Enter),
-        "Esc" => key(KeyCode::Esc),
-        "Space" => key(KeyCode::Char(' ')),
-        "h/l" => key(KeyCode::Char('l')),
-        "[/]" => key(KeyCode::Char(']')),
-        other => key(KeyCode::Char(
-            other.chars().next().expect("a hint names a key"),
-        )),
-    }
-}
-
 /// The keys on the hint bar, read off the rendered frame.
 fn hint_keys(screen: &WifiScreen) -> Vec<String> {
     let rows = render_lines(220, 30, |frame, area| screen.render(frame, area));
@@ -1429,8 +1415,62 @@ fn modes() -> Vec<Mode> {
     ]
 }
 
+/// Whether `action` is one the screen itself carries out. Anything else
+/// is work handed to the App: a request, a command, a dialog.
+fn stays_on_the_screen(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Invalidate
+            | Action::WifiSubTab(_)
+            | Action::WifiFocusAp(_)
+            | Action::WifiToggleChannelMap
+            | Action::WifiSortColumn(_)
+            | Action::WifiBandSelect(_)
+            | Action::ScrollToTop
+            | Action::ScrollToBottom
+            | Action::PageUp
+            | Action::PageDown
+    )
+}
+
+/// Press `key` and say whether it did anything: work for the App, or a
+/// frame that changed. A key that only returns `Invalidate` and leaves
+/// the screen as it was has done nothing.
+fn has_effect(screen: &mut WifiScreen, key: KeyEvent) -> bool {
+    let before = rendered_at(screen, 220, 30);
+    let action = screen.handle_key_input(key);
+    if let Some(action) = &action {
+        screen.apply_action(action);
+    }
+    match action {
+        None => rendered_at(screen, 220, 30) != before,
+        Some(action) if stays_on_the_screen(&action) => rendered_at(screen, 220, 30) != before,
+        Some(_) => true,
+    }
+}
+
+/// The keys a hint or help label stands for, each side of a pair.
+fn keys_of(label: &str) -> Vec<KeyEvent> {
+    match label {
+        "Enter" => vec![key(KeyCode::Enter)],
+        "Esc" => vec![key(KeyCode::Esc)],
+        "Space" => vec![key(KeyCode::Char(' '))],
+        "\u{2190}/\u{2192}" => vec![key(KeyCode::Left), key(KeyCode::Right)],
+        "\u{2191}/\u{2193}" => vec![key(KeyCode::Down), key(KeyCode::Up)],
+        "j/k" => vec![key(KeyCode::Char('j')), key(KeyCode::Char('k'))],
+        pair if pair.chars().count() == 3 && pair.chars().nth(1) == Some('/') => pair
+            .chars()
+            .filter(|ch| *ch != '/')
+            .map(|ch| key(KeyCode::Char(ch)))
+            .collect(),
+        other => vec![key(KeyCode::Char(
+            other.chars().next().expect("a label names a key"),
+        ))],
+    }
+}
+
 #[test]
-fn every_hinted_key_works_in_its_mode_and_is_in_the_help() {
+fn every_hinted_key_does_something_in_its_mode_and_is_in_the_help() {
     for (mode, build) in modes() {
         let screen = build();
         let help = screen.help();
@@ -1443,12 +1483,72 @@ fn every_hinted_key_works_in_its_mode_and_is_in_the_help() {
                     .any(|(keys, _)| keys.split_whitespace().any(|key| key == label)),
                 "{mode}: {label:?} is hinted but not in the help: {help:?}"
             );
-            if label == "j/k" {
+            // Both sides of a pair are pressed one after the other, in
+            // the order that works from here: the cursor may be resting
+            // at one end of its list.
+            let mut keys = keys_of(&label);
+            let works = |keys: &[KeyEvent]| {
+                let mut screen = build();
+                keys.iter().all(|key| has_effect(&mut screen, *key))
+            };
+            let forwards = works(&keys);
+            keys.reverse();
+            assert!(
+                forwards || works(&keys),
+                "{mode}: {label:?} is hinted but a key of it changes nothing"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_help_lists_no_key_that_is_dead_in_its_mode() {
+    let without_access: [Mode; 4] = [
+        ("clients without a session", || {
+            let mut screen = site();
+            screen.apply_action(&cloud_access());
+            screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
+            screen
+        }),
+        ("roaming without a session", || {
+            let mut screen = roaming_screen();
+            screen.apply_action(&cloud_access());
+            screen
+        }),
+        ("neighbors without a session", || {
+            let mut screen = site();
+            screen.apply_action(&cloud_access());
+            screen.apply_action(&Action::WifiSubTab(WifiSubTab::Neighbors));
+            screen
+        }),
+        ("ssids without the integration api", || {
+            let mut screen = site();
+            screen.apply_action(&Action::AccessUpdated(Access {
+                integration: false,
+                session: true,
+                live_events: true,
+            }));
+            screen.apply_action(&Action::WifiSubTab(WifiSubTab::Ssids));
+            screen
+        }),
+    ];
+    let list_keys: Vec<&str> = LIST_HELP.iter().map(|(keys, _)| *keys).collect();
+    for (mode, build) in modes().into_iter().chain(without_access) {
+        for (labels, what) in build().help() {
+            // Moving and paging are every list's, with or without rows.
+            if list_keys.contains(&labels) {
                 continue;
             }
-            let mut screen = build();
-            let action = screen.handle_key_input(hinted_key(&label));
-            assert!(action.is_some(), "{mode}: {label:?} is hinted but dead");
+            for label in labels.split_whitespace() {
+                for key in keys_of(label) {
+                    let mut screen = build();
+                    assert!(
+                        screen.handle_key_input(key).is_some(),
+                        "{mode}: the help lists {label:?} ({what}) but {:?} is dead",
+                        key.code
+                    );
+                }
+            }
         }
     }
 }

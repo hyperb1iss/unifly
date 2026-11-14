@@ -186,21 +186,24 @@ impl WifiScreen {
         keys.push(("h/l \u{2190}/\u{2192}", "Previous / next sub-tab"));
         match self.sub_tab {
             WifiSubTab::Overview => {
-                keys.extend([
-                    ("Enter", "AP detail"),
-                    ("Space", "Focus tabs on this AP"),
-                    ("c", "Channel map"),
-                ]);
+                // The keys that act on an AP need one under the cursor.
+                let ap = self.selected_ap().is_some();
+                if ap {
+                    keys.extend([("Enter", "AP detail"), ("Space", "Focus tabs on this AP")]);
+                }
+                keys.push(("c", "Channel map"));
                 if self.channel_map_open() {
                     keys.push(("[/]", "Channel map band"));
                 }
-                keys.extend([
-                    ("s", "Cycle the sort"),
-                    ("o", "Open on Devices screen"),
-                    ("R", "Restart the AP"),
-                    ("L", "Locate LED on / off"),
-                    ("U", "Upgrade firmware"),
-                ]);
+                keys.push(("s", "Cycle the sort"));
+                if ap {
+                    keys.extend([
+                        ("o", "Open on Devices screen"),
+                        ("R", "Restart the AP"),
+                        ("L", "Locate LED on / off"),
+                        ("U", "Upgrade firmware"),
+                    ]);
+                }
                 if self.overview_panel != OverviewPanel::None {
                     keys.push(("Esc", "Close the panel"));
                 } else if self.focused_ap.is_some() {
@@ -208,15 +211,18 @@ impl WifiScreen {
                 }
             }
             WifiSubTab::Clients => {
-                keys.extend([
-                    ("Enter", "WiFi experience"),
-                    ("o", "Open on Clients screen"),
-                    ("r", "Roam history"),
-                    ("s", "Cycle the sort"),
-                    ("b", "Block / unblock"),
-                    ("x", "Disconnect (kick)"),
-                    ("F", "Forget the client"),
-                ]);
+                // Without a session the table has no clients to act on.
+                if self.selected_client().is_some() {
+                    keys.extend([
+                        ("Enter", "WiFi experience"),
+                        ("o", "Open on Clients screen"),
+                        ("r", "Roam history"),
+                        ("s", "Cycle the sort"),
+                        ("b", "Block / unblock"),
+                        ("x", "Disconnect (kick)"),
+                        ("F", "Forget the client"),
+                    ]);
+                }
                 if self.client_detail_open {
                     keys.push(("Esc", "Close the panel"));
                 } else if self.focused_ap.is_some() {
@@ -224,25 +230,34 @@ impl WifiScreen {
                 }
             }
             WifiSubTab::Ssids => {
-                keys.extend([
-                    ("Enter", "SSID detail"),
-                    ("E", "Enable / disable"),
-                    ("N", "Rename"),
-                    ("P", "Change passphrase"),
-                    ("H", "Hide / announce name"),
-                    ("D", "Delete"),
-                ]);
+                // SSIDs come over the Integration API or not at all.
+                if self.selected_ssid().is_some() {
+                    keys.extend([
+                        ("Enter", "SSID detail"),
+                        ("E", "Enable / disable"),
+                        ("N", "Rename"),
+                        ("P", "Change passphrase"),
+                        ("H", "Hide / announce name"),
+                        ("D", "Delete"),
+                    ]);
+                }
                 if self.ssid_detail_open {
                     keys.push(("Esc", "Close the panel"));
                 }
             }
             WifiSubTab::Neighbors => {
-                keys.extend([("s", "Cycle the sort"), ("f  [/]", "Next / previous band")]);
+                if !self.session_missing() {
+                    keys.extend([("s", "Cycle the sort"), ("f  [/]", "Next / previous band")]);
+                }
                 if self.focused_ap.is_some() {
                     keys.push(("Esc", "Clear the AP focus"));
                 }
             }
-            WifiSubTab::Roaming => keys.push(("r  Enter", "Refresh the history")),
+            WifiSubTab::Roaming => {
+                if self.roam_target.is_some() && !self.session_missing() {
+                    keys.push(("r  Enter", "Refresh the history"));
+                }
+            }
         }
         keys
     }
