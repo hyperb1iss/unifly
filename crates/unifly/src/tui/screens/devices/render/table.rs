@@ -52,6 +52,8 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
             .saturating_sub(grid::list_rows_beside_detail(inner.height).min(table));
         let pane = detail_height(screen, device, inner.width, room).min(room);
         let list = (inner.height - pane).min(table);
+        // A filter bar and a header with no device under them say nothing.
+        let list = if list < MIN_TABLE_ROWS { 0 } else { list };
         let table_area = Rect {
             height: list,
             ..inner
@@ -79,6 +81,10 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
         render_detail(screen, frame, detail_area, device);
     }
 }
+
+/// Fewest rows worth giving the table beside an open detail: the filter
+/// bar, the header, and one device.
+const MIN_TABLE_ROWS: u16 = 3;
 
 /// Rows the table takes to show `devices` of them: the filter bar, the
 /// header, and a row each.
@@ -1282,6 +1288,42 @@ mod tests {
         assert!(
             text.contains("Signal") && text.contains("-58 dBm"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn a_table_with_no_room_for_a_device_steps_aside_for_the_detail() {
+        let mut screen = screen();
+        screen.select(2);
+        press(&mut screen, KeyCode::Enter);
+        screen.set_detail_tab(DeviceDetailTab::Clients);
+        let on_switch = |index: u8, name: &str| {
+            client(
+                index,
+                name,
+                &json!({ "uplink_device_mac": "aa:bb:cc:dd:ee:02" }),
+            )
+        };
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            on_switch(1, "nas-vault"),
+            on_switch(2, "render-01"),
+        ])));
+
+        // Seven rows inside the border and a pane of six: the one row
+        // left would hold the filter bar and no device.
+        let rows = draw(&screen, 100, 9);
+        let text = rows.join("\n");
+        assert!(rows[1].contains("sw-core  \u{b7}  USW"), "{text}");
+        assert!(!text.contains("Gateways"), "a bare filter bar:\n{text}");
+        assert!(text.contains("render-01"), "{text}");
+
+        // Two more rows make room for the header and the open device.
+        let rows = draw(&screen, 100, 11);
+        assert!(rows[3].contains("sw-core"), "{}", rows.join("\n"));
+        assert!(
+            rows[4].contains("sw-core  \u{b7}  USW"),
+            "{}",
+            rows.join("\n")
         );
     }
 
