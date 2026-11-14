@@ -102,6 +102,9 @@ struct ControllerInner {
     lifecycle: Mutex<()>,
     /// Warnings accumulated during connect (e.g. Session auth failure in Hybrid mode).
     warnings: Mutex<Vec<String>>,
+    /// Set once a login has sent the configured `totp_token`. A code works
+    /// once, so a later connect on this controller must not send it again.
+    totp_token_spent: std::sync::atomic::AtomicBool,
     /// Synthetic fleet backing a [`Controller::demo`] controller.
     #[cfg(feature = "demo")]
     demo: std::sync::OnceLock<Arc<crate::demo::DemoRuntime>>,
@@ -131,6 +134,7 @@ impl Controller {
                 port_writes: port_writes::PortWrites::default(),
                 integration_client: Mutex::new(None),
                 warnings: Mutex::new(Vec::new()),
+                totp_token_spent: std::sync::atomic::AtomicBool::new(false),
                 site_id: Mutex::new(None),
                 ws_handle: Mutex::new(None),
                 task_handles: Mutex::new(Vec::new()),

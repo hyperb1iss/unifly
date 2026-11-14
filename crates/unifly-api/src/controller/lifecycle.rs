@@ -206,14 +206,16 @@ impl Controller {
                 )?;
 
                 let cache = build_session_cache(config);
-                let totp = connect_totp(config);
-                if let Some(ref cache) = cache {
+                let totp = connect_totp(&self.inner);
+                let login_result = if let Some(ref cache) = cache {
                     client
                         .login_with_cache_and_totp(username, password, totp, cache)
-                        .await?;
+                        .await
                 } else {
-                    client.login_with_totp(username, password, totp).await?;
-                }
+                    client.login_with_totp(username, password, totp).await
+                };
+                note_totp_use(&self.inner, &client);
+                login_result?;
                 debug!("session authentication successful");
                 retain_reauth(&client, username, password, config, cache).await;
 
@@ -266,7 +268,7 @@ impl Controller {
                 match SessionClient::new(config.url.clone(), resolved.slug, platform, &transport) {
                     Ok(client) => {
                         let cache = build_session_cache(config);
-                        let totp = connect_totp(config);
+                        let totp = connect_totp(&self.inner);
                         let login_result = if let Some(ref cache) = cache {
                             client
                                 .login_with_cache_and_totp(username, password, totp, cache)
@@ -274,6 +276,7 @@ impl Controller {
                         } else {
                             client.login_with_totp(username, password, totp).await
                         };
+                        note_totp_use(&self.inner, &client);
                         match login_result {
                             Ok(()) => {
                                 debug!("session authentication successful (hybrid)");
@@ -571,9 +574,25 @@ fn logs_out_on_close(config: &crate::config::ControllerConfig) -> bool {
 }
 
 /// Where the connect-time login gets a TOTP code if the controller asks
-/// for one: the configured code, else the provider.
-fn connect_totp(config: &crate::config::ControllerConfig) -> TotpSource<'_> {
-    TotpSource::new(config.totp_token.as_ref(), config.totp_provider.as_ref())
+/// for one: the configured code until a login has sent it, else the
+/// provider. A code works once, so a reconnect that sent it again would
+/// be refused on every attempt while presenting the correct password.
+fn connect_totp(inner: &super::ControllerInner) -> TotpSource<'_> {
+    let spent = inner
+        .totp_token_spent
+        .load(std::sync::atomic::Ordering::Acquire);
+    let code = inner.config.totp_token.as_ref().filter(|_| !spent);
+    TotpSource::new(code, inner.config.totp_provider.as_ref())
+}
+
+/// Remember that the configured TOTP code is spent once `client` has sent
+/// one, whether or not the controller accepted it.
+fn note_totp_use(inner: &super::ControllerInner, client: &SessionClient) {
+    if client.has_sent_totp() {
+        inner
+            .totp_token_spent
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Let a cookie session log in again on its own when it expires.

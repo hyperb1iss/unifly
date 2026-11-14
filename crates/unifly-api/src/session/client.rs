@@ -254,6 +254,14 @@ impl SessionClient {
         *self.spent_totp.lock().expect("TOTP lock poisoned") = Some(code.clone());
     }
 
+    /// Whether a login on this client has sent a TOTP code.
+    pub(crate) fn has_sent_totp(&self) -> bool {
+        self.spent_totp
+            .lock()
+            .expect("TOTP lock poisoned")
+            .is_some()
+    }
+
     fn is_spent_totp(&self, code: &secrecy::SecretString) -> bool {
         use secrecy::ExposeSecret;
         self.spent_totp
