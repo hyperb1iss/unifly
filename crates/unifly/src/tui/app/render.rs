@@ -104,7 +104,13 @@ impl App {
 
         if let Some((request, input)) = &self.prompt {
             let title = self.shown_text(&request.title);
-            Self::render_prompt(frame, area, &title, request, input, &mut self.hits);
+            Self::render_prompt(
+                frame,
+                area,
+                &title,
+                (request, input, self.prompt_revealed),
+                &mut self.hits,
+            );
         }
 
         if self.notices_visible {
@@ -121,17 +127,23 @@ impl App {
                 .get(&self.active_screen)
                 .map(|screen| screen.help())
                 .unwrap_or_default();
-            let global = if self.fills_frame() {
-                FORM_KEYS
-            } else {
-                GLOBAL_KEYS
-            };
+            let searches = self.active_screen_searches();
+            let global: Vec<(&'static str, &'static str)> =
+                if self.fills_frame() || self.active_screen_captures_input() {
+                    FORM_KEYS.to_vec()
+                } else {
+                    GLOBAL_KEYS
+                        .iter()
+                        .filter(|(key, _)| searches || *key != "/")
+                        .copied()
+                        .collect()
+                };
             Self::render_help_overlay(
                 frame,
                 area,
                 self.active_screen,
                 &screen_keys,
-                global,
+                &global,
                 &mut self.hits,
             );
         }
@@ -251,26 +263,7 @@ impl App {
 
         let mut hints = ClickLine::default();
         hints.push_gap(Span::styled(" │ ", theme::key_hint()));
-        // App-wide buttons dispatch their action directly: as keys they
-        // would reach the screen first, which may use the same letter.
-        let refresh = if self.connection_status == ConnectionStatus::Disconnected {
-            Hint::action("^r", "retry", Action::RetryConnect)
-        } else {
-            Hint::action("^r", "refresh", Action::Refresh)
-        };
-        let search = self
-            .active_screen_searches()
-            .then(|| Hint::action("/", "search", Action::OpenSearch));
-        let shown: Vec<Hint> = [
-            Some(Hint::action("?", "help", Action::ToggleHelp)),
-            search,
-            Some(refresh),
-            Some(Hint::action(",", "settings", Action::OpenSettings)),
-            Some(Hint::action("q", "quit", Action::Quit)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let shown = self.status_hints();
         hints.push_hints(&shown, theme::key_hint_key(), theme::key_hint());
         let mut spans = vec![Span::raw(" "), connection_indicator];
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
@@ -308,6 +301,36 @@ impl App {
 
         if self.show_donate && hints_end + usize::from(DONATE_WIDTH) < usize::from(area.width) {
             Self::render_donate_button(frame, area, &mut self.hits);
+        }
+    }
+
+    /// The status bar's buttons. App-wide ones dispatch their action
+    /// directly: as keys they would reach the screen first, which may use
+    /// the same letter.
+    fn status_hints(&self) -> Vec<Hint> {
+        let refresh = if self.connection_status == ConnectionStatus::Disconnected {
+            Hint::action("^r", "retry", Action::RetryConnect)
+        } else {
+            Hint::action("^r", "refresh", Action::Refresh)
+        };
+        let search = self
+            .active_screen_searches()
+            .then(|| Hint::action("/", "search", Action::OpenSearch));
+        // A form has the keyboard: `?`, `,`, and `q` type into its field,
+        // so the bar offers only what still works.
+        if self.active_screen_captures_input() {
+            vec![Hint::info("F1", "help"), Hint::info("^c", "quit")]
+        } else {
+            [
+                Some(Hint::action("?", "help", Action::ToggleHelp)),
+                search,
+                Some(refresh),
+                Some(Hint::action(",", "settings", Action::OpenSettings)),
+                Some(Hint::action("q", "quit", Action::Quit)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
         }
     }
 
@@ -387,11 +410,12 @@ impl App {
         global: &[(&'static str, &'static str)],
         hits: &mut HitMap<Click>,
     ) {
-        let left = help_column(&format!("{screen} screen"), screen_keys);
-        let right = help_column("Everywhere", global);
+        let help_width = 78u16.min(area.width.saturating_sub(2));
+        let column = usize::from(help_width.saturating_sub(2) / 2);
+        let left = help_column(&format!("{screen} screen"), screen_keys, column);
+        let right = help_column("Everywhere", global, column);
         let rows = left.len().max(right.len());
 
-        let help_width = 78u16.min(area.width.saturating_sub(2));
         let help_height = u16::try_from(rows + 4)
             .unwrap_or(u16::MAX)
             .min(area.height.saturating_sub(2));
@@ -438,8 +462,11 @@ impl App {
         frame: &mut Frame,
         area: Rect,
         title: &str,
-        request: &crate::tui::action::PromptRequest,
-        input: &crate::tui::widgets::line_input::LineInput,
+        (request, input, revealed): (
+            &crate::tui::action::PromptRequest,
+            &crate::tui::widgets::line_input::LineInput,
+            bool,
+        ),
         hits: &mut HitMap<Click>,
     ) {
         let width = 60u16.min(area.width.saturating_sub(4));
@@ -472,7 +499,7 @@ impl App {
         field.extend(input.spans(
             text_width.saturating_sub(2),
             true,
-            request.secret.then_some('\u{25CF}'),
+            (request.secret && !revealed).then_some('\u{25CF}'),
             Style::default().fg(theme::accent_secondary()),
         ));
         let mut text = vec![
@@ -488,10 +515,19 @@ impl App {
                 .map(|line| Line::from(Span::styled(format!("  {line}"), theme::key_hint()))),
         );
         text.push(Line::from(""));
-        let mut buttons = click::key_hints(&[
+        let mut keys = vec![
             Hint::button("Enter", "save", KeyCode::Enter),
             Hint::button("Esc", "cancel", KeyCode::Esc),
-        ]);
+        ];
+        if request.secret {
+            let reveal = crossterm::event::KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            );
+            let label = if revealed { "hide" } else { "show" };
+            keys.push(Hint::button("^t", label, reveal));
+        }
+        let mut buttons = click::key_hints(&keys);
         let button_row = click::paragraph_row(inner, text.len());
         text.push(std::mem::take(&mut buttons).draw(button_row, hits));
         frame.render_widget(Paragraph::new(text), inner);
@@ -664,20 +700,63 @@ const FORM_KEYS: &[(&str, &str)] = &[
     ("Shift+drag", "Select text"),
 ];
 
-/// One column of the help overlay: a heading over its keys.
-fn help_column(heading: &str, keys: &[(&'static str, &'static str)]) -> Vec<Line<'static>> {
+/// The rows [`help_column`] draws for `keys`, without its heading, as
+/// plain text.
+#[cfg(test)]
+pub(super) fn help_column_text(keys: &[(&'static str, &'static str)], width: usize) -> Vec<String> {
+    help_column("", keys, width)
+        .into_iter()
+        .skip(1)
+        .map(|line| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            text.trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// Columns a key takes in the help overlay, with its gap.
+const HELP_KEY_WIDTH: usize = 14;
+
+/// One column of the help overlay, `width` columns wide: a heading over
+/// its keys. A description longer than the column continues on the next
+/// row under itself, so none is cut.
+fn help_column(
+    heading: &str,
+    keys: &[(&'static str, &'static str)],
+    width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         format!("  {heading}"),
         Style::default()
             .fg(theme::accent_secondary())
             .add_modifier(Modifier::BOLD),
     ))];
-    lines.extend(keys.iter().map(|(key, label)| {
-        Line::from(vec![
-            Span::styled(format!("  {key:<12}"), theme::key_hint_key()),
-            Span::styled(*label, theme::key_hint()),
-        ])
-    }));
+    let room = width.saturating_sub(HELP_KEY_WIDTH).max(8);
+    for (key, label) in keys {
+        let key_width = Span::raw(*key).width();
+        // A key wider than its column gets a row to itself.
+        let mut key_cell = Some(format!("  {key:<12}"));
+        if key_width > 12 {
+            lines.push(Line::from(Span::styled(
+                format!("  {key}"),
+                theme::key_hint_key(),
+            )));
+            key_cell = Some(" ".repeat(HELP_KEY_WIDTH));
+        }
+        for part in wrap(label, room) {
+            let lead = key_cell
+                .take()
+                .unwrap_or_else(|| " ".repeat(HELP_KEY_WIDTH));
+            lines.push(Line::from(vec![
+                Span::styled(lead, theme::key_hint_key()),
+                Span::styled(part, theme::key_hint()),
+            ]));
+        }
+    }
     if keys.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Tap a panel to open its screen",

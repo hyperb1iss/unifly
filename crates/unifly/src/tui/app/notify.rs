@@ -126,10 +126,13 @@ impl Notices {
         self.toasts.push_back(toast);
         while self.toasts.len() > MAX_VISIBLE {
             // Drop the oldest toast that is not an unread warning or error,
-            // and the oldest of all when every one is.
+            // and the oldest of all when every one is. The toast that just
+            // arrived is never the one to go.
+            let older = self.toasts.len() - 1;
             let drop = self
                 .toasts
                 .iter()
+                .take(older)
                 .position(|toast| !toast.sticky())
                 .unwrap_or(0);
             self.toasts.remove(drop);
@@ -265,14 +268,36 @@ impl App {
         let mut y = area.y.saturating_add(1);
         let floor = area.bottom().saturating_sub(1);
 
-        for toast in &self.notices.toasts {
-            let message = toast.notification.message.as_str();
-            let lines = wrap_clamped(message, usize::from(text_width), usize::from(MAX_ROWS));
-            let rows = u16::try_from(lines.len()).unwrap_or(MAX_ROWS);
-            let height = rows.saturating_add(2);
-            if y.saturating_add(height) > floor {
+        // When the stack is taller than the screen the newest toasts are
+        // the ones drawn: a result must not hide under older errors.
+        let wrapped: Vec<Vec<String>> = self
+            .notices
+            .toasts
+            .iter()
+            .map(|toast| {
+                wrap_clamped(
+                    &toast.notification.message,
+                    usize::from(text_width),
+                    usize::from(MAX_ROWS),
+                )
+            })
+            .collect();
+        let mut room = floor.saturating_sub(y);
+        let mut first = wrapped.len();
+        for lines in wrapped.iter().rev() {
+            let height = u16::try_from(lines.len())
+                .unwrap_or(MAX_ROWS)
+                .saturating_add(2);
+            if height > room {
                 break;
             }
+            room -= height;
+            first -= 1;
+        }
+
+        for (toast, lines) in self.notices.toasts.iter().zip(wrapped).skip(first) {
+            let rows = u16::try_from(lines.len()).unwrap_or(MAX_ROWS);
+            let height = rows.saturating_add(2);
             // A short message gets a toast as wide as it needs.
             let longest = lines.iter().map(|line| Line::from(line.as_str()).width());
             let needed = u16::try_from(longest.max().unwrap_or(0))
@@ -439,6 +464,26 @@ mod tests {
         }
         assert_eq!(app.notices.toasts.len(), MAX_VISIBLE);
         assert!(app.notices.messages().contains(&"stats failed"));
+    }
+
+    #[test]
+    fn the_newest_toast_is_never_the_one_dropped_or_hidden() {
+        let mut app = app();
+        for index in 0..MAX_VISIBLE {
+            app.show_notification(Notification::error(format!(
+                "error {index}: a long reason that wraps over several rows of the toast so \
+                 that four of them cannot all fit on a short terminal at the same time"
+            )));
+        }
+        app.show_notification(Notification::success("Restart sent to sw-core"));
+        assert_eq!(
+            app.notices.messages().last().copied(),
+            Some("Restart sent to sw-core"),
+            "the arriving toast was evicted"
+        );
+
+        let text = render_lines(80, 16, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Restart sent to sw-core"), "{text}");
     }
 
     #[test]

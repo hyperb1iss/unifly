@@ -53,6 +53,7 @@ impl App {
                 let input =
                     crate::tui::widgets::line_input::LineInput::new(request.initial.clone());
                 self.prompt = Some((request.clone(), input));
+                self.prompt_revealed = false;
             }
             Action::Repaint => {
                 self.repaint = true;
@@ -149,8 +150,11 @@ impl App {
             | Action::WifiRoamHistoryLoaded { .. }
             | Action::WifiRoamHistoryFailed { .. }
             | Action::StatsUpdated(_)
-            | Action::ControllerChanged
             | Action::NetworkEditResult(_) => {
+                self.forward_to_all_screens(action)?;
+            }
+            Action::ControllerChanged => {
+                self.locating.clear();
                 self.forward_to_all_screens(action)?;
             }
             Action::AccessUpdated(access) => {
@@ -205,8 +209,18 @@ impl App {
         let Some(controller) = self.controller.clone() else {
             return;
         };
+        // A held Ctrl+r is one refresh, not a queue of them.
+        if self
+            .refreshing
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let refreshing = std::sync::Arc::clone(&self.refreshing);
         self.spawn_op("Refreshing\u{2026}", async move {
-            match controller.full_refresh().await {
+            let result = controller.full_refresh().await;
+            refreshing.store(false, std::sync::atomic::Ordering::SeqCst);
+            match result {
                 Ok(()) => Notification::success("Data refreshed"),
                 Err(error) => Notification::error(format!("Refresh failed: {error}")),
             }
@@ -216,8 +230,26 @@ impl App {
         }
     }
 
-    /// Switch to `screen` and hand it the entity to open.
+    /// Switch to `screen` and hand it the entity to open. An entity that
+    /// has left since the key was pressed is reported from where the user
+    /// already is, with no jump to a screen that cannot show it.
     fn show_entity(&mut self, screen: ScreenId, action: &Action) -> Result<()> {
+        let missing = self.controller.as_ref().and_then(|controller| {
+            let store = controller.store();
+            match action {
+                Action::ShowDevice(id) if store.device_by_id(id).is_none() => {
+                    Some(self.resolve_device_name(id))
+                }
+                Action::ShowClient(id) if store.client_by_id(id).is_none() => {
+                    Some(self.resolve_client_name(id))
+                }
+                _ => None,
+            }
+        });
+        if let Some(name) = missing {
+            self.report_gone(&name);
+            return Ok(());
+        }
         self.switch_screen(screen)?;
         self.forward_to_screen(screen, action)
     }

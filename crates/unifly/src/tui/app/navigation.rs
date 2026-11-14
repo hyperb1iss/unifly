@@ -112,13 +112,13 @@ impl App {
             });
         }
 
-        if is_ctrl(key, 'r') {
-            return Ok(Some(Action::Refresh));
-        }
-
         // Read before forwarding: a key that closes the form (Esc) must not
         // go on to a global shortcut either.
         let typing = self.active_screen_captures_input();
+        // A refresh under a form could swap the record being edited.
+        if is_ctrl(key, 'r') && !typing {
+            return Ok(Some(Action::Refresh));
+        }
         // A chord is never a screen's plain letter: Ctrl+b must not block a
         // client because `b` does. A form reads its own editing chords, and
         // the lists page on Ctrl+d and Ctrl+u.
@@ -260,6 +260,18 @@ impl App {
                 };
                 Action::PromptSubmitted(text.to_owned())
             }),
+            // A masked value typed blind can lock a network out: Ctrl+T
+            // shows it, and hides it again.
+            KeyCode::Char('t') if is_ctrl(key, 't') => {
+                if self
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|(request, _)| request.secret)
+                {
+                    self.prompt_revealed = !self.prompt_revealed;
+                }
+                None
+            }
             _ => {
                 if let Some((_, input)) = &mut self.prompt {
                     input.handle_key(key);
@@ -685,9 +697,17 @@ mod tests {
             .expect("edit");
         let rows = render(&mut app, 120);
 
+        // The bar offers only the keys a form leaves working.
+        let bar = rows.last().cloned().unwrap_or_default();
+        assert!(bar.contains("F1 help") && bar.contains("^c quit"), "{bar}");
+        assert!(
+            !bar.contains("settings") && !bar.contains("refresh"),
+            "{bar}"
+        );
+
         for (marker, label) in [
-            ("settings", "quit"),
-            ("settings", "help"),
+            ("F1 help", "quit"),
+            ("F1 help", "help"),
             ("6 Topo", "2 Devices"),
         ] {
             let action = app
@@ -789,7 +809,6 @@ mod tests {
         for needed in [
             "Dashboard screen",
             "Everywhere",
-            "Search the list",
             "Notifications",
             "Refresh now, or retry",
             "Select text",
@@ -797,6 +816,32 @@ mod tests {
         ] {
             assert!(text.contains(needed), "{needed}:\n{text}");
         }
+    }
+
+    #[test]
+    fn the_help_overlay_lists_search_only_where_it_filters_and_wraps_long_rows() {
+        let mut app = dashboard_app();
+        app.help_visible = true;
+        let text = render_lines(80, 24, |frame, _| app.render(frame)).join("\n");
+        assert!(!text.contains("Search the list"), "{text}");
+
+        app.active_screen = ScreenId::Devices;
+        let text = render_lines(80, 24, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Search the list"), "{text}");
+
+        // A description longer than its column continues on the next row.
+        let lines = super::super::render::help_column_text(
+            &[("x", "Archive the selected alarm and reload the list")],
+            38,
+        );
+        assert_eq!(
+            lines,
+            [
+                "  x           Archive the selected",
+                "              alarm and reload the",
+                "              list"
+            ]
+        );
     }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -989,6 +1034,24 @@ mod tests {
             "{submitted:?}"
         );
         assert!(app.prompt.is_none());
+
+        // A secret is masked until Ctrl+T shows it.
+        app.process_action(&Action::OpenPrompt(crate::tui::action::PromptRequest {
+            title: "Passphrase for Guest".into(),
+            initial: "hunter22".into(),
+            secret: true,
+            ..Default::default()
+        }))
+        .expect("open");
+        let masked = render(&mut app, 100).join("\n");
+        assert!(!masked.contains("hunter22"), "{masked}");
+        assert!(masked.contains("^t show"), "{masked}");
+        app.handle_key_event(key(KeyCode::Char('t'), KeyModifiers::CONTROL))
+            .expect("key");
+        let shown = render(&mut app, 100).join("\n");
+        assert!(shown.contains("hunter22"), "{shown}");
+        app.handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("key");
 
         // A secret keeps the spaces around it; anything else is trimmed.
         for (secret, expected) in [(true, " pass phrase "), (false, "pass phrase")] {

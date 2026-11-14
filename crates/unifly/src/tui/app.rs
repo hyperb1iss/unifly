@@ -96,6 +96,8 @@ pub struct App {
     pending_confirm: Option<ConfirmRequest>,
     /// Open one-line prompt and the text typed into it.
     prompt: Option<(PromptRequest, LineInput)>,
+    /// Whether the open prompt's masked value is being shown for now.
+    prompt_revealed: bool,
     /// Toasts on screen and the history of everything shown.
     notices: notify::Notices,
     /// Devices whose locate LED this session switched on.
@@ -104,6 +106,8 @@ pub struct App {
     access: Access,
     /// Set when the next frame must clear the terminal first.
     repaint: bool,
+    /// Set while a refresh the user asked for is running.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
     /// Generation counter for stats requests — prevents stale responses from
     /// overwriting fresh data when the user rapidly switches periods.
     stats_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -175,10 +179,12 @@ impl App {
             bridge_handle: None,
             pending_confirm: None,
             prompt: None,
+            prompt_revealed: false,
             notices: notify::Notices::default(),
             locating: HashSet::new(),
             access: Access::default(),
             repaint: false,
+            refreshing: Arc::default(),
             stats_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_stats_fetch: None,
             stats_period: StatsPeriod::default(),

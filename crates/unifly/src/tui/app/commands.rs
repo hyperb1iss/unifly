@@ -34,19 +34,6 @@ impl App {
                     .detail("Everything connected through it drops until it is back."),
                 );
             }
-            Action::RequestAdopt(mac) => {
-                self.confirm(ConfirmRequest::new(
-                    format!("Adopt device {mac}?"),
-                    run(
-                        Command::AdoptDevice {
-                            mac: MacAddress::new(mac),
-                            ignore_device_limit: false,
-                        },
-                        format!("Adopting {mac}\u{2026}"),
-                        format!("Adoption started for {mac}"),
-                    ),
-                ));
-            }
             Action::RequestUnadopt(id) => {
                 let name = self.resolve_device_name(id);
                 self.confirm(
@@ -68,11 +55,9 @@ impl App {
                     return Ok(true);
                 };
                 // The controller does not report the locate LED, so the
-                // app tracks what it switched on.
-                let enable = !self.locating.remove(id);
-                if enable {
-                    self.locating.insert(id.clone());
-                }
+                // app tracks what it switched on, and only once the
+                // controller has accepted the switch.
+                let enable = !self.locating.contains(id);
                 let (pending, done) = if enable {
                     (
                         format!("Flashing the LED on {name}\u{2026}"),
@@ -84,10 +69,33 @@ impl App {
                         format!("Stopped locating {name}"),
                     )
                 };
-                self.run_command(
-                    Command::LocateDevice { mac, enable },
-                    &Notice::new(pending, done),
-                );
+                let Some(controller) = self.controller.clone() else {
+                    self.show_notification(Notification::error("Not connected"));
+                    return Ok(true);
+                };
+                let (tx, id) = (self.action_tx.clone(), id.clone());
+                self.spawn_op(&pending, async move {
+                    match controller
+                        .execute(Command::LocateDevice { mac, enable })
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = tx.send(Action::LocateSet(id, enable));
+                            Notification::success(done)
+                        }
+                        Err(error) => {
+                            warn!(%error, "locate failed");
+                            Notification::error(format!("{error}"))
+                        }
+                    }
+                });
+            }
+            Action::LocateSet(id, enable) => {
+                if *enable {
+                    self.locating.insert(id.clone());
+                } else {
+                    self.locating.remove(id);
+                }
             }
             Action::RequestUpgrade(id) => {
                 let name = self.resolve_device_name(id);
@@ -178,9 +186,7 @@ impl App {
                     .detail("It may reconnect right away.")
                 });
             }
-            Action::ShowConfirm(confirm) => {
-                self.pending_confirm = Some(confirm.clone());
-            }
+            Action::ShowConfirm(confirm) => self.open_confirm(confirm),
             Action::ConfirmYes => {
                 if let Some(confirm) = self.pending_confirm.take() {
                     self.action_tx.send(*confirm.action)?;
@@ -202,6 +208,22 @@ impl App {
         }
 
         Ok(true)
+    }
+
+    /// Open a confirmation, unless the keyboard already belongs to another
+    /// question. A confirm can arrive late, from background work started
+    /// by a key press; it must never replace the dialog being read, or
+    /// land over a prompt or the search bar and take a typed `y` as its
+    /// answer.
+    fn open_confirm(&mut self, confirm: &ConfirmRequest) {
+        if self.pending_confirm.is_some() || self.prompt.is_some() || self.search_active {
+            self.show_notification(Notification::warning(format!(
+                "Not asked while something else was open: {} Press the key again.",
+                confirm.prompt
+            )));
+            return;
+        }
+        self.pending_confirm = Some(confirm.clone());
     }
 
     /// Ask before `request` runs. Opens on the next action, so a second
@@ -280,10 +302,20 @@ impl App {
     /// so an error carrying a real identifier cannot leak one onto the
     /// screen.
     pub(super) fn shown_text(&self, text: &str) -> String {
-        self.sanitizer.as_ref().map_or_else(
-            || text.to_owned(),
-            |sanitizer| sanitizer.sanitize_text(text),
-        )
+        let Some(sanitizer) = &self.sanitizer else {
+            return text.to_owned();
+        };
+        let text = sanitizer.sanitize_text(text);
+        // A connect or command error names the controller it could not
+        // reach; that address is as private as the names behind it.
+        let host = self
+            .controller
+            .as_ref()
+            .and_then(|controller| controller.config().url.host_str().map(str::to_owned));
+        match host {
+            Some(host) if !host.is_empty() => text.replace(&host, "controller.example"),
+            _ => text,
+        }
     }
 
     pub(super) fn resolve_client_mac(&self, id: &EntityId) -> Option<MacAddress> {
@@ -361,10 +393,13 @@ mod tests {
         assert!(app.action_rx.try_recv().is_err());
     }
 
-    #[test]
-    fn a_command_for_an_entity_that_left_says_so() {
-        let mut app = App::new(None, None, false, true);
-        let id = EntityId::Legacy("client-1".into());
+    #[tokio::test]
+    async fn a_command_for_an_entity_that_left_says_so() {
+        // A connected fleet that does not hold this id: the entity left
+        // between the key press and the command.
+        let demo = demo_fleet().await;
+        let mut app = App::new(Some(demo), None, false, true);
+        let id = EntityId::Legacy("gone-since-the-key-press".into());
         for request in [
             Action::RequestKickClient(id.clone()),
             Action::RequestBlockClient(id.clone()),
@@ -381,6 +416,29 @@ mod tests {
                 toast.message
             );
         }
+    }
+
+    #[test]
+    fn under_a_sanitizer_an_error_never_names_the_controller() {
+        use std::sync::Arc;
+
+        use crate::config::DemoConfig;
+        use crate::sanitizer::Sanitizer;
+
+        let controller = unifly_api::Controller::new(unifly_api::ControllerConfig {
+            url: "https://unifi-hq.internal:8443".parse().expect("url"),
+            ..unifly_api::ControllerConfig::default()
+        });
+        let app = App::new(
+            Some(controller),
+            Some(Arc::new(Sanitizer::new(&DemoConfig::default()))),
+            false,
+            true,
+        );
+        let shown =
+            app.shown_text("Cannot connect to controller at https://unifi-hq.internal:8443/");
+        assert!(!shown.contains("unifi-hq"), "{shown}");
+        assert!(shown.contains("controller.example"), "{shown}");
     }
 
     #[tokio::test]
@@ -430,21 +488,43 @@ mod tests {
     }
 
     #[test]
-    fn request_adopt_queues_confirmation() {
+    fn a_late_confirm_never_replaces_or_interrupts_another_question() {
         let mut app = App::new(None, None, false, true);
+        app.active_screen = crate::tui::screen::ScreenId::Dashboard;
+        let ask = |prompt: &str| Action::ShowConfirm(ConfirmRequest::new(prompt, Action::Refresh));
 
-        app.process_action(&Action::RequestAdopt("aa-bb-cc-dd-ee-ff".into()))
-            .expect("request handling should succeed");
+        app.process_action(&ask("Restart sw-core?")).expect("first");
+        app.process_action(&ask("Delete network Guest?"))
+            .expect("second");
+        assert_eq!(
+            app.pending_confirm.as_ref().map(|c| c.prompt.as_str()),
+            Some("Restart sw-core?"),
+            "the dialog being read was replaced"
+        );
+        let toast = app
+            .notices
+            .latest()
+            .expect("the dropped question is reported");
+        assert!(
+            toast.message.contains("Delete network Guest?"),
+            "{}",
+            toast.message
+        );
+        app.process_action(&Action::ConfirmNo).expect("dismiss");
 
-        let queued = app
-            .action_rx
-            .try_recv()
-            .expect("confirm action should be queued");
-        assert!(matches!(
-            queued,
-            Action::ShowConfirm(ref confirm)
-                if confirm.prompt == "Adopt device aa-bb-cc-dd-ee-ff?"
-        ));
+        // A prompt and the search bar hold the keyboard the same way.
+        app.process_action(&Action::OpenPrompt(
+            crate::tui::action::PromptRequest::default(),
+        ))
+        .expect("prompt");
+        app.process_action(&ask("Delete network Guest?"))
+            .expect("over a prompt");
+        assert!(app.pending_confirm.is_none());
+        app.prompt = None;
+        app.search_active = true;
+        app.process_action(&ask("Delete network Guest?"))
+            .expect("over search");
+        assert!(app.pending_confirm.is_none());
     }
 
     #[test]
@@ -533,10 +613,42 @@ mod tests {
     }
 
     async fn next_action(app: &mut App) -> Action {
-        tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
-            .await
-            .expect("the request reports back")
-            .expect("the action channel stays open")
+        loop {
+            let action =
+                tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
+                    .await
+                    .expect("the request reports back")
+                    .expect("the action channel stays open");
+            // Bookkeeping a locate sends ahead of its result.
+            if matches!(action, Action::LocateSet(..)) {
+                app.process_action(&action).expect("locate state");
+                continue;
+            }
+            return action;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_locate_the_controller_refuses_leaves_the_led_marked_off() {
+        // No controller answers at this address, so the command fails.
+        let controller = unifly_api::Controller::new(unifly_api::ControllerConfig::default());
+        let id = EntityId::Legacy("device-1".into());
+        let mut app = App::new(Some(controller), None, false, true);
+        app.locating.insert(id.clone());
+        app.process_action(&Action::ControllerChanged)
+            .expect("controller change");
+        assert!(
+            app.locating.is_empty(),
+            "another controller's LEDs are not this one's"
+        );
+
+        // The app only marks an LED on once the controller accepted it.
+        app.process_action(&Action::LocateSet(id.clone(), true))
+            .expect("accepted");
+        assert!(app.locating.contains(&id));
+        app.process_action(&Action::LocateSet(id.clone(), false))
+            .expect("accepted");
+        assert!(!app.locating.contains(&id));
     }
 
     #[tokio::test]

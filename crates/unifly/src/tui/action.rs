@@ -498,7 +498,6 @@ pub enum Action {
     RequestRestart(EntityId),
     RequestLocate(EntityId),
     RequestUpgrade(EntityId),
-    RequestAdopt(String),
     RequestUnadopt(EntityId),
     RequestPortPowerCycle(EntityId, u32),
 
@@ -547,6 +546,9 @@ pub enum Action {
         command: Box<unifly_api::Command>,
         notice: Notice,
     },
+    /// The controller accepted a locate command: the LED of this device
+    /// is now on or off.
+    LocateSet(EntityId, bool),
     /// A command or other controller operation finished: its progress
     /// toast, when it has one, becomes this notification.
     OpFinished {
