@@ -337,6 +337,22 @@ impl Handover {
         Some(name)
     }
 
+    /// Clear the cache a cancelled test signed in under, unless the form
+    /// still holds it for a retest. A form that closed or moved on to
+    /// another sign-in has already dropped its own reference, and the
+    /// test may have written its cookie after that.
+    fn drop_if_orphaned(slot: &HandoverSlot, cache_name: &str, url: &str) {
+        let held = slot
+            .lock()
+            .is_ok_and(|slot| slot.as_ref().is_some_and(|held| held.name == cache_name));
+        if !held
+            && !cfg!(test)
+            && let Some(cache) = SessionCache::new(cache_name, url)
+        {
+            cache.clear();
+        }
+    }
+
     fn cache(&self) -> Option<SessionCache> {
         // Unit tests keep out of the user's cache directory.
         (!cfg!(test))
@@ -472,13 +488,16 @@ async fn run(
     // could not sign in at all.
     let mut probe = probe_config(&live);
     probe.no_session_cache = true;
+    let target_url = live.url.as_str().to_owned();
+    let mut parked = None;
     if let Some(sign_in) = SignIn::of(&live)
         && (totp.is_some() || !live.no_session_cache)
         && let Some(cache_name) = Handover::cache_name(&handover, &profile_name, sign_in)
     {
-        probe.profile_name = Some(cache_name);
+        probe.profile_name = Some(cache_name.clone());
         probe.no_session_cache = false;
         live.no_session_cache = false;
+        parked = Some(cache_name);
     }
     if totp.is_some() {
         probe.totp_token.clone_from(&totp);
@@ -502,6 +521,9 @@ async fn run(
     let connected = tokio::select! {
         () = cancel.cancelled() => {
             controller.disconnect().await;
+            if let Some(cache_name) = parked {
+                Handover::drop_if_orphaned(&handover, &cache_name, &target_url);
+            }
             return None;
         }
         connected = controller.connect_inventory() => connected,
@@ -521,7 +543,13 @@ async fn run(
         Err(error) => Err(explain(&error, &context)),
     };
     controller.disconnect().await;
-    (!cancel.is_cancelled()).then_some(result)
+    if cancel.is_cancelled() {
+        if let Some(cache_name) = parked {
+            Handover::drop_if_orphaned(&handover, &cache_name, &target_url);
+        }
+        return None;
+    }
+    Some(result)
 }
 
 /// The sites the connected `controller` read.
