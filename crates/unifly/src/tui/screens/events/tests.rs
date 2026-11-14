@@ -864,7 +864,9 @@ fn x_asks_to_archive_the_alarm_under_the_cursor() {
     let Some(Action::ShowConfirm(confirm)) = asked else {
         panic!("expected a confirmation, got {asked:?}");
     };
-    assert_eq!(confirm.detail.as_deref(), Some("ap-dock lost contact"));
+    let detail = confirm.detail.as_deref().unwrap_or_default();
+    assert!(detail.starts_with("ap-dock lost contact"), "{detail}");
+    assert!(detail.contains("groups with it"), "{detail}");
     let Action::Run { command, .. } = *confirm.action else {
         panic!("expected a command");
     };
@@ -913,9 +915,16 @@ fn the_alarm_cursor_stays_on_its_alarm_when_the_list_changes() {
     screen
         .update(&Action::AlarmsLoaded(Arc::new(Vec::new())))
         .expect("alarms");
-    assert!(draw(&screen).join("\n").contains("No active alarms"));
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("No active alarms"), "{text}");
     assert!(press(&mut screen, KeyCode::Char('x')).is_none());
     assert!(press(&mut screen, KeyCode::Char('X')).is_none());
+    assert!(press(&mut screen, KeyCode::Enter).is_none());
+    // Keys that do nothing here are not offered.
+    assert!(!text.contains("archive"), "{text}");
+    assert!(text.contains("reload"), "{text}");
+    let help = screen.help();
+    assert!(help.iter().all(|(keys, _)| *keys != "x" && *keys != "X"));
 }
 
 #[test]

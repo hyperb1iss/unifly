@@ -124,7 +124,12 @@ impl EventsScreen {
                     notice: Notice::new("Archiving the alarm\u{2026}", "Alarm archived"),
                 },
             )
-            .detail(alarm.message.clone()),
+            // A newer controller lists alerts by group and archives the
+            // group, so the row may stand for more than one alert.
+            .detail(format!(
+                "{} (alerts the controller groups with it are archived too)",
+                alarm.message
+            )),
         ))
     }
 
@@ -306,26 +311,33 @@ impl EventsScreen {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
-    pub(super) fn alarm_hints() -> Vec<Hint> {
-        vec![
-            Hint::button("v", "events", click::char_key('v')),
-            Hint::info("j/k", "move"),
-            Hint::button("x", "archive", click::char_key('x')),
-            Hint::button("X", "archive all", click::char_key('X')),
-            Hint::button("Enter", "device", KeyCode::Enter),
-            Hint::button("r", "reload", click::char_key('r')),
-        ]
+    /// The keys that do something now: with no active alarm there is
+    /// nothing to move through, archive, or open.
+    pub(super) fn alarm_hints(&self) -> Vec<Hint> {
+        let mut hints = vec![Hint::button("v", "events", click::char_key('v'))];
+        if self.active_alarms() > 0 {
+            hints.extend([
+                Hint::info("j/k", "move"),
+                Hint::button("x", "archive", click::char_key('x')),
+                Hint::button("X", "archive all", click::char_key('X')),
+                Hint::button("Enter", "device", KeyCode::Enter),
+            ]);
+        }
+        hints.push(Hint::button("r", "reload", click::char_key('r')));
+        hints
     }
 
-    pub(super) fn alarm_help() -> Vec<(&'static str, &'static str)> {
+    pub(super) fn alarm_help(&self) -> Vec<(&'static str, &'static str)> {
         let mut keys = vec![("v  Esc", "Back to the event feed")];
-        keys.extend_from_slice(crate::tui::component::LIST_HELP);
-        keys.extend_from_slice(&[
-            ("x", "Archive the selected alarm"),
-            ("X", "Archive every alarm"),
-            ("Enter", "Open the alarm's device"),
-            ("r", "Read the alarms again"),
-        ]);
+        if self.active_alarms() > 0 {
+            keys.extend_from_slice(crate::tui::component::LIST_HELP);
+            keys.extend_from_slice(&[
+                ("x", "Archive the selected alarm"),
+                ("X", "Archive every alarm"),
+                ("Enter", "Open the alarm's device"),
+            ]);
+        }
+        keys.push(("r", "Read the alarms again"));
         keys
     }
 }

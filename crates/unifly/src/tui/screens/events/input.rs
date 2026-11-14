@@ -168,7 +168,7 @@ impl EventsScreen {
 
     pub(super) fn help_keys(&self) -> Vec<(&'static str, &'static str)> {
         if self.view == View::Alarms {
-            return Self::alarm_help();
+            return self.alarm_help();
         }
         let mut keys = Vec::new();
         if self.detail_open {

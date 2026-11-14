@@ -117,7 +117,7 @@ impl EventsScreen {
             frame.render_widget(Paragraph::new(self.alarm_status_line()), layout[0]);
             self.render_alarm_list(frame, layout[1]);
             let line =
-                click::key_hints(&Self::alarm_hints()).draw(layout[2], &mut self.hits.borrow_mut());
+                click::key_hints(&self.alarm_hints()).draw(layout[2], &mut self.hits.borrow_mut());
             frame.render_widget(Paragraph::new(line), layout[2]);
             return;
         }
