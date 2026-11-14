@@ -225,10 +225,7 @@ mod tests {
         ));
         screen.apply_action(&Action::StatsLoading(StatsPeriod::ThirtyDays));
         let text = draw(&screen);
-        assert!(
-            text.contains("[30d]") && text.contains("Loading 30d"),
-            "{text}"
-        );
+        assert!(text.contains("Loading 30d"), "{text}");
         assert!(!text.contains("WAN Bandwidth"), "stale charts: {text}");
 
         // A late answer for the period that was left is dropped.

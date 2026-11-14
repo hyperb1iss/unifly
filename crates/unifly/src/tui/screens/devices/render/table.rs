@@ -719,7 +719,6 @@ mod tests {
         let rows = draw(&screen, 120, 12);
         screen.handle_mouse_input(click_label(&rows, "Gateways", "Switches"));
         let text = draw(&screen, 120, 12).join("\n");
-        assert!(text.contains("[Switches]"), "{text}");
         assert!(
             text.contains("sw-core") && !text.contains("ap-roof"),
             "{text}"
@@ -1032,7 +1031,7 @@ mod tests {
 
         let pane = rows
             .iter()
-            .position(|row| row.contains("[Overview]"))
+            .position(|row| row.contains(" Overview "))
             .unwrap_or(0);
         let column = |label: &str, value: &str| {
             let row = rows[pane..].iter().find(|row| row.contains(label))?;

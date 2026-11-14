@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use serde_json::json;
+use unifly_api::model::EventCategory;
 use unifly_api::{Device, Event};
 
 use super::EventsScreen;
@@ -412,7 +413,6 @@ fn h_and_l_step_the_category_filter() {
     press(&mut screen, KeyCode::Char('l'));
     let rows = draw(&screen);
     assert!(rows[0].contains("Events (1 of 6)"), "{}", rows[0]);
-    assert!(rows.iter().any(|row| row.contains("[Device]")));
     assert!(rows.iter().any(|row| row.contains("ap-loft upgraded")));
     assert_eq!(shown_events(&screen), Vec::<String>::new());
 
@@ -423,7 +423,7 @@ fn h_and_l_step_the_category_filter() {
     assert!(draw(&screen)[0].contains("Events (6)"));
     // The strip wraps.
     press(&mut screen, KeyCode::Char('h'));
-    assert!(draw(&screen).iter().any(|row| row.contains("[Other]")));
+    assert_eq!(screen.category, Some(EventCategory::Unknown));
     assert!(
         draw(&screen)
             .iter()
@@ -446,12 +446,12 @@ fn tapping_a_category_filters_by_it() {
 
     let rows = draw(&screen);
     screen
-        .handle_mouse_event(click_label(&rows, "[All]", "Network"))
+        .handle_mouse_event(click_label(&rows, "Device  Client", "Network"))
         .expect("click");
     assert!(draw(&screen)[0].contains("Events (1 of 5)"));
     let rows = draw(&screen);
     screen
-        .handle_mouse_event(click_label(&rows, "[Network]", "All"))
+        .handle_mouse_event(click_label(&rows, "Device  Client", "All"))
         .expect("click");
     assert!(draw(&screen)[0].contains("Events (5)"));
 }
