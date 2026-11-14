@@ -37,19 +37,22 @@ impl<'a> HyperHeatmap<'a> {
     }
 }
 
-impl Widget for HyperHeatmap<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl HyperHeatmap<'_> {
+    /// Rows the map takes in an area `width` columns wide: its cells,
+    /// wrapped, and the legend under them.
+    pub fn rows(&self, width: u16) -> u16 {
         if self.cells.is_empty() {
-            Paragraph::new(self.empty_message)
-                .style(Style::default().fg(theme::text_muted()))
-                .render(area, buf);
-            return;
+            return 1;
         }
+        u16::try_from(self.lines(width).len()).unwrap_or(u16::MAX)
+    }
 
+    /// The cells, as many to a line as fit `width`, then the legend.
+    fn lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let mut spans = Vec::new();
         let mut line_width = 0usize;
-        let max_width = usize::from(area.width.max(1));
+        let max_width = usize::from(width.max(1));
 
         for cell in self.cells {
             let (width, mut cell_spans) = cell_spans(cell);
@@ -75,8 +78,19 @@ impl Widget for HyperHeatmap<'_> {
                 Style::default().fg(theme::text_secondary()),
             ),
         ]));
+        lines
+    }
+}
 
-        Paragraph::new(lines).render(area, buf);
+impl Widget for HyperHeatmap<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if self.cells.is_empty() {
+            Paragraph::new(self.empty_message)
+                .style(Style::default().fg(theme::text_muted()))
+                .render(area, buf);
+            return;
+        }
+        Paragraph::new(self.lines(area.width)).render(area, buf);
     }
 }
 
@@ -164,5 +178,24 @@ mod tests {
 
         assert!(width >= 15);
         assert!(spans.len() >= 7);
+    }
+
+    #[test]
+    fn the_map_reports_the_rows_its_cells_wrap_to() {
+        let cells: Vec<HeatmapCell> = (1..=11)
+            .map(|channel| HeatmapCell {
+                label: channel.to_string(),
+                your_count: 0,
+                neighbor_count: 0,
+                signal: None,
+                conflict: false,
+            })
+            .collect();
+        let map = HyperHeatmap::new(&cells);
+        // Each idle cell is eleven columns: one line of cells and the legend.
+        assert_eq!(map.rows(121), 2);
+        assert_eq!(map.rows(120), 3);
+        assert_eq!(map.rows(11), 12);
+        assert_eq!(HyperHeatmap::new(&[]).rows(40), 1);
     }
 }
