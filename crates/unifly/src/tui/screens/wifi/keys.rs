@@ -178,19 +178,19 @@ impl WifiScreen {
         match self.sub_tab {
             WifiSubTab::Overview => {
                 keys.extend([
-                    ("Enter", "Open or close the AP detail"),
-                    ("Space", "Focus Clients and Neighbors on this AP"),
-                    ("c", "Open or close the channel map"),
+                    ("Enter", "AP detail"),
+                    ("Space", "Focus tabs on this AP"),
+                    ("c", "Channel map"),
                 ]);
                 if self.channel_map_open() {
                     keys.push(("[/]", "Channel map band"));
                 }
                 keys.extend([
-                    ("s", "Sort: health, clients, channel, name"),
-                    ("o", "Open this AP on the Devices screen"),
+                    ("s", "Cycle the sort"),
+                    ("o", "Open on Devices screen"),
                     ("R", "Restart the AP"),
-                    ("L", "Flash or stop its locate LED"),
-                    ("U", "Upgrade its firmware, when one is waiting"),
+                    ("L", "Locate LED on / off"),
+                    ("U", "Upgrade firmware"),
                 ]);
                 if self.overview_panel != OverviewPanel::None {
                     keys.push(("Esc", "Close the panel"));
@@ -200,11 +200,11 @@ impl WifiScreen {
             }
             WifiSubTab::Clients => {
                 keys.extend([
-                    ("Enter", "Open or close WiFi experience"),
-                    ("o", "Open this client on the Clients screen"),
-                    ("r", "Show its roam history"),
-                    ("s", "Sort: health, signal, name"),
-                    ("b", "Block, or unblock a blocked client"),
+                    ("Enter", "WiFi experience"),
+                    ("o", "Open on Clients screen"),
+                    ("r", "Roam history"),
+                    ("s", "Cycle the sort"),
+                    ("b", "Block / unblock"),
                     ("x", "Disconnect (kick)"),
                     ("F", "Forget the client"),
                 ]);
@@ -216,22 +216,19 @@ impl WifiScreen {
             }
             WifiSubTab::Ssids => {
                 keys.extend([
-                    ("Enter", "Open or close the SSID detail"),
-                    ("E", "Enable or disable the SSID"),
-                    ("N", "Rename it"),
-                    ("P", "Change its passphrase"),
-                    ("H", "Hide or announce its name"),
-                    ("D", "Delete it"),
+                    ("Enter", "SSID detail"),
+                    ("E", "Enable / disable"),
+                    ("N", "Rename"),
+                    ("P", "Change passphrase"),
+                    ("H", "Hide / announce name"),
+                    ("D", "Delete"),
                 ]);
                 if self.ssid_detail_open {
                     keys.push(("Esc", "Close the panel"));
                 }
             }
             WifiSubTab::Neighbors => {
-                keys.extend([
-                    ("s", "Sort: signal, channel, security, name"),
-                    ("f  [/]", "Next / previous band"),
-                ]);
+                keys.extend([("s", "Cycle the sort"), ("f  [/]", "Next / previous band")]);
                 if self.focused_ap.is_some() {
                     keys.push(("Esc", "Clear the AP focus"));
                 }

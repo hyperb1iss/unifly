@@ -1345,6 +1345,80 @@ fn every_hinted_key_works_in_its_mode_and_is_in_the_help() {
     }
 }
 
+/// The hints on the bar of a frame `width` wide, each as "key label".
+fn hint_bar(screen: &WifiScreen, width: u16) -> Vec<String> {
+    let rows = render_lines(width, 20, |frame, area| screen.render(frame, area));
+    rows[rows.len() - 2]
+        .trim_matches(|ch: char| ch == '\u{2502}' || ch.is_whitespace())
+        .split("  ")
+        .filter(|hint| !hint.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_narrow_hint_bar_drops_whole_hints_instead_of_cutting_one() {
+    for (mode, build) in modes() {
+        let screen = build();
+        let every = hint_bar(&screen, 220);
+        // Below this the first hint alone does not fit, and is cut.
+        for width in (30..=120).step_by(6) {
+            let shown = hint_bar(&screen, width);
+            assert!(
+                shown
+                    .iter()
+                    .zip(&every)
+                    .all(|(shown, whole)| shown == whole),
+                "{mode} at {width}: {shown:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn help_descriptions_fit_the_overlay_column() {
+    for (mode, build) in modes() {
+        for (keys, label) in build().help() {
+            assert!(keys.chars().count() <= 12, "{mode}: {keys:?}");
+            assert!(label.chars().count() <= 24, "{mode}: {label:?}");
+        }
+    }
+}
+
+#[test]
+fn a_name_too_long_for_its_column_ends_in_an_ellipsis() {
+    let mut screen = site();
+    let long = "ap-far-side-of-the-warehouse";
+    screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![
+        access_point("01", long),
+        access_point("02", "ap-b"),
+    ])));
+
+    let shown = rendered_at(&screen, 44, 20);
+    assert!(!shown.contains(long), "{shown}");
+    assert!(shown.contains("ap-far-side-\u{2026}"), "{shown}");
+    assert!(rendered_at(&screen, 160, 20).contains(long));
+}
+
+#[test]
+fn a_short_ssid_detail_folds_into_two_columns() {
+    let mut screen = site();
+    screen.apply_action(&ssid_fixture());
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Ssids));
+    screen.handle_key_input(key(KeyCode::Enter));
+
+    let shown = rendered_at(&screen, 80, 20);
+    for expected in ["State", "Passphrase", "write-only", "Hotspot", "MLO", "ID"] {
+        assert!(shown.contains(expected), "missing {expected:?}:\n{shown}");
+    }
+    assert!(
+        shown
+            .lines()
+            .any(|line| line.contains("State") && line.contains("Hidden")),
+        "{shown}"
+    );
+}
+
 #[test]
 fn the_hint_bar_offers_nothing_without_a_row_to_act_on() {
     let mut screen = WifiScreen::new();
