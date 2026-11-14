@@ -9,7 +9,7 @@ use super::{FIXED_MARK, zone_networks_label};
 use crate::tui::action::{Access, Action, FirewallSubTab};
 use crate::tui::screens::firewall::FirewallScreen;
 use crate::tui::screens::firewall::fixtures::{
-    acl_rule, busy_screen, draw, nat_rule, policy, press, screen_with, user, zone,
+    acl_rule, busy_screen, draw, hints, nat_rule, policy, press, screen_with, user, zone,
 };
 
 fn text(screen: &FirewallScreen, width: u16, height: u16) -> String {
@@ -56,15 +56,22 @@ fn a_fixed_policy_carries_the_mark_and_offers_no_move_or_delete() {
     let marked: Vec<&String> = rows.iter().filter(|row| row.contains(FIXED_MARK)).collect();
     assert_eq!(marked.len(), 1, "{}", rows.join("\n"));
     assert!(marked[0].contains(" sys "));
-    assert!(rows.join("\n").contains("K up"), "a user policy can move");
+
+    // `a` leads its zone pair: it can go down, and has nowhere to go up.
+    screen.select(1);
+    let bar = hints(&screen);
+    assert_eq!(bar, "Enter detail  E disable  L log on  J down  D delete");
 
     screen.select(3);
-    let hints = text(&screen, 100, 14);
-    assert!(
-        !hints.contains("K up") && !hints.contains("delete") && !hints.contains("E on/off"),
-        "{hints}"
-    );
-    assert!(hints.contains("L log"), "{hints}");
+    assert_eq!(hints(&screen), "Enter detail  L log on");
+}
+
+#[test]
+fn the_only_policy_of_its_pair_is_not_offered_a_move() {
+    let screen = busy_screen();
+    let bar = hints(&screen);
+    assert!(!bar.contains("K up") && !bar.contains("J down"), "{bar}");
+    assert!(bar.contains("D delete"), "{bar}");
 }
 
 #[test]
@@ -82,15 +89,38 @@ fn a_picked_up_policy_is_marked_and_the_hints_show_how_to_finish() {
         moving.contains("\u{2195}2"),
         "its new place is marked: {moving}"
     );
-    let hints = rows.join("\n");
+    // Nothing else answers mid-move.
+    assert_eq!(hints(&screen), "K up  J down  Enter apply  Esc put back");
+    // The toolbar says the move is still only on screen, against the
+    // right edge where the sub-tabs cannot push it around.
     assert!(
-        hints.contains("Enter apply") && hints.contains("Esc put back"),
-        "{hints}"
+        rows[1]
+            .trim_end()
+            .ends_with("moving 1 down, not saved \u{2502}"),
+        "{}",
+        rows[1]
     );
-    assert!(
-        !hints.contains("delete"),
-        "nothing else answers mid-move:\n{hints}"
-    );
+
+    press(&mut screen, KeyCode::Esc);
+    let rows = draw(&screen, 100, 14);
+    assert!(!rows[1].contains("moving"), "{}", rows[1]);
+}
+
+#[test]
+fn the_screen_draws_no_hint_row_and_the_table_takes_its_place() {
+    let mut screen = busy_screen();
+    let rows = draw(&screen, 100, 9);
+    let text = rows.join("\n");
+    assert!(!text.contains("Enter detail"), "a second hint bar:\n{text}");
+    // Under the toolbar and the header, the table runs down to the
+    // bottom border.
+    assert!(rows[7].contains(" b "), "{text}");
+
+    press(&mut screen, KeyCode::Enter);
+    let open = draw(&screen, 100, 20).join("\n");
+    assert!(!open.contains("Esc close"), "a second hint bar:\n{open}");
+    assert!(hints(&screen).ends_with("Esc close"), "{}", hints(&screen));
+    assert!(!hints(&screen).contains("Enter detail"));
 }
 
 #[test]

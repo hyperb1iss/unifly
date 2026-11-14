@@ -25,7 +25,7 @@ use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy};
 use crate::tui::action::{Access, Action, FirewallSubTab};
 use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::TableScroll;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 use self::reorder::Reorder;
 
@@ -86,6 +86,10 @@ impl Component for FirewallScreen {
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         self.render_screen(frame, area);
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {

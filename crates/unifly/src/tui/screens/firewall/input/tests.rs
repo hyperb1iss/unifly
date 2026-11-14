@@ -6,7 +6,7 @@ use unifly_api::Command;
 use serde_json::json;
 
 use super::super::fixtures::{
-    acl_rule, busy_screen, draw, nat_rule, policy, press, screen_with, user,
+    acl_rule, busy_screen, draw, hints, nat_rule, policy, press, screen_with, user,
 };
 use crate::tui::action::{Action, FirewallSubTab, RuleSwitch};
 use crate::tui::component::Component;
@@ -139,11 +139,7 @@ fn a_system_defined_policy_takes_logging_and_refuses_the_rest_without_a_round_tr
         ),
         "{logging:?}"
     );
-    let hints = draw(&screen, 120, 24).join("\n");
-    assert!(hints.contains("log"), "{hints}");
-    for gone in ["on/off", "delete", " up", "down"] {
-        assert!(!hints.contains(gone), "{gone} is offered:\n{hints}");
-    }
+    assert_eq!(hints(&screen), "Enter detail  L log on");
 }
 
 /// A policy the controller derived from another, such as an allow rule's
@@ -246,10 +242,10 @@ fn acl_and_nat_rules_toggle_and_delete_with_a_question() {
         refusal,
         "Masquerade is system-defined and cannot be switched on or off here"
     );
-    let hints = draw(&screen, 120, 24).join("\n");
-    assert!(
-        !hints.contains("on/off") && !hints.contains("delete"),
-        "a rule the controller owns offers no write:\n{hints}"
+    assert_eq!(
+        hints(&screen),
+        "Enter detail",
+        "a rule the controller owns offers no write"
     );
 
     screen.apply_action(&Action::FirewallSubTab(FirewallSubTab::Zones));

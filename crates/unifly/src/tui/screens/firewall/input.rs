@@ -232,6 +232,31 @@ impl FirewallScreen {
         }
     }
 
+    /// Whether the selected row's rule is switched on, on the tabs whose
+    /// rows have a switch.
+    pub(super) fn selected_enabled(&self) -> Option<bool> {
+        match self.sub_tab {
+            FirewallSubTab::Policies => self.selected_policy().map(|policy| policy.enabled),
+            FirewallSubTab::AclRules => self.selected_acl_rule().map(|rule| rule.enabled),
+            FirewallSubTab::NatPolicies => self.selected_nat_policy().map(|rule| rule.enabled),
+            FirewallSubTab::Zones => None,
+        }
+    }
+
+    /// Whether `K` (`step` -1) or `J` (1) would pick the selected policy
+    /// up: it is an admin's, in a zone pair, with a place to go that way,
+    /// and no other move is under way.
+    pub(super) fn can_move(&self, step: i32) -> bool {
+        self.sub_tab == FirewallSubTab::Policies
+            && self.reorder.is_none()
+            && self.selected_policy().is_some_and(|policy| {
+                owner(policy.origin).is_none()
+                    && policy.source.zone_id.is_some()
+                    && policy.destination.zone_id.is_some()
+                    && shifted(&self.policies, &policy.id, step).1 != 0
+            })
+    }
+
     fn toggle_enabled(&self) -> Option<Action> {
         const CHANGE: &str = "cannot be switched on or off here";
         match self.sub_tab {

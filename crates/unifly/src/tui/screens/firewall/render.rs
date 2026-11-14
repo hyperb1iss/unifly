@@ -6,15 +6,16 @@ use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Row};
 
 use crate::tui::action::FirewallSubTab;
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, ClickLine, Hint};
 use crate::tui::widgets::detail_grid::{render_empty, render_panel, split_detail};
-use crate::tui::widgets::sub_tabs;
+use crate::tui::widgets::{sub_tabs, toolbar};
 
 use super::FirewallScreen;
+use super::reorder::Stage;
 
 /// Rows a table keeps when the detail panel opens: its header and four
 /// rules.
@@ -37,12 +38,7 @@ impl FirewallScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let layout = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
+        let layout = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
 
         let labels = [
             format!("Policies ({})", self.policies.len()),
@@ -52,8 +48,13 @@ impl FirewallScreen {
         ];
         let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
         let strip = sub_tabs::sub_tab_strip(&labels, self.sub_tab_index());
-        let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[0]);
+        toolbar::render(
+            frame,
+            layout[0],
+            strip,
+            self.reorder_chip(),
+            &mut self.hits.borrow_mut(),
+        );
 
         if self.active_len() == 0 {
             render_empty(frame, layout[1], self.empty_reason());
@@ -76,11 +77,26 @@ impl FirewallScreen {
                 render_panel(frame, panel, &title, lines);
             }
         }
+    }
 
-        let line = self
-            .hint_line()
-            .draw(layout[2], &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[2]);
+    /// A policy move under way, for the right of the toolbar: how far the
+    /// picked-up policy has gone, then that the controller is taking it.
+    /// Until `Enter` the move is on screen only, which the list alone
+    /// does not say.
+    fn reorder_chip(&self) -> ClickLine<'static, Click> {
+        let Some(reorder) = &self.reorder else {
+            return ClickLine::default();
+        };
+        if reorder.stage != Stage::Draft {
+            return toolbar::chip(None, "saving", "new order".into());
+        }
+        let places = reorder.steps.unsigned_abs();
+        let moved = match reorder.steps {
+            0 => "in place".to_owned(),
+            ..0 => format!("{places} up"),
+            _ => format!("{places} down"),
+        };
+        toolbar::chip(None, "moving", format!("{moved}, not saved"))
     }
 
     /// Why the table on show has nothing in it.
@@ -104,55 +120,56 @@ impl FirewallScreen {
         }
     }
 
-    /// The keys that work right now, for the row and mode on screen.
-    fn hint_line(&self) -> ClickLine<'static, Click> {
+    /// What the status bar offers: the writes the selected row takes,
+    /// behind the way into its detail or out of it. While a policy is
+    /// picked up, only what moves, lands, or drops it.
+    pub(in crate::tui::screens::firewall) fn status_hints(&self) -> Vec<(u8, Hint)> {
+        let up = Hint::button("K", "up", click::char_key('K'));
+        let down = Hint::button("J", "down", click::char_key('J'));
         if self.is_drafting() {
-            return click::key_hints(&[
-                Hint::info("K/J", "move"),
-                Hint::button("Enter", "apply", KeyCode::Enter),
-                Hint::button("Esc", "put back", KeyCode::Esc),
-            ]);
+            return vec![
+                (1, up),
+                (1, down),
+                (0, Hint::button("Enter", "apply", KeyCode::Enter)),
+                (0, Hint::button("Esc", "put back", KeyCode::Esc)),
+            ];
         }
-        let tabs = Hint::info("h/l", "tab");
         if self.active_len() == 0 {
-            return click::key_hints(&[tabs]);
+            return Vec::new();
         }
-        let mut hints = vec![
-            Hint::info("j/k", "navigate"),
-            if self.detail_open {
-                Hint::button("Esc", "close", KeyCode::Esc)
-            } else {
-                Hint::button("Enter", "detail", KeyCode::Enter)
-            },
-        ];
-        let toggle = Hint::button("E", "on/off", click::char_key('E'));
-        let delete = Hint::button("D", "delete", click::char_key('D'));
+        let mut hints = Vec::new();
+        if !self.detail_open {
+            hints.push((0, Hint::button("Enter", "detail", KeyCode::Enter)));
+        }
         // A rule that is not an admin's takes no switch, move, or delete;
         // a built-in policy still takes logging.
-        let ours = self.can_toggle();
-        match self.sub_tab {
-            FirewallSubTab::Policies => {
-                if ours {
-                    hints.push(toggle);
-                }
-                if self.selected_policy().is_some() {
-                    hints.push(Hint::button("L", "log", click::char_key('L')));
-                }
-                if ours {
-                    hints.extend([
-                        Hint::button("K", "up", click::char_key('K')),
-                        Hint::button("J", "down", click::char_key('J')),
-                        delete,
-                    ]);
-                }
-            }
-            FirewallSubTab::AclRules | FirewallSubTab::NatPolicies if ours => {
-                hints.extend([toggle, delete]);
-            }
-            _ => {}
+        if let Some(enabled) = self.selected_enabled().filter(|_| self.can_toggle()) {
+            let label = if enabled { "disable" } else { "enable" };
+            hints.push((1, Hint::button("E", label, click::char_key('E'))));
         }
-        hints.push(tabs);
-        click::key_hints(&hints)
+        if self.sub_tab == FirewallSubTab::Policies
+            && let Some(policy) = self.selected_policy()
+        {
+            let label = if policy.logging_enabled {
+                "log off"
+            } else {
+                "log on"
+            };
+            hints.push((4, Hint::button("L", label, click::char_key('L'))));
+            if self.can_move(-1) {
+                hints.push((3, up));
+            }
+            if self.can_move(1) {
+                hints.push((3, down));
+            }
+        }
+        if self.can_toggle() {
+            hints.push((2, Hint::button("D", "delete", click::char_key('D'))));
+        }
+        if self.detail_open {
+            hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
+        }
+        hints
     }
 }
 

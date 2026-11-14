@@ -10,6 +10,7 @@ use super::FirewallScreen;
 use crate::tui::action::Action;
 use crate::tui::component::Component;
 use crate::tui::table::render_lines;
+use crate::tui::widgets::click;
 
 pub(super) fn zone(id: &str, networks: &[&str]) -> Arc<FirewallZone> {
     Arc::new(
@@ -113,4 +114,9 @@ pub(super) fn names(screen: &FirewallScreen) -> String {
 
 pub(super) fn draw(screen: &FirewallScreen, width: u16, height: u16) -> Vec<String> {
     render_lines(width, height, |frame, area| screen.render(frame, area))
+}
+
+/// What the status bar offers for the screen as it stands.
+pub(super) fn hints(screen: &FirewallScreen) -> String {
+    click::hint_text(&screen.hints())
 }
