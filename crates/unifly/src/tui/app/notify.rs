@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn toasts_stay_clear_of_the_hint_and_status_rows() {
+    fn toasts_stay_clear_of_the_status_bar() {
         let mut app = app();
         app.active_screen = ScreenId::Devices;
         app.show_notification(Notification::error("something went wrong"));
@@ -541,10 +541,7 @@ mod tests {
             "toast at row {toast_row}:\n{}",
             rows.join("\n")
         );
-        let hints = rows
-            .iter()
-            .find(|row| row.contains("j/k navigate"))
-            .expect("hint row drawn");
-        assert!(hints.contains("Enter detail"), "{hints}");
+        let status = rows.last().expect("status bar drawn");
+        assert!(status.contains("? help"), "{status}");
     }
 }

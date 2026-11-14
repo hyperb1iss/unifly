@@ -9,7 +9,7 @@ use unifly_api::Device;
 use unifly_api::model::{PoeMode, UplinkMedium};
 
 use super::grid::{self, Field};
-use super::table::command_hints;
+use super::table::{UPDATE_MARKER, command_hints};
 use crate::tui::action::DeviceDetailTab;
 use crate::tui::screens::devices::DevicesScreen;
 use crate::tui::screens::devices::commands::device_name;
@@ -19,8 +19,9 @@ use crate::tui::theme;
 use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::{bytes_fmt, status_indicator, sub_tabs};
 
-/// Pane height from which the tab strip gets a blank row above and below.
-const ROOMY: u16 = 14;
+/// Rows the pane takes besides what its tab holds: the border and the tab
+/// strip.
+const CHROME_ROWS: u16 = 3;
 
 pub(super) fn render_detail(
     screen: &DevicesScreen,
@@ -56,26 +57,53 @@ pub(super) fn render_detail(
     frame.render_widget(block, area);
     screen.detail_hits.borrow_mut().pane = area;
 
-    let spacer = u16::from(inner.height >= ROOMY);
-    let layout = Layout::vertical([
-        Constraint::Length(spacer),
-        Constraint::Length(1),
-        Constraint::Length(spacer),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    let layout = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
 
-    render_detail_tabs(screen, frame, layout[1], device, detail);
-    let content = layout[3];
+    render_detail_tabs(screen, frame, layout[0], device, detail);
+    let content = layout[1];
     match detail.tab {
-        DeviceDetailTab::Overview => render_overview_tab(screen, frame, content, device),
-        DeviceDetailTab::Performance => render_performance_tab(frame, content, device),
+        DeviceDetailTab::Overview => {
+            let fields = overview_fields(screen, device);
+            frame.render_widget(
+                Paragraph::new(grid::lines(&fields, content.width, content.height)),
+                content,
+            );
+        }
         DeviceDetailTab::Radios => render_radios_tab(frame, content, device),
         DeviceDetailTab::Clients => super::clients::render(screen, frame, content, device, detail),
         DeviceDetailTab::Ports => super::ports::render(screen, frame, content, device, detail),
     }
-    render_detail_hints(screen, frame, layout[4], device, detail);
+}
+
+/// Rows the pane wants in a screen `width` columns wide when it may take
+/// up to `room` of them: its border, its tab strip, and what the open tab
+/// holds. The two list tabs ask for every row of their list.
+pub(super) fn detail_height(screen: &DevicesScreen, device: &Device, width: u16, room: u16) -> u16 {
+    let Some(detail) = &screen.detail else {
+        return 0;
+    };
+    let width = width.saturating_sub(2);
+    let content = match detail.tab {
+        DeviceDetailTab::Overview => grid::rows_within(
+            overview_fields(screen, device).len(),
+            width,
+            room.saturating_sub(CHROME_ROWS),
+        ),
+        DeviceDetailTab::Radios => list_rows(device.radios.len()),
+        DeviceDetailTab::Clients => list_rows(screen.device_clients(device).len()),
+        DeviceDetailTab::Ports => super::ports::wanted_rows(device, detail, width),
+    };
+    content.saturating_add(CHROME_ROWS)
+}
+
+/// Rows a list of `len` entries takes under its header, or the one row of
+/// the note that stands in for an empty list.
+pub(super) fn list_rows(len: usize) -> u16 {
+    match u16::try_from(len) {
+        Ok(0) => 1,
+        Ok(len) => len.saturating_add(1),
+        Err(_) => u16::MAX,
+    }
 }
 
 /// Where the cursor is in the open tab's list, such as `port 3 of 24`.
@@ -108,52 +136,37 @@ fn render_detail_tabs(
     let tabs = tabs_for(device);
     let labels: Vec<&str> = tabs.iter().map(|tab| tab_label(*tab)).collect();
     let active = tabs.iter().position(|tab| *tab == detail.tab).unwrap_or(0);
-    let mut strip = click::ClickLine::default();
-    strip.push_gap(Span::raw(" "));
-    strip.append(sub_tabs::sub_tab_strip(&labels, active));
-    let line = strip.draw(area, &mut screen.hits.borrow_mut());
+    let line = sub_tabs::sub_tab_strip(&labels, active).draw(area, &mut screen.hits.borrow_mut());
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// The detail's hint bar: what movement does on this tab, the tab's own
-/// commands, then the device commands its state allows.
-fn render_detail_hints(
+/// What the status bar offers while the detail is open: the open tab's
+/// own commands, then the device commands its state allows, then the way
+/// out.
+pub(super) fn detail_hints(
     screen: &DevicesScreen,
-    frame: &mut Frame,
-    area: Rect,
     device: &Device,
     detail: &Detail,
-) {
-    let mut hints = vec![(0, Hint::info("h/l", "tabs"))];
-    match detail.tab {
-        DeviceDetailTab::Ports => {
-            hints.push((0, Hint::info("j/k", "port")));
-            hints.extend(port_hints(screen));
+) -> Vec<(u8, Hint)> {
+    let mut hints = match detail.tab {
+        DeviceDetailTab::Ports => port_hints(screen),
+        DeviceDetailTab::Clients if screen.cursor_client().is_some() => {
+            vec![(0, Hint::button("Enter", "client", KeyCode::Enter))]
         }
-        DeviceDetailTab::Clients => {
-            hints.push((0, Hint::info("j/k", "client")));
-            if screen.cursor_client().is_some() {
-                hints.push((1, Hint::button("Enter", "open client", KeyCode::Enter)));
-            }
-        }
-        _ => hints.push((2, Hint::info("j/k", "device"))),
-    }
-    let own_commands = hints.len() > 2;
+        _ => Vec::new(),
+    };
+    // A tab with its own commands keeps those longest on a narrow bar.
+    let behind = if hints.is_empty() { 0 } else { 4 };
     hints.extend(
         command_hints(screen, device)
             .into_iter()
-            .map(|(rank, hint)| {
-                // A tab with its own commands shows those first.
-                (if own_commands { rank + 4 } else { rank }, hint)
-            }),
+            .map(|(rank, hint)| (rank + behind, hint)),
     );
     if screen.can_remove(device) {
         hints.push((7, Hint::button("F", "remove", click::char_key('F'))));
     }
     hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
-    let hints = grid::fit_hints(hints, area.width);
-    let line = click::key_hints(&hints).draw(area, &mut screen.hits.borrow_mut());
-    frame.render_widget(Paragraph::new(line), area);
+    hints
 }
 
 /// Hints for the commands the port under the cursor can take. `O` shows
@@ -181,10 +194,13 @@ fn port_hints(screen: &DevicesScreen) -> Vec<(u8, Hint)> {
     hints
 }
 
-fn render_overview_tab(screen: &DevicesScreen, frame: &mut Frame, area: Rect, device: &Device) {
+/// Everything the Overview says about `device`: what it is and how it
+/// connects, then how it is doing. A value the device has not reported is
+/// a dash, so every field keeps its place from one device to the next.
+fn overview_fields(screen: &DevicesScreen, device: &Device) -> Vec<Field> {
     let firmware = device.firmware_version.as_ref().map(|version| {
         if device.firmware_updatable {
-            format!("{version} (update available)")
+            format!("{version} {UPDATE_MARKER} update")
         } else {
             version.clone()
         }
@@ -200,36 +216,52 @@ fn render_overview_tab(screen: &DevicesScreen, frame: &mut Frame, area: Rect, de
         .client_count
         .map(|count| usize::try_from(count).unwrap_or(listed).max(listed))
         .or((listed > 0).then_some(listed));
+    let stats = &device.stats;
+    let load = match (
+        stats.load_average_1m,
+        stats.load_average_5m,
+        stats.load_average_15m,
+    ) {
+        (Some(one), Some(five), Some(fifteen)) => {
+            Some(format!("{one:.2}  {five:.2}  {fifteen:.2}"))
+        }
+        (Some(one), _, _) => Some(format!("{one:.2}")),
+        _ => None,
+    };
+    let rates = stats.uplink_bandwidth.as_ref().map(|bandwidth| {
+        format!(
+            "{} / {}",
+            bytes_fmt::fmt_rate(bandwidth.tx_bytes_per_sec),
+            bytes_fmt::fmt_rate(bandwidth.rx_bytes_per_sec)
+        )
+    });
+    // The Session API dates a device's last contact and the Integration
+    // API its last heartbeat: one moment under two names.
+    let last_seen = device.last_seen.or(stats.last_heartbeat);
 
     let mut fields = vec![
         Field::new("State", state_label(device.state))
             .color(theme::text_primary())
             .marker(status_indicator::status_span(device.state)),
         Field::optional("IP", device.ip.map(|ip| ip.to_string())).color(theme::accent_tertiary()),
-        Field::optional(
-            "Uptime",
-            device.stats.uptime_secs.map(bytes_fmt::fmt_uptime),
-        ),
-        if firmware.is_some() {
-            Field::optional("Firmware", firmware).color(firmware_color)
-        } else {
-            Field::optional("Firmware", None)
-        },
+        Field::new("MAC", device.mac.to_string()).color(theme::accent_tertiary()),
+        Field::new("Type", type_label(device.device_type)),
         Field::optional("Uplink", uplink_label(screen, device)),
         Field::optional("Clients", client_count.map(|count| count.to_string())),
-        Field::new("Type", type_label(device.device_type)),
-        Field::new("MAC", device.mac.to_string()).color(theme::accent_tertiary()),
-        Field::optional("Serial", device.serial.clone()),
-        Field::optional("Last seen", device.last_seen.map(grid::ago)),
+        colored("Firmware", firmware, firmware_color),
+        Field::optional("Uptime", stats.uptime_secs.map(bytes_fmt::fmt_uptime)),
+        percent_field("CPU", stats.cpu_utilization_pct),
+        percent_field("Memory", stats.memory_utilization_pct),
+        colored("Load", load, theme::text_primary()),
+        Field::optional("TX/RX", rates),
+        Field::optional("Last seen", last_seen.map(grid::ago)),
         Field::optional("Adopted", device.adopted_at.map(grid::local_time)),
+        Field::optional("Serial", device.serial.clone()),
     ];
     if let Some(ipv6) = &device.wan_ipv6 {
         fields.push(Field::new("WAN IPv6", ipv6.clone()).color(theme::accent_tertiary()));
     }
-    frame.render_widget(
-        Paragraph::new(grid::lines(&fields, area.width, area.height)),
-        area,
-    );
+    fields
 }
 
 /// What `device` connects up through: the upstream device's name and the
@@ -269,44 +301,19 @@ fn load_color(value: f64) -> Color {
     }
 }
 
+/// A field drawn in `color` where its value is known, and as the muted
+/// dash where it is not.
+fn colored(label: &'static str, value: Option<String>, color: Color) -> Field {
+    let known = value.is_some();
+    let field = Field::optional(label, value);
+    if known { field.color(color) } else { field }
+}
+
 fn percent_field(label: &'static str, value: Option<f64>) -> Field {
     match value {
         Some(value) => Field::new(label, format!("{value:.1}%")).color(load_color(value)),
         None => Field::optional(label, None),
     }
-}
-
-fn render_performance_tab(frame: &mut Frame, area: Rect, device: &Device) {
-    let stats = &device.stats;
-    let load = match (
-        stats.load_average_1m,
-        stats.load_average_5m,
-        stats.load_average_15m,
-    ) {
-        (Some(one), Some(five), Some(fifteen)) => {
-            Some(format!("{one:.2}  {five:.2}  {fifteen:.2}"))
-        }
-        (Some(one), _, _) => Some(format!("{one:.2}")),
-        _ => None,
-    };
-    let rate = |pick: fn(&unifly_api::model::Bandwidth) -> u64| {
-        stats
-            .uplink_bandwidth
-            .as_ref()
-            .map(|bandwidth| bytes_fmt::fmt_rate(pick(bandwidth)))
-    };
-    let fields = [
-        percent_field("CPU", stats.cpu_utilization_pct),
-        percent_field("Memory", stats.memory_utilization_pct),
-        Field::optional("Load", load).color(theme::text_primary()),
-        Field::optional("Uplink TX", rate(|bandwidth| bandwidth.tx_bytes_per_sec)),
-        Field::optional("Uplink RX", rate(|bandwidth| bandwidth.rx_bytes_per_sec)),
-        Field::optional("Heartbeat", stats.last_heartbeat.map(grid::ago)),
-    ];
-    frame.render_widget(
-        Paragraph::new(grid::lines(&fields, area.width, area.height)),
-        area,
-    );
 }
 
 fn radio_band_label(freq: f32) -> &'static str {

@@ -85,7 +85,7 @@ impl DetailHits {
 /// The tabs that apply to `device`: radios only where there are any, and
 /// ports only where there are any.
 pub(super) fn tabs_for(device: &Device) -> Vec<DeviceDetailTab> {
-    let mut tabs = vec![DeviceDetailTab::Overview, DeviceDetailTab::Performance];
+    let mut tabs = vec![DeviceDetailTab::Overview];
     if device.has_access_point || !device.radios.is_empty() {
         tabs.push(DeviceDetailTab::Radios);
     }
@@ -99,7 +99,6 @@ pub(super) fn tabs_for(device: &Device) -> Vec<DeviceDetailTab> {
 pub(super) fn tab_label(tab: DeviceDetailTab) -> &'static str {
     match tab {
         DeviceDetailTab::Overview => "Overview",
-        DeviceDetailTab::Performance => "Performance",
         DeviceDetailTab::Radios => "Radios",
         DeviceDetailTab::Clients => "Clients",
         DeviceDetailTab::Ports => "Ports",

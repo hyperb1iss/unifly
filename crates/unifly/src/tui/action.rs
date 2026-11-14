@@ -44,7 +44,6 @@ impl ClientTypeFilter {
 pub enum DeviceDetailTab {
     #[default]
     Overview,
-    Performance,
     Radios,
     Clients,
     Ports,
@@ -52,13 +51,7 @@ pub enum DeviceDetailTab {
 
 impl DeviceDetailTab {
     /// All tabs in tab-bar order.
-    pub const ALL: [Self; 5] = [
-        Self::Overview,
-        Self::Performance,
-        Self::Radios,
-        Self::Clients,
-        Self::Ports,
-    ];
+    pub const ALL: [Self; 4] = [Self::Overview, Self::Radios, Self::Clients, Self::Ports];
 }
 
 /// One change to a switch port's configuration.

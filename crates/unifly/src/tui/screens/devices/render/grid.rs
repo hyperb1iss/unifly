@@ -8,7 +8,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::tui::theme;
-use crate::tui::widgets::click::{self, Hint};
 
 /// Narrowest column the grid lays fields out in.
 const MIN_COLUMN: usize = 34;
@@ -106,20 +105,7 @@ pub fn clipped(widths: &[Constraint], column: usize, text: String, reserved: usi
 /// with labels padded to one width so the values line up.
 pub fn lines(fields: &[Field], width: u16, height: u16) -> Vec<Line<'static>> {
     let width = usize::from(width);
-    let rows_available = usize::from(height).max(1);
-    let most_columns = (width / MIN_COLUMN).max(1);
-    // A long list on a wide pane reads better side by side than as one
-    // column beside empty space.
-    let balanced = if fields.len() >= SPLIT_FROM && width >= 2 * WIDE_COLUMN {
-        2
-    } else {
-        1
-    };
-    let columns = fields
-        .len()
-        .div_ceil(rows_available)
-        .max(balanced)
-        .clamp(1, most_columns);
+    let columns = columns_for(fields.len(), width, usize::from(height));
     let rows = fields.len().div_ceil(columns);
     let column_width = width / columns;
     let label_width = fields
@@ -142,17 +128,34 @@ pub fn lines(fields: &[Field], width: u16, height: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Rows [`lines`] takes for `count` fields in a pane `width` columns wide
-/// with all the height it wants.
-pub fn rows_for(count: usize, width: u16) -> u16 {
-    let width = usize::from(width);
+/// Columns the grid lays `count` fields out in, in an area `width` columns
+/// wide with `rows_available` rows: as few as hold them all.
+fn columns_for(count: usize, width: usize, rows_available: usize) -> usize {
     let most_columns = (width / MIN_COLUMN).max(1);
+    // A long list on a wide pane reads better side by side than as one
+    // column beside empty space.
     let balanced = if count >= SPLIT_FROM && width >= 2 * WIDE_COLUMN {
         2
     } else {
         1
     };
-    let columns = balanced.clamp(1, most_columns);
+    count
+        .div_ceil(rows_available.max(1))
+        .max(balanced)
+        .clamp(1, most_columns)
+}
+
+/// Rows [`lines`] takes for `count` fields in a pane `width` columns wide
+/// with all the height it wants.
+pub fn rows_for(count: usize, width: u16) -> u16 {
+    rows_within(count, width, u16::MAX)
+}
+
+/// Rows [`lines`] takes for `count` fields in an area `width` by `height`.
+/// A pane with fewer rows than fields flows them into more columns, so it
+/// asks for the rows those columns fill.
+pub fn rows_within(count: usize, width: u16, height: u16) -> u16 {
+    let columns = columns_for(count, usize::from(width), usize::from(height));
     u16::try_from(count.div_ceil(columns)).unwrap_or(u16::MAX)
 }
 
@@ -178,8 +181,7 @@ fn cell(field: &Field, label_width: usize, column_width: usize) -> Vec<Span<'sta
 }
 
 /// Screen height below which an open detail takes the whole screen: the
-/// pane needs its tabs, a few lines, and its hints more than the table
-/// needs two rows.
+/// pane needs its tabs and a few lines more than the table needs two rows.
 const SHARE_FROM: u16 = 12;
 
 /// Rows the table keeps above an open detail in a screen `height` rows
@@ -222,12 +224,6 @@ pub fn note(frame: &mut Frame, area: Rect, text: &str) {
             .alignment(Alignment::Center),
         row,
     );
-}
-
-/// The hints that fit a bar `width` columns wide that starts two columns
-/// in, as [`click::key_hints`] draws one.
-pub fn fit_hints(hints: Vec<(u8, Hint)>, width: u16) -> Vec<Hint> {
-    click::fit_hints(hints, width.saturating_sub(2))
 }
 
 /// A timestamp in the terminal's own time zone.
@@ -294,6 +290,22 @@ mod tests {
         assert!(rows[0].contains('A') && rows[0].contains('D'), "{rows:?}");
         // Too narrow for two columns: every field still gets a line.
         assert_eq!(lines(&fields, 40, 3).len(), 5);
+    }
+
+    #[test]
+    fn a_pane_is_told_the_rows_its_fields_fill_in_the_room_it_has() {
+        let fields: Vec<_> = (0..15).map(|_| Field::new("Label", "value")).collect();
+        // Wide enough for two balanced columns whatever the height.
+        assert_eq!(rows_for(15, 100), 8);
+        assert_eq!(rows_within(15, 100, 40), 8);
+        // Narrower, one column while it has the rows and two once it has
+        // not, exactly as the lines are then drawn.
+        assert_eq!(rows_for(15, 76), 15);
+        for height in [40, 15, 11, 8] {
+            let drawn = lines(&fields, 76, height).len();
+            assert_eq!(usize::from(rows_within(15, 76, height)), drawn, "{height}");
+        }
+        assert_eq!(rows_within(15, 76, 11), 8);
     }
 
     #[test]

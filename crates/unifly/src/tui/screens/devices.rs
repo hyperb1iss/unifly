@@ -26,7 +26,7 @@ use unifly_api::{Client, Device, EntityId};
 use crate::tui::action::{Access, Action, DeviceDetailTab};
 use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::TableScroll;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 pub(in crate::tui) use commands::poe_mode_label;
 pub(in crate::tui::screens) use render::grid;
@@ -94,6 +94,10 @@ impl Component for DevicesScreen {
         Some(&self.search_query)
     }
 
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
+    }
+
     fn help(&self) -> Vec<(&'static str, &'static str)> {
         let Some(detail) = &self.detail else {
             let mut keys = LIST_HELP.to_vec();
@@ -135,8 +139,8 @@ const DEVICE_KEYS: &[(&str, &str)] = &[
     ("T", "Gateway speed test"),
 ];
 
-/// Movement on the Overview, Performance, and Radios tabs, which hold no
-/// list: it steps through the devices, keeping the tab.
+/// Movement on the Overview and Radios tabs, which hold no list: it steps
+/// through the devices, keeping the tab.
 const DEVICE_STEP_KEYS: &[(&str, &str)] = &[
     ("j/k \u{2191}/\u{2193}", "Previous / next device"),
     ("g/G", "First / last device"),

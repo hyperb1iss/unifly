@@ -135,7 +135,7 @@ The speed test needs a gateway on the site and a direct controller session. Its 
 
 ### Devices
 
-The table filters by type and sorts by name, status, clients, traffic, or uptime. `Enter` opens a detail with a tab per aspect the device has: Overview, Performance, Radios on access points, Clients, and Ports on anything with ports. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
+The table filters by type and sorts by name, status, clients, traffic, or uptime. `Enter` opens a detail with a tab per aspect the device has: Overview (identity, uplink, and the CPU, memory, load, and traffic figures), Radios on access points, Clients, and Ports on anything with ports. The pane takes the rows its tab needs, and the table keeps the rest. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
 
 Devices waiting for adoption are listed with the adopted ones on profiles that reach the Integration API, so `A` has something to act on.
 

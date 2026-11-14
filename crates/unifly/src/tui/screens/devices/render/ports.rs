@@ -10,6 +10,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use unifly_api::Device;
 use unifly_api::model::{PoeMode, Port, PortConnector, PortMode, PortProfile, PortState};
 
+use super::detail::list_rows;
 use super::grid::{self, DASH};
 use crate::tui::screens::devices::DevicesScreen;
 use crate::tui::screens::devices::detail::{Detail, Profiles, ordered_ports};
@@ -20,6 +21,9 @@ use crate::tui::widgets::hyperchart::SwitchFaceplate;
 /// Fewest ports worth a faceplate: an access point's one or two say
 /// nothing the list does not.
 const FACEPLATE_PORTS: usize = 4;
+
+/// Narrowest pane the faceplate is drawn in.
+const FACEPLATE_WIDTH: u16 = 44;
 
 /// Port rows the list keeps when the faceplate is drawn above it.
 const MIN_LIST_ROWS: u16 = 5;
@@ -39,10 +43,8 @@ pub(super) fn render(
 
     let note = profile_note(&detail.profiles);
     let note_rows = u16::from(note.is_some());
-    let faceplate = faceplate_height(&ports, area.width);
-    let show_faceplate = ports.len() >= FACEPLATE_PORTS
-        && area.width >= 44
-        && area.height >= faceplate + note_rows + 1 + MIN_LIST_ROWS;
+    let faceplate = faceplate_rows(&ports, area.width);
+    let show_faceplate = faceplate > 0 && area.height >= faceplate + note_rows + 1 + MIN_LIST_ROWS;
     let layout = Layout::vertical([
         Constraint::Length(if show_faceplate { faceplate } else { 0 }),
         Constraint::Length(note_rows),
@@ -61,6 +63,29 @@ pub(super) fn render(
         );
     }
     render_list(screen, frame, layout[2], &ports, detail);
+}
+
+/// Rows the tab wants at `width`: the faceplate, the note about missing
+/// profiles, and every port under the list's header.
+pub(super) fn wanted_rows(device: &Device, detail: &Detail, width: u16) -> u16 {
+    let ports = ordered_ports(device);
+    if ports.is_empty() {
+        return list_rows(0);
+    }
+    let note_rows = u16::from(profile_note(&detail.profiles).is_some());
+    faceplate_rows(&ports, width)
+        .saturating_add(note_rows)
+        .saturating_add(list_rows(ports.len()))
+}
+
+/// Rows the faceplate takes at `width`, or none where it is not drawn: too
+/// few ports to be worth one, or too narrow a pane.
+fn faceplate_rows(ports: &[&Port], width: u16) -> u16 {
+    if ports.len() >= FACEPLATE_PORTS && width >= FACEPLATE_WIDTH {
+        faceplate_height(ports, width)
+    } else {
+        0
+    }
 }
 
 /// Rows the faceplate takes at `width`: four per bank of ports, and the

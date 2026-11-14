@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
 
 use unifly_api::{Device, DeviceState};
 
@@ -13,13 +13,13 @@ use crossterm::event::KeyCode;
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, Hint};
-use crate::tui::widgets::{bytes_fmt, status_indicator, sub_tabs};
+use crate::tui::widgets::{bytes_fmt, status_indicator, sub_tabs, toolbar};
 
-use super::detail::render_detail;
+use super::detail::{detail_height, detail_hints, render_detail};
 use super::grid;
 use crate::tui::screens::devices::DevicesScreen;
 use crate::tui::screens::devices::commands::{is_gateway, is_pending, is_reachable};
-use crate::tui::screens::devices::view::{DeviceFilter, counted};
+use crate::tui::screens::devices::view::DeviceFilter;
 
 pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
     screen.hits.borrow_mut().clear();
@@ -40,39 +40,67 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // With a detail open the table keeps a few rows around the cursor and
-    // the pane takes the rest; its hint bar then speaks for the screen.
-    // On a very short screen the pane takes all of it.
+    // An open detail takes the rows its tab needs, and sits right under
+    // the table where the table is shorter than its share, so the tab
+    // strip stays on one row as the tabs change. The table keeps at least
+    // a third of the screen; on a very short one the pane takes all of it.
     let detail_device = screen.detail_device();
-    let (table_area, detail_area) = if detail_device.is_some() {
-        let list = grid::list_rows_beside_detail(inner.height);
-        let chunks = Layout::vertical([Constraint::Length(list), Constraint::Min(0)]).split(inner);
-        (chunks[0], Some(chunks[1]))
+    let (table_area, detail_area) = if let Some(device) = detail_device {
+        let table = table_rows(filtered.len());
+        let room = inner
+            .height
+            .saturating_sub(grid::list_rows_beside_detail(inner.height).min(table));
+        let pane = detail_height(screen, device, inner.width, room).min(room);
+        let list = (inner.height - pane).min(table);
+        let table_area = Rect {
+            height: list,
+            ..inner
+        };
+        let detail_area = Rect {
+            y: inner.y + list,
+            height: pane,
+            ..inner
+        };
+        (table_area, Some(detail_area))
     } else {
         (inner, None)
     };
 
-    let hint_rows = u16::from(detail_area.is_none());
-    let layout = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(hint_rows),
-    ])
-    .split(table_area);
+    let layout = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(table_area);
 
-    render_filter_bar(screen, frame, layout[0], filtered.len());
+    render_filter_bar(screen, frame, layout[0]);
     if filtered.is_empty() {
         grid::note(frame, layout[1], &empty_note(screen));
     } else {
         render_device_table(screen, frame, layout[1], &filtered, selected_index);
     }
-    if detail_area.is_none() {
-        render_table_hints(screen, frame, layout[2]);
-    }
 
     if let (Some(detail_area), Some(device)) = (detail_area, detail_device) {
         render_detail(screen, frame, detail_area, device);
     }
+}
+
+/// Rows the table takes to show `devices` of them: the filter bar, the
+/// header, and a row each.
+fn table_rows(devices: usize) -> u16 {
+    u16::try_from(devices).unwrap_or(u16::MAX).saturating_add(2)
+}
+
+/// What the status bar offers: the way into the selected device's detail
+/// and the commands it can take, or the open detail's own.
+pub(in crate::tui::screens::devices) fn status_hints(screen: &DevicesScreen) -> Vec<(u8, Hint)> {
+    if let Some(detail) = &screen.detail {
+        return match screen.detail_device() {
+            Some(device) => detail_hints(screen, device, detail),
+            None => vec![(0, Hint::button("Esc", "close", KeyCode::Esc))],
+        };
+    }
+    let Some(device) = screen.selected_device() else {
+        return Vec::new();
+    };
+    let mut hints = vec![(0, Hint::button("Enter", "detail", KeyCode::Enter))];
+    hints.extend(command_hints(screen, device));
+    hints
 }
 
 /// The screen title: how many devices show, of how many, and the search
@@ -112,62 +140,35 @@ fn empty_note(screen: &DevicesScreen) -> String {
     screen.filter.empty_note().into()
 }
 
-/// The filter strip, then the sort, the row count, and the firmware
-/// updates waiting, as far as the width allows.
-fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect, shown: usize) {
-    let mut bar = click::ClickLine::default();
-    bar.push_gap(Span::raw(" "));
-    bar.append(sub_tabs::sub_tab_strip(
-        &DeviceFilter::LABELS,
-        screen.filter.index(),
-    ));
-
-    let secondary = Style::default().fg(theme::text_secondary());
-    let sort = [
-        Span::styled("   sort ", secondary),
-        Span::styled(
-            screen.sort.label(),
-            Style::default().fg(theme::accent_secondary()),
-        ),
-    ];
-    let room = |bar: &click::ClickLine<'_, Click>, spans: &[Span<'_>]| {
-        bar.width() + spans.iter().map(Span::width).sum::<usize>() < usize::from(area.width)
-    };
-    if room(&bar, &sort) {
-        for span in sort {
-            // `s` belongs to the table, so the label is only a button
-            // while no detail has the keys.
-            if screen.detail.is_none() {
-                bar.push(Click::Key(click::char_key('s')), span);
-            } else {
-                bar.push_gap(span);
-            }
-        }
-    }
-    let count = [Span::styled(
-        format!("   {}", counted(shown, "device", "devices")),
-        secondary,
-    )];
-    if room(&bar, &count) {
-        bar.push_gap(count[0].clone());
-    }
+/// The filter strip, with the sort against the right edge. The firmware
+/// updates waiting are counted on the filter that lists them.
+fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
+    let mut filters = sub_tabs::sub_tab_strip(&DeviceFilter::LABELS, screen.filter.index());
     let updates = screen
         .devices
         .iter()
         .filter(|device| device.firmware_updatable)
         .count();
-    let waiting = [Span::styled(
-        format!(
-            "   {UPDATE_MARKER} {}",
-            counted(updates, "update", "updates")
-        ),
-        Style::default().fg(theme::warning()),
-    )];
-    if updates > 0 && room(&bar, &waiting) {
-        bar.push_gap(waiting[0].clone());
+    if updates > 0 {
+        // Updates closes the strip, so its count follows the strip's last
+        // cell and is part of the same tab.
+        let tab = Click::Tab(DeviceFilter::Updates.index());
+        filters.push(
+            tab.clone(),
+            Span::styled(
+                updates.to_string(),
+                Style::default()
+                    .fg(theme::warning())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+        filters.push(tab, Span::raw(" "));
     }
-    let line = bar.draw(area, &mut screen.hits.borrow_mut());
-    frame.render_widget(Paragraph::new(line), area);
+    // `s` belongs to the table, so the chip is only a button while no
+    // detail has the keys.
+    let key = screen.detail.is_none().then(|| ("s", click::char_key('s')));
+    let sort = toolbar::chip(key, "sort", screen.sort.label());
+    toolbar::render(frame, area, filters, sort, &mut screen.hits.borrow_mut());
 }
 
 /// Table width from which the Devices table adds its Firmware and Clients columns:
@@ -175,7 +176,7 @@ fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect, show
 const WIDE_TABLE: u16 = 118;
 
 /// Marks a device with a firmware update waiting.
-const UPDATE_MARKER: &str = "\u{2191}";
+pub(super) const UPDATE_MARKER: &str = "\u{2191}";
 
 /// Header of the uplink rate column: bits per second, sent then received.
 const RATE_HEADER: &str = "TX/RX bps";
@@ -391,23 +392,6 @@ fn render_table_row(
     })
 }
 
-/// The table's hints: movement and view keys, then the commands the
-/// selected device can take right now.
-fn render_table_hints(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
-    let mut hints = vec![
-        (0, Hint::info("j/k", "navigate")),
-        (0, Hint::button("Enter", "detail", KeyCode::Enter)),
-        (2, Hint::button("h/l", "filter", click::char_key('l'))),
-        (3, Hint::button("s", "sort", click::char_key('s'))),
-    ];
-    if let Some(device) = screen.selected_device() {
-        hints.extend(command_hints(screen, device));
-    }
-    let hints = grid::fit_hints(hints, area.width);
-    let line = click::key_hints(&hints).draw(area, &mut screen.hits.borrow_mut());
-    frame.render_widget(Paragraph::new(line), area);
-}
-
 /// Hints for the device commands `device` can take in its state and under
 /// the controller's access, ranked for a narrow bar.
 pub(super) fn command_hints(screen: &DevicesScreen, device: &Device) -> Vec<(u8, Hint)> {
@@ -446,7 +430,9 @@ mod tests {
     use crate::tui::screens::devices::DevicesScreen;
     use crate::tui::screens::devices::fixtures::{client, device, switch};
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::click::{click_label, mouse};
+    use crate::tui::widgets::click::{self, click_label, mouse};
+
+    use super::status_hints;
 
     fn ap(index: u8, name: &str, model: &str, firmware: &str, updatable: bool) -> Arc<Device> {
         device(
@@ -501,13 +487,25 @@ mod tests {
             .and_then(|device| device.name.clone())
     }
 
-    /// The hint bar: the last row inside the screen's border, or inside
-    /// the detail's when one is open.
-    fn hints(rows: &[String]) -> &str {
+    /// What the status bar offers for the screen as it stands.
+    fn hints(screen: &DevicesScreen) -> String {
+        click::hint_text(&status_hints(screen))
+    }
+
+    /// The row the detail's tab strip is drawn on.
+    fn tab_row(rows: &[String]) -> usize {
         rows.iter()
-            .rev()
-            .find(|row| row.contains("j/k") || row.contains("h/l"))
-            .map_or("", String::as_str)
+            .position(|row| row.contains(" Overview "))
+            .expect("the tab strip is drawn")
+    }
+
+    /// Rows of the device table on screen, by the cursor and status column.
+    fn device_rows(rows: &[String]) -> usize {
+        rows.iter()
+            .filter(|row| {
+                row.starts_with("\u{2502} \u{25cf}") || row.starts_with("\u{2502}\u{25b8}\u{25cf}")
+            })
+            .count()
     }
 
     #[test]
@@ -523,12 +521,12 @@ mod tests {
             ("Overview", DeviceDetailTab::Overview),
         ] {
             let rows = draw(&screen, 120, 30);
-            screen.handle_mouse_input(click_label(&rows, "Performance", label));
+            screen.handle_mouse_input(click_label(&rows, " Overview ", label));
             assert_eq!(tab(&screen), Some(expected), "{label}");
         }
 
         let rows = draw(&screen, 120, 30);
-        let ports = click_label(&rows, "Performance", "Ports");
+        let ports = click_label(&rows, " Overview ", "Ports");
         press(&mut screen, KeyCode::Esc);
         draw(&screen, 120, 30);
 
@@ -555,7 +553,7 @@ mod tests {
         assert_eq!(shown(&screen).as_deref(), Some("ap-roof"));
 
         let rows = draw(&screen, 120, 30);
-        screen.handle_mouse_input(click_label(&rows, "Performance", "Radios"));
+        screen.handle_mouse_input(click_label(&rows, " Overview ", "Radios"));
         let rows = draw(&screen, 120, 30);
         screen.handle_mouse_input(click_label(&rows, "ap-atrium", "ap-atrium"));
         assert_eq!(shown(&screen).as_deref(), Some("ap-atrium"));
@@ -683,22 +681,34 @@ mod tests {
     }
 
     #[test]
-    fn the_filter_bar_counts_in_the_singular_and_shows_the_sort() {
+    fn the_title_counts_and_the_filter_bar_shows_the_sort_at_its_right_edge() {
         let mut screen = screen();
-        let top = draw(&screen, 120, 12).join("\n");
-        assert!(top.contains("Devices (3)"), "{top}");
-        assert!(top.contains("3 devices"), "{top}");
-        assert!(top.contains("sort name ↑"), "{top}");
-        assert!(top.contains("↑ 1 update "), "{top}");
+        let rows = draw(&screen, 120, 12);
+        assert!(rows[0].contains("Devices (3)"), "{}", rows[0]);
+        // The count is the title's alone, and the sort sits against the
+        // right edge whatever the filter strip says.
+        assert!(!rows[1].contains("devices"), "{}", rows[1]);
+        assert!(
+            rows[1].starts_with("\u{2502} All  Gateways  Switches  APs  Offline  Updates 1 "),
+            "{}",
+            rows[1]
+        );
+        assert!(
+            rows[1].ends_with("s sort name \u{2191} \u{2502}"),
+            "{}",
+            rows[1]
+        );
 
         // A tap on the sort steps it, like `s`.
-        let rows = draw(&screen, 120, 12);
         let tap = screen.handle_mouse_input(click_label(&rows, "sort name", "sort name"));
         assert!(matches!(tap, Some(Action::PressKey(key)) if key.code == KeyCode::Char('s')));
 
-        // With a detail open `s` is not the table's, so the label is text.
+        // With a detail open `s` is not the table's, so the chip is text
+        // and names no key.
         press(&mut screen, KeyCode::Enter);
         let rows = draw(&screen, 120, 24);
+        assert!(rows[1].contains("  sort name"), "{}", rows[1]);
+        assert!(!rows[1].contains("s sort name"), "{}", rows[1]);
         assert!(
             screen
                 .handle_mouse_input(click_label(&rows, "sort name", "sort name"))
@@ -710,7 +720,33 @@ mod tests {
         screen.set_search_query("roof");
         let top = draw(&screen, 120, 12).join("\n");
         assert!(top.contains("Devices (1/3) [\"roof\"]"), "{top}");
-        assert!(top.contains("1 device "), "{top}");
+    }
+
+    #[test]
+    fn waiting_updates_are_counted_on_the_filter_that_lists_them() {
+        let mut screen = screen();
+        let rows = draw(&screen, 120, 12);
+        assert!(rows[1].contains("Updates 1 "), "{}", rows[1]);
+        assert!(!rows[1].contains("1 update"), "{}", rows[1]);
+
+        // The count is part of the tab: a tap on it selects the filter.
+        screen.handle_mouse_input(click_label(&rows, "Updates", "1 "));
+        let text = draw(&screen, 120, 12).join("\n");
+        assert!(
+            text.contains("ap-roof") && !text.contains("sw-core"),
+            "{text}"
+        );
+
+        let current = screen_of(vec![ap(15, "ap-atrium", "U6 Enterprise", "8.1.113", false)]);
+        let rows = draw(&current, 120, 12);
+        assert!(rows[1].contains("Updates  "), "{}", rows[1]);
+    }
+
+    #[test]
+    fn a_narrow_filter_bar_keeps_the_filters_and_drops_the_sort() {
+        let rows = draw(&screen(), 60, 12);
+        assert!(rows[1].contains("Updates 1"), "{}", rows[1]);
+        assert!(!rows[1].contains("sort"), "{}", rows[1]);
     }
 
     #[test]
@@ -754,61 +790,107 @@ mod tests {
             device(3, "charlie", &json!({ "state": "PendingAdoption" })),
             device(4, "delta", &json!({ "state": "Offline" })),
         ]);
-        let bar = |screen: &DevicesScreen| hints(&draw(screen, 120, 14)).to_owned();
 
-        let alpha = bar(&screen);
+        let alpha = hints(&screen);
         assert!(
-            alpha.contains("Enter detail") && alpha.contains("R restart"),
+            alpha.starts_with("Enter detail") && alpha.contains("R restart"),
             "{alpha}"
         );
         assert!(
             !alpha.contains("upgrade") && !alpha.contains("adopt"),
             "{alpha}"
         );
+        // Movement and the keys the filter bar already shows are not
+        // actions on the selection.
+        for shared in ["j/k", "h/l", "sort", "filter"] {
+            assert!(!alpha.contains(shared), "{shared} is a hint: {alpha}");
+        }
 
         screen.select(1);
-        assert!(bar(&screen).contains("U upgrade"));
+        assert!(hints(&screen).contains("U upgrade"));
 
         screen.select(2);
-        let pending = bar(&screen);
-        assert!(
-            pending.contains("A adopt") && !pending.contains("restart"),
-            "{pending}"
-        );
+        assert_eq!(hints(&screen), "Enter detail  A adopt");
 
         screen.select(3);
-        let offline = bar(&screen);
-        assert!(
-            !offline.contains("restart") && !offline.contains("locate"),
-            "{offline}"
-        );
+        assert_eq!(hints(&screen), "Enter detail");
 
-        // With a detail open there is one bar, and it is the detail's.
+        // With a detail open the bar is the detail's.
         screen.select(0);
         press(&mut screen, KeyCode::Enter);
-        let rows = draw(&screen, 120, 24);
-        let text = rows.join("\n");
-        assert!(!text.contains("Enter detail"), "a dead Enter hint:\n{text}");
-        assert!(!text.contains("s sort"), "{text}");
-        let detail = hints(&rows);
+        let bar = hints(&screen);
+        assert!(!bar.contains("Enter"), "a dead Enter hint: {bar}");
         assert!(
-            detail.contains("h/l tabs") && detail.contains("j/k device"),
-            "{detail}"
+            bar.starts_with("R restart") && bar.contains("F remove"),
+            "{bar}"
         );
-        assert!(detail.contains("Esc close"), "{detail}");
+        assert!(bar.ends_with("Esc close"), "{bar}");
+
+        // Nothing is listed for an empty table.
+        assert_eq!(hints(&screen_of(Vec::new())), "");
     }
 
     #[test]
-    fn a_narrow_hint_bar_drops_whole_hints_and_keeps_esc() {
+    fn the_screen_draws_no_hint_row_and_gives_the_row_to_the_table() {
+        let mut screen = screen_of(
+            (0..40)
+                .map(|index| {
+                    ap(
+                        index,
+                        &format!("dev-{index:02}"),
+                        "U7 Pro",
+                        "8.1.113",
+                        false,
+                    )
+                })
+                .collect(),
+        );
+        // A border, the filter bar, and the header leave 16 of 20 rows.
+        let rows = draw(&screen, 120, 20);
+        assert!(rows[18].contains("dev-15"), "{}", rows[18]);
+        for dead in ["navigate", "Enter detail", "R restart"] {
+            assert!(!rows.join("\n").contains(dead), "{dead} is drawn");
+        }
+
+        press(&mut screen, KeyCode::Enter);
+        let text = draw(&screen, 120, 30).join("\n");
+        for dead in ["Esc close", "h/l tabs", "j/k device", "R restart"] {
+            assert!(!text.contains(dead), "{dead} is drawn:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_bar_keeps_the_ports_own_commands_and_esc() {
         let mut screen = screen();
         screen.select(2);
         press(&mut screen, KeyCode::Enter);
         screen.set_detail_tab(DeviceDetailTab::Ports);
-        let rows = draw(&screen, 60, 24);
-        let bar = hints(&rows);
-        assert!(bar.contains("Esc close"), "{bar}");
-        assert!(bar.contains("C power cycle"), "{bar}");
+        let fitted: Vec<_> = click::fit_hints(status_hints(&screen), 40)
+            .into_iter()
+            .map(|hint| (0, hint))
+            .collect();
+        let bar = click::hint_text(&fitted);
+        assert!(bar.ends_with("Esc close"), "{bar}");
+        assert!(bar.starts_with("C power cycle"), "{bar}");
         assert!(!bar.contains("provision"), "{bar}");
+    }
+
+    #[test]
+    fn the_clients_tab_offers_enter_only_with_a_client_under_the_cursor() {
+        let mut screen = screen();
+        screen.select(2);
+        press(&mut screen, KeyCode::Enter);
+        screen.set_detail_tab(DeviceDetailTab::Clients);
+        assert!(!hints(&screen).contains("Enter"), "{}", hints(&screen));
+
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![client(
+            1,
+            "nas-vault",
+            &json!({ "uplink_device_mac": "aa:bb:cc:dd:ee:02", "switch_port": 3 }),
+        )])));
+        let bar = hints(&screen);
+        assert!(bar.starts_with("Enter client"), "{bar}");
+        assert!(bar.ends_with("Esc close"), "{bar}");
     }
 
     #[test]
@@ -818,7 +900,7 @@ mod tests {
         press(&mut screen, KeyCode::Enter);
         screen.set_detail_tab(DeviceDetailTab::Ports);
         // Until the port's profile loads, O has no direction to offer.
-        let loading = hints(&draw(&screen, 120, 30)).to_owned();
+        let loading = hints(&screen);
         assert!(
             loading.contains("N rename") && !loading.contains("PoE"),
             "{loading}"
@@ -836,19 +918,28 @@ mod tests {
             device: unifly_api::EntityId::from("device-2"),
             ports: Arc::new(vec![profile]),
         });
-        let with_session = hints(&draw(&screen, 120, 30)).to_owned();
+        let with_session = hints(&screen);
         assert!(
-            with_session.contains("O PoE off") && with_session.contains("N rename"),
+            with_session.starts_with("C power cycle  O PoE off  N rename"),
             "{with_session}"
         );
+
+        // A port with no PoE has no power to cycle or switch.
+        screen.set_detail_cursor(8);
+        let plain = hints(&screen);
+        assert!(plain.starts_with("N rename"), "{plain}");
+        assert!(
+            !plain.contains("power cycle") && !plain.contains("PoE"),
+            "{plain}"
+        );
+        screen.set_detail_cursor(0);
 
         screen.apply_action(&Action::AccessUpdated(Access {
             integration: true,
             session: false,
             live_events: false,
         }));
-        let rows = draw(&screen, 120, 30);
-        let cloud = hints(&rows);
+        let cloud = hints(&screen);
         assert!(cloud.contains("C power cycle"), "{cloud}");
         for dead in ["PoE off", "rename", "provision", "upgrade"] {
             assert!(!cloud.contains(dead), "{dead} is offered: {cloud}");
@@ -862,7 +953,7 @@ mod tests {
             session: true,
             live_events: true,
         }));
-        let session_only = hints(&draw(&screen, 120, 30)).to_owned();
+        let session_only = hints(&screen);
         assert!(session_only.contains("N rename"), "{session_only}");
         for dead in ["power cycle", "F remove"] {
             assert!(
@@ -987,7 +1078,7 @@ mod tests {
         assert!(text.contains(" 48 "), "the second bank is cut:\n{text}");
 
         // Too short for it: the list takes the room.
-        let text = draw(&screen, 100, 24).join("\n");
+        let text = draw(&screen, 100, 20).join("\n");
         assert!(!text.contains("⇅ uplink"), "{text}");
         assert!(text.contains("port 1 of 48"), "{text}");
     }
@@ -1025,14 +1116,11 @@ mod tests {
         }
         assert!(!text.contains("AccessPoint") && !text.contains("ConnectionInterrupted"));
         assert!(!text.contains("UTC"), "{text}");
-        assert!(!text.contains("up to date"), "unknown firmware:\n{text}");
+        assert!(!text.contains("update"), "unknown firmware:\n{text}");
         // An access point has no ports to show.
         assert!(!text.contains("Ports"), "{text}");
 
-        let pane = rows
-            .iter()
-            .position(|row| row.contains(" Overview "))
-            .unwrap_or(0);
+        let pane = tab_row(&rows);
         let column = |label: &str, value: &str| {
             let row = rows[pane..].iter().find(|row| row.contains(label))?;
             Some(row.find(value)? - row.find(label)?)
@@ -1042,6 +1130,134 @@ mod tests {
             column("Uplink ", "sw-core port 5"),
             "values start in different columns:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_overview_carries_the_load_figures_and_marks_an_update() {
+        let mut screen = screen_of(vec![device(
+            18,
+            "ap-roof",
+            &json!({
+                "firmware_version": "8.0.26",
+                "firmware_updatable": true,
+                "stats": {
+                    "uptime_secs": 86_400,
+                    "cpu_utilization_pct": 11.3,
+                    "memory_utilization_pct": 44.0,
+                    "load_average_1m": 0.24,
+                    "load_average_5m": 0.21,
+                    "load_average_15m": 0.25,
+                    "uplink_bandwidth": {
+                        "tx_bytes_per_sec": 17_312_500,
+                        "rx_bytes_per_sec": 40_412_500
+                    },
+                    "last_heartbeat": "2025-04-22T16:55:00Z"
+                }
+            }),
+        )]);
+        press(&mut screen, KeyCode::Enter);
+
+        // Wide enough for two columns of whole values, and at the width
+        // where the two columns are at their tightest.
+        for width in [120, 80] {
+            let rows = draw(&screen, width, 24);
+            let text = rows.join("\n");
+            for expected in [
+                "11.3%",
+                "44.0%",
+                "0.24  0.21  0.25",
+                "138.5 Mbps / 323.3 Mbps",
+                "8.0.26 \u{2191} update",
+                "aa:bb:cc:dd:ee:12",
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "missing {expected:?} at {width}:\n{text}"
+                );
+            }
+            let pane = &rows[tab_row(&rows)..];
+            assert!(
+                !pane.iter().any(|row| row.contains('\u{2026}')),
+                "a value is cut at {width}:\n{text}"
+            );
+            // With no last contact from the Session API, the heartbeat
+            // dates the device, under the one label.
+            assert!(!text.contains("Heartbeat"), "{text}");
+            let seen = pane.iter().find(|row| row.contains("Last seen"));
+            assert!(seen.is_some_and(|row| row.contains(" ago")), "{text}");
+            assert!(!text.contains("Performance"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_pane_takes_the_rows_its_tab_needs_and_no_spacers() {
+        let mut screen = screen();
+        screen.select(2);
+        press(&mut screen, KeyCode::Enter);
+
+        // Fifteen fields in two columns: a border, the tab strip, eight
+        // rows, a border, right under a table that shows every device.
+        let rows = draw(&screen, 120, 44);
+        let tabs = tab_row(&rows);
+        assert_eq!(device_rows(&rows), 3, "{}", rows.join("\n"));
+        assert_eq!(tabs, 7, "the pane sits under the table");
+        assert!(rows[tabs - 1].contains("sw-core  \u{b7}  USW Pro Max 24 PoE"));
+        assert!(rows[tabs + 1].contains("State"), "{}", rows[tabs + 1]);
+        assert!(rows[tabs + 8].contains("Uptime"), "{}", rows[tabs + 8]);
+        assert!(
+            rows[tabs + 9].starts_with("\u{2502}\u{2570}"),
+            "{}",
+            rows[tabs + 9]
+        );
+
+        // A list tab takes a row per entry, and the strip stays where it
+        // was while the table has its rows.
+        screen.set_detail_tab(DeviceDetailTab::Ports);
+        let rows = draw(&screen, 120, 44);
+        assert_eq!(tab_row(&rows), tabs, "the tab strip moved");
+        assert!(rows.join("\n").contains("Port 24 "), "every port fits");
+
+        // An empty list is one line of explanation, not a tall box.
+        screen.set_detail_tab(DeviceDetailTab::Clients);
+        let rows = draw(&screen, 120, 44);
+        assert_eq!(tab_row(&rows), tabs);
+        assert!(rows[tabs + 1].contains("No clients connected through this device"));
+        assert!(
+            rows[tabs + 2].starts_with("\u{2502}\u{2570}"),
+            "{}",
+            rows[tabs + 2]
+        );
+    }
+
+    #[test]
+    fn a_long_list_tab_leaves_the_table_its_share() {
+        let mut devices: Vec<_> = (0..40)
+            .map(|index| {
+                ap(
+                    index + 10,
+                    &format!("dev-{index:02}"),
+                    "U7 Pro",
+                    "8.1.113",
+                    false,
+                )
+            })
+            .collect();
+        devices.push(switch(2, "sw-big", 48));
+        let mut screen = screen_of(devices);
+        screen.select(40);
+        press(&mut screen, KeyCode::Enter);
+        screen.set_detail_tab(DeviceDetailTab::Ports);
+
+        // 38 rows inside the border: the table keeps twelve of them, the
+        // filter bar and header among them, however long the port list.
+        let rows = draw(&screen, 120, 40);
+        assert_eq!(tab_row(&rows), 14, "{}", rows.join("\n"));
+        assert!(rows[12].contains("sw-big"), "the open device is in view");
+
+        // On the Overview the table takes back what the pane does not use.
+        screen.set_detail_tab(DeviceDetailTab::Overview);
+        let rows = draw(&screen, 120, 40);
+        assert_eq!(tab_row(&rows), 29, "{}", rows.join("\n"));
     }
 
     #[test]
