@@ -71,11 +71,13 @@ pub(super) fn detail_grid(network: &Network, zones: &[Arc<FirewallZone>]) -> Det
     grid.field("Purpose", purpose, style);
     let (vlan, style) = or_none(network.vlan_id.map(|vlan| vlan.to_string()));
     grid.field("VLAN", vlan, style);
-    grid.field("Type", management_label(network.management), value);
     let (gateway, style) = or_none(network.gateway_ip.map(|ip| ip.to_string()));
     grid.field("Gateway", gateway, style);
     let (subnet, style) = or_none(network.subnet.clone());
     grid.field("Subnet", subnet, style);
+    // After the addresses, so a gateway-managed network does not read
+    // `Type Gateway` right beside the `Gateway` address label.
+    grid.field("Type", management_label(network.management), value);
     let (zone, style) = or_none(zone_name(network, zones).map(str::to_owned));
     grid.field("Zone", zone, style);
     grid.field(

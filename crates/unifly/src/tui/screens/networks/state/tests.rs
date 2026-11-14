@@ -636,13 +636,22 @@ fn the_whole_detail_fits_a_24_row_terminal_and_shows_a_disabled_network() {
         let at = row.find(text).unwrap_or_else(|| panic!("{text} on {row}"));
         row[..at].chars().count()
     };
-    assert_eq!(column("Purpose", "Purpose"), column("Lease", "Lease"));
-    assert_eq!(column("Purpose", "Purpose"), column("Prefix", "Prefix"));
+    // Three fields to a row: labels and values each start in one column
+    // whichever row they are on.
+    assert_eq!(column("Purpose", "Status"), column("Lease", "Lease"));
+    assert_eq!(column("Purpose", "Purpose"), column("Prefix", "IPv6"));
     assert_eq!(
-        column("Status", "Disabled"),
+        column("Purpose", "Corporate"),
         column("Prefix", "Static"),
         "values line up under each other"
     );
+    // The management type sits after the addresses: a gateway-managed
+    // network never reads `Gateway` twice in a row.
+    let doubled = rows.iter().any(|row| {
+        let words: Vec<&str> = row.split_whitespace().collect();
+        words.windows(2).any(|pair| pair == ["Gateway", "Gateway"])
+    });
+    assert!(!doubled, "{text}");
 }
 
 #[test]
