@@ -247,9 +247,14 @@ impl SettingsScreen {
         if !self.shows_session_profile() {
             return None;
         }
-        field
+        let flag = field
             .overridable()
-            .and_then(|setting| self.session.override_on(setting))
+            .and_then(|setting| self.session.override_on(setting))?;
+        if self.private {
+            // The flag's value is as private as the field's.
+            return flag.split([' ', '=']).next().map(str::to_owned);
+        }
+        Some(flag)
     }
 }
 
@@ -345,15 +350,12 @@ impl SettingsScreen {
         is_text.then_some(field)
     }
 
-    /// Whether typed characters go into a text field right now.
+    /// Whether the form is taking keys as they are typed. It does on every
+    /// field: text fields edit, the site picker turns into one on the
+    /// first letter, and the theme picker filters as it is typed in. Only
+    /// a running test, a save, and a yes-or-no question do not.
     pub(super) fn typing(&self) -> bool {
-        match self.state {
-            SettingsState::Naming => true,
-            SettingsState::Editing => {
-                self.theme_selector.borrow().is_none() && self.active_text_field().is_some()
-            }
-            SettingsState::Testing | SettingsState::Saving | SettingsState::Confirming(_) => false,
-        }
+        matches!(self.state, SettingsState::Editing | SettingsState::Naming)
     }
 
     // ── Pickers ─────────────────────────────────────────────────────

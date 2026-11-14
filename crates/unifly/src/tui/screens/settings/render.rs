@@ -373,10 +373,13 @@ impl SettingsScreen {
             Some(site) => site.internal_reference.clone(),
             None => slug.to_owned(),
         };
-        let note = match position {
+        let mut note = match position {
             Some(index) => format!("{} of {}", index + 1, self.known_sites.len()),
             None => "not on this controller".to_owned(),
         };
+        if let Some(flag) = self.override_on(SettingsField::Site) {
+            note = format!("{note} \u{00B7} {flag}");
+        }
         let arrows = render_choice_row(frame, row, "Site", &shown, active, &note);
         self.register_arrows(SettingsField::Site, arrows);
     }

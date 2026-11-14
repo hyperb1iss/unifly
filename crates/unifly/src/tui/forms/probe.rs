@@ -98,16 +98,37 @@ impl ProbeFailure {
     }
 
     /// The failure as paragraphs to show, most important first. `private`
-    /// leaves out the raw error, which can name the controller.
+    /// says only what class of failure it was: the full text names the
+    /// controller, and the raw error can name more.
     pub(crate) fn paragraphs(&self, private: bool) -> Vec<(Tone, &str)> {
+        if private {
+            return vec![(Tone::Error, self.kind.label())];
+        }
         let mut out = vec![(Tone::Error, self.summary.as_str())];
         if !self.next_step.is_empty() {
             out.push((Tone::Advice, self.next_step.as_str()));
         }
-        if let Some(detail) = self.detail.as_deref().filter(|_| !private) {
+        if let Some(detail) = self.detail.as_deref() {
             out.push((Tone::Detail, detail));
         }
         out
+    }
+}
+
+impl FailureKind {
+    /// The failure class in a sentence that names nothing.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Tls => "The controller's certificate could not be verified.",
+            Self::Credentials => "The controller did not accept the credentials.",
+            Self::Mfa => "The sign-in needs a current one-time code.",
+            Self::Site => "The controller has no site with that name.",
+            Self::Unreachable => "The controller could not be reached.",
+            Self::Timeout => "The controller did not answer in time.",
+            Self::Unsupported => "The controller does not support this auth mode.",
+            Self::Save => "The connection worked, but the profile could not be saved.",
+            Self::Other => "The connection test failed.",
+        }
     }
 }
 
@@ -778,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn the_raw_error_is_left_out_where_values_are_hidden() {
+    fn a_private_failure_names_only_its_class() {
         let failure = explain(
             &unreachable("Connection refused"),
             &context(AuthMode::ApiKey),
@@ -792,7 +813,9 @@ mod tests {
                 .collect()
         };
         assert_eq!(tones(false), [Tone::Error, Tone::Advice, Tone::Detail]);
-        assert_eq!(tones(true), [Tone::Error, Tone::Advice]);
+        assert_eq!(tones(true), [Tone::Error]);
+        let shown = failure.paragraphs(true)[0].1;
+        assert!(!shown.contains("10.0.0.1"), "{shown}");
     }
 
     fn request(name: &str) -> (super::ProbeRequest, super::SavePlan) {

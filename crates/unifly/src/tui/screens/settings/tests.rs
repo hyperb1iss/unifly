@@ -431,9 +431,9 @@ fn text_fields_edit_like_a_line_editor_and_take_a_paste() {
 
     // A picker is not a text field: a paste there goes nowhere.
     screen.focus(SettingsField::AuthMode);
-    assert!(!screen.captures_input());
+    let before = screen.draft.clone();
     screen.handle_paste("cloud");
-    assert_eq!(screen.draft.auth_mode, AuthMode::ApiKey);
+    assert_eq!(screen.draft, before);
 }
 
 /// A value longer than its row keeps the end being typed and the cursor
@@ -849,7 +849,29 @@ fn a_redacting_session_sees_no_values() {
     ctrl(&mut screen, 't');
 
     let rows = frame(&screen, 120, 40).join("\n");
-    for secret in ["10.0.9.1", "admin", "work-password", "work", "hq-site"] {
+    let hidden = ["10.0.9.1", "admin", "work-password", "work", "hq-site"];
+    for secret in hidden {
+        assert!(!rows.contains(secret), "{secret} is on screen:\n{rows}");
+    }
+
+    // Nor does a failed test or a launch flag bring them back.
+    screen.session = Session {
+        profile: Some("work".into()),
+        overrides: ConnectionOverrides {
+            site: Some("hq-site".into()),
+            ..ConnectionOverrides::default()
+        },
+        ..Session::default()
+    };
+    press(&mut screen, KeyCode::Enter);
+    let mut refused = failure(FailureKind::Unreachable, DraftField::Site);
+    refused.summary = "Nothing is accepting connections at https://10.0.9.1/.".into();
+    refused.detail = Some("tcp connect error for admin@10.0.9.1".into());
+    finish(&mut screen, Err(refused));
+    let rows = frame(&screen, 120, 40).join("\n");
+    assert!(rows.contains("could not be reached"), "{rows}");
+    assert!(rows.contains("--site"), "{rows}");
+    for secret in hidden {
         assert!(!rows.contains(secret), "{secret} is on screen:\n{rows}");
     }
     assert!(rows.contains("Settings"), "{rows}");
