@@ -7,7 +7,7 @@ use unifly_api::{Command, DeviceType};
 use super::DashboardScreen;
 use crate::tui::action::{Action, ConfirmRequest, Notice, Notification};
 use crate::tui::screen::ScreenId;
-use crate::tui::widgets::click::{self, Click};
+use crate::tui::widgets::click::{self, Click, Hint};
 
 /// One dashboard panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -44,7 +44,7 @@ impl Panel {
         }
     }
 
-    /// What `Enter` does here, for the hint bar.
+    /// What `Enter` does here, for the status bar.
     fn open_label(self) -> &'static str {
         match self {
             Self::Traffic => "open Stats",
@@ -129,17 +129,21 @@ impl DashboardScreen {
             .find(|device| device.device_type == DeviceType::Gateway)
     }
 
-    /// Ask before starting a WAN speed test, or say why one cannot run.
-    fn request_speed_test(&self) -> Action {
+    /// Why a WAN speed test cannot run here, or `None` when it can.
+    fn speed_test_refusal(&self) -> Option<&'static str> {
         if self.gateway().is_none() {
-            return Action::Notify(Notification::info(
-                "A speed test needs a UniFi gateway on this site",
-            ));
+            return Some("A speed test needs a UniFi gateway on this site");
         }
         if !self.access.is_some_and(|access| access.session) {
-            return Action::Notify(Notification::info(
-                "A speed test needs a direct controller session",
-            ));
+            return Some("A speed test needs a direct controller session");
+        }
+        None
+    }
+
+    /// Ask before starting a WAN speed test, or say why one cannot run.
+    fn request_speed_test(&self) -> Action {
+        if let Some(refusal) = self.speed_test_refusal() {
+            return Action::Notify(Notification::info(refusal));
         }
         Action::ShowConfirm(
             ConfirmRequest::new(
@@ -185,12 +189,19 @@ impl DashboardScreen {
         ]
     }
 
-    pub(super) fn hint_bar(&self) -> click::ClickLine<'static, Click> {
-        click::key_hints(&[
-            click::Hint::info("hjkl", "focus"),
-            click::Hint::button("Enter", self.focus.open_label(), KeyCode::Enter),
-            click::Hint::button("S", "speed test", click::char_key('S')),
-        ])
+    /// What the status bar offers: where `Enter` goes from the focused
+    /// panel, and the speed test where this site can run one.
+    pub(super) fn status_hints(&self) -> Vec<(u8, Hint)> {
+        let open = if self.focus == Panel::Gateway && self.gateway().is_none() {
+            Panel::Connectivity.open_label()
+        } else {
+            self.focus.open_label()
+        };
+        let mut hints = vec![(0, Hint::button("Enter", open, KeyCode::Enter))];
+        if self.speed_test_refusal().is_none() {
+            hints.push((1, Hint::button("S", "speed test", click::char_key('S'))));
+        }
+        hints
     }
 }
 
@@ -208,7 +219,7 @@ pub(super) mod tests {
     use crate::tui::screen::ScreenId;
     use crate::tui::screens::dashboard::DashboardScreen;
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::click::click_label;
+    use crate::tui::widgets::click::{click_label, hint_text};
 
     pub(in crate::tui::screens::dashboard) fn device(
         name: &str,
@@ -340,7 +351,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn the_focused_panel_is_marked_and_the_hint_bar_names_what_enter_opens() {
+    fn the_focused_panel_is_marked_and_the_status_bar_names_what_enter_opens() {
         let mut screen = connected();
         let draw = |screen: &DashboardScreen| {
             render_lines(120, 40, |frame, area| screen.render(frame, area))
@@ -348,19 +359,56 @@ pub(super) mod tests {
 
         let rows = draw(&screen);
         assert!(rows.iter().any(|row| row.contains("\u{25B8} WAN Traffic")));
-        let hints = &rows[rows.len() - 2];
-        assert!(hints.contains("Enter open Stats"), "{hints}");
-        assert!(hints.contains("S speed test"), "{hints}");
+        assert_eq!(hint_text(&screen.hints()), "Enter open Stats  S speed test");
 
         press(&mut screen, KeyCode::Down);
         let rows = draw(&screen);
         assert!(rows.iter().any(|row| row.contains("\u{25B8} Gateway")));
         assert!(!rows.iter().any(|row| row.contains("\u{25B8} WAN Traffic")));
-        assert!(rows[rows.len() - 2].contains("Enter open the gateway"));
+        assert!(hint_text(&screen.hints()).starts_with("Enter open the gateway"));
 
         // An unfocused dashboard marks nothing.
         screen.focused = false;
         assert!(!draw(&screen).iter().any(|row| row.contains('\u{25B8}')));
+    }
+
+    #[test]
+    fn the_screen_draws_no_hint_row_and_the_panels_take_it() {
+        let screen = connected();
+        let rows = render_lines(103, 40, |frame, area| screen.render(frame, area));
+        let text = rows.join("\n");
+        for gone in ["hjkl focus", "speed test", "Enter for the full log"] {
+            assert!(!text.contains(gone), "{gone:?} is still drawn:\n{text}");
+        }
+        // The Recent Events frame closes on the last row inside the border.
+        assert!(rows[rows.len() - 2].contains('\u{2570}'), "{text}");
+    }
+
+    #[test]
+    fn the_speed_test_is_offered_only_where_one_can_run() {
+        let mut screen = connected();
+        assert!(hint_text(&screen.hints()).contains("S speed test"));
+
+        screen
+            .update(&Action::AccessUpdated(Access {
+                integration: true,
+                session: false,
+                live_events: false,
+            }))
+            .expect("access");
+        assert_eq!(hint_text(&screen.hints()), "Enter open Stats");
+
+        // Without a gateway its panel opens the device list instead.
+        let mut screen = connected();
+        screen
+            .update(&Action::DevicesUpdated(Arc::new(vec![device(
+                "ap-loft",
+                "00:00:00:00:00:02",
+                "AccessPoint",
+            )])))
+            .expect("devices");
+        press(&mut screen, KeyCode::Down);
+        assert_eq!(hint_text(&screen.hints()), "Enter open Devices");
     }
 
     #[test]

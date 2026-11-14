@@ -49,15 +49,7 @@ impl DashboardScreen {
         frame: &mut ratatui::Frame,
         area: ratatui::layout::Rect,
     ) {
-        // The panel holds only the newest few, so its footer points at
-        // the log rather than counting them as if they were all of it.
-        let footer = Line::from(Span::styled(
-            " Enter for the full log ",
-            Style::default().fg(theme::border_unfocused()),
-        ));
-        let block = self
-            .panel_block(Panel::Events, "Recent Events")
-            .title_bottom(footer);
+        let block = self.panel_block(Panel::Events, "Recent Events");
         let inner = block.inner(area);
         frame.render_widget(block, area);
 

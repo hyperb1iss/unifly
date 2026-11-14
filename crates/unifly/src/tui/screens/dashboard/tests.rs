@@ -417,7 +417,6 @@ fn a_short_terminal_still_shows_the_isp_latency_and_link_rates() {
         "WLAN",
         "10.0M",
         "client-02 connected",
-        "hjkl focus",
     ] {
         assert!(text.contains(expected), "missing {expected:?}:\n{text}");
     }
@@ -502,4 +501,21 @@ fn the_title_counts_unarchived_alarms() {
         .update(&Action::AlarmsLoaded(Arc::new(vec![alarm("c", true)])))
         .expect("alarms");
     assert!(!draw(&screen, 120, 40).contains("\u{26A0}"));
+}
+
+#[test]
+fn the_lists_take_the_rows_the_status_panels_do_not_fill() {
+    let screen = connected();
+    let rows = render_lines(103, 40, |frame, area| screen.render(frame, area));
+    let top = |title: &str| {
+        rows.iter()
+            .position(|row| row.contains(title))
+            .expect("the panel is drawn")
+    };
+    assert_eq!(
+        top("Networks") - top("Gateway"),
+        10,
+        "eight lines and a frame"
+    );
+    assert!(top("Recent Events") - top("Networks") > 10);
 }

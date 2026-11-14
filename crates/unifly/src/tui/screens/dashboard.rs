@@ -18,7 +18,7 @@ use crate::tui::action::{Access, Action};
 use crate::tui::component::Component;
 use crate::tui::screens::events::feed::Feed;
 use crate::tui::screens::link::Link;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 mod focus;
 mod helpers;
 mod render;
@@ -156,6 +156,10 @@ impl Component for DashboardScreen {
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {
         Self::help_keys()
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

@@ -26,6 +26,11 @@ use super::focus::Panel;
 /// events panel becomes one line and the panels share what that frees.
 const COMPACT_BELOW: u16 = 26;
 
+/// Most rows the gateway, connectivity, and capacity panels take: the
+/// eight lines the fullest of them writes, and its frame. Rows past that
+/// go to the lists beneath, which grow with the site.
+const STATUS_ROWS: u16 = 10;
+
 impl DashboardScreen {
     pub(super) fn render_dashboard(&self, frame: &mut ratatui::Frame, area: Rect) {
         let refresh_str = self.refresh_age_str();
@@ -75,8 +80,7 @@ impl DashboardScreen {
             return;
         }
 
-        let [body, hints] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+        let body = inner;
         let compact = body.height < COMPACT_BELOW;
         let (traffic, events) = if compact {
             (5, 1)
@@ -87,7 +91,7 @@ impl DashboardScreen {
         let middle = if compact {
             rest.div_ceil(2)
         } else {
-            rest * 55 / 100
+            (rest * 55 / 100).min(STATUS_ROWS)
         };
         let rows = Layout::vertical([
             Constraint::Length(traffic),
@@ -131,9 +135,6 @@ impl DashboardScreen {
         } else {
             self.render_recent_events(frame, rows[3]);
         }
-
-        let line = self.hint_bar().draw(hints, &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), hints);
     }
 
     /// Whether `panel` holds keyboard focus on a focused dashboard.
