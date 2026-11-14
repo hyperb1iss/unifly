@@ -8,7 +8,7 @@ use crate::model::common::DataSource;
 use crate::model::entity_id::EntityId;
 use crate::model::network::{DhcpConfig, Ipv6Mode, Network, NetworkManagement};
 
-use super::helpers::map_origin;
+use super::helpers::origin_from_metadata;
 
 fn net_field<'a>(
     extra: &'a HashMap<String, Value>,
@@ -91,6 +91,16 @@ fn parse_network_fields(
                         .collect()
                 })
                 .unwrap_or_default();
+            let relay_servers = dhcp_cfg
+                .get("dhcpServerIpAddresses")
+                .and_then(Value::as_array)
+                .map(|servers| {
+                    servers
+                        .iter()
+                        .filter_map(|server| server.as_str()?.parse::<IpAddr>().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
             return Some(DhcpConfig {
                 enabled: dhcp_enabled,
                 range_start,
@@ -98,6 +108,7 @@ fn parse_network_fields(
                 lease_time_secs,
                 dns_servers,
                 gateway: gateway_ip,
+                relay_servers,
             });
         }
 
@@ -137,6 +148,7 @@ fn parse_network_fields(
             lease_time_secs,
             dns_servers,
             gateway,
+            relay_servers: Vec::new(),
         })
     });
 
@@ -201,17 +213,16 @@ fn parse_network_fields(
             .or_else(|| v.get("prefix").and_then(Value::as_str).map(String::from))
     });
 
-    // ── Management type inference ───────────────────────────────
-    let has_ipv4_config = ipv4.is_some();
-    let has_device_id = extra.contains_key("deviceId");
-    let management = if has_ipv4_config && !has_device_id {
-        Some(NetworkManagement::Gateway)
-    } else if has_device_id {
-        Some(NetworkManagement::Switch)
-    } else if has_ipv4_config {
-        Some(NetworkManagement::Gateway)
-    } else {
-        None
+    // ── Management type ─────────────────────────────────────────
+    // The controller names it. The shape of the record is only a guide
+    // for a value this version does not know.
+    let management = match management_str {
+        "GATEWAY" => Some(NetworkManagement::Gateway),
+        "SWITCH" => Some(NetworkManagement::Switch),
+        "UNMANAGED" => Some(NetworkManagement::Unmanaged),
+        _ if extra.contains_key("deviceId") => Some(NetworkManagement::Switch),
+        _ if ipv4.is_some() => Some(NetworkManagement::Gateway),
+        _ => None,
     };
 
     Network {
@@ -243,7 +254,7 @@ fn parse_network_fields(
         internet_access_enabled,
         mdns_forwarding_enabled,
         cellular_backup_enabled,
-        origin: map_origin(management_str),
+        origin: origin_from_metadata(metadata),
         source: DataSource::IntegrationApi,
     }
 }
@@ -275,5 +286,96 @@ impl From<integration_types::NetworkDetailsResponse> for Network {
             &n.metadata,
             &n.extra,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::model::common::EntityOrigin;
+
+    fn network(fields: &serde_json::Value) -> Network {
+        let mut record = json!({
+            "id": "8a1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a01", "name": "Lab", "enabled": true,
+            "vlanId": 30, "metadata": {"origin": "USER_DEFINED"},
+        });
+        for (key, value) in fields.as_object().into_iter().flatten() {
+            record[key] = value.clone();
+        }
+        let details: integration_types::NetworkDetailsResponse =
+            serde_json::from_value(record).expect("network should parse");
+        Network::from(details)
+    }
+
+    #[test]
+    fn management_is_the_kind_the_controller_names() {
+        let ipv4 = json!({"hostIpAddress": "10.0.30.1", "prefixLength": 24});
+        for (wire, expected) in [
+            ("GATEWAY", NetworkManagement::Gateway),
+            ("SWITCH", NetworkManagement::Switch),
+            ("UNMANAGED", NetworkManagement::Unmanaged),
+        ] {
+            assert_eq!(
+                network(&json!({"management": wire})).management,
+                Some(expected),
+                "{wire} with no other field to infer it from"
+            );
+        }
+        // The list endpoint's summary rows carry no IPv4 configuration:
+        // the name decides, not the shape.
+        assert_eq!(
+            network(&json!({"management": "UNMANAGED", "ipv4Configuration": ipv4})).management,
+            Some(NetworkManagement::Unmanaged)
+        );
+    }
+
+    #[test]
+    fn an_unknown_management_falls_back_to_the_shape_of_the_record() {
+        let ipv4 = json!({"hostIpAddress": "10.0.30.1", "prefixLength": 24});
+        assert_eq!(
+            network(&json!({"management": "LATER", "ipv4Configuration": ipv4})).management,
+            Some(NetworkManagement::Gateway)
+        );
+        assert_eq!(
+            network(&json!({"management": "LATER", "deviceId": "x"})).management,
+            Some(NetworkManagement::Switch)
+        );
+        assert_eq!(network(&json!({"management": "LATER"})).management, None);
+    }
+
+    #[test]
+    fn origin_comes_from_the_metadata() {
+        assert_eq!(
+            network(&json!({"management": "GATEWAY"})).origin,
+            Some(EntityOrigin::UserDefined)
+        );
+        assert_eq!(
+            network(&json!({
+                "management": "GATEWAY", "metadata": {"origin": "SYSTEM_DEFINED"},
+            }))
+            .origin,
+            Some(EntityOrigin::SystemDefined)
+        );
+    }
+
+    #[test]
+    fn a_dhcp_relay_reads_as_a_relay_and_not_as_a_server() {
+        let relayed = network(&json!({
+            "management": "GATEWAY",
+            "ipv4Configuration": {
+                "hostIpAddress": "10.0.30.1", "prefixLength": 24,
+                "dhcpConfiguration": {
+                    "mode": "RELAY", "dhcpServerIpAddresses": ["10.0.0.5", "10.0.0.6"],
+                },
+            },
+        }));
+        let dhcp = relayed.dhcp.expect("a relay is a DHCP configuration");
+        assert!(!dhcp.enabled, "the network does not serve addresses itself");
+        assert_eq!(
+            dhcp.relay_servers,
+            ["10.0.0.5", "10.0.0.6"].map(|server| server.parse::<IpAddr>().expect("address"))
+        );
     }
 }

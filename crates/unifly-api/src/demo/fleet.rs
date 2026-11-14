@@ -186,6 +186,7 @@ fn build_network(spec: &NetworkSpec, rng: &mut DemoRng) -> Network {
             lease_time_secs: Some(if spec.guest { 7_200 } else { 86_400 }),
             dns_servers: vec![IpAddr::V4(gateway)],
             gateway: Some(gateway),
+            relay_servers: Vec::new(),
         }),
         ipv6_enabled: spec.ipv6,
         ipv6_mode: spec.ipv6.then_some(Ipv6Mode::PrefixDelegation),

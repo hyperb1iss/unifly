@@ -461,6 +461,7 @@ pub fn firewall_group_from_session(v: &serde_json::Value) -> Option<FirewallGrou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::common::EntityOrigin;
     use serde_json::json;
 
     #[test]
@@ -582,5 +583,34 @@ mod tests {
         let response: integration_types::AclRuleResponse =
             serde_json::from_value(raw).expect("ACL rule should parse");
         assert_eq!(AclRule::from(response).index, Some(3));
+    }
+
+    /// The policies a controller derives, such as the return-traffic
+    /// policy of an allow rule, are not an admin's to move or delete.
+    #[test]
+    fn a_derived_policy_and_acl_rule_keep_their_origin() {
+        let policy: integration_types::FirewallPolicyResponse = serde_json::from_value(json!({
+            "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a04",
+            "name": "Allow Return Traffic", "enabled": true, "index": 30000,
+            "action": {"type": "ALLOW", "allowReturnTraffic": false},
+            "ipProtocolScope": {"ipVersion": "IPV4_AND_IPV6"},
+            "loggingEnabled": false,
+            "source": {"zoneId": "fedb7e64-ff34-4dcb-ae6d-9645807b3329"},
+            "destination": {"zoneId": "6cfd721d-0c5d-4dde-a2ee-cfdc386ebd9c"},
+            "metadata": {"origin": "DERIVED"}
+        }))
+        .expect("derived policy should parse");
+        assert_eq!(
+            FirewallPolicy::from(policy).origin,
+            Some(EntityOrigin::Derived)
+        );
+
+        let rule: integration_types::AclRuleResponse = serde_json::from_value(json!({
+            "id": "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a05",
+            "name": "Derived", "type": "IPV4", "action": "ALLOW", "enabled": true,
+            "index": 0, "metadata": {"origin": "DERIVED"}
+        }))
+        .expect("derived ACL rule should parse");
+        assert_eq!(AclRule::from(rule).origin, Some(EntityOrigin::Derived));
     }
 }

@@ -118,6 +118,7 @@ fn apply_dhcp(
         lease_time_secs: Some(DEFAULT_LEASE_SECS),
         dns_servers: Vec::new(),
         gateway: network.gateway_ip,
+        relay_servers: Vec::new(),
     });
     if let Some(update) = update {
         if let Some(start) = update.range_start.as_deref() {

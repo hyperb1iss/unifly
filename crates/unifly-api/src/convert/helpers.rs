@@ -88,6 +88,7 @@ pub(crate) fn map_origin(management: &str) -> Option<EntityOrigin> {
     match management {
         "USER_DEFINED" => Some(EntityOrigin::UserDefined),
         "SYSTEM_DEFINED" => Some(EntityOrigin::SystemDefined),
+        "DERIVED" => Some(EntityOrigin::Derived),
         "ORCHESTRATED" => Some(EntityOrigin::Orchestrated),
         _ => None,
     }

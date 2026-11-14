@@ -49,6 +49,10 @@ pub struct DhcpConfig {
     pub lease_time_secs: Option<u64>,
     pub dns_servers: Vec<IpAddr>,
     pub gateway: Option<Ipv4Addr>,
+    /// The servers DHCP requests are relayed to, when the network relays
+    /// them instead of serving addresses itself.
+    #[serde(default)]
+    pub relay_servers: Vec<IpAddr>,
 }
 
 /// The canonical Network type.
