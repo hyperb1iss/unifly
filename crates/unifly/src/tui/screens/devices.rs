@@ -121,10 +121,10 @@ const LIST_KEYS: &[(&str, &str)] = &[
 const DEVICE_KEYS: &[(&str, &str)] = &[
     ("A", "Adopt a pending device"),
     ("R", "Restart"),
-    ("L", "Locate: flash the LED, again to stop"),
-    ("U", "Upgrade firmware, when offered"),
+    ("L", "Locate (LED on / off)"),
+    ("U", "Upgrade firmware"),
     ("P", "Provision again"),
-    ("T", "Speed test, on a gateway"),
+    ("T", "Gateway speed test"),
 ];
 
 /// Movement on the Overview, Performance, and Radios tabs, which hold no
@@ -141,7 +141,7 @@ const PORT_KEYS: &[(&str, &str)] = &[
     ("g/G", "First / last port"),
     ("PgUp/PgDn", "Page through the ports"),
     ("C", "Power cycle the PoE port"),
-    ("O", "Turn the port's PoE off or on"),
+    ("O", "Port PoE off / on"),
     ("N", "Rename the port"),
 ];
 

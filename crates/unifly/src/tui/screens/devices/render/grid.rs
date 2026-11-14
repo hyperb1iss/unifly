@@ -2,7 +2,7 @@
 //! helpers the panes share.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -89,6 +89,18 @@ pub fn truncate(text: &str, width: usize) -> String {
     kept
 }
 
+/// `text` cut to the width the table planner gave column `column`, less
+/// `reserved` cells for a marker drawn after it, so a name that does not
+/// fit ends in an ellipsis instead of mid-word.
+pub fn clipped(widths: &[Constraint], column: usize, text: String, reserved: usize) -> String {
+    match widths.get(column) {
+        Some(Constraint::Length(width)) => {
+            truncate(&text, usize::from(*width).saturating_sub(reserved))
+        }
+        _ => text,
+    }
+}
+
 /// The grid's lines for an area `width` by `height`: fields run down the
 /// first column and on into the next, in as few columns as hold them all,
 /// with labels padded to one width so the values line up.
@@ -149,6 +161,21 @@ fn cell(field: &Field, label_width: usize, column_width: usize) -> Vec<Span<'sta
     spans.push(Span::styled(value, Style::default().fg(field.color)));
     spans.push(Span::raw(" ".repeat(pad)));
     spans
+}
+
+/// Screen height below which an open detail takes the whole screen: the
+/// pane needs its tabs, a few lines, and its hints more than the table
+/// needs two rows.
+const SHARE_FROM: u16 = 12;
+
+/// Rows the table keeps above an open detail in a screen `height` rows
+/// tall: a third, between four and twelve, or none on a very short screen.
+pub fn list_rows_beside_detail(height: u16) -> u16 {
+    if height < SHARE_FROM {
+        0
+    } else {
+        (height / 3).clamp(4, 12)
+    }
 }
 
 /// Draw one muted line in the middle of `area`: the empty, loading, and

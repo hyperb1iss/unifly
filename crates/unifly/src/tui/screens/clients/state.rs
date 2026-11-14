@@ -604,7 +604,7 @@ mod tests {
             screen.help().iter().any(|(_, what)| *what == text)
         };
         assert!(describes(&screen, "Open the client"));
-        assert!(describes(&screen, "Block, or unblock a blocked client"));
+        assert!(describes(&screen, "Block / unblock"));
         assert!(!describes(&screen, "Close the detail"));
 
         enter(&mut screen);
@@ -612,5 +612,10 @@ mod tests {
         assert!(describes(&screen, "Close the detail"));
         assert!(!describes(&screen, "Open the client"));
         assert!(!describes(&screen, "Sort by the next column"));
+
+        // The overlay gives a description 24 columns before it clips.
+        for (key, what) in screen.help() {
+            assert!(what.chars().count() <= 24, "{key}: {what:?} is clipped");
+        }
     }
 }

@@ -57,7 +57,8 @@ fn fields(screen: &ClientsScreen, client: &Client) -> Vec<Field> {
         Field::new("MAC", client.mac.to_string()).color(theme::accent_tertiary()),
         Field::optional("Network", network(screen, client)),
         Field::optional("Uplink", screen.links.uplink_label(client)),
-        Field::optional("Connected", client.connected_at.map(connected)),
+        Field::optional("Connected", client.connected_at.map(connected_for)),
+        Field::optional("Since", client.connected_at.map(grid::local_time)),
         fixed_ip(client),
     ];
     if let Some(hostname) = client.hostname.as_deref()
@@ -68,21 +69,30 @@ fn fields(screen: &ClientsScreen, client: &Client) -> Vec<Field> {
     if let Some(wireless) = &client.wireless {
         fields.extend(wireless_fields(wireless));
     }
+    let pair = |tx: Option<String>, rx: Option<String>| match (tx, rx) {
+        (None, None) => None,
+        (tx, rx) => {
+            let dash = || grid::DASH.to_owned();
+            Some(format!(
+                "{} / {}",
+                tx.unwrap_or_else(dash),
+                rx.unwrap_or_else(dash)
+            ))
+        }
+    };
     fields.push(Field::optional(
-        "Data TX",
-        client.tx_bytes.map(bytes_fmt::fmt_bytes_short),
-    ));
-    fields.push(Field::optional(
-        "Data RX",
-        client.rx_bytes.map(bytes_fmt::fmt_bytes_short),
+        "Data TX/RX",
+        pair(
+            client.tx_bytes.map(bytes_fmt::fmt_bytes_short),
+            client.rx_bytes.map(bytes_fmt::fmt_bytes_short),
+        ),
     ));
     if let Some(bandwidth) = &client.bandwidth {
-        fields.push(Field::new(
-            "Rate now",
-            format!(
-                "{} up, {} down",
-                bytes_fmt::fmt_rate(bandwidth.tx_bytes_per_sec),
-                bytes_fmt::fmt_rate(bandwidth.rx_bytes_per_sec)
+        fields.push(Field::optional(
+            "Rate TX/RX",
+            pair(
+                Some(bytes_fmt::fmt_rate(bandwidth.tx_bytes_per_sec)),
+                Some(bytes_fmt::fmt_rate(bandwidth.rx_bytes_per_sec)),
             ),
         ));
     }
@@ -109,17 +119,13 @@ fn network(screen: &ClientsScreen, client: &Client) -> Option<String> {
     })
 }
 
-/// How long the client has been connected, and since when.
-fn connected(since: chrono::DateTime<chrono::Utc>) -> String {
+/// How long the client has been connected.
+fn connected_for(since: chrono::DateTime<chrono::Utc>) -> String {
     let secs = chrono::Utc::now()
         .signed_duration_since(since)
         .num_seconds()
         .max(0);
-    format!(
-        "{}, since {}",
-        bytes_fmt::fmt_uptime(u64::try_from(secs).unwrap_or_default()),
-        grid::local_time(since)
-    )
+    bytes_fmt::fmt_uptime(u64::try_from(secs).unwrap_or_default())
 }
 
 fn fixed_ip(client: &Client) -> Field {
@@ -137,14 +143,12 @@ fn wireless_fields(wireless: &WirelessInfo) -> Vec<Field> {
             Some(ghz) => format!("{channel} ({ghz} GHz)"),
             None => channel.to_string(),
         });
-    let mbps = |kbps: u64| format!("{} Mbps", kbps / 1000);
+    let mbps = |kbps: Option<u64>| {
+        kbps.map_or_else(|| grid::DASH.to_owned(), |kbps| (kbps / 1000).to_string())
+    };
     let rates = match (wireless.tx_rate_kbps, wireless.rx_rate_kbps) {
         (None, None) => None,
-        (tx, rx) => Some(format!(
-            "{} TX, {} RX",
-            tx.map_or_else(|| grid::DASH.to_owned(), mbps),
-            rx.map_or_else(|| grid::DASH.to_owned(), mbps)
-        )),
+        (tx, rx) => Some(format!("{} / {} Mbps", mbps(tx), mbps(rx))),
     };
     let signal = wireless.signal_dbm.map(|dbm| match wireless.noise_dbm {
         Some(noise) => format!("{dbm} dBm (noise {noise})"),
@@ -154,7 +158,7 @@ fn wireless_fields(wireless: &WirelessInfo) -> Vec<Field> {
         Field::optional("SSID", wireless.ssid.clone()),
         Field::optional("Signal", signal),
         Field::optional("Channel", channel),
-        Field::optional("Link rate", rates),
+        Field::optional("Link TX/RX", rates),
         Field::optional(
             "Experience",
             wireless.satisfaction.map(|score| format!("{score}%")),
@@ -177,10 +181,7 @@ fn guest(client: &Client) -> Field {
         return Field::new("Guest", "not authorized").color(theme::warning());
     };
     match auth.expires_at {
-        Some(expires) => Field::new(
-            "Guest",
-            format!("authorized until {}", grid::local_time(expires)),
-        ),
+        Some(expires) => Field::new("Guest", format!("until {}", grid::local_time(expires))),
         None => Field::new("Guest", "authorized"),
     }
 }

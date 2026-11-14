@@ -41,9 +41,10 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
 
     // With a detail open the table keeps a few rows around the cursor and
     // the pane takes the rest; its hint bar then speaks for the screen.
+    // On a very short screen the pane takes all of it.
     let detail_client = screen.detail_client(&filtered);
     let (table_area, detail_area) = if detail_client.is_some() {
-        let list = (inner.height / 3).clamp(4, 12);
+        let list = grid::list_rows_beside_detail(inner.height);
         let chunks = Layout::vertical([Constraint::Length(list), Constraint::Min(0)]).split(inner);
         (chunks[0], Some(chunks[1]))
     } else {
@@ -142,7 +143,7 @@ fn render_filter_bar(screen: &ClientsScreen, frame: &mut Frame, area: Rect, show
         ),
     ];
     let room = |bar: &click::ClickLine<'_, Click>, spans: &[Span<'_>]| {
-        bar.width() + spans.iter().map(Span::width).sum::<usize>() <= usize::from(area.width)
+        bar.width() + spans.iter().map(Span::width).sum::<usize>() < usize::from(area.width)
     };
     if room(&bar, &sort) {
         for span in sort {
@@ -287,15 +288,19 @@ fn render_client_table(
             .into_iter()
             .map(|label| Cell::from(label).style(theme::table_header())),
     );
+    let widths = plan_columns(&columns, area.width);
     let rows: Vec<Row> = filtered
         .iter()
         .zip(cells)
         .enumerate()
-        .map(|(index, (client, cells))| render_table_row(index == selected_idx, client, cells))
+        .map(|(index, (client, mut cells))| {
+            cells.name = grid::clipped(&widths, 1, cells.name, 0);
+            render_table_row(index == selected_idx, client, cells)
+        })
         .collect();
 
     let len = rows.len();
-    let table = Table::new(rows, plan_columns(&columns, area.width))
+    let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::table_selected());
 
@@ -547,6 +552,13 @@ mod tests {
     }
 
     #[test]
+    fn a_name_too_long_for_its_column_ends_in_an_ellipsis() {
+        let text = draw(&screen(), 50, 10).join("\n");
+        assert!(text.contains('…'), "{text}");
+        assert!(text.contains("10.40.20.40"), "the address is cut:\n{text}");
+    }
+
+    #[test]
     fn unknown_traffic_is_a_dash_not_zero_bytes() {
         let screen = screen_of(vec![client(1, "quiet", &json!({}))]);
         let text = draw(&screen, 120, 10).join("\n");
@@ -661,7 +673,7 @@ mod tests {
             "sw-core port 14",
             "82:8b:02:66:7c:28",
             "no, from DHCP",
-            "151.4G",
+            "151.4G / 352.0G",
         ] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
@@ -697,7 +709,7 @@ mod tests {
             "Harbor",
             "-58 dBm",
             "44 (5 GHz)",
-            "866 Mbps TX, 720 Mbps RX",
+            "866 / 720 Mbps",
             "97%",
             "pixel-9",
             "Android",

@@ -63,6 +63,7 @@ pub(super) fn render(
         Column::fit("Signal", cells.iter().map(|c| &c.signal), 8),
     ]);
 
+    let widths = plan_columns(&columns, area.width);
     let selected = detail.cursor_index();
     let rows: Vec<Row> = cells
         .into_iter()
@@ -71,7 +72,8 @@ pub(super) fn render(
             let is_selected = index == selected;
             let mut row = vec![
                 Cell::from(if is_selected { "▸" } else { " " }),
-                Cell::from(cells.name).style(Style::default().fg(theme::accent_secondary())),
+                Cell::from(grid::clipped(&widths, 1, cells.name, 0))
+                    .style(Style::default().fg(theme::accent_secondary())),
                 Cell::from(cells.ip).style(Style::default().fg(theme::accent_tertiary())),
             ];
             if show_mac {
@@ -95,7 +97,7 @@ pub(super) fn render(
             .map(|label| Cell::from(label).style(theme::table_header())),
     );
     let len = rows.len();
-    let table = Table::new(rows, plan_columns(&columns, area.width)).header(header);
+    let table = Table::new(rows, widths).header(header);
     let drawn = detail
         .scroll
         .render(frame, table, area, &detail.cursor, len);

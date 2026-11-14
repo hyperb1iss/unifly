@@ -801,5 +801,13 @@ mod tests {
 
         screen.set_detail_tab(DeviceDetailTab::Clients);
         assert!(describes(&screen, "Open the client"));
+
+        // The overlay gives a description 24 columns before it clips.
+        for tab in DeviceDetailTab::ALL {
+            screen.set_detail_tab(tab);
+            for (key, what) in screen.help() {
+                assert!(what.chars().count() <= 24, "{key}: {what:?} is clipped");
+            }
+        }
     }
 }

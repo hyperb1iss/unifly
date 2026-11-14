@@ -235,6 +235,7 @@ fn render_list(
         columns.push(if at > 0 { column.shrink_to(6) } else { column });
     }
 
+    let widths = plan_columns(&columns, area.width);
     let selected = detail.cursor_index();
     let rows: Vec<Row> = cells
         .iter()
@@ -244,7 +245,7 @@ fn render_list(
             let mut row = vec![
                 Cell::from(if is_selected { "▸" } else { " " }),
                 Cell::from(cells.index.clone()),
-                Cell::from(cells.name.clone())
+                Cell::from(grid::clipped(&widths, 2, cells.name.clone(), 0))
                     .style(Style::default().fg(theme::accent_secondary())),
                 Cell::from(cells.link.clone()).style(Style::default().fg(cells.link_color)),
                 Cell::from(cells.poe.clone()).style(Style::default().fg(cells.poe_color)),
@@ -263,7 +264,7 @@ fn render_list(
             .into_iter()
             .map(|label| Cell::from(label).style(theme::table_header())),
     );
-    let table = Table::new(rows, plan_columns(&columns, area.width)).header(header);
+    let table = Table::new(rows, widths).header(header);
     let len = cells.len();
     let drawn = detail
         .scroll

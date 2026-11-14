@@ -42,9 +42,10 @@ pub(super) fn render_screen(screen: &DevicesScreen, frame: &mut Frame, area: Rec
 
     // With a detail open the table keeps a few rows around the cursor and
     // the pane takes the rest; its hint bar then speaks for the screen.
+    // On a very short screen the pane takes all of it.
     let detail_device = screen.detail_device();
     let (table_area, detail_area) = if detail_device.is_some() {
-        let list = (inner.height / 3).clamp(4, 12);
+        let list = grid::list_rows_beside_detail(inner.height);
         let chunks = Layout::vertical([Constraint::Length(list), Constraint::Min(0)]).split(inner);
         (chunks[0], Some(chunks[1]))
     } else {
@@ -130,7 +131,7 @@ fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect, show
         ),
     ];
     let room = |bar: &click::ClickLine<'_, Click>, spans: &[Span<'_>]| {
-        bar.width() + spans.iter().map(Span::width).sum::<usize>() <= usize::from(area.width)
+        bar.width() + spans.iter().map(Span::width).sum::<usize>() < usize::from(area.width)
     };
     if room(&bar, &sort) {
         for span in sort {
@@ -292,17 +293,21 @@ fn render_device_table(
             .into_iter()
             .map(|label| Cell::from(label).style(theme::table_header())),
     );
+    let widths = plan_columns(&columns, area.width);
     let rows: Vec<Row> = filtered
         .iter()
         .zip(cells)
         .enumerate()
-        .map(|(index, (device, cells))| {
+        .map(|(index, (device, mut cells))| {
+            // The marker takes two of the name's cells where it rides there.
+            let marker = usize::from(cells.update_available && !wide) * 2;
+            cells.name = grid::clipped(&widths, 1, cells.name, marker);
             render_table_row(Some(index) == selected_index, device, cells, wide)
         })
         .collect();
 
     let len = rows.len();
-    let table = Table::new(rows, plan_columns(&columns, area.width))
+    let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::table_selected());
 

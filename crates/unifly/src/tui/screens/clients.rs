@@ -86,10 +86,7 @@ impl Component for ClientsScreen {
             keys.extend([
                 ("j/k \u{2191}/\u{2193}", "Previous / next client"),
                 ("g/G", "First / last client"),
-                (
-                    "h/l \u{2190}/\u{2192}",
-                    "Change the filter, closing the detail",
-                ),
+                ("h/l \u{2190}/\u{2192}", "Filter (closes detail)"),
             ]);
         } else {
             keys.extend(LIST_HELP);
@@ -114,9 +111,9 @@ impl Component for ClientsScreen {
 
 /// Commands for the selected client, in the table and in the detail.
 const CLIENT_KEYS: &[(&str, &str)] = &[
-    ("b", "Block, or unblock a blocked client"),
-    ("x", "Disconnect a wireless client"),
-    ("I", "Set or remove the fixed IP"),
-    ("A", "Authorize a guest, or revoke it"),
+    ("b", "Block / unblock"),
+    ("x", "Kick (wireless only)"),
+    ("I", "Set / remove fixed IP"),
+    ("A", "Authorize / revoke guest"),
     ("F", "Forget the client"),
 ];
