@@ -5,6 +5,7 @@ mod input;
 mod keys;
 mod render;
 mod roam;
+mod ssid_detail;
 mod ssids;
 mod state;
 #[cfg(test)]
@@ -142,6 +143,8 @@ pub struct WifiScreen {
     last_channels_request_at: Option<Instant>,
     /// What the open prompt was asked for.
     ssid_prompt: Option<ssids::SsidPrompt>,
+    /// The SSIDs' full records, which the list leaves most of out.
+    ssid_details: ssid_detail::SsidDetails,
 }
 
 impl Default for WifiScreen {

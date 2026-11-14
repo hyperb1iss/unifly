@@ -20,7 +20,7 @@ use crate::controller::{PortProfileUpdate, fixed_ip};
 use crate::core_error::CoreError;
 use crate::model::{
     ClientType, DeviceState, EntityId, EntityOrigin, EventCategory, EventSeverity, GuestAuth,
-    MacAddress, PoeMode, PortState,
+    MacAddress, PoeMode, PortState, WifiBroadcast,
 };
 use crate::session::models::SessionUserEntry;
 
@@ -57,6 +57,13 @@ enum GuestAccess {
     Granted { minutes: Option<u32> },
     /// Back to the portal.
     Revoked,
+}
+
+fn wifi_not_found(id: &EntityId) -> CoreError {
+    CoreError::NotFound {
+        entity_type: "WiFi broadcast".into(),
+        identifier: id.to_string(),
+    }
 }
 
 fn unavailable(operation: &str) -> CoreError {
@@ -548,10 +555,7 @@ impl Simulation {
             .wifi
             .iter_mut()
             .find(|wifi| &wifi.id == id)
-            .ok_or_else(|| CoreError::NotFound {
-                entity_type: "WiFi broadcast".into(),
-                identifier: id.to_string(),
-            })?;
+            .ok_or_else(|| wifi_not_found(id))?;
         let before = wifi.name.clone();
         let mut changes = Vec::new();
         if let Some(name) = update.name.as_ref().or(update.ssid.as_ref())
@@ -564,8 +568,11 @@ impl Simulation {
             wifi.enabled = enabled;
             changes.push(if enabled { "enabled" } else { "disabled" }.to_owned());
         }
-        if let Some(hidden) = update.hide_ssid.filter(|hidden| *hidden != wifi.hidden) {
-            wifi.hidden = hidden;
+        if let Some(hidden) = update
+            .hide_ssid
+            .filter(|hidden| Some(*hidden) != wifi.hidden)
+        {
+            wifi.hidden = Some(hidden);
             changes.push(if hidden { "hidden" } else { "unhidden" }.to_owned());
         }
         if update.passphrase.is_some() {
@@ -606,8 +613,19 @@ impl Simulation {
                 .events
                 .push(self.event(now, ADMIN_INFO, "EVT_AD_WlanChanged", message));
         }
-        delta.wifi.push(updated);
+        // The store holds what the controller's list returns.
+        delta.wifi.push(updated.summary());
         Ok(())
+    }
+
+    /// One SSID in full, as the controller's detail endpoint returns it.
+    pub(crate) fn wifi_detail(&self, id: &EntityId) -> Result<WifiBroadcast, CoreError> {
+        self.fleet
+            .wifi
+            .iter()
+            .find(|wifi| &wifi.id == id)
+            .cloned()
+            .ok_or_else(|| wifi_not_found(id))
     }
 
     /// Drop a client and everything the controller kept about it. Unlike

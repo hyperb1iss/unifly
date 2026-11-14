@@ -4,6 +4,7 @@
 
 use crossterm::event::KeyCode;
 
+use super::ssid_detail::Setting;
 use super::{OverviewPanel, WifiScreen};
 use crate::tui::action::{WifiSortField, WifiSubTab};
 use crate::tui::component::LIST_HELP;
@@ -164,7 +165,12 @@ impl WifiScreen {
         hints.push(Hint::button("P", "passphrase", click::char_key('P')));
         hints.push(Hint::button(
             "H",
-            if ssid.hidden { "unhide" } else { "hide" },
+            match self.ssid_setting(ssid, |ssid| ssid.hidden) {
+                Setting::On => "unhide",
+                Setting::Off => "hide",
+                // The key reads the controller before it asks which.
+                _ => "hide/unhide",
+            },
             click::char_key('H'),
         ));
         hints.push(Hint::button("D", "delete", click::char_key('D')));

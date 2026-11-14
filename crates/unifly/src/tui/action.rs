@@ -339,6 +339,13 @@ impl Notification {
     }
 }
 
+/// One write to an SSID.
+#[derive(Debug, Clone)]
+pub enum SsidChange {
+    Update(Box<unifly_api::UpdateWifiBroadcastRequest>),
+    Delete,
+}
+
 /// What the connected controller can reach. Screens use it to say why
 /// something is empty instead of drawing a bare table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -661,6 +668,33 @@ pub enum Action {
         generation: u64,
         answer: Box<Action>,
     },
+    /// Read one SSID in full: the controller's list leaves most of its
+    /// settings out.
+    RequestWifiBroadcastDetail(EntityId),
+    WifiBroadcastDetailLoaded {
+        id: EntityId,
+        detail: Arc<WifiBroadcast>,
+    },
+    WifiBroadcastDetailFailed {
+        id: EntityId,
+        error: String,
+    },
+    /// Read whether an SSID hides its name, then ask before flipping it.
+    RequestSsidVisibilityToggle(EntityId),
+    /// The record a visibility toggle just read from the controller.
+    WifiSsidVisibilityRead {
+        id: EntityId,
+        detail: Arc<WifiBroadcast>,
+    },
+    /// Change or delete one SSID, check that it took, and read it again.
+    /// A second write to an SSID waits for the first to end.
+    WifiSsidWrite {
+        id: EntityId,
+        change: SsidChange,
+        notice: Notice,
+    },
+    /// A write to this SSID ended, whether or not it took.
+    WifiSsidWriteSettled(EntityId),
     // ── monitor ───────────────────────────────────────────────────
     /// Fetch events from further back than the feed holds. `id` names the
     /// request, so its result can be told from one that was cancelled.

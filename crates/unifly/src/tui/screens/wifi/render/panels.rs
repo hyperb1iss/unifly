@@ -15,6 +15,7 @@ use super::{health_color, kbps_to_mbps, panel_block, render_notice, state_color,
 use crate::tui::action::WifiBand;
 use crate::tui::screens::wifi::WifiScreen;
 use crate::tui::screens::wifi::roam::{band_name, json_i32, json_string, json_u64};
+use crate::tui::screens::wifi::ssid_detail::{Pick, Setting};
 use crate::tui::screens::wifi::state::{
     band_from_frequency, display_client_name, display_device_name,
 };
@@ -248,17 +249,22 @@ impl WifiScreen {
         frame.render_widget(HyperHeatmap::new(&cells), map);
     }
 
-    pub(super) fn render_ssid_detail(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" SSID Detail ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let Some(ssid) = self.selected_ssid() else {
-            render_notice(frame, inner, "No SSID selected");
-            return;
-        };
-
+    /// The SSID detail's rows: what the list says, then the settings only
+    /// the full record carries.
+    fn ssid_detail_rows(&self, ssid: &WifiBroadcast) -> Vec<(&'static str, String)> {
         let yes_no = |value: bool| if value { "yes" } else { "no" }.to_owned();
+        // A setting the list leaves out is drawn as what is known of it,
+        // never as "no" by default.
+        let setting = |pick: Pick| {
+            match self.ssid_setting(ssid, pick) {
+                Setting::On => "yes",
+                Setting::Off => "no",
+                Setting::Absent => "─",
+                Setting::Reading => "\u{2026}",
+                Setting::Unknown => "unknown",
+            }
+            .to_owned()
+        };
         let network = ssid.network_id.as_ref().map_or_else(
             || "─".to_owned(),
             |id| {
@@ -283,18 +289,22 @@ impl WifiScreen {
                 }
                 .to_owned(),
             ),
-            ("Hidden", yes_no(ssid.hidden)),
-            ("Isolation", yes_no(ssid.client_isolation)),
-            ("Steering", yes_no(ssid.band_steering)),
-            ("Fast roam", yes_no(ssid.fast_roaming)),
-            ("MLO", yes_no(ssid.mlo_enabled)),
+            ("Hidden", setting(|ssid| ssid.hidden)),
+            ("Isolation", setting(|ssid| ssid.client_isolation)),
+            ("Steering", setting(|ssid| ssid.band_steering)),
+            ("Fast roam", setting(|ssid| ssid.fast_roaming)),
+            ("MLO", setting(|ssid| ssid.mlo_enabled)),
             ("Hotspot", yes_no(ssid.hotspot_enabled)),
         ];
-        if let Some(locked) = ssid.channel2g_locked_to6 {
-            rows.push(("Ch 6 lock", yes_no(locked)));
-        }
-        if let Some(locked) = ssid.dtim_period2g_locked_to3 {
-            rows.push(("DTIM 3 lock", yes_no(locked)));
+        // Controllers older than these two locks never report them.
+        let locks: [(&str, Pick); 2] = [
+            ("Ch 6 lock", |ssid| ssid.channel2g_locked_to6),
+            ("DTIM 3 lock", |ssid| ssid.dtim_period2g_locked_to3),
+        ];
+        for (label, pick) in locks {
+            if matches!(self.ssid_setting(ssid, pick), Setting::On | Setting::Off) {
+                rows.push((label, setting(pick)));
+            }
         }
         if let Some(origin) = &ssid.origin {
             let origin = match origin {
@@ -305,10 +315,23 @@ impl WifiScreen {
             };
             rows.push(("Origin", origin.to_owned()));
         }
+        rows
+    }
+
+    pub(super) fn render_ssid_detail(&self, frame: &mut Frame, area: Rect) {
+        let block = panel_block(" SSID Detail ", self.focused);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let Some(ssid) = self.selected_ssid() else {
+            render_notice(frame, inner, "No SSID selected");
+            return;
+        };
+        let rows = self.ssid_detail_rows(ssid);
 
         let pair = |(label, value): &(&str, String)| {
             [
-                Span::styled(format!(" {label:<11}"), muted()),
+                Span::styled(format!(" {label:<12}"), muted()),
                 Span::styled(value.clone(), secondary()),
             ]
         };
@@ -316,9 +339,16 @@ impl WifiScreen {
             format!(" {}", ssid.name),
             theme::title_style(),
         ))];
+        // Under the name, where a short panel cannot push it out of view.
+        if let Some(error) = self.ssid_detail_error(ssid) {
+            lines.push(Line::from(Span::styled(
+                format!(" Settings unavailable: {error}. Retrying."),
+                Style::default().fg(theme::warning()),
+            )));
+        }
         // A short panel folds the record into two columns, so none of it
         // falls off the bottom.
-        let room = usize::from(inner.height).saturating_sub(2);
+        let room = usize::from(inner.height).saturating_sub(lines.len() + 1);
         let half = usize::from(inner.width / 2);
         if rows.len() > room && half >= 28 {
             let (left, right) = rows.split_at(rows.len().div_ceil(2));
@@ -335,7 +365,7 @@ impl WifiScreen {
             lines.extend(rows.iter().map(|row| Line::from(pair(row).to_vec())));
         }
         lines.push(Line::from(pair(&("ID", ssid.id.to_string())).to_vec()));
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 }
 
@@ -581,7 +611,11 @@ pub(super) fn bands_label(ssid: &WifiBroadcast) -> String {
         .map(|band| band.label().trim_end_matches(" GHz"))
         .collect();
     if numbers.is_empty() {
-        return "─".to_owned();
+        // An IoT-optimized broadcast carries no band list: it is 2.4 GHz.
+        return match ssid.broadcast_type {
+            WifiBroadcastType::IotOptimized => WifiBand::TwoGhz.label().to_owned(),
+            WifiBroadcastType::Standard => "─".to_owned(),
+        };
     }
     format!("{} GHz", numbers.join(" · "))
 }

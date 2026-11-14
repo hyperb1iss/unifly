@@ -1,14 +1,15 @@
 //! The SSIDs sub-tab's commands: enable, hide, rename, change the
-//! passphrase, and delete. Each is a partial update of one broadcast.
+//! passphrase, and delete. Each is one write to one broadcast, asked about
+//! first, since every one of them has the access points reprovision.
 
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use unifly_api::model::{WifiBroadcast, WifiSecurityMode};
-use unifly_api::{Command, EntityId, UpdateWifiBroadcastRequest};
+use unifly_api::{EntityId, UpdateWifiBroadcastRequest};
 
 use super::WifiScreen;
-use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PromptRequest};
+use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PromptRequest, SsidChange};
 
 /// Longest network name the standard allows, in bytes.
 const SSID_MAX_BYTES: usize = 32;
@@ -23,11 +24,9 @@ pub(super) enum SsidPrompt {
 }
 
 fn update(ssid: &WifiBroadcast, update: UpdateWifiBroadcastRequest, notice: Notice) -> Action {
-    Action::Run {
-        command: Box::new(Command::UpdateWifiBroadcast {
-            id: ssid.id.clone(),
-            update,
-        }),
+    Action::WifiSsidWrite {
+        id: ssid.id.clone(),
+        change: SsidChange::Update(Box::new(update)),
         notice,
     }
 }
@@ -52,7 +51,9 @@ impl WifiScreen {
         let ssid = Arc::clone(self.selected_ssid()?);
         match key.code {
             KeyCode::Char('E') => Some(self.toggle_ssid_enabled(&ssid)),
-            KeyCode::Char('H') => Some(toggle_ssid_hidden(&ssid)),
+            // Which way this goes is read from the controller first: the
+            // list does not say whether an SSID hides its name.
+            KeyCode::Char('H') => Some(Action::RequestSsidVisibilityToggle(ssid.id.clone())),
             KeyCode::Char('N') => Some(self.prompt_ssid_rename(&ssid, None)),
             KeyCode::Char('P') => Some(self.prompt_ssid_passphrase(&ssid, None)),
             KeyCode::Char('D') => Some(self.delete_ssid(&ssid)),
@@ -60,36 +61,48 @@ impl WifiScreen {
         }
     }
 
-    /// Enabling runs at once. Disabling asks first: it drops every client
-    /// on the network.
+    /// Both directions ask first. Disabling drops every client on the
+    /// network, and enabling puts a network on the air that was off for a
+    /// reason.
     fn toggle_ssid_enabled(&self, ssid: &WifiBroadcast) -> Action {
         let name = &ssid.name;
         let request = |enabled| UpdateWifiBroadcastRequest {
             enabled: Some(enabled),
             ..Default::default()
         };
-        if !ssid.enabled {
-            return update(
+        if ssid.enabled {
+            let run = update(
                 ssid,
-                request(true),
+                request(false),
                 Notice::new(
-                    format!("Enabling {name}\u{2026}"),
-                    format!("Enabled {name}"),
+                    format!("Disabling {name}\u{2026}"),
+                    format!("Disabled {name}"),
                 ),
+            );
+            return Action::ShowConfirm(
+                ConfirmRequest::new(format!("Disable {name}?"), run).detail(format!(
+                    "Access points reprovision and it stops broadcasting: {}.",
+                    clients_phrase(self.ssid_client_count(name))
+                )),
             );
         }
         let run = update(
             ssid,
-            request(false),
+            request(true),
             Notice::new(
-                format!("Disabling {name}\u{2026}"),
-                format!("Disabled {name}"),
+                format!("Enabling {name}\u{2026}"),
+                format!("Enabled {name}"),
             ),
         );
+        let open = if ssid.security == WifiSecurityMode::Open {
+            " It is an open network: anyone in range can join."
+        } else {
+            ""
+        };
         Action::ShowConfirm(
-            ConfirmRequest::new(format!("Disable {name}?"), run).detail(format!(
-                "It stops broadcasting: {}.",
-                clients_phrase(self.ssid_client_count(name))
+            ConfirmRequest::new(format!("Enable {name}?"), run).detail(format!(
+                "Access points reprovision and start broadcasting it, so clients on other \
+                 SSIDs may drop for a moment.{open}"
             )),
         )
     }
@@ -134,11 +147,9 @@ impl WifiScreen {
 
     fn delete_ssid(&self, ssid: &WifiBroadcast) -> Action {
         let name = &ssid.name;
-        let run = Action::Run {
-            command: Box::new(Command::DeleteWifiBroadcast {
-                id: ssid.id.clone(),
-                force: false,
-            }),
+        let run = Action::WifiSsidWrite {
+            id: ssid.id.clone(),
+            change: SsidChange::Delete,
             notice: Notice::new(
                 format!("Deleting {name}\u{2026}"),
                 format!("Deleted {name}"),
@@ -236,61 +247,55 @@ impl WifiScreen {
     }
 }
 
-/// Hiding only stops the name being announced, so it runs without asking.
-fn toggle_ssid_hidden(ssid: &WifiBroadcast) -> Action {
-    let name = &ssid.name;
-    let notice = if ssid.hidden {
-        Notice::new(
-            format!("Showing {name}\u{2026}"),
-            format!("{name} announces its name again"),
-        )
-    } else {
-        Notice::new(
-            format!("Hiding {name}\u{2026}"),
-            format!("{name} is hidden: clients must know its name to join"),
-        )
-    };
-    update(
-        ssid,
-        UpdateWifiBroadcastRequest {
-            hide_ssid: Some(!ssid.hidden),
-            ..Default::default()
-        },
-        notice,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use crossterm::event::{KeyCode, KeyEvent};
     use serde_json::json;
-    use unifly_api::Command;
     use unifly_api::model::WifiBroadcast;
 
-    use crate::tui::action::{Action, WifiSubTab};
+    use crate::tui::action::{Access, Action, SsidChange, WifiSubTab};
     use crate::tui::component::Component;
     use crate::tui::screens::wifi::WifiScreen;
     use crate::tui::table::render_lines;
 
+    /// An SSID as the controller lists it: the summary, with none of the
+    /// settings only the full record carries.
     fn ssid(id: u128, name: &str, security: &str) -> Arc<WifiBroadcast> {
         Arc::new(
             serde_json::from_value(json!({
                 "id": uuid::Uuid::from_u128(id).to_string(), "name": name,
                 "enabled": true, "broadcast_type": "Standard", "security": security,
                 "network_id": uuid::Uuid::from_u128(100).to_string(),
-                "frequencies_ghz": [2.4, 5.0], "hidden": false,
-                "client_isolation": false, "band_steering": true,
-                "mlo_enabled": false, "fast_roaming": false,
-                "hotspot_enabled": false, "origin": null
+                "frequencies_ghz": [2.4, 5.0], "hotspot_enabled": false, "origin": null
             }))
             .expect("SSID fixture should deserialize"),
         )
     }
 
+    /// The full record of `summary`, as its detail read returns it.
+    fn record(summary: &WifiBroadcast, hidden: bool) -> Action {
+        let mut full = summary.clone();
+        full.hidden = Some(hidden);
+        full.client_isolation = Some(true);
+        full.band_steering = Some(false);
+        full.mlo_enabled = Some(false);
+        full.fast_roaming = Some(true);
+        Action::WifiBroadcastDetailLoaded {
+            id: full.id.clone(),
+            detail: Arc::new(full),
+        }
+    }
+
     fn ssid_screen() -> WifiScreen {
         let mut screen = WifiScreen::new();
+        screen.focused = true;
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: false,
+            live_events: false,
+        }));
         screen.apply_action(&Action::WifiBroadcastsUpdated(Arc::new(vec![
             ssid(2, "Studio", "Wpa2Wpa3Personal"),
             ssid(1, "Guest", "Open"),
@@ -299,17 +304,38 @@ mod tests {
         screen
     }
 
+    fn draw(screen: &WifiScreen) -> String {
+        render_lines(120, 24, |frame, area| screen.render(frame, area)).join("\n")
+    }
+
+    /// What the table's Hidden column says for the SSID `name`, with the
+    /// table at its full width.
+    fn hidden_cell(screen: &mut WifiScreen, name: &str) -> String {
+        let panel = std::mem::replace(&mut screen.ssid_detail_open, false);
+        let drawn = draw(screen);
+        screen.ssid_detail_open = panel;
+        drawn
+            .lines()
+            .find(|line| line.contains(name) && line.contains("GHz"))
+            .unwrap_or_else(|| panic!("no row for {name}"))
+            .trim_end_matches(|ch: char| ch.is_whitespace() || ch == '\u{2502}')
+            .rsplit(' ')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
     fn press(screen: &mut WifiScreen, key: char) -> Option<Action> {
         screen.handle_key_input(KeyEvent::from(KeyCode::Char(key)))
     }
 
     fn update_of(action: &Action) -> &unifly_api::UpdateWifiBroadcastRequest {
         match action {
-            Action::Run { command, .. } => match command.as_ref() {
-                Command::UpdateWifiBroadcast { update, .. } => update,
-                other => panic!("not an SSID update: {other:?}"),
-            },
-            other => panic!("not a command: {other:?}"),
+            Action::WifiSsidWrite {
+                change: SsidChange::Update(update),
+                ..
+            } => update,
+            other => panic!("not an SSID update: {other:?}"),
         }
     }
 
@@ -352,27 +378,182 @@ mod tests {
     }
 
     #[test]
-    fn disabling_asks_first_and_enabling_does_not() {
+    fn disabling_and_enabling_both_ask_first_and_say_what_it_costs() {
         let mut screen = ssid_screen();
-        let (prompt, run) = confirmed(press(&mut screen, 'E'));
-        assert_eq!(prompt, "Disable Guest?");
-        assert_eq!(update_of(&run).enabled, Some(false));
+        let Some(Action::ShowConfirm(disable)) = press(&mut screen, 'E') else {
+            panic!("E asks before disabling");
+        };
+        assert_eq!(disable.prompt, "Disable Guest?");
+        assert_eq!(update_of(&disable.action).enabled, Some(false));
+        let cost = disable.detail.as_deref().unwrap_or_default();
+        assert!(cost.contains("reprovision"), "{cost}");
 
         let mut off = (*ssid(1, "Guest", "Open")).clone();
         off.enabled = false;
         screen.apply_action(&Action::WifiBroadcastsUpdated(Arc::new(vec![Arc::new(
             off,
         )])));
-        let run = press(&mut screen, 'E').expect("E enables");
-        assert_eq!(update_of(&run).enabled, Some(true));
+        let Some(Action::ShowConfirm(enable)) = press(&mut screen, 'E') else {
+            panic!("E asks before enabling: one key must not put a network on the air");
+        };
+        assert_eq!(enable.prompt, "Enable Guest?");
+        assert_eq!(update_of(&enable.action).enabled, Some(true));
+        let cost = enable.detail.as_deref().unwrap_or_default();
+        assert!(
+            cost.contains("reprovision") && cost.contains("anyone in range can join"),
+            "an open network says so: {cost}"
+        );
     }
 
     #[test]
-    fn hiding_flips_the_hidden_flag() {
+    fn hiding_writes_nothing_by_itself_and_asks_the_controller_which_way_to_go() {
         let mut screen = ssid_screen();
-        let run = press(&mut screen, 'H').expect("H hides");
-        assert_eq!(update_of(&run).hide_ssid, Some(true));
-        assert_eq!(update_of(&run).enabled, None, "only the one field is sent");
+        let guest = ssid(1, "Guest", "Open").id.clone();
+        // Whatever the screen last drew, the direction is not its to pick.
+        for known in [None, Some(false), Some(true)] {
+            if let Some(hidden) = known {
+                screen.apply_action(&record(&ssid(1, "Guest", "Open"), hidden));
+            }
+            let asked = press(&mut screen, 'H');
+            assert!(
+                matches!(&asked, Some(Action::RequestSsidVisibilityToggle(id)) if *id == guest),
+                "{asked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_setting_the_list_leaves_out_is_drawn_as_unread_and_never_as_off() {
+        let mut screen = ssid_screen();
+        screen.handle_key_input(KeyEvent::from(KeyCode::Enter));
+        let before = draw(&screen);
+        assert!(before.contains("Hidden      \u{2026}"), "{before}");
+        assert!(before.contains("Isolation   \u{2026}"), "{before}");
+        assert!(!before.contains("Hidden      no"), "{before}");
+        assert_eq!(hidden_cell(&mut screen, "Guest"), "\u{2026}");
+
+        screen.apply_action(&record(&ssid(1, "Guest", "Open"), true));
+        let read = draw(&screen);
+        assert!(read.contains("Hidden      yes"), "{read}");
+        assert!(read.contains("Isolation   yes"), "{read}");
+        assert!(read.contains("Steering    no"), "{read}");
+        assert!(read.contains("Fast roam   yes"), "{read}");
+        assert_eq!(hidden_cell(&mut screen, "Guest"), "hidden");
+        assert_eq!(
+            hidden_cell(&mut screen, "Studio"),
+            "\u{2026}",
+            "the other SSID is still unread"
+        );
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_read_says_so_instead_of_guessing() {
+        let mut screen = ssid_screen();
+        screen.handle_key_input(KeyEvent::from(KeyCode::Enter));
+        screen.apply_action(&Action::WifiBroadcastDetailFailed {
+            id: ssid(1, "Guest", "Open").id.clone(),
+            error: "HTTP 503".into(),
+        });
+        let shown = draw(&screen);
+        assert!(shown.contains("Hidden      unknown"), "{shown}");
+        assert!(shown.contains("Settings unavailable: HTTP 503"), "{shown}");
+        assert_eq!(hidden_cell(&mut screen, "Guest"), "?");
+    }
+
+    #[test]
+    fn the_tab_reads_each_ssid_in_full_once_the_selected_one_first() {
+        let mut screen = ssid_screen();
+        press(&mut screen, 'j');
+        let (guest, studio) = (
+            ssid(1, "Guest", "Open").id.clone(),
+            ssid(2, "Studio", "Wpa2Wpa3Personal").id.clone(),
+        );
+
+        let first = screen.apply_action(&Action::Tick);
+        assert!(
+            matches!(&first, Some(Action::RequestWifiBroadcastDetail(id)) if *id == studio),
+            "the selected SSID is read first: {first:?}"
+        );
+        let second = screen.apply_action(&Action::Tick);
+        assert!(
+            matches!(&second, Some(Action::RequestWifiBroadcastDetail(id)) if *id == guest),
+            "{second:?}"
+        );
+        assert!(
+            screen.apply_action(&Action::Tick).is_none(),
+            "a read in flight is not asked for again"
+        );
+
+        screen.apply_action(&record(&ssid(1, "Guest", "Open"), false));
+        screen.apply_action(&record(&ssid(2, "Studio", "Wpa2Wpa3Personal"), false));
+        assert!(
+            screen.apply_action(&Action::Tick).is_none(),
+            "a fresh record is kept"
+        );
+    }
+
+    #[test]
+    fn a_record_is_read_again_after_a_write_or_when_the_list_disagrees() {
+        let mut screen = ssid_screen();
+        let guest = ssid(1, "Guest", "Open");
+        screen.apply_action(&record(&guest, false));
+        screen.apply_action(&record(&ssid(2, "Studio", "Wpa2Wpa3Personal"), false));
+        assert!(screen.apply_action(&Action::Tick).is_none());
+
+        screen.apply_action(&Action::WifiSsidWriteSettled(guest.id.clone()));
+        let after_write = screen.apply_action(&Action::Tick);
+        assert!(
+            matches!(&after_write, Some(Action::RequestWifiBroadcastDetail(id)) if *id == guest.id),
+            "{after_write:?}"
+        );
+        screen.apply_action(&record(&guest, true));
+        assert!(screen.apply_action(&Action::Tick).is_none());
+
+        // Something else disabled it: the record on hand is out of date.
+        let mut off = (*guest).clone();
+        off.enabled = false;
+        screen.apply_action(&Action::WifiBroadcastsUpdated(Arc::new(vec![
+            Arc::new(off),
+            ssid(2, "Studio", "Wpa2Wpa3Personal"),
+        ])));
+        let after_change = screen.apply_action(&Action::Tick);
+        assert!(
+            matches!(&after_change, Some(Action::RequestWifiBroadcastDetail(id)) if *id == guest.id),
+            "{after_change:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_is_read_off_the_tab_or_without_the_integration_api() {
+        let mut screen = ssid_screen();
+        screen.apply_action(&Action::WifiSubTab(WifiSubTab::Overview));
+        assert!(screen.apply_action(&Action::Tick).is_none());
+
+        let mut screen = ssid_screen();
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: false,
+            session: true,
+            live_events: true,
+        }));
+        assert!(screen.apply_action(&Action::Tick).is_none());
+    }
+
+    #[test]
+    fn the_hide_hint_names_a_direction_only_once_it_is_known() {
+        let hint = |screen: &WifiScreen| {
+            draw(screen)
+                .lines()
+                .rev()
+                .find(|line| line.contains("H "))
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let mut screen = ssid_screen();
+        assert!(hint(&screen).contains("H hide/unhide"), "{}", hint(&screen));
+        screen.apply_action(&record(&ssid(1, "Guest", "Open"), true));
+        assert!(hint(&screen).contains("H unhide"), "{}", hint(&screen));
+        screen.apply_action(&record(&ssid(1, "Guest", "Open"), false));
+        assert!(hint(&screen).contains("H hide "), "{}", hint(&screen));
     }
 
     #[test]
@@ -444,7 +625,10 @@ mod tests {
         assert_eq!(prompt, "Delete Guest?");
         assert!(matches!(
             run,
-            Action::Run { command, .. } if matches!(*command, Command::DeleteWifiBroadcast { .. })
+            Action::WifiSsidWrite {
+                change: SsidChange::Delete,
+                ..
+            }
         ));
     }
 

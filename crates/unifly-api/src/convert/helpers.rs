@@ -65,10 +65,6 @@ pub(crate) fn parse_legacy_wan_ipv6(
     ipv6.and_then(pick_ipv6_from_value)
 }
 
-pub(crate) fn extra_bool(extra: &HashMap<String, Value>, key: &str) -> bool {
-    extra.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
 pub(crate) fn extra_frequencies(extra: &HashMap<String, Value>, key: &str) -> Vec<f32> {
     extra
         .get(key)

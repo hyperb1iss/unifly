@@ -1,7 +1,10 @@
+mod ssids;
+
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use unifly_api::MacAddress;
+use unifly_api::{EntityId, MacAddress};
 
 use super::App;
 use crate::tui::action::Action;
@@ -14,6 +17,10 @@ pub(super) struct WifiState {
     /// count it started under, and its answer is dropped once that count
     /// has moved on.
     generation: u64,
+    /// SSIDs with a write in flight. Every write reads the record, changes
+    /// it, and sends it whole, so two at once on one SSID would have the
+    /// second undo the first.
+    writes: HashSet<EntityId>,
 }
 
 impl App {
@@ -24,6 +31,7 @@ impl App {
             Action::ControllerChanged => {
                 self.wifi = WifiState {
                     generation: self.wifi.generation + 1,
+                    writes: HashSet::new(),
                 };
                 return Ok(false);
             }
@@ -38,7 +46,17 @@ impl App {
             Action::RequestWifiRoamHistory { mac, limit } => {
                 self.fetch_wifi_roam_history(mac, *limit);
             }
-            Action::WifiNeighborsFailed(_) | Action::WifiChannelsFailed(_) => {
+            Action::RequestWifiBroadcastDetail(id) => self.fetch_wifi_broadcast_detail(id),
+            Action::RequestSsidVisibilityToggle(id) => self.read_ssid_visibility(id),
+            Action::WifiSsidVisibilityRead { id, detail } => {
+                self.confirm_ssid_visibility(id, detail)?;
+            }
+            Action::WifiSsidWrite { id, change, notice } => self.write_ssid(id, change, notice),
+            Action::WifiSsidWriteSettled(id) => self.ssid_write_settled(id)?,
+            Action::WifiNeighborsFailed(_)
+            | Action::WifiChannelsFailed(_)
+            | Action::WifiBroadcastDetailLoaded { .. }
+            | Action::WifiBroadcastDetailFailed { .. } => {
                 self.forward_to_screen(ScreenId::Wifi, action)?;
             }
             _ => return Ok(false),
@@ -329,51 +347,6 @@ mod tests {
                     && matches!(**answer, Action::WifiChannelsUpdated(_))),
             "{answer:?}"
         );
-        controller.disconnect().await;
-    }
-
-    #[tokio::test]
-    async fn an_ssid_key_runs_through_the_app_and_changes_the_controller() {
-        use crossterm::event::{KeyCode, KeyEvent};
-
-        let controller = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
-        controller.connect().await.expect("demo");
-        let mut app = App::new(Some(controller.clone()), None, false, true);
-        app.active_screen = ScreenId::Wifi;
-        app.process_action(&Action::WifiBroadcastsUpdated(
-            controller.wifi_broadcasts_snapshot(),
-        ))
-        .expect("SSIDs reach the screen");
-        app.process_action(&Action::WifiSubTab(crate::tui::action::WifiSubTab::Ssids))
-            .expect("sub-tab");
-
-        // The first SSID in name order is enabled, so `E` asks first.
-        for key in ['E', 'y'] {
-            let pressed = app
-                .handle_key_event(KeyEvent::from(KeyCode::Char(key)))
-                .expect("key")
-                .expect("the key does something");
-            app.process_action(&pressed).expect("key action");
-            while let Ok(queued) = app.action_rx.try_recv() {
-                app.process_action(&queued).expect("queued action");
-            }
-        }
-        let finished =
-            tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
-                .await
-                .expect("the command reports back")
-                .expect("the action channel stays open");
-        app.process_action(&finished).expect("result");
-
-        let disabled: Vec<_> = controller
-            .wifi_broadcasts_snapshot()
-            .iter()
-            .filter(|ssid| !ssid.enabled)
-            .map(|ssid| ssid.name.clone())
-            .collect();
-        assert_eq!(disabled.len(), 1, "{disabled:?}");
-        let toast = app.notices.latest().expect("a toast reports the result");
-        assert_eq!(toast.message, format!("Disabled {}", disabled[0]));
         controller.disconnect().await;
     }
 

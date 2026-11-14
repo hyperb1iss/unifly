@@ -369,6 +369,28 @@ fn a_speed_test_reports_through_site_health_and_not_as_an_event() {
 }
 
 #[test]
+fn the_list_is_summary_shaped_and_the_detail_fills_it_in() {
+    let sim = Simulation::new(fleet());
+    let listed = sim.refresh_snapshot().wifi;
+    assert_eq!(listed.len(), sim.fleet.wifi.len());
+    for summary in &listed {
+        assert_eq!(summary.hidden, None, "{}", summary.name);
+        assert_eq!(summary.client_isolation, None);
+        assert_eq!(summary.fast_roaming, None);
+        let detail = sim.wifi_detail(&summary.id).expect("detail");
+        assert!(detail.hidden.is_some(), "{}", detail.name);
+        assert_eq!(detail.name, summary.name);
+    }
+    assert!(
+        listed
+            .iter()
+            .filter_map(|summary| sim.wifi_detail(&summary.id).ok())
+            .any(|detail| detail.hidden == Some(true)),
+        "one SSID hides its name, which only its detail says"
+    );
+}
+
+#[test]
 fn power_cycling_the_dark_camera_port_brings_it_back() {
     let mut sim = Simulation::new(fleet());
     let core = sim.fleet.devices[super::fleet::SWITCH_BASE].id.clone();
@@ -694,7 +716,11 @@ fn ssid_edits_change_the_broadcast_and_a_rename_carries_its_clients() {
         },
     );
     assert!(!delta.wifi[0].enabled);
-    assert!(delta.wifi[0].hidden);
+    assert_eq!(
+        delta.wifi[0].hidden, None,
+        "the list summary has no visibility"
+    );
+    assert_eq!(sim.fleet.wifi[0].hidden, Some(true));
     assert_eq!(delta.events.len(), 1);
 
     for name in ["Harbor Crew", "Harbor Staff"] {

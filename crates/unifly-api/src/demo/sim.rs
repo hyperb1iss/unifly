@@ -218,7 +218,8 @@ impl Simulation {
                 .map(|client| client.client.clone())
                 .collect(),
             networks: fleet.networks.clone(),
-            wifi: fleet.wifi.clone(),
+            // The list summary: the store never holds the detail fields.
+            wifi: fleet.wifi.iter().map(WifiBroadcast::summary).collect(),
             policies: Some(fleet.policies.clone()),
             zones: Some(fleet.zones.clone()),
             acls: Some(fleet.acls.clone()),

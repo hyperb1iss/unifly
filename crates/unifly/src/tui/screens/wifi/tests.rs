@@ -1323,13 +1323,14 @@ fn hint_keys(screen: &WifiScreen) -> Vec<String> {
         .collect()
 }
 
+/// One SSID as the controller lists it, without the settings only its
+/// full record carries.
 fn ssid_fixture() -> Action {
     let ssid = serde_json::from_value(json!({
         "id": uuid::Uuid::from_u128(9).to_string(), "name": "Studio",
         "enabled": true, "broadcast_type": "Standard", "security": "Wpa2Personal",
-        "network_id": null, "frequencies_ghz": [2.4, 5.0], "hidden": false,
-        "client_isolation": false, "band_steering": true, "mlo_enabled": false,
-        "fast_roaming": false, "hotspot_enabled": false, "origin": null
+        "network_id": null, "frequencies_ghz": [2.4, 5.0],
+        "hotspot_enabled": false, "origin": null
     }))
     .expect("SSID fixture should deserialize");
     Action::WifiBroadcastsUpdated(Arc::new(vec![Arc::new(ssid)]))

@@ -46,13 +46,14 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
         security,
         network_id: Some(net_id(fleet, key)),
         frequencies_ghz: frequencies.to_vec(),
-        hidden: false,
-        client_isolation: false,
-        band_steering: frequencies.len() > 1,
-        mlo_enabled: false,
-        fast_roaming: false,
-        channel2g_locked_to6: None,
-        dtim_period2g_locked_to3: None,
+        hidden: Some(false),
+        client_isolation: Some(false),
+        band_steering: Some(frequencies.len() > 1),
+        mlo_enabled: Some(false),
+        fast_roaming: Some(false),
+        channel2g_locked_to6: Some(false),
+        dtim_period2g_locked_to3: Some(false),
+        preshared_key_count: 0,
         hotspot_enabled: false,
         origin: Some(EntityOrigin::UserDefined),
         source: DataSource::IntegrationApi,
@@ -65,8 +66,8 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
         WifiSecurityMode::Wpa2Wpa3Personal,
         &[2.4, 5.0, 6.0],
     );
-    studio.mlo_enabled = true;
-    studio.fast_roaming = true;
+    studio.mlo_enabled = Some(true);
+    studio.fast_roaming = Some(true);
 
     let mut guest = ssid(
         rng,
@@ -75,7 +76,7 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
         WifiSecurityMode::Wpa2Personal,
         &[2.4, 5.0],
     );
-    guest.client_isolation = true;
+    guest.client_isolation = Some(true);
     guest.hotspot_enabled = true;
 
     let mut iot = ssid(
@@ -83,9 +84,14 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
         catalog::SSID_IOT,
         "iot",
         WifiSecurityMode::Wpa2Personal,
-        &[2.4, 5.0],
+        &[],
     );
+    // An IoT-optimized broadcast has no band list and none of the
+    // standard type's roaming switches.
     iot.broadcast_type = WifiBroadcastType::IotOptimized;
+    iot.band_steering = None;
+    iot.mlo_enabled = None;
+    iot.fast_roaming = None;
 
     let mut crew = ssid(
         rng,
@@ -94,8 +100,8 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
         WifiSecurityMode::Wpa3Enterprise,
         &[5.0, 6.0],
     );
-    crew.hidden = true;
-    crew.fast_roaming = true;
+    crew.hidden = Some(true);
+    crew.fast_roaming = Some(true);
 
     vec![studio, guest, iot, crew]
 }

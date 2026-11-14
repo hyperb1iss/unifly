@@ -74,6 +74,7 @@ impl WifiScreen {
             last_neighbors_request_at: None,
             last_channels_request_at: None,
             ssid_prompt: None,
+            ssid_details: super::ssid_detail::SsidDetails::default(),
         }
     }
 
@@ -190,8 +191,16 @@ impl WifiScreen {
                 sorted.sort_by_cached_key(|ssid| (ssid.name.to_lowercase(), ssid.id.to_string()));
                 self.ssids = Arc::new(sorted);
                 self.loaded.ssids = true;
+                self.ssid_details.follow(&self.ssids);
                 self.follow_rows(&selected);
             }
+            Action::WifiBroadcastDetailLoaded { id, detail } => {
+                self.ssid_detail_loaded(id, detail);
+            }
+            Action::WifiBroadcastDetailFailed { id, error } => {
+                self.ssid_detail_failed(id, error);
+            }
+            Action::WifiSsidWriteSettled(id) => self.ssid_details.expire(id),
             Action::WifiNeighborsUpdated(neighbors) => {
                 let selected = self.selected_rows();
                 self.neighbors = Arc::clone(neighbors);

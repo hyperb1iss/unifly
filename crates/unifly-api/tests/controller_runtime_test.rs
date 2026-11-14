@@ -2790,3 +2790,5 @@ mod round_trip;
 
 #[path = "controller_runtime/network_writes.rs"]
 mod network_writes;
+#[path = "controller_runtime/wifi.rs"]
+mod wifi_broadcasts;

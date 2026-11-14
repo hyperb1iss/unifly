@@ -1,6 +1,7 @@
 //! When the WiFi screen asks the controller for data, and what it does with
-//! each answer. Every read here needs a session, so nothing is asked for
-//! without one, and a failure is kept for its panel instead of toasted.
+//! each answer. The observability reads need a session and the SSID
+//! records need the Integration API, so nothing is asked for without the
+//! access it needs, and a failure is kept for its panel instead of toasted.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,13 +31,13 @@ fn due(last: Option<Instant>, interval: Duration, now: Instant) -> bool {
     last.is_none_or(|last| now.duration_since(last) >= interval)
 }
 
-fn recent(failures: &HashMap<String, Failure>, key: &str, now: Instant) -> bool {
+pub(super) fn recent(failures: &HashMap<String, Failure>, key: &str, now: Instant) -> bool {
     failures
         .get(key)
         .is_some_and(|failure| now.duration_since(failure.at) < RETRY_INTERVAL)
 }
 
-fn record(failures: &mut HashMap<String, Failure>, key: &str, error: &str) {
+pub(super) fn record(failures: &mut HashMap<String, Failure>, key: &str, error: &str) {
     let now = Instant::now();
     failures.retain(|_, failure| now.duration_since(failure.at) < RETRY_INTERVAL);
     failures.insert(
@@ -63,12 +64,22 @@ impl WifiScreen {
     /// The one request this tick sends, if anything on screen is stale.
     pub(super) fn tick_request(&mut self) -> Option<Action> {
         // Nothing is asked for until the controller has said what it can
-        // reach, and never without the session these reads need.
-        if !self.focused || self.access.is_none_or(|access| !access.session) {
+        // reach, and each read waits for the access it needs.
+        if !self.focused {
             return None;
         }
-
+        let access = self.access?;
         let now = Instant::now();
+
+        if access.integration
+            && self.sub_tab == WifiSubTab::Ssids
+            && let Some(request) = self.ssid_detail_request(now)
+        {
+            return Some(request);
+        }
+        if !access.session {
+            return None;
+        }
 
         if (self.sub_tab == WifiSubTab::Neighbors || self.channel_map_open())
             && due(

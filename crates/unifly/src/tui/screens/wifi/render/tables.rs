@@ -18,6 +18,7 @@ use super::{
 };
 use crate::tui::action::{WifiBand, WifiSortField};
 use crate::tui::screens::wifi::WifiScreen;
+use crate::tui::screens::wifi::ssid_detail::Setting;
 use crate::tui::screens::wifi::state::{
     band_from_frequency, display_client_name, display_device_name, neighbor_name,
 };
@@ -416,7 +417,13 @@ impl WifiScreen {
                     security_label(ssid.security).to_owned(),
                     bands_label(ssid),
                     network,
-                    if ssid.hidden { "hidden" } else { "─" }.to_owned(),
+                    match self.ssid_setting(ssid, |ssid| ssid.hidden) {
+                        Setting::On => "hidden",
+                        Setting::Off | Setting::Absent => "─",
+                        Setting::Reading => "\u{2026}",
+                        Setting::Unknown => "?",
+                    }
+                    .to_owned(),
                 ]
             })
             .collect();
