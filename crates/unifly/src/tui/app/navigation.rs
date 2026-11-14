@@ -614,6 +614,32 @@ mod tests {
     }
 
     #[test]
+    fn the_sponsor_button_gives_its_corner_to_screen_actions() {
+        let mut app = dashboard_app();
+        app.process_action(&Action::DevicesUpdated(std::sync::Arc::new(vec![device(
+            "01", "sw-alpha",
+        )])))
+        .expect("devices update");
+        app.switch_screen(ScreenId::Devices).expect("switch");
+        let status =
+            |app: &mut App, width: u16| render(app, width).last().cloned().unwrap_or_default();
+
+        // With room for everything, the button keeps the corner.
+        let wide = status(&mut app, 120);
+        assert!(
+            wide.contains("Enter detail") && wide.contains("Sponsor"),
+            "{wide}"
+        );
+
+        // Where it would cost an action, the action wins, and the way to
+        // help stays.
+        let narrow = status(&mut app, 64);
+        assert!(narrow.contains("Enter detail"), "{narrow}");
+        assert!(!narrow.contains("Sponsor"), "{narrow}");
+        assert!(narrow.contains("? help"), "{narrow}");
+    }
+
+    #[test]
     fn the_status_bar_and_toasts_take_taps() {
         let mut app = dashboard_app();
         let rows = render(&mut app, 120);

@@ -285,32 +285,47 @@ impl App {
         );
         let global_width = u16::try_from(global.width()).unwrap_or(u16::MAX);
         let indicator_width = u16::try_from(connection_indicator.width()).unwrap_or(u16::MAX);
-        // The sponsor button takes the corner only when the connection
-        // state keeps its room.
-        let donate = self.show_donate && 1 + indicator_width + 1 + DONATE_WIDTH <= area.width;
-        let donate_width = if donate { DONATE_WIDTH } else { 0 };
-        let right_edge = area.width.saturating_sub(donate_width);
-        let global_area =
-            (1 + indicator_width + STATUS_GAP + global_width < right_edge).then(|| Rect {
-                x: area.x + right_edge - 1 - global_width,
-                width: global_width,
-                ..area
-            });
-        let left_room = global_area.map_or(right_edge, |global| global.x - area.x);
-
-        // What the screen can do with its selection takes the middle, as
-        // many actions as fit.
         let divider = Span::styled(" \u{2502} ", theme::key_hint());
         let divider_width = u16::try_from(divider.width()).unwrap_or(u16::MAX);
-        let context = self
+        // Where the right group lands and what that leaves the screen's
+        // actions, with or without the sponsor button in the corner.
+        let place = |donate: bool| {
+            let right_edge = area
+                .width
+                .saturating_sub(if donate { DONATE_WIDTH } else { 0 });
+            let global_x = (1 + indicator_width + STATUS_GAP + global_width < right_edge)
+                .then(|| right_edge - 1 - global_width);
+            let left_room = global_x.unwrap_or(right_edge);
+            let hint_room =
+                left_room.saturating_sub(1 + indicator_width + divider_width + STATUS_GAP);
+            (global_x, left_room, hint_room)
+        };
+
+        // What the screen can do with its selection takes the middle, as
+        // many actions as fit. The sponsor button takes the corner only
+        // while it costs none of them, nor the app-wide keys, nor the
+        // connection state.
+        let offered = self
             .screens
             .get(&self.active_screen)
             .map(|screen| screen.hints())
             .unwrap_or_default();
-        let context = click::fit_hints(
-            context,
-            left_room.saturating_sub(1 + indicator_width + divider_width + STATUS_GAP),
-        );
+        let mut donate = self.show_donate && 1 + indicator_width + 1 + DONATE_WIDTH <= area.width;
+        let (mut global_x, mut left_room, hint_room) = place(donate);
+        let mut context = click::fit_hints(offered.clone(), hint_room);
+        if donate && (global_x.is_none() || context.len() < offered.len()) {
+            let (wider_x, wider_room, hint_room) = place(false);
+            let wider = click::fit_hints(offered, hint_room);
+            if wider.len() > context.len() || (global_x.is_none() && wider_x.is_some()) {
+                donate = false;
+                (global_x, left_room, context) = (wider_x, wider_room, wider);
+            }
+        }
+        let global_area = global_x.map(|x| Rect {
+            x: area.x + x,
+            width: global_width,
+            ..area
+        });
         let mut actions = ClickLine::default();
         if !context.is_empty() {
             actions.push_gap(divider);
