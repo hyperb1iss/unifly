@@ -9,7 +9,7 @@ use super::{OnboardingScreen, Purpose, TestPhase, WizardField, WizardHit, Wizard
 use crate::tui::forms::controller_profile::{AuthMode, DraftField, EXAMPLE_URL};
 use crate::tui::forms::probe::{FailureKind, Tone};
 use crate::tui::forms::widgets::{
-    BOX_ROWS, FieldView, message_lines, render_input_box, render_input_row, render_toggle_row,
+    BOX_ROWS, FieldView, message_lines, render_input_box, render_input_row, render_insecure_row,
     render_waiting,
 };
 use crate::tui::theme;
@@ -97,8 +97,9 @@ impl OnboardingScreen {
                 frame,
                 content,
                 "Where is your controller?",
-                "UniFi consoles ship with a self-signed certificate. Leave verification on \
-                 if yours has a trusted one.",
+                "UniFi consoles ship with a self-signed certificate. Skipping verification \
+                 accepts any certificate from then on; leave it on if yours has a trusted \
+                 one.",
             ),
             WizardStep::Credentials => self.render_fields(frame, content, "Sign in", ""),
             WizardStep::Site if self.picks_site() => self.render_site_picker(frame, content),
@@ -299,14 +300,9 @@ impl OnboardingScreen {
                 WizardField::Text(draft_field) => {
                     self.render_text_field(frame, slot, *draft_field, active, boxed);
                 }
-                WizardField::Insecure => render_toggle_row(
-                    frame,
-                    slot,
-                    "Skip TLS verify",
-                    self.draft.insecure(),
-                    active,
-                    "accept a self-signed certificate",
-                ),
+                WizardField::Insecure => {
+                    render_insecure_row(frame, slot, self.draft.insecure(), active, None);
+                }
             }
             top = top
                 .saturating_add(height)
@@ -455,16 +451,22 @@ impl OnboardingScreen {
             self.draft.site.text().trim()
         );
         let saved = format!("Saved to {}", crate::config::config_path().display());
-        let mut paragraphs = vec![
-            (Tone::Advice, details.as_str()),
-            (Tone::Detail, saved.as_str()),
-        ];
+        let mut paragraphs = vec![(Tone::Advice, details.as_str())];
+        // A profile that checks no certificate says so before it is used.
+        if self.skips_verification() {
+            paragraphs.push((
+                Tone::Notice,
+                "TLS verification is off for this profile: it accepts any certificate. \
+                 Settings can turn it back on or set a CA certificate.",
+            ));
+        }
         // Where a secret ended up is the user's to know before moving on.
         paragraphs.extend(
             self.notices
                 .iter()
                 .map(|notice| (Tone::Notice, notice.as_str())),
         );
+        paragraphs.push((Tone::Detail, saved.as_str()));
         paragraphs.push((Tone::Advice, "Press Enter to open the dashboard."));
         let lines = message_lines(
             &paragraphs,
@@ -529,15 +531,17 @@ impl OnboardingScreen {
                 TestPhase::Testing => vec![Hint::button("Esc", "cancel", KeyCode::Esc)],
                 TestPhase::Saving => vec![Hint::info("", "saving the profile")],
                 TestPhase::Idle => {
-                    let mut hints = vec![Hint::button("Enter", "retry", KeyCode::Enter)];
+                    // First, so a narrow panel drops it before the keys
+                    // that retry and go back.
+                    let mut hints = Vec::new();
                     if self.offers_trust() {
                         hints.push(Hint::button(
                             "t",
-                            "accept the certificate and retry",
+                            "turn TLS verification off and retry",
                             click::char_key('t'),
                         ));
                     }
-                    hints.push(back);
+                    hints.extend([Hint::button("Enter", "retry", KeyCode::Enter), back]);
                     hints
                 }
             },

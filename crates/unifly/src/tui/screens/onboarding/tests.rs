@@ -74,6 +74,7 @@ fn pass(site: &str, names: &[&str]) -> ProbePass {
     ProbePass {
         config: Box::new(unifly_api::ControllerConfig {
             site: site.into(),
+            tls: unifly_api::TlsVerification::SystemDefaults,
             ..unifly_api::ControllerConfig::default()
         }),
         sites: sites(names),
@@ -520,6 +521,10 @@ fn done_applies_the_tested_connection_and_shows_what_the_save_reported() {
     let rows = frame(&screen, 80, 24).join("\n");
     assert!(rows.contains("Connected and saved"), "{rows}");
     assert!(rows.contains("plaintext"), "{rows}");
+    assert!(
+        !rows.contains("TLS verification is off"),
+        "this profile verifies: {rows}"
+    );
 
     // Editing after the fact cannot change what gets applied.
     screen.draft.site.set("elsewhere");
@@ -593,25 +598,31 @@ fn a_failed_test_is_explained_and_can_be_retried_or_fixed() {
     assert_eq!(screen.active_text_field(), Some(DraftField::Url));
 }
 
-/// A certificate that cannot be verified is the one failure the user may
-/// simply accept: the wizard offers it, and accepting is what turns
-/// verification off.
+/// A certificate that cannot be verified can be answered from the
+/// failure, and the key says what the answer is: verification goes off
+/// for the profile, for every certificate, not just this one. The Done
+/// step says so again once that is what was saved.
 #[test]
-fn an_unverified_certificate_can_be_accepted_from_the_failure() {
+fn turning_verification_off_from_a_failure_is_called_what_it_is() {
     let mut screen = testing();
     finish(
         &mut screen,
         Err(failure(FailureKind::Tls, DraftField::Insecure)),
     );
     let rows = frame(&screen, 80, 24).join("\n");
-    assert!(rows.contains("accept the certificate and retry"), "{rows}");
+    assert!(
+        rows.contains("t turn TLS verification off and retry"),
+        "{rows}"
+    );
+    assert!(!rows.contains("accept the certificate"), "{rows}");
     assert!(!screen.draft.insecure());
 
     press(&mut screen, KeyCode::Char('t'));
     assert!(screen.draft.insecure());
+    assert_eq!(screen.draft.to_profile().insecure, Some(true));
     assert_eq!(screen.phase, TestPhase::Testing);
 
-    // Already skipping verification: there is nothing left to accept.
+    // Already skipping verification: there is nothing left to turn off.
     finish(
         &mut screen,
         Err(failure(FailureKind::Tls, DraftField::Insecure)),
@@ -619,6 +630,16 @@ fn an_unverified_certificate_can_be_accepted_from_the_failure() {
     assert!(!screen.offers_trust());
     press(&mut screen, KeyCode::Char('t'));
     assert_eq!(screen.phase, TestPhase::Idle);
+
+    press(&mut screen, KeyCode::Enter);
+    let mut passed = pass("default", &["default"]);
+    passed.config.tls = unifly_api::TlsVerification::DangerAcceptInvalid;
+    finish(&mut screen, Ok(passed));
+    saved(&mut screen, Ok(Vec::new()));
+    assert_eq!(screen.step, WizardStep::Done);
+    let rows = frame(&screen, 80, 24).join("\n");
+    assert!(rows.contains("TLS verification is off"), "{rows}");
+    assert!(rows.contains("it accepts any"), "{rows}");
 }
 
 /// With several sites on the controller the wizard asks which one, and

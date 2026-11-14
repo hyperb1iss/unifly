@@ -170,6 +170,35 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, view: &FieldView<'
     );
 }
 
+/// What the "skip TLS verification" checkbox says next to itself. Ticked,
+/// it is no exception for one certificate: nothing is checked at all.
+pub(crate) fn insecure_note(skips: bool) -> &'static str {
+    if skips {
+        "off: any certificate is accepted"
+    } else {
+        "turns certificate checks off"
+    }
+}
+
+/// Draw the "skip TLS verification" checkbox, with its note as a warning
+/// while the box is ticked. `tag` replaces the note, for a launch flag
+/// that overrides the box.
+pub(crate) fn render_insecure_row(
+    frame: &mut Frame,
+    area: Rect,
+    skips: bool,
+    active: bool,
+    tag: Option<&str>,
+) {
+    let note = tag.unwrap_or_else(|| insecure_note(skips));
+    let style = if skips && tag.is_none() {
+        Style::default().fg(theme::warning())
+    } else {
+        muted()
+    };
+    render_toggle(frame, area, "Skip TLS verify", skips, active, note, style);
+}
+
 /// Draw a checkbox row: label, box, and what the box means.
 pub(crate) fn render_toggle_row(
     frame: &mut Frame,
@@ -178,6 +207,18 @@ pub(crate) fn render_toggle_row(
     value: bool,
     active: bool,
     note: &str,
+) {
+    render_toggle(frame, area, label, value, active, note, muted());
+}
+
+fn render_toggle(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: bool,
+    active: bool,
+    note: &str,
+    note_style: Style,
 ) {
     if area.is_empty() {
         return;
@@ -192,7 +233,7 @@ pub(crate) fn render_toggle_row(
     };
     let mut spans = row_label(label, active);
     spans.push(Span::styled(marker, marker_style));
-    spans.push(Span::styled(format!(" {note}"), muted()));
+    spans.push(Span::styled(format!(" {note}"), note_style));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

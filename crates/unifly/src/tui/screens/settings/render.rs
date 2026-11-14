@@ -10,7 +10,7 @@ use crate::tui::forms::controller_profile::{DraftField, EXAMPLE_URL};
 use crate::tui::forms::probe::Tone;
 use crate::tui::forms::widgets::{
     self, FieldView, message_lines, render_choice_row, render_info_row, render_input_row,
-    render_section, render_toggle_row, render_value_row, render_waiting,
+    render_insecure_row, render_section, render_toggle_row, render_value_row, render_waiting,
 };
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, ClickLine, Hint};
@@ -256,15 +256,12 @@ impl SettingsScreen {
                 self.register_arrows(field, arrows);
             }
             SettingsField::Site if self.picks_site() => self.render_site_picker(frame, row, active),
-            SettingsField::Insecure => render_toggle_row(
+            SettingsField::Insecure => render_insecure_row(
                 frame,
                 row,
-                field.label(),
                 self.draft.insecure(),
                 active,
-                overridden
-                    .as_deref()
-                    .unwrap_or("accept a self-signed certificate"),
+                overridden.as_deref(),
             ),
             SettingsField::ShowDonate => render_toggle_row(
                 frame,
@@ -447,9 +444,15 @@ impl SettingsScreen {
             SettingsField::Site if self.picks_site() => {
                 "These are the sites on this controller. Type to enter a name by hand."
             }
+            SettingsField::Insecure if self.draft.insecure() => {
+                "TLS verification is off for this profile: it connects to whatever answers \
+                 at the address, with any certificate. A CA certificate verifies a \
+                 self-signed console instead."
+            }
             SettingsField::Insecure => {
                 "UniFi consoles ship with a self-signed certificate, which only connects \
-                 with this on or with a CA certificate set."
+                 with this on or with a CA certificate set. On means no certificate is \
+                 checked at all, from then on."
             }
             SettingsField::CaCert => {
                 "Path to a PEM file with the certificate authority that signed the \

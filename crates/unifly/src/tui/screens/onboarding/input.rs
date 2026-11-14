@@ -113,7 +113,7 @@ impl OnboardingScreen {
             (KeyCode::Enter, _) | (_, Some('r')) if self.phase == TestPhase::Idle => {
                 self.start_test();
             }
-            (_, Some('t')) => self.trust_and_retry(),
+            (_, Some('t')) => self.skip_verification_and_retry(),
             _ => {}
         }
         None

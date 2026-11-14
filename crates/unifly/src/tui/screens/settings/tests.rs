@@ -1086,6 +1086,31 @@ fn an_untouched_form_is_clean_and_saves_the_profile_as_it_was() {
     assert_eq!(saved.host_id_env.as_deref(), Some("UNIFLY_TEST_UNSET_HOST"));
 }
 
+/// The checkbox is not an exception for one certificate. Its row and its
+/// help say what ticking it does, and a profile that already skips
+/// verification says so wherever the form is open, focused or not.
+#[test]
+fn a_profile_that_skips_tls_verification_says_so_in_the_form() {
+    let (mut screen, _dir) = screen_for(TWO_PROFILES, "home");
+    let tls = field_row(&frame(&screen, 120, 40), "Skip TLS verify").expect("tls row");
+    assert!(tls.contains("[ ] turns certificate checks off"), "{tls}");
+    assert!(!tls.contains("self-signed"), "{tls}");
+
+    // `work` is saved with insecure = true.
+    screen.focus(SettingsField::Profile);
+    press(&mut screen, KeyCode::Right);
+    let rows = frame(&screen, 120, 40);
+    let tls = field_row(&rows, "Skip TLS verify").expect("tls row");
+    assert!(tls.contains("off: any certificate is accepted"), "{tls}");
+
+    screen.focus(SettingsField::Insecure);
+    let all = frame(&screen, 120, 40).join("\n");
+    assert!(
+        all.contains("TLS verification is off for this profile"),
+        "{all}"
+    );
+}
+
 /// A one-time code is good for the test it was typed for. Once that test
 /// reports, the field is empty, so a retest cannot send the spent code.
 #[test]

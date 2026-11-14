@@ -518,17 +518,26 @@ impl OnboardingScreen {
         }
     }
 
-    /// Accept the certificate the controller presented and test again: the
-    /// answer to a certificate that could not be verified.
-    pub(super) fn trust_and_retry(&mut self) {
+    /// Turn TLS verification off for this profile and test again: one
+    /// answer to a certificate that could not be verified. Nothing is
+    /// pinned, so the saved profile accepts any certificate from then on.
+    pub(super) fn skip_verification_and_retry(&mut self) {
         if self.offers_trust() {
-            self.draft.toggle_insecure();
+            self.draft.set_insecure(true);
             self.start_test();
         }
     }
 
-    /// Whether the failure showing is a certificate the user can choose
-    /// to accept.
+    /// Whether the connection the last test passed with checks no
+    /// certificate, whether the profile says so or `[defaults]` does.
+    pub(super) fn skips_verification(&self) -> bool {
+        self.tested.as_ref().is_some_and(|config| {
+            matches!(config.tls, unifly_api::TlsVerification::DangerAcceptInvalid)
+        })
+    }
+
+    /// Whether the failure showing is a certificate that could not be
+    /// verified, with verification still on to turn off.
     pub(super) fn offers_trust(&self) -> bool {
         self.phase == TestPhase::Idle
             && !self.draft.insecure()
