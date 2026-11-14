@@ -22,8 +22,12 @@ impl ClientsScreen {
         }
         match key.code {
             // The filter changes what the list holds, so a detail closes.
-            KeyCode::Char('l') | KeyCode::Right => self.apply_filter(self.filter_after(1)),
-            KeyCode::Char('h') | KeyCode::Left => self.apply_filter(self.filter_after(-1)),
+            KeyCode::Char('l') | KeyCode::Right => {
+                return self.apply_filter(self.filter_after(1));
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                return self.apply_filter(self.filter_after(-1));
+            }
             KeyCode::Esc if self.detail_open => {
                 self.close_detail();
                 return Some(Action::CloseDetail);
@@ -76,12 +80,9 @@ impl ClientsScreen {
         }
         let target = self.hits.borrow().clicked(mouse)?;
         match target {
-            Click::Tab(index) => {
-                if let Some(filter) = ClientTypeFilter::ALL.get(index) {
-                    self.apply_filter(*filter);
-                }
-                None
-            }
+            Click::Tab(index) => ClientTypeFilter::ALL
+                .get(index)
+                .and_then(|filter| self.apply_filter(*filter)),
             Click::Row(index) => {
                 self.click_row(index);
                 None
@@ -93,11 +94,12 @@ impl ClientsScreen {
 
     /// Select a type filter. An open detail closes, since its client may
     /// not pass the new filter.
-    fn apply_filter(&mut self, filter: ClientTypeFilter) {
-        if filter != self.filter {
-            self.close_detail();
-            self.set_filter(filter);
+    fn apply_filter(&mut self, filter: ClientTypeFilter) -> Option<Action> {
+        if filter == self.filter {
+            return None;
         }
+        self.close_detail();
+        self.set_filter(filter)
     }
 
     /// A row selects its client, and a second tap opens it, like `Enter`.
@@ -159,6 +161,7 @@ mod tests {
             ("Wired", ClientTypeFilter::Wired),
             ("VPN", ClientTypeFilter::Vpn),
             ("Guest", ClientTypeFilter::Guest),
+            ("Blocked", ClientTypeFilter::Blocked),
             ("All", ClientTypeFilter::All),
         ] {
             let rows = render(&screen);
@@ -182,8 +185,11 @@ mod tests {
     #[test]
     fn the_filter_steps_both_ways_and_leaves_tab_to_the_app() {
         let mut screen = ClientsScreen::new();
-        press(&mut screen, KeyCode::Left);
-        assert_eq!(screen.filter, ClientTypeFilter::Guest);
+        assert!(matches!(
+            press(&mut screen, KeyCode::Left),
+            Some(Action::RequestBlockedClients)
+        ));
+        assert_eq!(screen.filter, ClientTypeFilter::Blocked);
         press(&mut screen, KeyCode::Char('l'));
         assert_eq!(screen.filter, ClientTypeFilter::All);
         assert!(

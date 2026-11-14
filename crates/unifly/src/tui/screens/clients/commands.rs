@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use unifly_api::{Client, ClientType, Command, EntityId};
 
 use super::ClientsScreen;
-use super::view::client_name;
+use super::view::{client_name, type_label};
 use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PromptRequest};
 
 /// Minutes a guest is authorized for unless the prompt is changed.
@@ -47,7 +47,34 @@ fn current_ipv4(client: &Client) -> Option<Ipv4Addr> {
     })
 }
 
+/// Why a command that only the Session API serves cannot run here.
+const NEEDS_SESSION: &str =
+    "needs a direct controller session, which a cloud profile does not have";
+
 impl ClientsScreen {
+    /// Whether the commands that only the Session API serves can run: not
+    /// once the controller has said it has none.
+    pub(super) fn has_session(&self) -> bool {
+        !matches!(self.access, Some(access) if !access.session)
+    }
+
+    /// A toast saying why `client` cannot take a command, if it cannot:
+    /// the command needs a session the controller lacks, or the client
+    /// is off the network.
+    fn refusal(&self, client: &Client, what: &str) -> Option<Action> {
+        if !self.has_session() {
+            return Some(info(format!("{what} {NEEDS_SESSION}")));
+        }
+        self.is_offline(client)
+            .then(|| info(format!("{} is not connected", client_name(client))))
+    }
+
+    /// Whether `client` can hold a DHCP reservation. A VPN or Teleport
+    /// client has no MAC for the controller to key one on.
+    pub(super) fn can_reserve(client: &Client) -> bool {
+        matches!(client.client_type, ClientType::Wired | ClientType::Wireless)
+    }
+
     /// `b`: block the client, or unblock it when it is blocked.
     pub(super) fn request_block_toggle(&self) -> Option<Action> {
         let client = self.action_client()?;
@@ -68,11 +95,17 @@ impl ClientsScreen {
                 client_name(client)
             )));
         }
+        if self.is_offline(client) {
+            return Some(info(format!("{} is not connected", client_name(client))));
+        }
         Some(Action::RequestKickClient(client.id.clone()))
     }
 
     pub(super) fn request_forget(&self) -> Option<Action> {
         let client = self.action_client()?;
+        if !self.has_session() {
+            return Some(info(format!("Forgetting a client {NEEDS_SESSION}")));
+        }
         Some(Action::RequestForgetClient(client.id.clone()))
     }
 
@@ -86,6 +119,9 @@ impl ClientsScreen {
             return Some(info(format!(
                 "{name} is not a guest, so it needs no authorizing"
             )));
+        }
+        if let Some(refused) = self.refusal(client, "Guest access") {
+            return Some(refused);
         }
         if is_authorized(client) {
             return Some(Action::ShowConfirm(
@@ -111,6 +147,15 @@ impl ClientsScreen {
     pub(super) fn request_fixed_ip(&mut self) -> Option<Action> {
         let client = self.action_client()?;
         let name = client_name(client).to_owned();
+        if !Self::can_reserve(client) {
+            return Some(info(format!(
+                "{name} is a {} client; only wired and wireless clients take a fixed IP",
+                type_label(client.client_type)
+            )));
+        }
+        if let Some(refused) = self.refusal(client, "A fixed IP") {
+            return Some(refused);
+        }
         let fixed = client.use_fixedip;
         let initial = current_ipv4(client).map(|ip| ip.to_string());
         let prompt = fixed_ip_prompt(&name, initial.as_deref().unwrap_or(""), fixed, None);

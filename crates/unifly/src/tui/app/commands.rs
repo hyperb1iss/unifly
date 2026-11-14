@@ -281,6 +281,7 @@ impl App {
         self.controller
             .as_ref()
             .and_then(|c| c.store().client_by_id(id))
+            .or_else(|| self.blocked_client(id))
             .and_then(|c| c.name.clone().or(c.hostname.clone()))
             .map_or_else(
                 || self.shown_text(&id.to_string()),
@@ -322,6 +323,7 @@ impl App {
         self.controller
             .as_ref()
             .and_then(|c| c.store().client_by_id(id))
+            .or_else(|| self.blocked_client(id))
             .map(|c| c.mac.clone())
     }
 

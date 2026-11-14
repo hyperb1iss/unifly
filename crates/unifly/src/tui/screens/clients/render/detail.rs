@@ -43,7 +43,7 @@ pub(super) fn render_detail(
     );
 
     let mut hints = vec![(3, Hint::info("j/k", "client"))];
-    hints.extend(command_hints(client));
+    hints.extend(command_hints(screen, client));
     hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
     let hints = grid::fit_hints(hints, layout[1].width);
     let line = click::key_hints(&hints).draw(layout[1], &mut screen.hits.borrow_mut());

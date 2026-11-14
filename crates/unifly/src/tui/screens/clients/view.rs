@@ -94,7 +94,7 @@ impl ClientSort {
 }
 
 /// The filter-bar labels, in [`ClientTypeFilter::ALL`] order.
-pub(super) const FILTER_LABELS: [&str; 5] = ["All", "Wireless", "Wired", "VPN", "Guest"];
+pub(super) const FILTER_LABELS: [&str; 6] = ["All", "Wireless", "Wired", "VPN", "Guest", "Blocked"];
 
 pub(super) fn filter_matches(filter: ClientTypeFilter, client: &Client) -> bool {
     match filter {
@@ -103,6 +103,7 @@ pub(super) fn filter_matches(filter: ClientTypeFilter, client: &Client) -> bool 
         ClientTypeFilter::Wired => client.client_type == ClientType::Wired,
         ClientTypeFilter::Vpn => client.client_type == ClientType::Vpn,
         ClientTypeFilter::Guest => client.is_guest,
+        ClientTypeFilter::Blocked => client.blocked,
     }
 }
 
@@ -114,6 +115,7 @@ pub(super) fn empty_note(filter: ClientTypeFilter) -> &'static str {
         ClientTypeFilter::Wired => "No wired clients connected",
         ClientTypeFilter::Vpn => "No VPN clients connected",
         ClientTypeFilter::Guest => "No guests connected",
+        ClientTypeFilter::Blocked => "No blocked clients",
     }
 }
 

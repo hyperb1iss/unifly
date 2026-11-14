@@ -11,6 +11,18 @@ use crate::tui::action::{Action, ClientTypeFilter, Notification};
 use crate::tui::screens::devices::view::wrapped;
 use crate::tui::table::{TableScroll, reselect};
 
+/// Where a list the screen asks the controller for stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) enum Fetch {
+    /// Nothing asked for yet.
+    #[default]
+    Unasked,
+    Loading,
+    Loaded,
+    /// Why the list cannot be shown.
+    Unavailable(String),
+}
+
 impl ClientsScreen {
     pub fn new() -> Self {
         Self {
@@ -27,15 +39,23 @@ impl ClientsScreen {
             detail_open: false,
             detail_client_id: None,
             asking: None,
+            offline_blocked: Arc::new(Vec::new()),
+            offline_blocked_status: Fetch::default(),
+            blocked_rows: Vec::new(),
         }
     }
 
     /// Clients shown in the table: the ones passing the type filter and
-    /// the search query, in the chosen order.
+    /// the search query, in the chosen order. The Blocked filter also
+    /// lists the blocked clients that are off the network.
     pub(super) fn filtered_clients(&self) -> Vec<&Arc<Client>> {
         let query = self.search_query.to_lowercase();
-        let mut clients: Vec<&Arc<Client>> = self
-            .clients
+        let rows: &[Arc<Client>] = if self.filter == ClientTypeFilter::Blocked {
+            &self.blocked_rows
+        } else {
+            &self.clients
+        };
+        let mut clients: Vec<&Arc<Client>> = rows
             .iter()
             .filter(|client| filter_matches(self.filter, client))
             .filter(|client| query.is_empty() || matches_query(client, &query))
@@ -77,11 +97,53 @@ impl ClientsScreen {
     }
 
     /// Show the clients `filter` lets through. An open detail closes when
-    /// its client is no longer among them.
-    pub(super) fn set_filter(&mut self, filter: ClientTypeFilter) {
+    /// its client is no longer among them. The Blocked filter asks the
+    /// controller for the blocked clients that are off the network.
+    pub(super) fn set_filter(&mut self, filter: ClientTypeFilter) -> Option<Action> {
         let selected = self.selected_client_id();
         self.filter = filter;
         self.reconcile_selection(selected.as_ref(), true);
+        self.request_offline_blocked()
+    }
+
+    /// Ask for the offline blocked clients while the Blocked filter
+    /// shows, one request at a time. The rows on screen stay until the
+    /// answer replaces them.
+    fn request_offline_blocked(&mut self) -> Option<Action> {
+        if self.filter != ClientTypeFilter::Blocked || self.offline_blocked_status == Fetch::Loading
+        {
+            return None;
+        }
+        self.offline_blocked_status = Fetch::Loading;
+        Some(Action::RequestBlockedClients)
+    }
+
+    /// Whether `client` is a blocked client that is off the network: it
+    /// can be unblocked or forgotten, and nothing else.
+    pub(super) fn is_offline(&self, client: &Client) -> bool {
+        self.offline_blocked
+            .iter()
+            .any(|offline| offline.id == client.id)
+    }
+
+    /// Rebuild the Blocked filter's rows from the connected clients and
+    /// the offline ones, by name like the rest of the table.
+    fn rebuild_blocked_rows(&mut self) {
+        let connected = self.clients.iter().filter(|client| client.blocked);
+        let offline = self
+            .offline_blocked
+            .iter()
+            .filter(|offline| !self.clients.iter().any(|client| client.id == offline.id));
+        let rows: Vec<Arc<Client>> = connected.chain(offline).cloned().collect();
+        self.blocked_rows = order::clients(&rows);
+    }
+
+    fn apply_offline_blocked(&mut self, offline: Arc<Vec<Arc<Client>>>, status: Fetch) {
+        let selected = self.selected_client_id();
+        self.offline_blocked = offline;
+        self.offline_blocked_status = status;
+        self.rebuild_blocked_rows();
+        self.reconcile_selection(selected.as_ref(), false);
     }
 
     pub(super) fn set_sort(&mut self, sort: ClientSort) {
@@ -98,11 +160,15 @@ impl ClientsScreen {
     }
 
     /// Store a refreshed client list in table order, keeping the selection
-    /// on the client it was on.
-    pub(super) fn apply_clients_update(&mut self, clients: &[Arc<Client>]) {
+    /// on the client it was on. A block or an unblock shows up as a
+    /// client leaving or joining, so the offline blocked ones are asked
+    /// for again while their filter shows.
+    pub(super) fn apply_clients_update(&mut self, clients: &[Arc<Client>]) -> Option<Action> {
         let selected = self.selected_client_id();
         self.clients = Arc::new(order::clients(clients));
+        self.rebuild_blocked_rows();
         self.reconcile_selection(selected.as_ref(), false);
+        self.request_offline_blocked()
     }
 
     /// Re-point the cursor after the rows changed. An open detail keeps
@@ -159,7 +225,11 @@ impl ClientsScreen {
     pub(super) fn action_client(&self) -> Option<&Arc<Client>> {
         if self.detail_open {
             let id = self.detail_client_id.as_ref()?;
-            return self.clients.iter().find(|client| client.id == *id);
+            return self
+                .clients
+                .iter()
+                .chain(self.offline_blocked.iter())
+                .find(|client| client.id == *id);
         }
         self.selected_client()
     }
@@ -214,7 +284,16 @@ impl ClientsScreen {
 
     pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {
         match action {
-            Action::ClientsUpdated(clients) => self.apply_clients_update(clients),
+            Action::ClientsUpdated(clients) => return self.apply_clients_update(clients),
+            Action::BlockedClientsLoaded(offline) => {
+                self.apply_offline_blocked(Arc::new(order::clients(offline)), Fetch::Loaded);
+            }
+            Action::BlockedClientsFailed(reason) => {
+                self.apply_offline_blocked(
+                    Arc::new(Vec::new()),
+                    Fetch::Unavailable(reason.clone()),
+                );
+            }
             Action::DevicesUpdated(devices) => self.links.set_devices(devices),
             Action::NetworksUpdated(networks) => self.links.set_networks(networks),
             Action::AccessUpdated(access) => self.access = Some(*access),
@@ -548,6 +627,135 @@ mod tests {
             matches!(removed, Some(Action::RequestRemoveFixedIp(ref client)) if *client == id(2)),
             "{removed:?}"
         );
+    }
+
+    fn access(session: bool) -> Action {
+        Action::AccessUpdated(crate::tui::action::Access {
+            integration: true,
+            session,
+            live_events: false,
+        })
+    }
+
+    #[test]
+    fn the_blocked_filter_lists_clients_that_are_off_the_network() {
+        let mut screen = screen(vec![
+            client(1, "alpha", &json!({})),
+            client(2, "kiosk", &json!({ "blocked": true })),
+        ]);
+
+        // Stepping onto the filter asks for the offline blocked clients,
+        // once: a second ask waits for the first answer.
+        assert!(matches!(
+            screen.set_filter(ClientTypeFilter::Blocked),
+            Some(Action::RequestBlockedClients)
+        ));
+        assert_eq!(names(&screen), ["kiosk"], "the connected one shows at once");
+        let refreshed = screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            client(1, "alpha", &json!({})),
+            client(2, "kiosk", &json!({ "blocked": true })),
+        ])));
+        assert!(refreshed.is_none(), "{refreshed:?}");
+
+        let offline = wireless(-60, "aa:bb:cc:dd:ee:01");
+        let offline = client(
+            7,
+            "banned-phone",
+            &json!({ "blocked": true, "ip": null, "client_type": offline["client_type"] }),
+        );
+        screen.apply_action(&Action::BlockedClientsLoaded(Arc::new(vec![offline])));
+        assert_eq!(names(&screen), ["banned-phone", "kiosk"]);
+
+        // The offline one can be unblocked and forgotten, and nothing else.
+        screen.select(0);
+        assert!(matches!(
+            press(&mut screen, 'b'),
+            Some(Action::RequestUnblockClient(unblocked)) if unblocked == id(7)
+        ));
+        assert!(matches!(
+            press(&mut screen, 'F'),
+            Some(Action::RequestForgetClient(forgotten)) if forgotten == id(7)
+        ));
+        for key in ['x', 'I'] {
+            let (_, message) = toast(press(&mut screen, key));
+            assert_eq!(message, "banned-phone is not connected", "{key}");
+        }
+        enter(&mut screen);
+        assert!(matches!(
+            press(&mut screen, 'b'),
+            Some(Action::RequestUnblockClient(unblocked)) if unblocked == id(7)
+        ));
+
+        // A refresh asks again, since an unblock shows up as a rejoin.
+        let refreshed = screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            client(1, "alpha", &json!({})),
+            client(7, "banned-phone", &json!({})),
+        ])));
+        assert!(matches!(refreshed, Some(Action::RequestBlockedClients)));
+        assert_eq!(
+            names(&screen),
+            Vec::<String>::new(),
+            "it is connected and unblocked"
+        );
+
+        // Other filters never ask.
+        assert!(screen.set_filter(ClientTypeFilter::All).is_none());
+    }
+
+    #[test]
+    fn commands_the_controller_cannot_serve_say_so_instead_of_failing() {
+        let mut screen = screen(vec![client(
+            1,
+            "guest-phone",
+            &json!({ "is_guest": true, "client_type": "Wireless" }),
+        )]);
+        screen.apply_action(&access(false));
+
+        for (key, what) in [
+            ('F', "Forgetting a client"),
+            ('A', "Guest access"),
+            ('I', "A fixed IP"),
+        ] {
+            let (level, message) = toast(press(&mut screen, key));
+            assert_eq!(level, NotificationLevel::Info);
+            assert!(
+                message.starts_with(what) && message.contains("direct controller session"),
+                "{key}: {message}"
+            );
+        }
+        assert!(screen.asking.is_none(), "no prompt was armed");
+        // Block and kick have a path on every profile.
+        assert!(matches!(
+            press(&mut screen, 'b'),
+            Some(Action::RequestBlockClient(_))
+        ));
+        assert!(matches!(
+            press(&mut screen, 'x'),
+            Some(Action::RequestKickClient(_))
+        ));
+
+        screen.apply_action(&access(true));
+        assert!(matches!(
+            press(&mut screen, 'I'),
+            Some(Action::OpenPrompt(_))
+        ));
+    }
+
+    #[test]
+    fn a_vpn_client_takes_no_fixed_ip() {
+        let mut screen = screen(vec![
+            client(1, "road-warrior", &json!({ "client_type": "Vpn" })),
+            client(2, "tunnel", &json!({ "client_type": "Teleport" })),
+        ]);
+        for row in 0..2 {
+            screen.select(row);
+            let (_, message) = toast(press(&mut screen, 'I'));
+            assert!(
+                message.contains("only wired and wireless clients take a fixed IP"),
+                "{message}"
+            );
+        }
+        assert!(screen.asking.is_none());
     }
 
     #[test]

@@ -43,6 +43,12 @@ pub struct ClientsScreen {
     detail_client_id: Option<EntityId>,
     /// What the open prompt's answer is for.
     asking: Option<commands::Asking>,
+    /// Blocked clients that are off the network, which the controller
+    /// lists apart from the connected ones.
+    offline_blocked: Arc<Vec<Arc<Client>>>,
+    offline_blocked_status: state::Fetch,
+    /// The Blocked filter's rows: connected and offline, by name.
+    blocked_rows: Vec<Arc<Client>>,
 }
 
 impl Default for ClientsScreen {

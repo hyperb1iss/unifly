@@ -30,16 +30,19 @@ pub enum ClientTypeFilter {
     Wired,
     Vpn,
     Guest,
+    /// Blocked clients, including the ones that are off the network.
+    Blocked,
 }
 
 impl ClientTypeFilter {
     /// All filters in filter-bar order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::All,
         Self::Wireless,
         Self::Wired,
         Self::Vpn,
         Self::Guest,
+        Self::Blocked,
     ];
 }
 
@@ -676,6 +679,11 @@ pub enum Action {
     },
     /// Drop a client's reserved address, after a confirmation.
     RequestRemoveFixedIp(EntityId),
+    /// Fetch the blocked clients that are off the connected list.
+    RequestBlockedClients,
+    BlockedClientsLoaded(Arc<Vec<Arc<Client>>>),
+    /// Why the blocked clients cannot be listed.
+    BlockedClientsFailed(String),
     // ── setup ────────────────────────────────────────────────────
     /// A connection test started by the setup wizard or Settings finished.
     /// Only the test with this generation may act on it.

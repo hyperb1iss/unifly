@@ -13,7 +13,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use unifly_api::{Client, ClientType};
 
+use crate::tui::action::ClientTypeFilter;
 use crate::tui::screens::clients::commands::is_authorized;
+use crate::tui::screens::clients::state::Fetch;
 use crate::tui::screens::clients::view::{FILTER_LABELS, client_name, empty_note};
 use crate::tui::screens::devices::grid;
 use crate::tui::screens::devices::view::counted;
@@ -79,7 +81,7 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
             (3, Hint::button("s", "sort", click::char_key('s'))),
         ];
         if let Some(client) = filtered.get(selected_idx) {
-            hints.extend(command_hints(client));
+            hints.extend(command_hints(screen, client));
         }
         let hints = grid::fit_hints(hints, layout[2].width);
         let line = click::key_hints(&hints).draw(layout[2], &mut screen.hits.borrow_mut());
@@ -121,6 +123,15 @@ fn empty_state(screen: &ClientsScreen) -> String {
             "No client matches \"{}\" (/ then Esc clears the search)",
             screen.search_query
         );
+    }
+    if screen.filter == ClientTypeFilter::Blocked {
+        match &screen.offline_blocked_status {
+            Fetch::Unasked | Fetch::Loading => return "Loading blocked clients\u{2026}".into(),
+            Fetch::Unavailable(reason) => {
+                return format!("Offline blocked clients are not listed: {reason}");
+            }
+            Fetch::Loaded => {}
+        }
     }
     empty_note(screen.filter).into()
 }
@@ -167,15 +178,18 @@ fn render_filter_bar(screen: &ClientsScreen, frame: &mut Frame, area: Rect, show
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Hints for the commands `client` can take in its state, ranked for a
-/// narrow bar. The block hint says which way `b` goes.
-pub(super) fn command_hints(client: &Client) -> Vec<(u8, Hint)> {
+/// Hints for the commands `client` can take in its state and under the
+/// controller's access, ranked for a narrow bar. The block hint says
+/// which way `b` goes.
+pub(super) fn command_hints(screen: &ClientsScreen, client: &Client) -> Vec<(u8, Hint)> {
     let block = if client.blocked { "unblock" } else { "block" };
     let mut hints = vec![(1, Hint::button("b", block, click::char_key('b')))];
-    if client.client_type == ClientType::Wireless {
+    let session = screen.has_session();
+    let connected = !screen.is_offline(client);
+    if connected && client.client_type == ClientType::Wireless {
         hints.push((1, Hint::button("x", "kick", click::char_key('x'))));
     }
-    if client.is_guest {
+    if session && connected && client.is_guest {
         let guest = if is_authorized(client) {
             "revoke guest"
         } else {
@@ -183,8 +197,12 @@ pub(super) fn command_hints(client: &Client) -> Vec<(u8, Hint)> {
         };
         hints.push((2, Hint::button("A", guest, click::char_key('A'))));
     }
-    hints.push((4, Hint::button("I", "fixed IP", click::char_key('I'))));
-    hints.push((5, Hint::button("F", "forget", click::char_key('F'))));
+    if session && connected && ClientsScreen::can_reserve(client) {
+        hints.push((4, Hint::button("I", "fixed IP", click::char_key('I'))));
+    }
+    if session {
+        hints.push((5, Hint::button("F", "forget", click::char_key('F'))));
+    }
     hints
 }
 
@@ -446,7 +464,11 @@ mod tests {
 
     fn screen_of(clients: Vec<Arc<Client>>) -> ClientsScreen {
         let mut screen = ClientsScreen::new();
-        screen.apply_action(&Action::AccessUpdated(Access::default()));
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: true,
+            live_events: true,
+        }));
         screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![switch(
             2, "sw-core", 24,
         )])));
@@ -617,6 +639,22 @@ mod tests {
         screen.select(2);
         assert!(hints(&draw(&screen, 120, 12)).contains("A authorize"));
 
+        // Without a session the commands only it serves are not offered.
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            ..Access::default()
+        }));
+        let cloud = hints(&draw(&screen, 120, 12)).to_owned();
+        assert!(cloud.contains("b block"), "{cloud}");
+        for dead in ["authorize", "fixed IP", "forget"] {
+            assert!(!cloud.contains(dead), "{dead} is offered: {cloud}");
+        }
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: true,
+            live_events: true,
+        }));
+
         // With a detail open there is one bar, and it is the detail's.
         press(&mut screen, KeyCode::Enter);
         let rows = draw(&screen, 120, 24);
@@ -624,6 +662,42 @@ mod tests {
         assert!(!text.contains("Enter detail"), "a dead Enter hint:\n{text}");
         assert!(hints(&rows).contains("j/k client"), "{}", hints(&rows));
         assert!(hints(&rows).contains("Esc close"), "{}", hints(&rows));
+    }
+
+    #[test]
+    fn the_blocked_filter_says_whether_it_is_loading_empty_or_unreadable() {
+        let mut screen = screen_of(vec![client(1, "alpha", &json!({}))]);
+        let note = |screen: &ClientsScreen| draw(screen, 100, 12).join("\n");
+
+        screen.set_filter(crate::tui::action::ClientTypeFilter::Blocked);
+        assert!(note(&screen).contains("Loading blocked clients"));
+
+        screen.apply_action(&Action::BlockedClientsLoaded(Arc::new(Vec::new())));
+        assert!(note(&screen).contains("No blocked clients"));
+
+        screen.apply_action(&Action::BlockedClientsFailed(
+            "no direct controller session".into(),
+        ));
+        let text = draw(&screen, 80, 12).join("\n");
+        assert!(
+            text.contains("Offline blocked clients are not listed: no direct controller session"),
+            "{text}"
+        );
+
+        let offline = client(7, "banned-phone", &json!({ "blocked": true, "ip": null }));
+        screen.apply_action(&Action::BlockedClientsLoaded(Arc::new(vec![offline])));
+        let rows = draw(&screen, 100, 12);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("banned-phone") && row.contains('\u{2298}')),
+            "{rows:?}"
+        );
+        let bar = hints(&rows);
+        assert!(
+            bar.contains("b unblock") && bar.contains("F forget"),
+            "{bar}"
+        );
+        assert!(!bar.contains("fixed IP") && !bar.contains("kick"), "{bar}");
     }
 
     #[test]

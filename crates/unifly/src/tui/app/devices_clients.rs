@@ -8,7 +8,7 @@ use color_eyre::eyre::Result;
 use tracing::warn;
 
 use unifly_api::model::{PoeMode, PortProfile};
-use unifly_api::{Command, CoreError, EntityId, PortProfileUpdate};
+use unifly_api::{Client, Command, CoreError, EntityId, PortProfileUpdate};
 
 use super::App;
 use crate::sanitizer::Sanitizer;
@@ -42,6 +42,25 @@ impl App {
             } => self.update_port(device, *port, change),
             Action::RequestSetFixedIp { client, ip } => self.set_fixed_ip(client, *ip),
             Action::RequestRemoveFixedIp(id) => self.confirm_remove_fixed_ip(id),
+            Action::RequestBlockedClients => self.fetch_blocked_clients(),
+            Action::BlockedClientsLoaded(blocked) => {
+                // The screen draws a sanitized copy; commands resolve the
+                // real record here.
+                self.blocked_clients = Arc::clone(blocked);
+                let shown = self.sanitizer.as_ref().map_or_else(
+                    || Arc::clone(blocked),
+                    |sanitizer| sanitizer.sanitize_clients(blocked),
+                );
+                self.forward_to_screen(ScreenId::Clients, &Action::BlockedClientsLoaded(shown))?;
+            }
+            Action::BlockedClientsFailed(_) => {
+                self.blocked_clients = Arc::default();
+                self.forward_to_screen(ScreenId::Clients, action)?;
+            }
+            Action::ControllerChanged => {
+                self.blocked_clients = Arc::default();
+                return Ok(false);
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -182,6 +201,54 @@ impl App {
             }
             let _ = tx.send(Action::RequestPortProfiles(device));
             Notification::success(done)
+        });
+    }
+
+    /// A blocked client that is off the connected list, by ID.
+    pub(super) fn blocked_client(&self, id: &EntityId) -> Option<Arc<Client>> {
+        self.blocked_clients
+            .iter()
+            .find(|client| client.id == *id)
+            .cloned()
+    }
+
+    /// Fetch the blocked clients the connected list no longer holds and
+    /// hand them to the Clients screen, or tell it why they cannot be read.
+    fn fetch_blocked_clients(&self) {
+        let tx = self.action_tx.clone();
+        let Some(controller) = self.controller.clone() else {
+            let _ = tx.send(Action::BlockedClientsFailed("not connected".into()));
+            return;
+        };
+        if !self.access.session {
+            let _ = tx.send(Action::BlockedClientsFailed(
+                "no direct controller session".into(),
+            ));
+            return;
+        }
+        let sanitizer = self.sanitizer.clone();
+        tokio::spawn(async move {
+            let action = match controller.list_users().await {
+                Ok(users) => {
+                    let store = controller.store();
+                    let blocked = users
+                        .into_iter()
+                        .filter(|user| user.blocked == Some(true))
+                        .map(Client::from)
+                        .filter(|client| store.client_by_mac(&client.mac).is_none())
+                        .map(Arc::new)
+                        .collect();
+                    Action::BlockedClientsLoaded(Arc::new(blocked))
+                }
+                Err(error) => {
+                    warn!(%error, "blocked clients could not be read");
+                    let error = error.to_string();
+                    Action::BlockedClientsFailed(
+                        sanitizer.map_or_else(|| error.clone(), |s| s.sanitize_text(&error)),
+                    )
+                }
+            };
+            let _ = tx.send(action);
         });
     }
 
@@ -379,6 +446,78 @@ mod tests {
             matches!(&confirm, Action::ShowConfirm(confirm) if confirm.prompt.starts_with("Remove the fixed IP of ")),
             "{confirm:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_blocked_client_off_the_list_is_fetched_and_unblocked_by_its_mac() {
+        let demo = demo_fleet().await;
+        let store = Arc::clone(demo.store());
+        let phone = store
+            .clients_snapshot()
+            .iter()
+            .find(|client| client.client_type == ClientType::Wireless)
+            .cloned()
+            .expect("a wireless client");
+        demo.execute(Command::BlockClient {
+            mac: phone.mac.clone(),
+        })
+        .await
+        .expect("block");
+        assert!(
+            store.client_by_id(&phone.id).is_none(),
+            "a blocked wireless client leaves the connected list"
+        );
+        let mut app = App::new(Some(demo), None, false, true);
+
+        // Without a session the screen is told why, and nothing is fetched.
+        app.process_action(&Action::RequestBlockedClients)
+            .expect("fetch");
+        let refused = app.action_rx.try_recv().expect("the screen gets an answer");
+        assert!(
+            matches!(&refused, Action::BlockedClientsFailed(reason)
+                if reason.contains("no direct controller session")),
+            "{refused:?}"
+        );
+
+        app.access = demo_access();
+        app.process_action(&Action::RequestBlockedClients)
+            .expect("fetch");
+        let loaded = next_action(&mut app).await;
+        let Action::BlockedClientsLoaded(blocked) = &loaded else {
+            panic!("expected the blocked clients, got {loaded:?}");
+        };
+        assert_eq!(blocked.len(), 1, "only the one off the connected list");
+        assert_eq!(blocked[0].id, phone.id);
+        assert!(blocked[0].blocked);
+        app.process_action(&loaded).expect("loaded");
+
+        // The store no longer knows the client, so its name and MAC come
+        // from the blocked list.
+        app.process_action(&Action::RequestUnblockClient(phone.id.clone()))
+            .expect("unblock");
+        let Action::ShowConfirm(confirm) = app.action_rx.try_recv().expect("unblock asks") else {
+            panic!("expected a confirmation");
+        };
+        assert!(
+            matches!(
+                *confirm.action,
+                Action::Run { ref command, .. }
+                    if matches!(**command, Command::UnblockClient { ref mac } if *mac == phone.mac)
+            ),
+            "{confirm:?}"
+        );
+        app.process_action(&confirm.action).expect("run");
+        let finished = run_until(&mut app, |action| {
+            matches!(action, Action::OpFinished { .. })
+        })
+        .await;
+        assert!(
+            matches!(&finished, Action::OpFinished { notification, .. }
+                if notification.level == NotificationLevel::Success),
+            "{finished:?}"
+        );
+        let back = store.client_by_id(&phone.id).expect("it rejoined");
+        assert!(!back.blocked);
     }
 
     #[tokio::test]

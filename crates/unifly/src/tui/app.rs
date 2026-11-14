@@ -104,6 +104,10 @@ pub struct App {
     locating: HashSet<unifly_api::EntityId>,
     /// What the connected controller can reach.
     access: Access,
+    /// Blocked clients that are off the connected list, as the controller
+    /// reports them. The store does not hold them, so commands on one
+    /// resolve its name and MAC here.
+    blocked_clients: Arc<Vec<Arc<unifly_api::Client>>>,
     /// Set when the next frame must clear the terminal first.
     repaint: bool,
     /// Set while a refresh the user asked for is running.
@@ -183,6 +187,7 @@ impl App {
             notices: notify::Notices::default(),
             locating: HashSet::new(),
             access: Access::default(),
+            blocked_clients: Arc::default(),
             repaint: false,
             refreshing: Arc::default(),
             stats_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
