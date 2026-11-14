@@ -28,6 +28,10 @@ struct Detail {
 pub(super) struct SsidDetails {
     known: HashMap<EntityId, Detail>,
     pending: HashSet<EntityId>,
+    /// Reads asked for before a write to their SSID ended. What they
+    /// bring back may be the record from before the write, so it is
+    /// dropped.
+    outdated: HashSet<EntityId>,
     failures: HashMap<String, Failure>,
 }
 
@@ -59,7 +63,7 @@ impl SsidDetails {
     }
 
     /// Mark the record of `id` out of date, so the next tick reads it.
-    pub(super) fn expire(&mut self, id: &EntityId) {
+    fn expire(&mut self, id: &EntityId) {
         if let Some(detail) = self.known.get_mut(id) {
             detail.fresh_since = None;
         }
@@ -71,6 +75,7 @@ impl SsidDetails {
         let ids: HashSet<&EntityId> = listed.iter().map(|ssid| &ssid.id).collect();
         self.known.retain(|id, _| ids.contains(id));
         self.pending.retain(|id| ids.contains(id));
+        self.outdated.retain(|id| ids.contains(id));
         for ssid in listed {
             if let Some(detail) = self.known.get_mut(&ssid.id) {
                 let record = &detail.record;
@@ -103,7 +108,15 @@ impl WifiScreen {
     pub(super) fn ssid_detail_loaded(&mut self, id: &EntityId, record: &Arc<WifiBroadcast>) {
         self.ssid_details.pending.remove(id);
         self.ssid_details.failures.remove(&id.to_string());
-        // A record for an SSID the list no longer has is not kept.
+        if self.ssid_details.outdated.remove(id) {
+            return;
+        }
+        self.keep_ssid_record(id, record);
+    }
+
+    /// Keep `record` as the fresh record of `id`, unless the list no
+    /// longer has that SSID.
+    fn keep_ssid_record(&mut self, id: &EntityId, record: &Arc<WifiBroadcast>) {
         if self.ssids.iter().any(|ssid| &ssid.id == id) {
             self.ssid_details.known.insert(
                 id.clone(),
@@ -117,7 +130,22 @@ impl WifiScreen {
 
     pub(super) fn ssid_detail_failed(&mut self, id: &EntityId, error: &str) {
         self.ssid_details.pending.remove(id);
+        self.ssid_details.outdated.remove(id);
         record(&mut self.ssid_details.failures, &id.to_string(), error);
+    }
+
+    /// A write to `id` ended. The record read back after it is the one to
+    /// show; without it the record on hand is out of date. A read still
+    /// in flight was asked for before the write ended and may carry the
+    /// record from before it.
+    pub(super) fn ssid_write_settled(&mut self, id: &EntityId, read: Option<&Arc<WifiBroadcast>>) {
+        if self.ssid_details.pending.contains(id) {
+            self.ssid_details.outdated.insert(id.clone());
+        }
+        match read {
+            Some(record) => self.keep_ssid_record(id, record),
+            None => self.ssid_details.expire(id),
+        }
     }
 
     /// Why the last read of `ssid`'s record failed.

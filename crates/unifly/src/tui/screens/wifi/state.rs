@@ -200,7 +200,9 @@ impl WifiScreen {
             Action::WifiBroadcastDetailFailed { id, error } => {
                 self.ssid_detail_failed(id, error);
             }
-            Action::WifiSsidWriteSettled(id) => self.ssid_details.expire(id),
+            Action::WifiSsidWriteSettled { id, detail } => {
+                self.ssid_write_settled(id, detail.as_ref());
+            }
             Action::WifiNeighborsUpdated(neighbors) => {
                 let selected = self.selected_rows();
                 self.neighbors = Arc::clone(neighbors);

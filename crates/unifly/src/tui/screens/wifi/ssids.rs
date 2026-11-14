@@ -176,7 +176,7 @@ impl WifiScreen {
             return Action::Notify(refusal);
         }
         self.ssid_prompt = Some(SsidPrompt::Passphrase(ssid.id.clone()));
-        Action::OpenPrompt(PromptRequest {
+        Action::RequestSsidPrompt(PromptRequest {
             title: format!("Passphrase for {}", ssid.name),
             label: "New passphrase".to_owned(),
             initial: typed.unwrap_or_default().to_owned(),
@@ -195,7 +195,7 @@ impl WifiScreen {
             id: ssid.id.clone(),
             first: first.to_owned(),
         });
-        Action::OpenPrompt(PromptRequest {
+        Action::RequestSsidPrompt(PromptRequest {
             title: format!("Passphrase for {}", ssid.name),
             label: "Type it again".to_owned(),
             initial: String::new(),
@@ -566,7 +566,11 @@ mod tests {
         screen.apply_action(&record(&ssid(2, "Studio", "Wpa2Wpa3Personal"), false));
         assert!(screen.apply_action(&Action::Tick).is_none());
 
-        screen.apply_action(&Action::WifiSsidWriteSettled(guest.id.clone()));
+        // A write whose read-back failed leaves the record out of date.
+        screen.apply_action(&Action::WifiSsidWriteSettled {
+            id: guest.id.clone(),
+            detail: None,
+        });
         let after_write = screen.apply_action(&Action::Tick);
         assert!(
             matches!(&after_write, Some(Action::RequestWifiBroadcastDetail(id)) if *id == guest.id),
@@ -587,6 +591,54 @@ mod tests {
             matches!(&after_change, Some(Action::RequestWifiBroadcastDetail(id)) if *id == guest.id),
             "{after_change:?}"
         );
+    }
+
+    fn full(summary: &WifiBroadcast, hidden: bool) -> Arc<WifiBroadcast> {
+        match record(summary, hidden) {
+            Action::WifiBroadcastDetailLoaded { detail, .. } => detail,
+            other => panic!("not a record: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_record_read_back_after_a_write_is_shown_and_an_older_read_cannot_replace_it() {
+        let mut screen = ssid_screen();
+        let guest = ssid(1, "Guest", "Open");
+        // The tab's own read of Guest is out when the write ends.
+        let asked = screen.apply_action(&Action::Tick);
+        assert!(
+            matches!(&asked, Some(Action::RequestWifiBroadcastDetail(id)) if *id == guest.id),
+            "{asked:?}"
+        );
+
+        screen.apply_action(&Action::WifiSsidWriteSettled {
+            id: guest.id.clone(),
+            detail: Some(full(&guest, true)),
+        });
+        assert_eq!(hidden_cell(&mut screen, "Guest"), "hidden");
+
+        // That read lands late, with the record from before the write.
+        screen.apply_action(&record(&guest, false));
+        assert_eq!(
+            hidden_cell(&mut screen, "Guest"),
+            "hidden",
+            "the older record does not replace the one read after the write"
+        );
+        // A read asked for after the write is taken as usual.
+        screen.apply_action(&record(&guest, false));
+        assert_eq!(hidden_cell(&mut screen, "Guest"), "\u{2500}");
+    }
+
+    #[test]
+    fn leaving_the_screen_forgets_what_a_prompt_was_holding() {
+        let mut screen = ssid_screen();
+        press(&mut screen, 'j');
+        press(&mut screen, 'P');
+        submit(&mut screen, "correct horse");
+        assert!(screen.ssid_prompt.is_some());
+
+        screen.set_focused(false);
+        assert!(screen.ssid_prompt.is_none());
     }
 
     #[test]
@@ -674,7 +726,7 @@ mod tests {
 
     fn prompt_of(action: Option<&Action>) -> &crate::tui::action::PromptRequest {
         match action {
-            Some(Action::OpenPrompt(request)) => request,
+            Some(Action::RequestSsidPrompt(request)) => request,
             other => panic!("expected a prompt, got {other:?}"),
         }
     }

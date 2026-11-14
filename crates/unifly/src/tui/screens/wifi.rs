@@ -183,6 +183,9 @@ impl Component for WifiScreen {
         self.focused = focused;
         if focused {
             self.mark_refresh_due();
+        } else {
+            // Nothing typed into a prompt outlives the screen's turn.
+            self.ssid_prompt = None;
         }
     }
 

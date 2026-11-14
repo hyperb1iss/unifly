@@ -148,6 +148,8 @@ impl WifiScreen {
     /// Mouse and touch input: sub-tabs, rows, chips, and hints by click,
     /// the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // As for a key: the mouse reaches the screen only with no prompt up.
+        self.ssid_prompt = None;
         if let Some(delta) = click::wheel_delta(mouse) {
             self.move_selection(delta);
             return None;

@@ -705,8 +705,15 @@ pub enum Action {
         change: SsidChange,
         notice: Notice,
     },
-    /// A write to this SSID ended, whether or not it took.
-    WifiSsidWriteSettled(EntityId),
+    /// A write to this SSID ended, whether or not it took. `detail` is
+    /// the record read back after it, when that read worked.
+    WifiSsidWriteSettled {
+        id: EntityId,
+        detail: Option<Arc<WifiBroadcast>>,
+    },
+    /// Open a prompt for the SSIDs tab at once, unless a dialog is up: a
+    /// prompt queued behind a dialog would take the keys meant for it.
+    RequestSsidPrompt(PromptRequest),
     // ── monitor ───────────────────────────────────────────────────
     /// Fetch events from further back than the feed holds. `id` names the
     /// request, so its result can be told from one that was cancelled.

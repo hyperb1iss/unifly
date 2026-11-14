@@ -85,6 +85,17 @@ impl App {
         busy
     }
 
+    /// Open `request` now, unless a dialog or another prompt is up. The
+    /// prompt opens in this call and not through the queue, so nothing
+    /// handled in between can open a dialog underneath it.
+    pub(super) fn open_ssid_prompt(&mut self, request: &PromptRequest) {
+        if self.pending_confirm.is_some() || self.prompt.is_some() {
+            return;
+        }
+        let input = crate::tui::widgets::line_input::LineInput::new(request.initial.clone());
+        self.prompt = Some((request.clone(), input));
+    }
+
     /// Read from the controller whether the SSID hides its name. The list
     /// does not say, so the toggle's direction comes from this read and
     /// never from what a screen last drew.
@@ -99,21 +110,31 @@ impl App {
         let Some(controller) = self.controller.clone() else {
             return;
         };
+        // The read can take a moment, and the question follows it.
+        let progress = self.begin_progress(&format!("Reading {name}\u{2026}"));
         let reply = self.wifi_reply();
+        let tx = self.action_tx.clone();
         let id = id.clone();
         tokio::spawn(async move {
-            reply(match controller.get_wifi_broadcast_detail(&id).await {
-                Ok(detail) => Action::WifiSsidVisibilityRead {
-                    id,
-                    detail: Arc::new(detail),
-                },
+            match controller.get_wifi_broadcast_detail(&id).await {
+                Ok(detail) => {
+                    // The toast goes whatever becomes of the answer.
+                    let _ = tx.send(Action::DismissToast(progress));
+                    reply(Action::WifiSsidVisibilityRead {
+                        id,
+                        detail: Arc::new(detail),
+                    });
+                }
                 Err(error) => {
                     warn!(%error, "an SSID could not be read before a visibility change");
-                    Action::Notify(Notification::error(format!(
-                        "Could not read {name} from the controller: {error}"
-                    )))
+                    let _ = tx.send(Action::OpFinished {
+                        progress: Some(progress),
+                        notification: Notification::error(format!(
+                            "Could not read {name} from the controller: {error}"
+                        )),
+                    });
                 }
-            });
+            }
         });
     }
 
@@ -132,9 +153,24 @@ impl App {
                 detail: Arc::new(shown),
             },
         )?;
-        // The answer to a key pressed on the WiFi screen: it opens nothing
-        // once the user has moved on or is typing into something else.
-        if self.active_screen != ScreenId::Wifi || self.prompt.is_some() {
+        // The answer to a key pressed a moment ago on the WiFi screen. It
+        // asks nothing once the user has left, and nothing over whatever
+        // has opened since: a dialog takes keys ahead of everything, so
+        // one arriving under a search or a prompt would read a typed `y`
+        // as its answer.
+        if self.active_screen != ScreenId::Wifi {
+            return Ok(());
+        }
+        if self.pending_confirm.is_some()
+            || self.prompt.is_some()
+            || self.search_active
+            || self.help_visible
+            || self.notices_visible
+            || self.about_visible
+        {
+            self.show_notification(Notification::info(format!(
+                "Nothing was changed on {name}. Press H again when nothing else is open."
+            )));
             return Ok(());
         }
         let Some(hidden) = detail.hidden else {
@@ -170,7 +206,10 @@ impl App {
             })),
             notice,
         };
-        self.confirm(ConfirmRequest::new(prompt, write).detail(format!("{REPROVISION} {effect}")));
+        // Opened in this call, behind the checks above, and not through
+        // the queue: whatever is handled next finds the dialog up.
+        self.pending_confirm =
+            Some(ConfirmRequest::new(prompt, write).detail(format!("{REPROVISION} {effect}")));
         Ok(())
     }
 
@@ -187,7 +226,7 @@ impl App {
             None if real == shown => real,
             None => String::new(),
         };
-        let _ = self.action_tx.send(Action::OpenPrompt(PromptRequest {
+        self.open_ssid_prompt(&PromptRequest {
             title: format!("Rename {shown}"),
             label: "Network name (SSID)".to_owned(),
             initial,
@@ -197,7 +236,7 @@ impl App {
                     .to_owned(),
             ),
             secret: false,
-        }));
+        });
     }
 
     /// Ask before renaming the SSID `id` to `name`. The name is checked
@@ -268,25 +307,23 @@ impl App {
         let (id, change, done) = (id.clone(), change.clone(), notice.done.clone());
         self.spawn_op(&notice.pending, async move {
             let (notification, read) = apply(&controller, &id, change, &name, done).await;
-            reply(Action::WifiSsidWriteSettled(id.clone()));
-            if let Some(detail) = read {
-                let detail = sanitizer
-                    .as_ref()
-                    .map_or_else(|| detail.clone(), |san| san.sanitize_wifi(&detail));
-                reply(Action::WifiBroadcastDetailLoaded {
-                    id,
-                    detail: Arc::new(detail),
-                });
-            }
+            let detail = read.map(|detail| {
+                Arc::new(
+                    sanitizer
+                        .as_ref()
+                        .map_or_else(|| detail.clone(), |san| san.sanitize_wifi(&detail)),
+                )
+            });
+            reply(Action::WifiSsidWriteSettled { id, detail });
             notification
         });
     }
 
     /// A write ended: the SSID takes the next one, and the WiFi screen
-    /// reads it again.
-    pub(super) fn ssid_write_settled(&mut self, id: &EntityId) -> Result<()> {
+    /// takes the record read back, or reads it again.
+    pub(super) fn ssid_write_settled(&mut self, id: &EntityId, settled: &Action) -> Result<()> {
         self.wifi.writes.remove(id);
-        self.forward_to_screen(ScreenId::Wifi, &Action::WifiSsidWriteSettled(id.clone()))
+        self.forward_to_screen(ScreenId::Wifi, settled)
     }
 }
 
@@ -352,6 +389,8 @@ async fn apply(
                 Notification::warning(format!(
                     "{done}, but the controller's record does not say whether the name is hidden"
                 ))
+            } else if let Some(passphrase) = &update.passphrase {
+                passphrase_result(controller, id, passphrase, name, done).await
             } else {
                 Notification::success(done)
             };
@@ -366,9 +405,32 @@ async fn apply(
     }
 }
 
+/// The toast for a passphrase change, from the controller's own record of
+/// the SSID: success only when that record carries the new passphrase.
+async fn passphrase_result(
+    controller: &Controller,
+    id: &EntityId,
+    passphrase: &str,
+    name: &str,
+    done: String,
+) -> Notification {
+    match controller.wifi_passphrase_matches(id, passphrase).await {
+        Ok(Some(true)) => Notification::success(done),
+        Ok(Some(false)) => Notification::error(format!(
+            "The controller accepted the change to {name} but still reports its old passphrase"
+        )),
+        Ok(None) => Notification::warning(format!(
+            "{done}, but the controller's record shows no passphrase to check it against"
+        )),
+        Err(error) => Notification::warning(format!(
+            "{done}, but it could not be read back to check: {error}"
+        )),
+    }
+}
+
 /// What `detail` still says against `update`, when the change did not
-/// take. A passphrase is not compared: the record's copy stays out of
-/// the model.
+/// take. A passphrase is checked apart from this: the record's copy
+/// stays out of the model.
 fn unapplied(update: &UpdateWifiBroadcastRequest, detail: &WifiBroadcast) -> Option<String> {
     if let Some(enabled) = update.enabled
         && detail.enabled != enabled
@@ -591,11 +653,10 @@ mod tests {
         (app, controller)
     }
 
+    /// The prompt that is open, closed again as Esc would.
     fn opened_prompt(app: &mut App) -> PromptRequest {
-        match app.action_rx.try_recv() {
-            Ok(Action::OpenPrompt(request)) => request,
-            other => panic!("expected a prompt, got {other:?}"),
-        }
+        let (request, _) = app.prompt.take().expect("a prompt is open");
+        request
     }
 
     #[tokio::test]
@@ -740,6 +801,167 @@ mod tests {
         })
         .join("\n");
         assert!(!drawn.contains(&first), "{drawn}");
+        controller.disconnect().await;
+    }
+
+    /// The answer to `H` on the demo fleet's first SSID, as it comes back
+    /// from the controller, with the "Reading" toast already cleared.
+    async fn visibility_answer(app: &mut App, controller: &Controller) -> (Action, String) {
+        let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
+        app.process_action(&Action::RequestSsidVisibilityToggle(ssid.id.clone()))
+            .expect("H");
+        assert_eq!(
+            app.notices.messages(),
+            [format!("Reading {}\u{2026}", ssid.name)],
+            "the read shows while it runs"
+        );
+        loop {
+            let action = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
+                .await
+                .expect("the read reports back")
+                .expect("the action channel stays open");
+            if matches!(action, Action::WifiAnswer { .. }) {
+                assert!(app.notices.messages().is_empty(), "the toast is cleared");
+                return (action, ssid.name.clone());
+            }
+            app.process_action(&action).expect("action");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_visibility_answer_asks_nothing_over_what_opened_while_it_was_out() {
+        type Open = (&'static str, fn(&mut App));
+        let opened: [Open; 5] = [
+            ("the search bar", |app| app.search_active = true),
+            ("the help", |app| app.help_visible = true),
+            ("the notification list", |app| app.notices_visible = true),
+            ("a prompt", |app| {
+                app.open_ssid_prompt(&PromptRequest {
+                    title: "Rename".into(),
+                    ..PromptRequest::default()
+                });
+            }),
+            ("another question", |app| {
+                app.pending_confirm = Some(ConfirmRequest::new("Delete it?", Action::Invalidate));
+            }),
+        ];
+        for (what, open) in opened {
+            let (mut app, controller) = ssids_app().await;
+            let (answer, name) = visibility_answer(&mut app, &controller).await;
+            open(&mut app);
+            app.process_action(&answer).expect("the answer");
+            drain(&mut app);
+
+            let asked = app
+                .pending_confirm
+                .as_ref()
+                .map(|confirm| confirm.prompt.clone());
+            assert!(
+                asked.as_deref().is_none_or(|prompt| prompt == "Delete it?"),
+                "over {what} the answer asked {asked:?}"
+            );
+            let toast = app.notices.latest().expect("a toast says why");
+            assert!(
+                toast.message.contains(&name) && toast.message.contains("Press H again"),
+                "{what}: {}",
+                toast.message
+            );
+            controller.disconnect().await;
+        }
+
+        // On another screen it asks nothing and says nothing.
+        let (mut app, controller) = ssids_app().await;
+        let (answer, _) = visibility_answer(&mut app, &controller).await;
+        app.active_screen = ScreenId::Devices;
+        app.process_action(&answer).expect("the answer");
+        drain(&mut app);
+        assert!(app.pending_confirm.is_none());
+        assert!(app.notices.latest().is_none());
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn a_prompt_asked_for_behind_a_question_does_not_open_under_it() {
+        let (mut app, controller) = ssids_app().await;
+        let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
+        let (answer, _) = visibility_answer(&mut app, &controller).await;
+
+        // `N` and `P` were pressed in the same pass the answer arrived in:
+        // the answer is handled first and their requests after it.
+        app.process_action(&answer).expect("the answer");
+        assert!(app.pending_confirm.is_some(), "the question is up at once");
+        app.process_action(&Action::RequestSsidRename {
+            id: ssid.id.clone(),
+            typed: None,
+        })
+        .expect("N");
+        app.process_action(&Action::RequestSsidPrompt(PromptRequest {
+            title: "Passphrase".into(),
+            secret: true,
+            ..PromptRequest::default()
+        }))
+        .expect("P");
+        drain(&mut app);
+        assert!(
+            app.prompt.is_none(),
+            "a prompt under the question would lose its keys to it"
+        );
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn a_passphrase_change_is_reported_from_the_record_read_back() {
+        let (mut app, controller) = ssids_app().await;
+        let ssid = controller
+            .wifi_broadcasts_snapshot()
+            .iter()
+            .find(|ssid| ssid.preshared_key_count == 0)
+            .cloned()
+            .expect("an SSID with one passphrase");
+        app.process_action(&Action::WifiSsidWrite {
+            id: ssid.id.clone(),
+            change: SsidChange::Update(Box::new(UpdateWifiBroadcastRequest {
+                passphrase: Some("correct horse".into()),
+                ..Default::default()
+            })),
+            notice: Notice::new("Changing\u{2026}", "Changed the passphrase"),
+        })
+        .expect("write");
+        finish_write(&mut app).await;
+
+        let toast = app.notices.latest().expect("a toast");
+        assert_eq!(toast.level, NotificationLevel::Success, "{}", toast.message);
+        assert_eq!(
+            controller
+                .wifi_passphrase_matches(&ssid.id, "correct horse")
+                .await
+                .expect("read back"),
+            Some(true)
+        );
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn a_late_end_of_the_old_controllers_write_does_not_free_the_new_ones() {
+        let (mut app, controller) = ssids_app().await;
+        let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
+        let old = app.wifi.generation;
+        app.process_action(&Action::ControllerChanged)
+            .expect("switch");
+        app.wifi.writes.insert(ssid.id.clone());
+
+        app.process_action(&Action::WifiAnswer {
+            generation: old,
+            answer: Box::new(Action::WifiSsidWriteSettled {
+                id: ssid.id.clone(),
+                detail: None,
+            }),
+        })
+        .expect("a late end");
+        assert!(
+            app.wifi.writes.contains(&ssid.id),
+            "the write in flight on this controller still holds the SSID"
+        );
         controller.disconnect().await;
     }
 
@@ -1019,6 +1241,65 @@ mod tests {
         assert!(
             toast.message.contains("still reports its name announced"),
             "{}",
+            toast.message
+        );
+        server.verify().await;
+    }
+
+    /// A controller that answers a passphrase change with 200 and keeps
+    /// the old passphrase.
+    #[tokio::test]
+    async fn a_passphrase_the_controller_did_not_take_is_reported_as_a_failure() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let unchanged = serde_json::json!({
+            "type": "STANDARD", "id": SSID, "name": "Studio", "enabled": true,
+            "metadata": {"origin": "USER_DEFINED"}, "hideName": false,
+            "securityConfiguration": {"type": "WPA2_PERSONAL", "passphrase": "the old one"},
+            "broadcastingFrequenciesGHz": [2.4, 5]
+        });
+        let record = format!("{BASE}/sites/{SITE}/wifi/broadcasts/{SSID}");
+        Mock::given(method("GET"))
+            .and(path(&record))
+            .respond_with(ResponseTemplate::new(200).set_body_json(unchanged.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(&record))
+            .and(body_partial_json(serde_json::json!({
+                "securityConfiguration": {"type": "WPA2_PERSONAL", "passphrase": "correct horse"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(unchanged))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let controller = http_controller(&server).await;
+        let mut app = App::new(Some(controller), None, false, true);
+        app.active_screen = ScreenId::Wifi;
+
+        app.process_action(&Action::WifiSsidWrite {
+            id: EntityId::from(SSID),
+            change: SsidChange::Update(Box::new(UpdateWifiBroadcastRequest {
+                passphrase: Some("correct horse".into()),
+                ..Default::default()
+            })),
+            notice: Notice::new("Changing\u{2026}", "Changed the passphrase for Studio"),
+        })
+        .expect("write");
+        finish_write(&mut app).await;
+
+        let toast = app.notices.latest().expect("a toast");
+        assert_eq!(toast.level, NotificationLevel::Error, "{}", toast.message);
+        assert!(
+            toast.message.contains("still reports its old passphrase"),
+            "{}",
+            toast.message
+        );
+        assert!(
+            !toast.message.contains("correct horse") && !toast.message.contains("the old one"),
+            "no passphrase is drawn: {}",
             toast.message
         );
         server.verify().await;

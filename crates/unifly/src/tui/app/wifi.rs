@@ -56,7 +56,8 @@ impl App {
             }
             Action::RequestSsidRenameTo { id, name } => self.confirm_ssid_rename(id, name),
             Action::WifiSsidWrite { id, change, notice } => self.write_ssid(id, change, notice),
-            Action::WifiSsidWriteSettled(id) => self.ssid_write_settled(id)?,
+            Action::WifiSsidWriteSettled { id, .. } => self.ssid_write_settled(id, action)?,
+            Action::RequestSsidPrompt(request) => self.open_ssid_prompt(request),
             Action::WifiNeighborsFailed(_)
             | Action::WifiChannelsFailed(_)
             | Action::WifiBroadcastDetailLoaded { .. }
