@@ -363,6 +363,16 @@ impl Simulation {
             return;
         }
         let switch = &mut self.fleet.devices[SWITCH_BASE];
+        // A port an admin switched PoE off on powers nothing back up.
+        let unpowered = switch
+            .ports
+            .iter()
+            .find(|port| port.index == port_index)
+            .and_then(|port| port.poe.as_ref())
+            .is_some_and(|poe| !poe.enabled);
+        if unpowered {
+            return;
+        }
         if let Some(port) = switch
             .ports
             .iter_mut()

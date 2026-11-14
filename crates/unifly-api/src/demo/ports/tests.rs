@@ -522,3 +522,59 @@ fn client_records_follow_admin_commands() {
         "a forgotten client does not come back"
     );
 }
+
+#[test]
+fn poe_power_only_returns_where_an_admin_left_it_on() {
+    use crate::controller::PortProfileUpdate;
+    use crate::model::PortState;
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let mut now = sim.fleet.anchor;
+    let core = sim.fleet.devices[SWITCH_BASE].id.clone();
+    let mac = sim.fleet.devices[SWITCH_BASE].mac.clone();
+    let poe_mode = |mode| PortProfileUpdate {
+        poe_mode: Some(mode),
+        ..PortProfileUpdate::default()
+    };
+    let poe_of = |sim: &Simulation, index: u32| {
+        sim.fleet.devices[SWITCH_BASE]
+            .ports
+            .iter()
+            .find(|port| port.index == index)
+            .and_then(|port| port.poe.clone())
+            .expect("a PoE port")
+    };
+
+    // A linked port that never fed anything gains no load by enabling PoE.
+    let idle = sim.fleet.devices[SWITCH_BASE]
+        .ports
+        .iter()
+        .find(|port| {
+            port.state == PortState::Up && port.poe.as_ref().is_some_and(|poe| !poe.enabled)
+        })
+        .map(|port| port.index)
+        .expect("a linked port with PoE switched off");
+    sim.apply_port_update(&mac, idle, &poe_mode(PoeMode::Auto), now)
+        .expect("PoE on");
+    assert!(poe_of(&sim, idle).enabled);
+    assert_eq!(poe_of(&sim, idle).state, PortState::Down);
+
+    // The dark camera does not come back on a port whose PoE was then
+    // switched off.
+    let (_, camera_port) = OFFLINE_CAMERA;
+    sim.apply_command(
+        Command::PowerCyclePort {
+            device_id: core,
+            port_idx: camera_port,
+        },
+        now,
+    )
+    .expect("power cycle");
+    sim.apply_port_update(&mac, camera_port, &poe_mode(PoeMode::Off), now)
+        .expect("PoE off");
+    for _ in 0..12 {
+        now += chrono::Duration::seconds(1);
+        sim.step(now);
+    }
+    assert!(!poe_of(&sim, camera_port).enabled);
+}

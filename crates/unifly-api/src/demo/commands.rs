@@ -306,7 +306,11 @@ impl Simulation {
                 message: format!("{name} port {port_index} is not supplying PoE"),
             });
         }
-        let port_label = port.name.clone();
+        let port_label = self
+            .port_edits
+            .get(&(index, port_index))
+            .and_then(|edit| edit.label.clone())
+            .or_else(|| port.name.clone());
         let (camera, camera_port) = catalog::OFFLINE_CAMERA;
         let camera_port_hit = index == super::fleet::SWITCH_BASE && port_index == camera_port;
         if camera_port_hit {
@@ -551,22 +555,31 @@ impl Simulation {
             .ok_or_else(|| CoreError::ValidationFailed {
                 message: format!("{name} has no port {port_index}"),
             })?;
+        let edit = self.port_edits.entry((index, port_index)).or_default();
         let mut changes = Vec::new();
         if let Some(mode) = update.poe_mode {
             let link = port.state;
             let poe = port.poe.as_mut().ok_or_else(|| CoreError::Rejected {
                 message: format!("{name} port {port_index} has no PoE"),
             })?;
-            poe.enabled = mode != PoeMode::Off;
-            poe.state = if poe.enabled { link } else { PortState::Down };
-            changes.push(format!(
-                "PoE turned {}",
-                if poe.enabled { "on" } else { "off" }
-            ));
+            let on = mode != PoeMode::Off;
+            if poe.enabled && !on {
+                edit.was_delivering = poe.state == PortState::Up;
+            }
+            // Power only comes back to a port that was feeding something.
+            let delivering = on && edit.was_delivering && link == PortState::Up;
+            if poe.enabled != on {
+                poe.state = if delivering {
+                    PortState::Up
+                } else {
+                    PortState::Down
+                };
+            }
+            poe.enabled = on;
+            changes.push(format!("PoE turned {}", if on { "on" } else { "off" }));
         }
-        let edit = self.port_edits.entry((index, port_index)).or_default();
         if let Some(label) = &update.name {
-            *edit = Some(label.clone());
+            edit.label = Some(label.clone());
             changes.push(format!("renamed to \"{label}\""));
         }
         let mut delta = Delta::default();

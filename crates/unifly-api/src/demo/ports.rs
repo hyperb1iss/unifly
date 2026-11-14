@@ -277,7 +277,7 @@ impl Simulation {
             // A port an admin edited carries an override like a configured
             // one, under the label it was given.
             let edit = self.port_edits.get(&(index, port.index));
-            if let Some(Some(label)) = edit {
+            if let Some(label) = edit.and_then(|edit| edit.label.as_ref()) {
                 config.insert("name".into(), json!(label));
             }
             let configured = matches!(profile, Profile::Access { .. } | Profile::Trunk { .. });

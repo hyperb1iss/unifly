@@ -72,6 +72,16 @@ impl Burst {
     }
 }
 
+/// What an admin changed on one port.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PortEdit {
+    /// The label the port was given, if any.
+    pub label: Option<String>,
+    /// Whether the port was delivering power when its PoE was turned off,
+    /// so turning it back on powers the same device again and no other.
+    pub was_delivering: bool,
+}
+
 pub(crate) struct Simulation {
     pub(crate) fleet: Fleet,
     pub(crate) rng: DemoRng,
@@ -97,8 +107,8 @@ pub(crate) struct Simulation {
     /// IDs of the alarms an admin archived this session.
     pub(crate) archived_alarms: std::collections::HashSet<String>,
     /// Ports an admin edited during the session, keyed by device index
-    /// and port index, with the label they were given, if any.
-    pub(crate) port_edits: std::collections::HashMap<(usize, u32), Option<String>>,
+    /// and port index.
+    pub(crate) port_edits: std::collections::HashMap<(usize, u32), PortEdit>,
     initial_clients: usize,
 }
 
