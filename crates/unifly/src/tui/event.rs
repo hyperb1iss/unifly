@@ -109,24 +109,29 @@ impl EventReader {
     }
 }
 
-/// Resolves when the process is asked to stop (SIGTERM, SIGHUP), so the
+/// Resolves when the process is asked to stop (SIGTERM, SIGHUP, SIGINT,
+/// SIGQUIT), so the
 /// app can restore the terminal on its way out. Never resolves where
 /// those signals do not exist.
 fn stop_signal() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        match (
-            signal(SignalKind::terminate()),
-            signal(SignalKind::hangup()),
-        ) {
-            (Ok(mut term), Ok(mut hangup)) => Box::pin(async move {
-                tokio::select! {
-                    _ = term.recv() => {}
-                    _ = hangup.recv() => {}
-                }
+        let signals = [
+            SignalKind::terminate(),
+            SignalKind::hangup(),
+            SignalKind::interrupt(),
+            SignalKind::quit(),
+        ]
+        .into_iter()
+        .map(signal)
+        .collect::<Result<Vec<_>, _>>();
+        match signals {
+            Ok(mut signals) => Box::pin(async move {
+                let waits = signals.iter_mut().map(|signal| Box::pin(signal.recv()));
+                futures::future::select_all(waits).await;
             }),
-            _ => Box::pin(std::future::pending()),
+            Err(_) => Box::pin(std::future::pending()),
         }
     }
     #[cfg(not(unix))]
