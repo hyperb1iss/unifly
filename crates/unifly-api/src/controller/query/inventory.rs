@@ -18,6 +18,29 @@ impl Controller {
         Ok(WifiBroadcast::from(detail))
     }
 
+    /// Whether the controller's record of an SSID carries `expected` as
+    /// its passphrase: the read-back after a passphrase change. `None`
+    /// when the record shows no passphrase to compare, as for an open or
+    /// enterprise SSID. The passphrase itself is never returned.
+    pub async fn wifi_passphrase_matches(
+        &self,
+        id: &EntityId,
+        expected: &str,
+    ) -> Result<Option<bool>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.wifi_passphrase_matches(id, expected)));
+        }
+        let (client, site_id) = integration_site_context(self, "wifi_passphrase_matches").await?;
+        let uuid = require_uuid(id)?;
+        let detail = client.get_wifi_broadcast(&site_id, &uuid).await?;
+        Ok(detail
+            .security_configuration
+            .get("passphrase")
+            .and_then(serde_json::Value::as_str)
+            .map(|passphrase| passphrase == expected))
+    }
+
     pub async fn list_pending_devices(&self) -> Result<Vec<serde_json::Value>, CoreError> {
         let integration = self.inner.integration_client.lock().await.clone();
         let site_id = *self.inner.site_id.lock().await;

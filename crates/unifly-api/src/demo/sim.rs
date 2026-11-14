@@ -122,6 +122,9 @@ pub(crate) struct Simulation {
     /// name)`. Clients join under the generated name, so each tick maps
     /// them to the current one.
     pub(crate) ssid_renames: Vec<(String, String)>,
+    /// Passphrases set during the session, by SSID, so a change can be
+    /// read back like any other.
+    pub(crate) wifi_passphrases: std::collections::HashMap<crate::model::EntityId, String>,
     /// IDs of the alarms an admin archived this session.
     pub(crate) archived_alarms: std::collections::HashSet<String>,
     /// The gateway's last WAN speed test, as site health reports it.
@@ -169,6 +172,7 @@ impl Simulation {
             live_roams: Vec::new(),
             wan,
             ssid_renames: Vec::new(),
+            wifi_passphrases: std::collections::HashMap::new(),
             archived_alarms: std::collections::HashSet::new(),
             speed_test: SpeedTest {
                 ran_at: fleet_anchor - chrono::Duration::hours(5),

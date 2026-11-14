@@ -420,6 +420,39 @@ fn deleting_an_ssid_removes_it_from_the_list_and_the_detail() {
 }
 
 #[test]
+fn a_passphrase_set_in_the_session_reads_back_and_one_never_set_does_not() {
+    let mut sim = Simulation::new(fleet());
+    let ssid = sim
+        .fleet
+        .wifi
+        .iter()
+        .find(|wifi| wifi.preshared_key_count == 0)
+        .cloned()
+        .expect("an SSID with one passphrase");
+    assert_eq!(sim.wifi_passphrase_matches(&ssid.id, "anything"), None);
+
+    sim.apply_command(
+        Command::UpdateWifiBroadcast {
+            id: ssid.id.clone(),
+            update: crate::command::UpdateWifiBroadcastRequest {
+                passphrase: Some("correct horse".into()),
+                ..Default::default()
+            },
+        },
+        anchor(),
+    )
+    .expect("a passphrase change works in demo mode");
+    assert_eq!(
+        sim.wifi_passphrase_matches(&ssid.id, "correct horse"),
+        Some(true)
+    );
+    assert_eq!(
+        sim.wifi_passphrase_matches(&ssid.id, "correct hrose"),
+        Some(false)
+    );
+}
+
+#[test]
 fn a_passphrase_is_refused_for_the_ssid_with_per_network_keys() {
     let mut sim = Simulation::new(fleet());
     let keyed = sim

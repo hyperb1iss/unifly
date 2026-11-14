@@ -329,3 +329,46 @@ async fn the_summary_names_the_networks_that_have_a_key_of_their_own() {
     assert_eq!(listed[0].preshared_key_count, 1);
     controller.disconnect().await;
 }
+
+#[tokio::test]
+async fn a_passphrase_change_can_be_checked_against_the_record_read_back() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    mount_detail(&server, detail(false)).await;
+    let controller = controller(&server);
+    controller.connect_lightweight().await.unwrap();
+
+    let matches = |expected: &'static str| {
+        let controller = controller.clone();
+        async move {
+            controller
+                .wifi_passphrase_matches(&ssid_id(), expected)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(matches("the old passphrase").await, Some(true));
+    assert_eq!(
+        matches("a brand new one").await,
+        Some(false),
+        "a write the controller did not apply shows in the read-back"
+    );
+    controller.disconnect().await;
+
+    // A record without a passphrase gives nothing to compare.
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let mut open = detail(false);
+    open["securityConfiguration"] = json!({"type": "OPEN"});
+    mount_detail(&server, open).await;
+    let controller = self::controller(&server);
+    controller.connect_lightweight().await.unwrap();
+    assert_eq!(
+        controller
+            .wifi_passphrase_matches(&ssid_id(), "anything")
+            .await
+            .unwrap(),
+        None
+    );
+    controller.disconnect().await;
+}

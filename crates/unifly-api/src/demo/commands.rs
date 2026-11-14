@@ -590,6 +590,9 @@ impl Simulation {
             changes.push("passphrase changed".to_owned());
         }
         let updated = wifi.clone();
+        if let Some(passphrase) = &update.passphrase {
+            self.wifi_passphrases.insert(id.clone(), passphrase.clone());
+        }
 
         if updated.name != before {
             // Later renames chain from the generated name clients join by.
@@ -644,12 +647,21 @@ impl Simulation {
             .position(|wifi| &wifi.id == id)
             .ok_or_else(|| wifi_not_found(id))?;
         let removed = self.fleet.wifi.remove(index);
+        self.wifi_passphrases.remove(id);
         let message = format!("WiFi \"{}\" was deleted", removed.name);
         delta
             .events
             .push(self.event(now, ADMIN_INFO, "EVT_AD_WlanDeleted", message));
         delta.config_changed = true;
         Ok(())
+    }
+
+    /// Whether the SSID's passphrase is `expected`, or `None` for one
+    /// nobody has set this session: the fleet starts without any.
+    pub(crate) fn wifi_passphrase_matches(&self, id: &EntityId, expected: &str) -> Option<bool> {
+        self.wifi_passphrases
+            .get(id)
+            .map(|passphrase| passphrase == expected)
     }
 
     /// One SSID in full, as the controller's detail endpoint returns it.
