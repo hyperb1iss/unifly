@@ -34,20 +34,6 @@ impl App {
                     .detail("Everything connected through it drops until it is back."),
                 );
             }
-            Action::RequestUnadopt(id) => {
-                let name = self.resolve_device_name(id);
-                self.confirm(
-                    ConfirmRequest::new(
-                        format!("Remove {name} from this site?"),
-                        run(
-                            Command::RemoveDevice { id: id.clone() },
-                            format!("Removing {name}\u{2026}"),
-                            format!("Removed {name}"),
-                        ),
-                    )
-                    .detail("It is factory reset and has to be adopted again."),
-                );
-            }
             Action::RequestLocate(id) => {
                 let name = self.resolve_device_name(id);
                 let Some(mac) = self.resolve_device_mac(id) else {

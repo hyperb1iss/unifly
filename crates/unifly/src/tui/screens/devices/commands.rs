@@ -152,7 +152,7 @@ impl DevicesScreen {
                     command: Box::new(Command::SpeedtestDevice),
                     notice: Notice::new(
                         format!("Starting a speed test on {name}\u{2026}"),
-                        "Speed test started; the result arrives as an event",
+                        "Speed test started; its result shows on the Dashboard's Gateway panel in about a minute",
                     ),
                 },
             )

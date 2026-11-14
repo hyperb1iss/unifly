@@ -505,7 +505,6 @@ pub enum Action {
     RequestRestart(EntityId),
     RequestLocate(EntityId),
     RequestUpgrade(EntityId),
-    RequestUnadopt(EntityId),
     RequestPortPowerCycle(EntityId, u32),
 
     // ── Client Commands ───────────────────────────────────────────
