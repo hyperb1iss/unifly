@@ -6,7 +6,6 @@
 // state, and visibility. Anything else that would need a real controller
 // to mean something (adoption, other WiFi and VPN CRUD, site admin) is
 // refused with a clear error instead of pretending.
-// with a clear error instead of pretending.
 
 use chrono::{DateTime, Utc};
 
@@ -73,49 +72,16 @@ impl Simulation {
         match command {
             Command::RestartDevice { id } => self.restart(&id, now, &mut delta)?,
             Command::UpgradeDevice { mac, .. } => self.upgrade(&mac, now, &mut delta)?,
-            Command::LocateDevice { mac, enable } => {
-                let index = self.require_device(&mac)?;
-                let state = if enable { "on" } else { "off" };
-                let message = format!("Locate LED turned {state} for {}", self.device_name(index));
-                self.push_device_event(index, now, "EVT_AD_DeviceLocate", message, &mut delta);
-            }
-            Command::ProvisionDevice { mac } => {
-                let index = self.require_device(&mac)?;
-                let message = format!("{} was provisioned", self.device_name(index));
-                self.push_device_event(index, now, "EVT_AP_Provisioned", message, &mut delta);
-            }
-            Command::SpeedtestDevice => {
-                let event = self.event(
-                    now,
-                    (EventCategory::Network, EventSeverity::Info),
-                    "EVT_GW_SpeedTest",
-                    "Speed test complete: 2.31 Gbps down, 1.94 Gbps up, 6 ms".into(),
-                );
-                delta.events.push(event);
-            }
+            Command::LocateDevice { mac, enable } => self.locate(&mac, enable, now, &mut delta)?,
+            Command::ProvisionDevice { mac } => self.provision(&mac, now, &mut delta)?,
+            Command::SpeedtestDevice => self.speedtest(now, &mut delta),
             Command::PowerCyclePort {
                 device_id,
                 port_idx,
             } => self.power_cycle(&device_id, port_idx, now, &mut delta)?,
             Command::BlockClient { mac } => self.set_blocked(&mac, true, now, &mut delta)?,
             Command::UnblockClient { mac } => self.set_blocked(&mac, false, now, &mut delta)?,
-            Command::KickClient { mac } => {
-                let index = self.require_client(&mac)?;
-                // UniFi kicks wireless stations off their AP; a wired port
-                // has nothing to deauthenticate.
-                let client = &self.fleet.clients[index].client;
-                if client.client_type != ClientType::Wireless {
-                    return Err(CoreError::Rejected {
-                        message: format!(
-                            "{} is wired; only wireless clients can be kicked",
-                            client_label(client)
-                        ),
-                    });
-                }
-                if let Some(mac) = self.disconnect(index, now, &mut delta, "EVT_WU_Kicked") {
-                    self.returns.push((self.tick + KICK_RETURN_TICKS, mac));
-                }
-            }
+            Command::KickClient { mac } => self.kick(&mac, now, &mut delta)?,
             Command::ForgetClient { mac } => self.forget_client(&mac, now, &mut delta)?,
             Command::AuthorizeGuest {
                 client_id,
@@ -178,6 +144,66 @@ impl Simulation {
             other => return Err(unavailable(&command_name(&other))),
         }
         Ok((CommandResult::Ok, delta))
+    }
+
+    fn locate(
+        &mut self,
+        mac: &MacAddress,
+        enable: bool,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_device(mac)?;
+        let state = if enable { "on" } else { "off" };
+        let message = format!("Locate LED turned {state} for {}", self.device_name(index));
+        self.push_device_event(index, now, "EVT_AD_DeviceLocate", message, delta);
+        Ok(())
+    }
+
+    fn provision(
+        &mut self,
+        mac: &MacAddress,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_device(mac)?;
+        let message = format!("{} was provisioned", self.device_name(index));
+        self.push_device_event(index, now, "EVT_AP_Provisioned", message, delta);
+        Ok(())
+    }
+
+    fn speedtest(&mut self, now: DateTime<Utc>, delta: &mut Delta) {
+        let event = self.event(
+            now,
+            (EventCategory::Network, EventSeverity::Info),
+            "EVT_GW_SpeedTest",
+            "Speed test complete: 2.31 Gbps down, 1.94 Gbps up, 6 ms".into(),
+        );
+        delta.events.push(event);
+    }
+
+    /// UniFi kicks wireless stations off their AP; a wired port has
+    /// nothing to deauthenticate.
+    fn kick(
+        &mut self,
+        mac: &MacAddress,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_client(mac)?;
+        let client = &self.fleet.clients[index].client;
+        if client.client_type != ClientType::Wireless {
+            return Err(CoreError::Rejected {
+                message: format!(
+                    "{} is wired; only wireless clients can be kicked",
+                    client_label(client)
+                ),
+            });
+        }
+        if let Some(mac) = self.disconnect(index, now, delta, "EVT_WU_Kicked") {
+            self.returns.push((self.tick + KICK_RETURN_TICKS, mac));
+        }
+        Ok(())
     }
 
     fn archive_alarm(&mut self, id: &EntityId) -> Result<(), CoreError> {
