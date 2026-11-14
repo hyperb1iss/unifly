@@ -212,15 +212,17 @@ impl TopologyScreen {
                 0,
                 Hint::button("Enter", enter, crossterm::event::KeyCode::Enter),
             ),
-            (1, Hint::button("[", "prev", click::char_key('['))),
+            // The cursor wraps, so on a narrow bar one way round is
+            // enough and the zoom keeps both of its keys.
+            (3, Hint::button("[", "prev", click::char_key('['))),
             (1, Hint::button("]", "next", click::char_key(']'))),
             (2, Hint::button("+", "zoom in", click::char_key('+'))),
             (2, Hint::button("-", "zoom out", click::char_key('-'))),
-            (3, Hint::button("r", "100%", click::char_key('r'))),
+            (4, Hint::button("r", "100%", click::char_key('r'))),
         ];
         // A fitted map has nothing to fit.
         if self.camera != Camera::Fit {
-            hints.push((3, Hint::button("f", "fit", click::char_key('f'))));
+            hints.push((4, Hint::button("f", "fit", click::char_key('f'))));
         }
         hints
     }
@@ -942,6 +944,14 @@ mod tests {
         assert_eq!(
             hint_text(&screen.status_hints()),
             "Enter open  [ prev  ] next  + zoom in  - zoom out  r 100%  f fit"
+        );
+
+        // A narrow bar keeps both zoom keys and one way round the cursor.
+        let narrow = crate::tui::widgets::click::fit_hints(screen.status_hints(), 44);
+        let narrow: Vec<(u8, _)> = narrow.into_iter().map(|hint| (0, hint)).collect();
+        assert_eq!(
+            hint_text(&narrow),
+            "Enter open  ] next  + zoom in  - zoom out"
         );
     }
 
