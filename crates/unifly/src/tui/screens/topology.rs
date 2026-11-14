@@ -19,7 +19,7 @@ use unifly_api::{Device, EntityId};
 use crate::tui::action::Action;
 use crate::tui::component::Component;
 use crate::tui::screens::link::Link;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 /// Where the camera is.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,6 +85,10 @@ impl Component for TopologyScreen {
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         self.render_screen(frame, area);
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {

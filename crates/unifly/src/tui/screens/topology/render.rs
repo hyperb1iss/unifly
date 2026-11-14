@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine, Rectangle};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
@@ -18,14 +18,16 @@ use super::{Camera, TopologyScreen};
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, Hint};
 
-/// Hint bar legend entries, most useful first: they are added while they
-/// fit, so a narrow terminal drops the tail rather than clipping one.
+/// Legend entries, most useful first: they are added while they fit, so a
+/// narrow terminal drops the tail rather than clipping one. Device state
+/// leads because nothing on the map spells it out, where a mesh link and
+/// a wired port carry their own labels.
 fn legend() -> [(&'static str, Color, &'static str); 5] {
     [
-        ("\u{2500} ", theme::accent_secondary(), "wired"),
-        ("\u{254C} ", theme::info(), "mesh"),
         ("\u{25A0} ", theme::error(), "down"),
         ("\u{25A0} ", theme::warning(), "busy"),
+        ("\u{2500} ", theme::accent_secondary(), "wired"),
+        ("\u{254C} ", theme::info(), "mesh"),
         ("\u{2504} ", theme::border_unfocused(), "uplink unknown"),
     ]
 }
@@ -57,16 +59,7 @@ impl TopologyScreen {
             } else {
                 theme::border_default()
             });
-        let inner = block.inner(area);
-        let content_area = Rect {
-            height: inner.height.saturating_sub(1),
-            ..inner
-        };
-        let hints_area = Rect {
-            y: inner.y + inner.height.saturating_sub(1),
-            height: inner.height.min(1),
-            ..inner
-        };
+        let content_area = block.inner(area);
         self.canvas.set(content_area);
 
         // The layout works in cells (y down). At 100% zoom one unit is one
@@ -85,11 +78,15 @@ impl TopologyScreen {
             height: content_area.height,
         };
 
-        let block = block
+        let mut block = block
             .title(self.title(&scene, &viewport))
             .title_style(theme::title_style());
+        // The legend rides the bottom border: it explains the map, so it
+        // sits on the map's frame, where it can never cover a device.
+        if !scene.tree.nodes.is_empty() {
+            block = block.title_bottom(legend_line(area.width.saturating_sub(2)));
+        }
         frame.render_widget(block, area);
-        self.render_hints(frame, hints_area);
 
         let tree = &scene.tree;
         if tree.nodes.is_empty() {
@@ -197,34 +194,63 @@ impl TopologyScreen {
         title
     }
 
-    fn render_hints(&self, frame: &mut Frame, area: Rect) {
-        let mut bar = click::key_hints(&[
-            Hint::info("hjkl", "pan"),
-            Hint::button("+", "in", click::char_key('+')),
-            Hint::button("-", "out", click::char_key('-')),
-            Hint::button("f", "fit", click::char_key('f')),
-            Hint::button("r", "100%", click::char_key('r')),
-            Hint::button("[", "prev", click::char_key('[')),
-            Hint::button("]", "next", click::char_key(']')),
-            Hint::button("Enter", "open", crossterm::event::KeyCode::Enter),
-        ]);
-        for (symbol, color, label) in legend() {
-            let entry = [
-                Span::raw("  "),
-                Span::styled(symbol, Style::default().fg(color)),
-                Span::styled(label, theme::key_hint()),
-            ];
-            let width: usize = entry.iter().map(Span::width).sum();
-            if bar.width() + width > usize::from(area.width) {
-                break;
-            }
-            for span in entry {
-                bar.push_gap(span);
-            }
+    /// What the status bar offers: the device cursor and what `Enter`
+    /// does with it, then the zoom. Panning is navigation and lives in the
+    /// help overlay.
+    pub(super) fn status_hints(&self) -> Vec<(u8, Hint)> {
+        if self.devices.is_empty() {
+            return Vec::new();
         }
-        let line = bar.draw(area, &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), area);
+        // With no cursor yet, `Enter` puts it on the first device.
+        let enter = if self.selected.is_some() {
+            "open"
+        } else {
+            "select"
+        };
+        let mut hints = vec![
+            (
+                0,
+                Hint::button("Enter", enter, crossterm::event::KeyCode::Enter),
+            ),
+            (1, Hint::button("[", "prev", click::char_key('['))),
+            (1, Hint::button("]", "next", click::char_key(']'))),
+            (2, Hint::button("+", "zoom in", click::char_key('+'))),
+            (2, Hint::button("-", "zoom out", click::char_key('-'))),
+            (3, Hint::button("r", "100%", click::char_key('r'))),
+        ];
+        // A fitted map has nothing to fit.
+        if self.camera != Camera::Fit {
+            hints.push((3, Hint::button("f", "fit", click::char_key('f'))));
+        }
+        hints
     }
+}
+
+/// The legend for a bottom border with `width` columns between its
+/// corners: as many whole entries as fit.
+fn legend_line(width: u16) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    let mut used = 1;
+    for (index, (symbol, color, label)) in legend().into_iter().enumerate() {
+        let gap = if index == 0 { "" } else { "  " };
+        let entry = [
+            Span::raw(gap),
+            Span::styled(symbol, Style::default().fg(color)),
+            Span::styled(label, theme::key_hint()),
+        ];
+        let entry_width: usize = entry.iter().map(Span::width).sum();
+        // One more column closes the legend off from the border.
+        if used + entry_width + 1 > usize::from(width) {
+            break;
+        }
+        used += entry_width;
+        spans.extend(entry);
+    }
+    if spans.len() == 1 {
+        return Line::default();
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
 }
 
 fn node_color(node: &TopoNode) -> Color {
@@ -847,28 +873,76 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_bar_drops_legend_entries_rather_than_clipping_one() {
+    fn the_legend_rides_the_bottom_border_and_drops_entries_whole() {
         use crate::tui::screens::topology::state::tests::screen_with;
 
         let screen = screen_with(3);
-        let hints = |width| {
+        let border = |width| {
             let rows = draw(&screen, width, 20);
-            rows[rows.len() - 2]
-                .trim_matches(['\u{2502}', ' '])
-                .to_owned()
+            rows[rows.len() - 1].clone()
         };
 
-        let wide = hints(130);
-        assert!(wide.ends_with("uplink unknown"), "{wide}");
-        assert!(wide.contains("busy") && wide.contains("down"), "{wide}");
-
-        let narrow = hints(80);
-        assert!(narrow.contains("Enter open"), "{narrow}");
+        let wide = border(100);
         assert!(
-            ["wired", "open"].iter().any(|last| narrow.ends_with(last)),
-            "a whole entry ends the bar: {narrow}"
+            wide.starts_with(
+                "\u{2570} \u{25A0} down  \u{25A0} busy  \u{2500} wired  \u{254C} mesh"
+            ),
+            "{wide}"
         );
-        assert!(!narrow.contains("uplink"), "{narrow}");
+        assert!(wide.contains("uplink unknown \u{2500}"), "{wide}");
+
+        let narrow = border(30);
+        assert!(narrow.contains("wired \u{2500}"), "{narrow}");
+        assert!(
+            !narrow.contains("mes") && !narrow.contains("upl"),
+            "a whole entry ends the legend: {narrow}"
+        );
+
+        let empty = draw(&super::TopologyScreen::new(), 100, 20);
+        assert!(
+            !empty[empty.len() - 1].contains("wired"),
+            "nothing to explain yet: {}",
+            empty[empty.len() - 1]
+        );
+    }
+
+    #[test]
+    fn the_map_takes_every_row_inside_the_border() {
+        use ratatui::layout::Rect;
+
+        use crate::tui::screens::topology::state::tests::screen_with;
+
+        let screen = screen_with(3);
+        let text = draw(&screen, 100, 20).join("\n");
+        assert_eq!(screen.canvas.get(), Rect::new(1, 1, 98, 18));
+        for key in ["Enter open", "zoom in", "f fit", "hjkl"] {
+            assert!(!text.contains(key), "a hint row of its own:\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_status_bar_offers_the_cursor_and_the_zoom() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        use crate::tui::screens::topology::state::tests::screen_with;
+        use crate::tui::widgets::click::hint_text;
+
+        assert!(super::TopologyScreen::new().status_hints().is_empty());
+
+        let mut screen = screen_with(3);
+        draw(&screen, 100, 30);
+        // A fitted map offers no fit, and Enter has no device to open.
+        assert_eq!(
+            hint_text(&screen.status_hints()),
+            "Enter select  [ prev  ] next  + zoom in  - zoom out  r 100%"
+        );
+
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char(']')));
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('+')));
+        assert_eq!(
+            hint_text(&screen.status_hints()),
+            "Enter open  [ prev  ] next  + zoom in  - zoom out  r 100%  f fit"
+        );
     }
 
     #[test]

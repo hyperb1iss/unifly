@@ -121,14 +121,12 @@ impl TopologyScreen {
         Some(Action::Invalidate)
     }
 
-    /// Mouse and touch input: key hints press their key, a tap picks a
-    /// device, a drag pans the map under the pointer, and the wheel zooms
-    /// on the pointer.
+    /// Mouse and touch input: a tap picks a device, a drag pans the map
+    /// under the pointer, and the wheel zooms on the pointer.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let node = match self.hits.borrow().clicked(mouse) {
-                    Some(Click::Key(key)) => return Some(Action::PressKey(key)),
                     Some(Click::Row(index)) => Some(index),
                     _ => None,
                 };
@@ -139,8 +137,7 @@ impl TopologyScreen {
                 });
                 None
             }
-            // Only a press that began on the map pans it; one that began
-            // on a hint button never armed a drag.
+            // Only a press that began on the map pans it.
             MouseEventKind::Drag(MouseButton::Left) => {
                 let press = self.press.as_mut()?;
                 let (column, row) = press.at;
@@ -199,7 +196,7 @@ mod tests {
     use crate::tui::screens::topology::state::tests::screen_with;
     use crate::tui::screens::topology::{Camera, TopologyScreen};
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::click::{self, click_label, mouse};
+    use crate::tui::widgets::click::{click_label, mouse};
 
     fn draw(screen: &TopologyScreen, width: u16, height: u16) -> Vec<String> {
         render_lines(width, height, |frame, area| screen.render(frame, area))
@@ -414,26 +411,6 @@ mod tests {
         screen.handle_mouse_input(mouse(MouseEventKind::Up(MouseButton::Left), 34, 14));
         screen.handle_mouse_input(mouse(MouseEventKind::Drag(MouseButton::Left), 10, 5));
         assert_eq!(view(&screen).0, dragged_x, "a released drag stops");
-    }
-
-    #[test]
-    fn a_drag_that_starts_on_a_hint_never_pans() {
-        let mut screen = screen_with(40);
-        let rows = draw(&screen, 120, 20);
-        let before = screen.camera;
-        let hint = click_label(&rows, "hjkl pan", "fit");
-        let action = screen.handle_mouse_input(hint);
-        assert!(
-            matches!(action, Some(Action::PressKey(key)) if key == click::char_key('f')),
-            "{action:?}"
-        );
-
-        for column in [hint.column + 3, hint.column + 9] {
-            screen.handle_mouse_input(mouse(MouseEventKind::Drag(MouseButton::Left), column, 2));
-        }
-
-        assert_eq!(screen.camera, before);
-        assert!(screen.press.is_none(), "a hint tap starts no drag");
     }
 
     #[test]
