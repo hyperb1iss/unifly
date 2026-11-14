@@ -27,6 +27,7 @@ impl EventsScreen {
             heatmap: None,
             heatmap_shown: Cell::new(false),
             heatmap_fits: Cell::new(true),
+            chips_shown: Cell::new(true),
             access: None,
             link: Link::default(),
             history: History::default(),
@@ -54,6 +55,15 @@ impl EventsScreen {
             .filter(|(_, event)| self.passes(event, &needle))
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// Whether the filters let any event through.
+    pub(super) fn any_listed(&self) -> bool {
+        let needle = self.search.to_lowercase();
+        self.feed
+            .events()
+            .iter()
+            .any(|event| self.passes(event, &needle))
     }
 
     /// Whether `event` passes the category filter and holds `needle`, the
@@ -374,8 +384,8 @@ impl EventsScreen {
         Action::RequestEventHistory { id, query }
     }
 
-    /// What the status says when the feed is full, which is why nothing
-    /// older can be shown.
+    /// What the title bar says when the feed is full, which is why
+    /// nothing older can be shown.
     pub(super) fn cap_note(&self) -> String {
         format!(
             "limit reached: the newest {} events are kept",
@@ -423,7 +433,7 @@ impl EventsScreen {
     }
 }
 
-/// A history window as the status line names it.
+/// A history window as the title bar names it.
 pub(super) fn window_label(hours: u32) -> String {
     if hours <= 48 {
         format!("{hours}h")

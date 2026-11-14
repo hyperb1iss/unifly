@@ -134,9 +134,9 @@ impl EventsScreen {
         }
     }
 
-    /// Mouse and touch input: hints press their key, a category chip picks
-    /// it, a row takes the cursor (and a second tap opens it), and the
-    /// wheel moves through the feed.
+    /// Mouse and touch input: a toolbar chip presses its key, a category
+    /// picks itself, a row takes the cursor (and a second tap opens it),
+    /// and the wheel moves through the feed.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         if let Some(delta) = click::wheel_delta(mouse) {
             let key = if delta < 0 {

@@ -9,12 +9,9 @@ use unifly_api::Event;
 use unifly_api::model::{EventCategory, EventSeverity};
 
 use super::punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
-use super::state::window_label;
-use super::{CATEGORIES, EventsScreen, View};
-use crate::tui::screens::link::Link;
+use super::{EventsScreen, View};
 use crate::tui::theme;
-use crate::tui::widgets::click::{self, Click, Hint};
-use crate::tui::widgets::sub_tabs;
+use crate::tui::widgets::click::{self, Click};
 
 /// List rows the heatmap must leave for it to show unasked.
 const ROOMY_LIST_ROWS: u16 = 12;
@@ -85,16 +82,7 @@ fn local_date(timestamp: DateTime<Utc>) -> chrono::NaiveDate {
 impl EventsScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
         self.hits.borrow_mut().clear();
-        let view = self.view();
-        let title = if self.view == View::Alarms {
-            self.alarm_title()
-        } else if self.filtered() {
-            format!(" Events ({} of {}) ", view.len(), self.feed.len())
-        } else {
-            format!(" Events ({}) ", self.feed.len())
-        };
         let block = Block::default()
-            .title(title)
             .title_style(theme::title_style())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -103,32 +91,35 @@ impl EventsScreen {
             } else {
                 theme::border_default()
             });
-
         let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // Room on a border between its corners, for what rides it.
+        let border = usize::from(inner.width);
 
         if self.view == View::Alarms {
-            let layout = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-            frame.render_widget(Paragraph::new(self.alarm_status_line()), layout[0]);
-            self.render_alarm_list(frame, layout[1]);
-            let line =
-                click::key_hints(&self.alarm_hints()).draw(layout[2], &mut self.hits.borrow_mut());
-            frame.render_widget(Paragraph::new(line), layout[2]);
+            let title = Line::from(self.alarm_title());
+            let status = self.alarm_status_line(border.saturating_sub(title.width() + 2));
+            frame.render_widget(block.title(title).title(status), area);
+            self.render_alarm_list(frame, inner);
             return;
         }
+
+        let view = self.view();
+        self.place_chips(inner.width);
+        let title = self.feed_title(view.len());
+        let history = self.history_line(border.saturating_sub(title.width() + 2));
+        let block = block
+            .title(title)
+            .title(history)
+            .title_bottom(self.position_line(&view));
+        frame.render_widget(block, area);
 
         let detail = self
             .detail_open
             .then(|| self.detail_lines(inner.width))
             .flatten();
-        // Status, filters, and hints are always drawn; the heatmap and the
-        // detail pane share what is left with the list.
-        let free = inner.height.saturating_sub(3);
+        // The toolbar is always drawn; the heatmap and the detail pane
+        // share what is left with the list.
+        let free = inner.height.saturating_sub(1);
         let detail_height = detail.as_ref().map_or(0, |lines| {
             u16::try_from(lines.len() + 2)
                 .unwrap_or(u16::MAX)
@@ -139,26 +130,22 @@ impl EventsScreen {
 
         let layout = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(1),
             Constraint::Length(heatmap_height),
             Constraint::Min(1),
             Constraint::Length(detail_height),
-            Constraint::Length(1),
         ])
         .split(inner);
 
-        frame.render_widget(Paragraph::new(self.status_line()), layout[0]);
-        self.render_filters(frame, layout[1]);
+        self.render_toolbar(frame, layout[0]);
         if heatmap_height > 0 {
-            render_punchcard(self.feed.events(), frame, layout[2]);
+            render_punchcard(self.feed.events(), frame, layout[1]);
         }
-        self.render_event_list(frame, layout[3], &view);
+        self.render_event_list(frame, layout[2], &view);
         if let Some(lines) = detail
             && detail_height > 2
         {
-            Self::render_detail(frame, layout[4], lines);
+            Self::render_detail(frame, layout[3], lines);
         }
-        self.render_hints(frame, layout[5]);
     }
 
     /// Rows the heatmap takes: all of them when it is wanted and the list
@@ -172,107 +159,6 @@ impl EventsScreen {
             .heatmap
             .unwrap_or(list_rows >= ROOMY_LIST_ROWS && detail_height == 0);
         if fits && wanted { PUNCHCARD_HEIGHT } else { 0 }
-    }
-
-    /// Whether the feed is live, polling, or cannot arrive at all, and how
-    /// far back it reaches.
-    fn status_line(&self) -> Line<'static> {
-        let muted = Style::default().fg(theme::text_muted());
-        let (state, color) = self.feed_state();
-        let mut spans = vec![
-            Span::raw("  "),
-            Span::styled(state, Style::default().fg(color)),
-        ];
-        if self.paused && self.unseen > 0 {
-            spans.push(Span::styled(
-                format!("  \u{25BC} {} new", self.unseen),
-                Style::default().fg(theme::accent_secondary()),
-            ));
-        }
-        match self.active_alarms() {
-            0 => {}
-            1 => spans.push(Span::styled(
-                "  \u{00B7}  \u{26A0} 1 alarm",
-                Style::default().fg(theme::warning()),
-            )),
-            count => spans.push(Span::styled(
-                format!("  \u{00B7}  \u{26A0} {count} alarms"),
-                Style::default().fg(theme::warning()),
-            )),
-        }
-        // A load and its outcome come before the steady facts: a narrow
-        // terminal cuts the end of the line.
-        if let Some(pending) = self.history.loading {
-            let what = match pending.load {
-                super::HistoryLoad::Older => {
-                    format!("loading {} of older events", window_label(pending.hours))
-                }
-                super::HistoryLoad::Firewall => "loading firewall blocks".to_owned(),
-            };
-            spans.push(Span::styled(
-                format!("  \u{00B7}  {what}\u{2026} Esc cancels"),
-                Style::default().fg(theme::warning()),
-            ));
-        } else if let Some(note) = &self.history.note {
-            spans.push(Span::styled(format!("  \u{00B7}  {note}"), muted));
-        }
-        // How far back the feed really reaches, not the window asked for.
-        let reach = self.history_reach().map(|oldest| {
-            format!(
-                "back to {}",
-                oldest.with_timezone(&Local).format("%m-%d %H:%M")
-            )
-        });
-        let blocks = self.history.include_firewall.then_some("blocks");
-        let covers: Vec<&str> = reach.as_deref().into_iter().chain(blocks).collect();
-        if !covers.is_empty() {
-            spans.push(Span::styled(
-                format!("  \u{00B7}  {}", covers.join(" + ")),
-                muted,
-            ));
-        }
-        if !self.search.is_empty() {
-            spans.push(Span::styled("  \u{00B7}  /", muted));
-            spans.push(Span::styled(
-                self.search.clone(),
-                Style::default().fg(theme::accent_secondary()),
-            ));
-        }
-        Line::from(spans)
-    }
-
-    pub(super) fn feed_state(&self) -> (&'static str, Color) {
-        let Some(access) = self.access.filter(|_| self.link.reachable()) else {
-            return if self.link == Link::Down {
-                ("\u{25CB} not connected", theme::error())
-            } else {
-                ("\u{25D0} connecting", theme::warning())
-            };
-        };
-        if !access.session {
-            ("\u{25CB} no event access", theme::text_muted())
-        } else if self.paused {
-            ("\u{2016} paused", theme::warning())
-        } else if access.live_events {
-            ("\u{25CF} live", theme::success())
-        } else {
-            ("\u{25D0} polling (no live stream)", theme::info())
-        }
-    }
-
-    /// The category strip: "All" and one chip per category.
-    fn render_filters(&self, frame: &mut Frame, area: Rect) {
-        let mut labels = vec!["All"];
-        labels.extend(CATEGORIES.iter().map(|category| category_label(*category)));
-        let active = self
-            .category
-            .and_then(|category| CATEGORIES.iter().position(|each| *each == category))
-            .map_or(0, |index| index + 1);
-        let mut strip = click::ClickLine::default();
-        strip.push_gap(Span::raw("  "));
-        strip.append(sub_tabs::sub_tab_strip(&labels, active));
-        let line = strip.draw(area, &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), area);
     }
 
     /// Whether every event in the feed happened today, so the time of day
@@ -298,8 +184,8 @@ impl EventsScreen {
         } else {
             ("%m-%d %H:%M:%S", 16)
         };
-        // A header row above and a position row below share the area.
-        let rows = usize::from(area.height.saturating_sub(2)).max(1);
+        // A header row above shares the area.
+        let rows = usize::from(area.height.saturating_sub(1)).max(1);
         self.page.set(rows);
         let first = self.first_row(view, rows);
         let cursor_row = self.paused.then(|| self.cursor_row(view));
@@ -333,11 +219,6 @@ impl EventsScreen {
             hits.push(click::paragraph_row(area, lines.len() - 1), Click::Row(row));
         }
         drop(hits);
-
-        while lines.len() < usize::from(area.height.saturating_sub(1)) {
-            lines.push(Line::default());
-        }
-        lines.push(self.position_line(view, cursor_row));
         frame.render_widget(Paragraph::new(lines), area);
     }
 
@@ -359,25 +240,6 @@ impl EventsScreen {
         self.top.set(first);
         self.anchor.set(view.get(first).copied().unwrap_or(0));
         first
-    }
-
-    /// The row under the list: where the view is in the feed.
-    fn position_line(&self, view: &[usize], cursor_row: Option<usize>) -> Line<'static> {
-        let muted = Style::default().fg(theme::border_unfocused());
-        let Some(row) = cursor_row else {
-            return Line::from(Span::styled("  \u{2193} auto-scrolling", muted));
-        };
-        let mut spans = vec![Span::styled(
-            format!("  event {} of {}", row + 1, view.len()),
-            muted,
-        )];
-        if self.unseen > 0 {
-            spans.push(Span::styled(
-                format!("  \u{25BC} {} new below", self.unseen),
-                Style::default().fg(theme::accent_secondary()),
-            ));
-        }
-        Line::from(spans)
     }
 
     /// One centered line saying why the list is empty.
@@ -406,46 +268,6 @@ impl EventsScreen {
             .alignment(Alignment::Center),
             row,
         );
-    }
-
-    fn render_hints(&self, frame: &mut Frame, area: Rect) {
-        let pause = Hint::button(
-            "Space",
-            if self.paused { "resume" } else { "pause" },
-            click::char_key(' '),
-        );
-        let hints = if self.history.loading.is_some() && !self.detail_open {
-            vec![
-                Hint::button("Esc", "cancel load", crossterm::event::KeyCode::Esc),
-                pause,
-                Hint::info("j/k", if self.paused { "move" } else { "scroll" }),
-                Hint::button("Enter", "details", crossterm::event::KeyCode::Enter),
-            ]
-        } else if self.detail_open {
-            let mut hints = vec![
-                Hint::button("Esc", "close", crossterm::event::KeyCode::Esc),
-                Hint::info("j/k", "move"),
-            ];
-            if self.selected_device_id().is_some() {
-                hints.push(Hint::button("d", "device", click::char_key('d')));
-            }
-            if self.selected_client_id().is_some() {
-                hints.push(Hint::button("c", "client", click::char_key('c')));
-            }
-            hints.push(pause);
-            hints
-        } else {
-            vec![
-                pause,
-                Hint::info("j/k", if self.paused { "move" } else { "scroll" }),
-                Hint::button("Enter", "details", crossterm::event::KeyCode::Enter),
-                Hint::info("h/l", "category"),
-                Hint::button("o", "older", click::char_key('o')),
-                Hint::button("v", "alarms", click::char_key('v')),
-            ]
-        };
-        let line = click::key_hints(&hints).draw(area, &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), area);
     }
 }
 

@@ -77,7 +77,7 @@ impl EventsScreen {
                 label("Device"),
                 mac,
                 name,
-                ("d opens it", "not on this controller"),
+                "not on this controller",
             ));
         }
         if let Some(mac) = &event.client_mac {
@@ -92,12 +92,7 @@ impl EventsScreen {
                         .or_else(|| client.hostname.clone())
                         .unwrap_or_else(|| mac.to_string())
                 });
-            lines.push(entity_line(
-                label("Client"),
-                mac,
-                name,
-                ("c opens it", "not connected"),
-            ));
+            lines.push(entity_line(label("Client"), mac, name, "not connected"));
         }
 
         let message = wrap::wrap_clamped(&event.message, value_columns, MESSAGE_LINES);
@@ -123,13 +118,13 @@ impl EventsScreen {
     }
 }
 
-/// A device or client line: its name and MAC, then how to open it, or why
-/// it cannot be opened.
+/// A device or client line: its name and MAC, or its MAC and why it
+/// cannot be opened. The status bar offers the key that opens it.
 fn entity_line(
     label: Span<'static>,
     mac: &MacAddress,
     name: Option<String>,
-    (hint, missing): (&'static str, &'static str),
+    missing: &'static str,
 ) -> Line<'static> {
     let plain = Style::default().fg(theme::text_primary());
     let muted = Style::default().fg(theme::text_muted());
@@ -138,19 +133,8 @@ fn entity_line(
             label,
             Span::styled(name, Style::default().fg(theme::accent_secondary())),
             Span::styled(format!("  {mac}"), muted),
-            Span::styled(
-                format!("  {hint}"),
-                Style::default().fg(theme::accent_tertiary()),
-            ),
         ]),
-        Some(_) => Line::from(vec![
-            label,
-            Span::styled(mac.to_string(), plain),
-            Span::styled(
-                format!("  {hint}"),
-                Style::default().fg(theme::accent_tertiary()),
-            ),
-        ]),
+        Some(_) => Line::from(vec![label, Span::styled(mac.to_string(), plain)]),
         None => Line::from(vec![
             label,
             Span::styled(mac.to_string(), plain),

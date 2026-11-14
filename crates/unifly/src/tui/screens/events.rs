@@ -2,6 +2,7 @@
 //! category and text filters, a detail pane, and older history on demand.
 
 mod alarms;
+mod chrome;
 mod detail;
 pub(in crate::tui::screens) mod feed;
 mod input;
@@ -26,7 +27,7 @@ use unifly_api::{Client, Device};
 use crate::tui::action::{Access, Action};
 use crate::tui::component::Component;
 use crate::tui::screens::link::Link;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 use feed::{EventKey, Feed};
 
@@ -85,8 +86,8 @@ struct PendingHistory {
 struct History {
     /// Index into [`HISTORY_STEPS`] of the window the next load asks for.
     step: usize,
-    /// Whether a load has come back, so the status says how far the feed
-    /// reaches.
+    /// Whether a load has come back, so the title bar says how far the
+    /// feed reaches.
     loaded: bool,
     /// Whether firewall blocks are loaded. Set by the load that brings
     /// them, never by asking.
@@ -125,6 +126,10 @@ pub struct EventsScreen {
     heatmap_shown: Cell<bool>,
     /// Whether the last frame had room for the heatmap.
     heatmap_fits: Cell<bool>,
+    /// Whether the last frame had room for the feed and alarm chips on
+    /// the toolbar. Without them the title says what they said and the
+    /// status bar offers their keys.
+    chips_shown: Cell<bool>,
     access: Option<Access>,
     link: Link,
     history: History,
@@ -166,6 +171,14 @@ impl Component for EventsScreen {
     fn search_query(&self) -> Option<&str> {
         // Search filters the feed; the Alarms view has nothing to filter.
         (self.view == View::Feed).then_some(self.search.as_str())
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        if self.view == View::Alarms {
+            self.alarm_hints()
+        } else {
+            self.feed_hints()
+        }
     }
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {

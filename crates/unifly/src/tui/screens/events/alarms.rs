@@ -19,6 +19,57 @@ use crate::tui::action::{Action, ConfirmRequest, Notice, Notification};
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, Hint};
 
+/// Columns of the list's time, severity, and category cells.
+const TIME_COLUMNS: usize = 16;
+const SEVERITY_COLUMNS: usize = 10;
+const CATEGORY_COLUMNS: usize = 10;
+
+/// The list's columns for one frame.
+struct Columns {
+    /// Zero on a screen too narrow for the category beside every message
+    /// it shows whole: an alarm cut short says less than one without its
+    /// category.
+    category: usize,
+    message: usize,
+}
+
+impl Columns {
+    fn plan(shown: &[&Alarm], width: u16) -> Self {
+        let longest = shown
+            .iter()
+            .map(|alarm| Span::raw(alarm.message.as_str()).width())
+            .max()
+            .unwrap_or(0);
+        let room = usize::from(width).saturating_sub(2 + TIME_COLUMNS + SEVERITY_COLUMNS);
+        let category = if longest + CATEGORY_COLUMNS <= room {
+            CATEGORY_COLUMNS
+        } else {
+            0
+        };
+        Self {
+            category,
+            message: room - category,
+        }
+    }
+
+    /// One row: the cursor marker, then the time, severity, category,
+    /// and message cells in their styles. With `fill` the message cell
+    /// runs to the edge, which a selected row's highlight needs.
+    fn line(&self, cells: [&str; 5], styles: [Style; 4], fill: bool) -> Line<'static> {
+        let [marker, time, severity, category, message] = cells;
+        let category_columns = self.category;
+        let category = if category_columns == 0 { "" } else { category };
+        let message = clip(message, self.message);
+        let message_columns = if fill { self.message } else { 0 };
+        Line::from(vec![
+            Span::styled(format!("{marker}{time:<TIME_COLUMNS$}"), styles[0]),
+            Span::styled(format!("{severity:<SEVERITY_COLUMNS$}"), styles[1]),
+            Span::styled(format!("{category:<category_columns$}"), styles[2]),
+            Span::styled(format!("{message:<message_columns$}"), styles[3]),
+        ])
+    }
+}
+
 /// The alarms the controller last reported, and the cursor over the
 /// unarchived ones.
 #[derive(Debug, Default)]
@@ -158,13 +209,9 @@ impl EventsScreen {
 
     /// Open the device the alarm under the cursor names.
     fn open_alarm_device(&self) -> Option<Action> {
-        let active = self.alarms.active();
-        let alarm = active.get(self.alarms.cursor)?;
-        let device = alarm
-            .device_mac
-            .as_ref()
-            .and_then(|mac| self.devices.iter().find(|device| &device.mac == mac));
-        Some(match device {
+        // With no alarm under the cursor there is nothing to say.
+        self.alarms.active().get(self.alarms.cursor)?;
+        Some(match self.alarm_device() {
             Some(device) => Action::ShowDevice(device.id.clone()),
             None => Action::Notify(Notification::info("This alarm names no known device")),
         })
@@ -180,7 +227,7 @@ impl EventsScreen {
         Some(Action::Invalidate)
     }
 
-    /// How many alarms are unarchived, for the feed's status line.
+    /// How many alarms are unarchived, for the feed's alarm chip.
     pub(super) fn active_alarms(&self) -> usize {
         self.alarms.active().len()
     }
@@ -189,68 +236,66 @@ impl EventsScreen {
         format!(" Alarms ({}) ", self.alarms.active().len())
     }
 
-    /// What the alarms are doing: how many, and any read under way or
-    /// failed.
-    pub(super) fn alarm_status_line(&self) -> Line<'static> {
-        let muted = Style::default().fg(theme::text_muted());
-        let active = self.alarms.active().len();
-        let mut spans = vec![Span::raw("  ")];
-        if active > 0 {
-            spans.push(Span::styled(
-                format!("\u{26A0} {active} active"),
-                Style::default().fg(theme::warning()),
-            ));
-        } else {
-            spans.push(Span::styled("\u{2713} none active", muted));
-        }
-        let archived = self.alarms.archived();
-        if archived > 0 {
-            spans.push(Span::styled(
-                format!("  \u{00B7}  {archived} archived"),
-                muted,
-            ));
-        }
+    /// How many alarms the controller holds as archived.
+    pub(super) fn archived_alarms(&self) -> usize {
+        self.alarms.archived()
+    }
+
+    /// A read under way, or the last one's failure cut to `room` columns.
+    pub(super) fn alarm_read_status(&self, room: usize) -> Option<Span<'static>> {
         if self.alarms.loading {
-            spans.push(Span::styled(
-                "  \u{00B7}  loading\u{2026}",
+            return Some(Span::styled(
+                "loading\u{2026}",
                 Style::default().fg(theme::warning()),
             ));
-        } else if let Some(error) = &self.alarms.error {
-            spans.push(Span::styled(
-                format!("  \u{00B7}  could not read alarms: {error}"),
-                Style::default().fg(theme::error()),
-            ));
         }
-        Line::from(spans)
+        let error = self.alarms.error.as_ref()?;
+        Some(Span::styled(
+            clip(&format!("could not read alarms: {error}"), room),
+            Style::default().fg(theme::error()),
+        ))
+    }
+
+    /// The device the alarm under the cursor names, when it is still on
+    /// the controller.
+    fn alarm_device(&self) -> Option<&Arc<unifly_api::Device>> {
+        let active = self.alarms.active();
+        let mac = active.get(self.alarms.cursor)?.device_mac.as_ref()?;
+        self.devices.iter().find(|device| &device.mac == mac)
+    }
+
+    /// One centered line saying why no alarm is listed.
+    fn render_no_alarms(&self, frame: &mut Frame, area: Rect) {
+        let message = if let Some(waiting) = self.link.waiting() {
+            waiting
+        } else if !self.access.is_some_and(|access| access.session) {
+            "Alarms need a direct controller session; cloud profiles cannot read them"
+        } else if self.alarms.error.is_some() {
+            "Alarms could not be read. Press r to try again."
+        } else if self.alarms.loaded {
+            "No active alarms"
+        } else {
+            "Loading alarms\u{2026}"
+        };
+        let row = Rect {
+            y: area.y + area.height / 2,
+            height: area.height.min(1),
+            ..area
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                Style::default().fg(theme::text_muted()),
+            ))
+            .alignment(Alignment::Center),
+            row,
+        );
     }
 
     pub(super) fn render_alarm_list(&self, frame: &mut Frame, area: Rect) {
         let active = self.alarms.active();
         if active.is_empty() {
-            let message = if let Some(waiting) = self.link.waiting() {
-                waiting
-            } else if !self.access.is_some_and(|access| access.session) {
-                "Alarms need a direct controller session; cloud profiles cannot read them"
-            } else if self.alarms.error.is_some() {
-                "Alarms could not be read. Press r to try again."
-            } else if self.alarms.loaded {
-                "No active alarms"
-            } else {
-                "Loading alarms\u{2026}"
-            };
-            let row = Rect {
-                y: area.y + area.height / 2,
-                height: area.height.min(1),
-                ..area
-            };
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    message,
-                    Style::default().fg(theme::text_muted()),
-                ))
-                .alignment(Alignment::Center),
-                row,
-            );
+            self.render_no_alarms(frame, area);
             return;
         }
 
@@ -263,43 +308,39 @@ impl EventsScreen {
             .clamp((cursor + 1).saturating_sub(rows), cursor)
             .min(active.len().saturating_sub(rows));
         self.top.set(first);
-        let message_columns = usize::from(area.width).saturating_sub(2 + 16 + 10 + 10);
+        let shown = &active[first..active.len().min(first + rows)];
+        let columns = Columns::plan(shown, area.width);
 
-        let mut lines = vec![Line::from(vec![
-            Span::styled(format!("  {:<16}", "Time"), theme::table_header()),
-            Span::styled(format!("{:<10}", "Severity"), theme::table_header()),
-            Span::styled(format!("{:<10}", "Category"), theme::table_header()),
-            Span::styled("Message", theme::table_header()),
-        ])];
+        let mut lines = vec![columns.line(
+            ["  ", "Time", "Severity", "Category", "Message"],
+            [theme::table_header(); 4],
+            false,
+        )];
         let mut hits = self.hits.borrow_mut();
-        for (row, alarm) in active.iter().enumerate().skip(first).take(rows) {
+        for (row, alarm) in (first..).zip(shown) {
             let selected = row == cursor;
-            let marker = if selected { "\u{25B8} " } else { "  " };
             let time = alarm
                 .timestamp
                 .with_timezone(&Local)
                 .format("%m-%d %H:%M:%S")
                 .to_string();
-            let color = severity_color(alarm.severity);
-            let message = clip(&alarm.message, message_columns);
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{marker}{time:<16}"),
+            let severity = Style::default().fg(severity_color(alarm.severity));
+            let line = columns.line(
+                [
+                    if selected { "\u{25B8} " } else { "  " },
+                    &time,
+                    severity_label(alarm.severity),
+                    category_label(alarm.category),
+                    &alarm.message,
+                ],
+                [
                     Style::default().fg(theme::warning()),
-                ),
-                Span::styled(
-                    format!("{:<10}", severity_label(alarm.severity)),
-                    Style::default().fg(color),
-                ),
-                Span::styled(
-                    format!("{:<10}", category_label(alarm.category)),
+                    severity,
                     Style::default().fg(theme::text_secondary()),
-                ),
-                Span::styled(
-                    format!("{message:<message_columns$}"),
-                    Style::default().fg(color),
-                ),
-            ]);
+                    severity,
+                ],
+                selected,
+            );
             lines.push(if selected {
                 line.style(theme::table_selected())
             } else {
@@ -311,19 +352,24 @@ impl EventsScreen {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
-    /// The keys that do something now: with no active alarm there is
-    /// nothing to move through, archive, or open.
-    pub(super) fn alarm_hints(&self) -> Vec<Hint> {
-        let mut hints = vec![Hint::button("v", "events", click::char_key('v'))];
+    /// What the status bar offers: with no active alarm there is nothing
+    /// to archive or open, and `Enter` is offered only for an alarm whose
+    /// device can be opened.
+    pub(super) fn alarm_hints(&self) -> Vec<(u8, Hint)> {
+        let mut hints = Vec::new();
+        if self.alarm_device().is_some() {
+            hints.push((0, Hint::button("Enter", "device", KeyCode::Enter)));
+        }
         if self.active_alarms() > 0 {
             hints.extend([
-                Hint::info("j/k", "move"),
-                Hint::button("x", "archive", click::char_key('x')),
-                Hint::button("X", "archive all", click::char_key('X')),
-                Hint::button("Enter", "device", KeyCode::Enter),
+                (1, Hint::button("x", "archive", click::char_key('x'))),
+                (2, Hint::button("X", "archive all", click::char_key('X'))),
             ]);
         }
-        hints.push(Hint::button("r", "reload", click::char_key('r')));
+        hints.extend([
+            (3, Hint::button("r", "reload", click::char_key('r'))),
+            (0, Hint::button("v", "events", click::char_key('v'))),
+        ]);
         hints
     }
 

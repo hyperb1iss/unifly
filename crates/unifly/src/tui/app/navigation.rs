@@ -544,17 +544,23 @@ mod tests {
         let rows = render(&mut app, 120);
 
         let action = app
-            .handle_mouse_event(click_label(&rows, "Space pause", "pause"))
+            .handle_mouse_event(click_label(&rows, "v alarms", "alarms"))
             .expect("click handling");
         let Some(Action::PressKey(key)) = action else {
             panic!("expected a key press, got {action:?}");
         };
-        assert_eq!(key, crate::tui::widgets::click::char_key(' '));
+        assert_eq!(key, crate::tui::widgets::click::char_key('v'));
 
+        // The screen takes the key as if it had been typed: `v` opens
+        // its alarms view.
         app.process_action(&Action::PressKey(key))
             .expect("key press handling");
         let queued = app.action_rx.try_recv().expect("the press dispatches");
-        assert!(matches!(queued, Action::ToggleEventPause), "{queued:?}");
+        assert!(matches!(queued, Action::Invalidate), "{queued:?}");
+        assert!(render(&mut app, 120)[0].contains("Alarms (0)"));
+        app.process_action(&Action::PressKey(key))
+            .expect("key press handling");
+        app.action_rx.try_recv().expect("the press dispatches");
 
         // A pressed key the screen leaves alone reaches the global keys:
         // Events leaves `?` to the App, which opens help.

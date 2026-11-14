@@ -10,7 +10,7 @@ use super::feed::tests::{event, event_at};
 use crate::tui::action::{Access, Action};
 use crate::tui::component::Component;
 use crate::tui::table::render_lines;
-use crate::tui::widgets::click::{click_label, mouse};
+use crate::tui::widgets::click::{click_label, hint_text, mouse};
 
 const FULL: Access = Access {
     integration: true,
@@ -46,6 +46,11 @@ fn press(screen: &mut EventsScreen, code: KeyCode) -> Option<Action> {
 
 fn draw(screen: &EventsScreen) -> Vec<String> {
     render_lines(100, 30, |frame, area| screen.render(frame, area))
+}
+
+/// What the status bar offers for the screen as it stands.
+fn hints(screen: &EventsScreen) -> String {
+    hint_text(&screen.hints())
 }
 
 /// The event rows a 100x30 frame shows, oldest first.
@@ -222,7 +227,7 @@ fn the_oldest_events_fill_the_list_instead_of_collapsing_it() {
 }
 
 #[test]
-fn live_list_keeps_the_newest_event_above_the_scroll_marker() {
+fn a_live_list_ends_on_its_newest_event_with_no_row_under_it() {
     let mut screen = connected(FULL);
     receive(&mut screen, 0..40);
 
@@ -233,11 +238,37 @@ fn live_list_keeps_the_newest_event_above_the_scroll_marker() {
             .position(|row| row.contains("client-39 connected"))
             .unwrap_or_else(|| panic!("newest event missing:\n{}", text.join("\n")));
         assert!(
-            text[newest + 1].contains("auto-scrolling"),
-            "newest event not last:\n{}",
+            text[newest + 1].starts_with('\u{2570}'),
+            "newest event not on the last row:\n{}",
             text.join("\n")
         );
+        // Live is said once, by the chip or the title, and the border
+        // carries a position only while the feed is paused.
+        let all = text.join("\n");
+        assert_eq!(all.matches("live").count(), 1, "{all}");
+        assert!(!all.contains("auto-scrolling"), "{all}");
+        assert!(!text[newest + 1].contains("event"), "{}", text[newest + 1]);
     }
+}
+
+#[test]
+fn pausing_moves_no_row_and_the_border_says_where_the_cursor_is() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..40);
+    let live = shown_events(&screen);
+
+    press(&mut screen, KeyCode::Char('k'));
+    let paused: Vec<String> = shown_events(&screen)
+        .into_iter()
+        .map(|row| row.trim_start_matches(['\u{25B8}', ' ']).to_owned())
+        .collect();
+    assert_eq!(paused, live, "pausing moved the rows");
+    let rows = draw(&screen);
+    let border = rows.last().expect("a bottom border");
+    assert!(
+        border.ends_with("event 39 of 40 \u{256F}"),
+        "against the right corner: {border}"
+    );
 }
 
 #[test]
@@ -370,13 +401,14 @@ fn the_detail_jumps_to_the_devices_the_event_names() {
     let unknown = press(&mut screen, KeyCode::Char('d'));
     assert!(matches!(unknown, Some(Action::Notify(_))), "{unknown:?}");
     assert!(draw(&screen).join("\n").contains("not on this controller"));
+    assert_eq!(hints(&screen), "Esc close", "no device to open");
 
     press(&mut screen, KeyCode::Char('k'));
     let text = draw(&screen).join("\n");
-    assert!(
-        text.contains("sw-core") && text.contains("d opens it"),
-        "{text}"
-    );
+    assert!(text.contains("Device    sw-core"), "{text}");
+    // The key that opens it is offered once, by the status bar.
+    assert!(!text.contains("opens it"), "{text}");
+    assert_eq!(hints(&screen), "d device  Esc close");
     let jump = press(&mut screen, KeyCode::Char('d'));
     assert!(
         matches!(&jump, Some(Action::ShowDevice(id)) if *id == core.id),
@@ -466,8 +498,11 @@ fn search_filters_by_message_text() {
         .update(&Action::SearchInput("CLIENT-3".into()))
         .expect("search");
     let rows = draw(&screen);
-    assert!(rows[0].contains("Events (10 of 40)"), "{}", rows[0]);
-    assert!(rows.iter().any(|row| row.contains("/CLIENT-3")));
+    assert!(
+        rows[0].contains("Events (10 of 40) [\"CLIENT-3\"]"),
+        "{}",
+        rows[0]
+    );
     assert_eq!(screen.search_query(), Some("CLIENT-3"));
 
     screen.update(&Action::CloseSearch).expect("close");
@@ -515,7 +550,7 @@ fn rows_carry_the_date_unless_every_event_is_from_today() {
 }
 
 #[test]
-fn the_status_line_says_how_events_arrive() {
+fn the_feed_chip_says_how_events_arrive() {
     let none = EventsScreen::new();
     assert!(draw(&none).join("\n").contains("connecting"));
 
@@ -536,7 +571,7 @@ fn the_status_line_says_how_events_arrive() {
         ..FULL
     });
     let text = draw(&cloud).join("\n");
-    assert!(text.contains("no event access"), "{text}");
+    assert!(text.contains("\u{25CB} no access"), "{text}");
     assert!(text.contains("need a direct controller session"), "{text}");
     assert!(!text.contains("live"), "{text}");
 
@@ -544,6 +579,78 @@ fn the_status_line_says_how_events_arrive() {
     down.update(&Action::Disconnected("timed out".into()))
         .expect("update");
     assert!(draw(&down).join("\n").contains("not connected"));
+}
+
+#[test]
+fn the_chips_sit_against_the_right_edge_and_hold_still_when_the_feed_pauses() {
+    let mut screen = with_alarms();
+    let toolbar = |screen: &EventsScreen| draw(screen)[1].clone();
+
+    let live = toolbar(&screen);
+    assert!(
+        live.trim_end()
+            .ends_with("Space \u{25CF} live     v alarms 2 \u{2502}"),
+        "{live}"
+    );
+    assert!(live.starts_with("\u{2502} All  Device  Client"), "{live}");
+
+    press(&mut screen, KeyCode::Char(' '));
+    let paused = toolbar(&screen);
+    assert!(
+        paused.contains("Space \u{2016} paused   v alarms 2"),
+        "{paused}"
+    );
+    assert_eq!(live.find("Space"), paused.find("Space"), "the chip moved");
+    assert_eq!(live.find("v alarms"), paused.find("v alarms"));
+
+    // Each chip is a button for its own key.
+    let rows = draw(&screen);
+    let tap = click_label(&rows, "v alarms", "paused");
+    let action = screen.handle_mouse_event(tap).expect("tap");
+    assert!(
+        matches!(action, Some(Action::PressKey(key)) if key.code == KeyCode::Char(' ')),
+        "{action:?}"
+    );
+    let tap = click_label(&rows, "v alarms", "alarms");
+    let action = screen.handle_mouse_event(tap).expect("tap");
+    assert!(
+        matches!(action, Some(Action::PressKey(key)) if key.code == KeyCode::Char('v')),
+        "{action:?}"
+    );
+}
+
+#[test]
+fn a_screen_too_narrow_for_the_chips_says_the_same_in_the_title_and_the_bar() {
+    let mut screen = with_alarms();
+    let narrow =
+        |screen: &EventsScreen| render_lines(80, 22, |frame, area| screen.render(frame, area));
+
+    let rows = narrow(&screen);
+    assert!(
+        rows[0].contains("Events (3)  \u{00B7}  \u{25CF} live  \u{00B7}  2 alarms"),
+        "{}",
+        rows[0]
+    );
+    assert!(!rows[1].contains("Space"), "{}", rows[1]);
+    assert!(
+        rows[1].contains("VPN  Other"),
+        "the strip is whole: {}",
+        rows[1]
+    );
+    let bar = hints(&screen);
+    assert!(
+        bar.contains("Space pause") && bar.contains("v alarms"),
+        "{bar}"
+    );
+
+    press(&mut screen, KeyCode::Char(' '));
+    assert!(narrow(&screen)[0].contains("\u{2016} paused"));
+    assert!(hints(&screen).contains("Space resume"));
+
+    // With room for the chips the bar leaves their keys to them.
+    draw(&screen);
+    let bar = hints(&screen);
+    assert!(!bar.contains("Space") && !bar.contains("v alarms"), "{bar}");
 }
 
 #[test]
@@ -616,9 +723,15 @@ fn older_history_pages_back_from_the_oldest_event_held() {
             until: Some(event(3).timestamp),
         }
     );
-    let text = draw(&screen).join("\n");
-    assert!(text.contains("loading 24h of older events"), "{text}");
-    assert!(text.contains("Esc cancel load"), "{text}");
+    let rows = draw(&screen);
+    assert!(
+        rows[0]
+            .trim_end()
+            .ends_with("loading 24h of older events\u{2026} \u{256E}"),
+        "against the top right corner: {}",
+        rows[0]
+    );
+    assert_eq!(hints(&screen), "Enter details  Esc cancel");
     // A second press while the load is in flight asks for nothing.
     let busy = press(&mut screen, KeyCode::Char('o'));
     assert!(matches!(busy, Some(Action::Invalidate)), "{busy:?}");
@@ -931,7 +1044,7 @@ fn the_heatmap_yields_to_the_list_on_short_terminals_and_p_toggles_it() {
     let heatmap = |screen: &EventsScreen, height| {
         render_lines(100, height, |frame, area| screen.render(frame, area))
             .iter()
-            .any(|row| row.contains("Events by hour"))
+            .any(|row| row.contains("  Mon "))
     };
 
     assert!(heatmap(&screen, 40));
@@ -944,26 +1057,82 @@ fn the_heatmap_yields_to_the_list_on_short_terminals_and_p_toggles_it() {
 }
 
 #[test]
-fn the_hint_bar_and_help_follow_the_mode() {
+fn the_heatmap_takes_one_row_above_its_weekdays() {
     let mut screen = connected(FULL);
-    receive(&mut screen, 0..6);
-    let hints = |screen: &EventsScreen| {
-        let rows = draw(screen);
-        rows[rows.len() - 2].clone()
-    };
+    receive(&mut screen, 0..40);
 
-    assert!(hints(&screen).contains("Space pause"), "{}", hints(&screen));
+    let rows = render_lines(100, 40, |frame, area| screen.render(frame, area));
+    // The axis sits right under the toolbar, with the scale at its end,
+    // lined up under the chips.
+    assert!(
+        rows[2].contains("00") && rows[2].contains("22"),
+        "{}",
+        rows[2]
+    );
+    assert!(
+        rows[2]
+            .trim_end()
+            .ends_with("less \u{2591}\u{2592}\u{2593}\u{2588} more \u{2502}"),
+        "{}",
+        rows[2]
+    );
+    assert_eq!(
+        rows[1].trim_end().chars().count(),
+        rows[2].trim_end().chars().count()
+    );
+    assert!(rows[3].contains("  Mon "), "{}", rows[3]);
+    assert!(rows[10].contains("Category"), "{}", rows[10]);
+
+    // A narrower screen keeps the axis and gives up the scale.
+    let rows = render_lines(80, 40, |frame, area| screen.render(frame, area));
+    assert!(
+        rows[2].contains("22") && !rows[2].contains("less"),
+        "{}",
+        rows[2]
+    );
+}
+
+#[test]
+fn the_hints_and_help_follow_the_mode() {
+    let mut screen = connected(FULL);
+    assert_eq!(
+        hints(&screen),
+        "o older  f firewall blocks  p heatmap",
+        "an empty feed has nothing to open"
+    );
+
+    receive(&mut screen, 0..6);
+    draw(&screen);
+    assert_eq!(
+        hints(&screen),
+        "Enter details  o older  f firewall blocks  p heatmap"
+    );
     assert!(screen.help().iter().any(|(key, _)| *key == "Enter"));
+    // The screen draws no hint row of its own.
+    let text = draw(&screen).join("\n");
+    assert!(!text.contains("Enter details"), "{text}");
 
     press(&mut screen, KeyCode::Char(' '));
-    assert!(hints(&screen).contains("Space resume"));
-
     press(&mut screen, KeyCode::Enter);
-    let bar = hints(&screen);
-    assert!(bar.contains("Esc close"), "{bar}");
-    assert!(!bar.contains("d device"), "no device to open: {bar}");
+    assert_eq!(hints(&screen), "Esc close", "no device to open");
+    assert!(!draw(&screen).join("\n").contains("Esc close"));
     assert!(screen.help().iter().any(|(key, _)| *key == "Esc"));
     assert!(!screen.help().iter().any(|(key, _)| *key == "Enter"));
+
+    // Navigation and the keys the chips carry stay in the help overlay.
+    press(&mut screen, KeyCode::Esc);
+    let help = screen.help();
+    for key in ["Space", "v", "h/l \u{2190}/\u{2192}", "p", "o", "f"] {
+        assert!(help.iter().any(|(keys, _)| *keys == key), "{key}");
+    }
+
+    // A session-less profile is offered no load it cannot run.
+    let cloud = connected(Access {
+        session: false,
+        live_events: false,
+        ..FULL
+    });
+    assert_eq!(hints(&cloud), "p heatmap");
 }
 
 #[test]
@@ -1041,19 +1210,24 @@ fn with_alarms() -> EventsScreen {
 fn v_opens_the_alarms_view_and_reads_them_again() {
     let mut screen = with_alarms();
     let feed = draw(&screen).join("\n");
-    assert!(
-        feed.contains("\u{26A0} 2 alarms"),
-        "the feed counts them: {feed}"
-    );
+    assert!(feed.contains("v alarms 2"), "the feed counts them: {feed}");
 
     let opened = press(&mut screen, KeyCode::Char('v'));
     assert!(matches!(opened, Some(Action::RequestAlarms)), "{opened:?}");
     let rows = draw(&screen);
     assert!(rows[0].contains("Alarms (2)"), "{}", rows[0]);
-    let text = rows.join("\n");
     assert!(
-        text.contains("2 active") && text.contains("1 archived"),
-        "{text}"
+        rows[0].trim_end().ends_with("1 archived \u{256E}"),
+        "{}",
+        rows[0]
+    );
+    // The count is said once, and the list starts under the title.
+    let text = rows.join("\n");
+    assert!(!text.contains("active"), "{text}");
+    assert!(rows[1].contains("Severity"), "{}", rows[1]);
+    assert_eq!(
+        hints(&screen),
+        "x archive  X archive all  r reload  v events"
     );
     assert!(
         !text.contains("WAN2 came back"),
@@ -1144,8 +1318,7 @@ fn the_alarm_cursor_stays_on_its_alarm_when_the_list_changes() {
     assert!(press(&mut screen, KeyCode::Char('X')).is_none());
     assert!(press(&mut screen, KeyCode::Enter).is_none());
     // Keys that do nothing here are not offered.
-    assert!(!text.contains("archive"), "{text}");
-    assert!(text.contains("reload"), "{text}");
+    assert_eq!(hints(&screen), "r reload  v events");
     let help = screen.help();
     assert!(help.iter().all(|(keys, _)| *keys != "x" && *keys != "X"));
 }
@@ -1158,6 +1331,7 @@ fn enter_opens_the_device_an_alarm_names() {
         .update(&Action::DevicesUpdated(Arc::new(vec![Arc::clone(&core)])))
         .expect("devices");
     press(&mut screen, KeyCode::Char('v'));
+    assert!(hints(&screen).starts_with("Enter device  x archive"));
 
     let opened = press(&mut screen, KeyCode::Enter);
     assert!(
