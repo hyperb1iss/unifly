@@ -362,7 +362,7 @@ the TUI surface there, and each of those screens says so.
 | Screen         | Highlights                                                                                                                                                                                   |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Dashboard**  | btop-style overview: mirrored RX/TX WAN chart, gateway info, CPU/MEM gauges, top clients, events, alarm count. Keyboard focus across panels and a WAN speed test                             |
-| **Devices**    | Model, firmware with update markers, clients, CPU/MEM. Filter and sort. Restart, locate, upgrade, adopt, provision, forget. Detail tabs with a switch port map, PoE control, and port rename |
+| **Devices**    | Model, firmware with update markers, clients, CPU/MEM. Filter and sort. Restart, locate, upgrade, adopt, provision, remove. Detail tabs with a switch port map, PoE control, and port rename |
 | **Clients**    | Network, uplink AP or switch port, signal, traffic. Filter and sort. Block, kick, fixed IP, guest authorization, forget                                                                      |
 | **Networks**   | VLAN list with a detail panel. Create, edit, and delete, with a dependency check before a delete                                                                                             |
 | **Firewall**   | Policies grouped by zone pair in evaluation order, plus zones, ACL, and NAT. Detail panels, enable/disable, logging, delete, and pick-up-and-move reordering                                 |

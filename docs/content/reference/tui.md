@@ -36,7 +36,7 @@ Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, a click or tap on the tab 
 
 ## Key Bindings
 
-Press `?` (or `F1`) on any screen for the keys that work there. The overlay lists the active screen's keys for the mode it is in (list, open detail, form, held policy move) beside the global ones, and the hint bar at the bottom of each screen offers only what works for the selected row.
+Press `?` (or `F1`) on any screen for the keys that work there. The overlay lists the active screen's keys for the mode it is in (list, open detail, form, held policy move) beside the global ones, and the hint bar at the bottom of each screen offers only what works for the selected row. The overlay follows the same rule: it lists `/` only on screens where search filters something, and a description too long for its column wraps onto the next row.
 
 ### Global
 
@@ -67,6 +67,8 @@ Press `?` (or `F1`) on any screen for the keys that work there. The overlay list
 
 While a field has the keyboard (the search bar, the Networks form, a prompt, Setup, Settings), keys type into it and no shortcut fires, so `q` and digits are text. `?` is text there too, which is why `F1` also opens help. Pasted text goes to that field as one piece, and a newline in it never submits; a paste anywhere else is dropped, so it cannot run as a burst of shortcut keys. A `Ctrl` or `Alt` chord never acts as its plain letter.
 
+While a form is open (the Networks form, Setup, Settings), the status bar shows only `F1 help` and `^c quit`, and the help overlay lists only the keys that still work. `Ctrl+r` does nothing there, so a refresh cannot swap the record being edited. Held down anywhere else, `Ctrl+r` is one refresh, not a queue of them.
+
 ### Mouse and Touch
 
 Tabs, list rows, key hints, dialogs, and dashboard panels take a click, so the TUI runs on a touchscreen kiosk without a keyboard. On a touchscreen, taps work wherever the terminal reports them as mouse clicks.
@@ -94,13 +96,14 @@ Typing still needs a keyboard: search, prompts, the Networks form, the Settings 
 
 Everything the TUI does on the controller reports back the same way:
 
-- **Toasts** stack in the top-right corner, up to four at a time, and wrap long text instead of cutting it. One never replaces another, so an error is not wiped by the success that lands after it. Notes and successes clear after 3 seconds, warnings after 8, errors after 10. `Esc` dismisses warnings and errors, and a tap dismisses any toast.
-- **Confirmations** come before anything disruptive (a restart, a block, a delete, turning a rule off). The dialog names the target and says what yes costs. `y` confirms; `n` or `Esc` cancels.
-- **Prompts** ask for a single value, such as a fixed IP, a port name, or a passphrase. `Enter` saves and `Esc` cancels. The field takes the line-editing keys and a paste, a passphrase is masked, and a value that cannot be used reopens the prompt on what you typed, saying what is wrong with it.
+- **Toasts** stack in the top-right corner, up to four at a time, and wrap long text instead of cutting it. One never replaces another, so an error is not wiped by the success that lands after it. The newest toast is always drawn: when the stack is taller than the screen the older ones give way, and when a fifth arrives the oldest one that is not a warning or an error goes first, never the one that just arrived. Notes and successes clear after 3 seconds, warnings after 8, errors after 10. `Esc` dismisses warnings and errors, and a tap dismisses any toast.
+- **Confirmations** come before anything disruptive (a restart, a block, a delete, turning a rule on or off). The dialog names the target and says what yes costs. `y` confirms; `n` or `Esc` cancels. A question that arrives late, from a check that ran in the background, never replaces a dialog you are reading and never opens over a prompt or the search bar. It is dropped with a notice to press the key again.
+- **Prompts** ask for a single value, such as a fixed IP, a port name, or a passphrase. `Enter` saves and `Esc` cancels. The field takes the line-editing keys and a paste. A passphrase is masked, and `Ctrl+t` shows or hides it. A value that cannot be used reopens the prompt on what you typed, saying what is wrong with it.
 - **Progress**: a command shows a progress toast the moment it starts, and its result takes that toast over. When the command lands, the TUI fetches the controller's data again, so the screens show the change without waiting for the next poll.
+- **Checked results**: where the controller's record can be read back (a firewall rule's switch, an SSID's settings, a port's PoE mode or name, a fixed IP), the result is checked against it. A change the controller accepted but did not apply is reported as such, not as done.
 - **History**: `n` opens the last 50 notifications, newest first, with the time each was shown. `Esc` or `n` closes it.
 
-A key that cannot do anything for the selected row says why in a toast (an offline device cannot be restarted, a wired client cannot be kicked) instead of sending a command that would fail.
+A key that cannot do anything for the selected row says why in a toast (an offline device cannot be restarted, a wired client cannot be kicked, a firmware upgrade needs a controller session this profile lacks) instead of sending a command that would fail. A jump to a device or client that has left the controller says so and stays on the screen you are on.
 
 ## Screen Reference
 
@@ -111,7 +114,7 @@ Eight live panels:
 | Panel             | What It Shows                                                                                     |
 | ----------------- | ------------------------------------------------------------------------------------------------- |
 | **WAN Traffic**   | Mirrored chart (download up, upload down, each on its own scale), live TX/RX rates, peak tracking |
-| **Gateway**       | Model, firmware, WAN IP, IPv6, DNS, ISP name, latency, uptime                                     |
+| **Gateway**       | Model, firmware, WAN IP, IPv6, DNS, ISP name, latency, uptime, last speed test                    |
 | **Connectivity**  | Subsystem status dots (WAN/WWW/WLAN/LAN/VPN), aggregate traffic bars                              |
 | **Capacity**      | Color-coded CPU/MEM gauges, load averages, device/client fleet count                              |
 | **Networks**      | VLANs sorted by ID with IPv6 prefix delegation and SLAAC mode                                     |
@@ -119,7 +122,7 @@ Eight live panels:
 | **Top Clients**   | Proportional traffic bars with fractional block characters                                        |
 | **Recent Events** | Compact event display, color-coded by severity                                                    |
 
-The title counts the controller's active alarms. A panel with nothing to show says whether it is still connecting or which access it lacks, and a WAN rate that has stopped arriving is not drawn as a flat line.
+The title counts the controller's active alarms. A panel with nothing to show says whether it is still connecting or which access it lacks. A WAN rate that has stopped arriving is not drawn as a flat line: the panel says how old the last one is (`no rate for 47s`), or `not connected`.
 
 | Key                      | Action                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------ |
@@ -128,11 +131,13 @@ The title counts the controller's active alarms. A panel with nothing to show sa
 | `Enter`                  | Open the focused panel's screen (the Gateway panel opens the gateway's detail) |
 | `S`                      | Run a WAN speed test (asks first)                                              |
 
-The speed test needs a gateway on the site and a direct controller session; the result arrives as an event.
+The speed test needs a gateway on the site and a direct controller session. Its result shows on the Gateway panel's `Spd` line about a minute later, as download, upload, and how long ago it ran (`↓2.4G ↑1.9G just now`).
 
 ### Devices
 
-The table filters by type and sorts by name, status, clients, traffic, or uptime. `Enter` opens a detail with a tab per aspect the device has: Overview, Performance, Radios on access points, Clients, and Ports on anything with ports. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border, so every row is reachable on a short terminal.
+The table filters by type and sorts by name, status, clients, traffic, or uptime. `Enter` opens a detail with a tab per aspect the device has: Overview, Performance, Radios on access points, Clients, and Ports on anything with ports. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
+
+Devices waiting for adoption are listed with the adopted ones on profiles that reach the Integration API, so `A` has something to act on.
 
 | Mode                 | Key                | Action                                                            |
 | -------------------- | ------------------ | ----------------------------------------------------------------- |
@@ -147,14 +152,19 @@ The table filters by type and sorts by name, status, clients, traffic, or uptime
 | List and detail      | `T`                | Run a speed test on a gateway (asks first)                        |
 | Detail               | `h` / `l`          | Previous / next detail tab                                        |
 | Detail               | `j` / `k`, `g`/`G` | Move through the ports or clients; on other tabs, the next device |
-| Detail               | `F`                | Forget the device, removing it from the site (asks first)         |
+| Detail               | `F`                | Remove the device from the site (asks first)                      |
 | Detail               | `Esc`              | Close the detail                                                  |
 | Detail (Clients tab) | `Enter`            | Open that client on the Clients screen                            |
 | Detail (Ports tab)   | `C`                | Power cycle the selected PoE port (asks first)                    |
-| Detail (Ports tab)   | `O`                | Turn the port's PoE off (asks first) or back on                   |
+| Detail (Ports tab)   | `O`                | Turn the port's PoE off (asks first), or back on as it was        |
 | Detail (Ports tab)   | `N`                | Rename the selected port                                          |
 
-The Ports tab shows each port's mode, native network, and tagged networks where the controller has a Session API. The PoE and rename keys write port settings, which need that session too; without one the tab says so in place of the profile columns and the keys are not offered.
+The Ports tab shows each port's mode, native network, and tagged networks where the controller has a Session API. The PoE and rename keys write port settings, which need that session too; without one the tab says so in place of the profile columns and the keys are not offered. The tab reads the port settings again on every device refresh, `Ctrl+r` included.
+
+- **PoE**: `O` needs the port's settings, so while they load it asks you to press it again in a moment. Turning PoE back on restores the mode the port had when the TUI last saw it on (passive 24V stays passive 24V) without asking. When that mode was never seen this session, it asks before writing auto.
+- **Remove**: `F` on an online device factory resets it, and it has to be adopted again. An offline device is only dropped from the site, and the confirmation says to reset it by hand. A device that is not adopted has nothing to remove.
+- **Speed test**: the result of `T` shows on the Dashboard's Gateway panel about a minute later.
+- **Access**: `U`, `P`, and `T` need a controller session, and `F` and the port power cycle need the Integration API. On a profile without the one a key needs, the key says so and sends nothing.
 
 ### Clients
 
@@ -162,7 +172,7 @@ The table filters by type and sorts by name, signal, traffic, or duration. `Ente
 
 | Mode            | Key       | Action                                                         |
 | --------------- | --------- | -------------------------------------------------------------- |
-| List            | `h` / `l` | Filter (All / Wireless / Wired / VPN / Guest)                  |
+| List            | `h` / `l` | Filter (All / Wireless / Wired / VPN / Guest / Blocked)        |
 | List            | `s` / `r` | Sort by the next column / reverse the sort                     |
 | List            | `Enter`   | Open the client                                                |
 | List and detail | `b`       | Block the client, or unblock a blocked one (asks first)        |
@@ -174,9 +184,13 @@ The table filters by type and sorts by name, signal, traffic, or duration. `Ente
 | Detail          | `h` / `l` | Change the filter, which closes the detail                     |
 | Detail          | `Esc`     | Close the detail                                               |
 
+- **Blocked** lists the connected clients that are blocked and, with a controller session, the offline ones the controller remembers. An offline row takes `b` to unblock it and `F` to forget it, and nothing else.
+- **Fixed IP**: `I` works on wired and wireless clients. The network is picked from the address, and an address outside every network's subnet changes nothing and says so.
+- **Access**: `I`, `A`, and `F` need a controller session. Without one they say so before asking anything.
+
 ### Networks
 
-`Enter` shows or hides a detail panel with the network's status, purpose, zone, gateway and subnet, DHCP range, lease, DNS, and IPv6 settings.
+`Enter` shows or hides a detail panel with the network's status, purpose, zone, gateway and subnet, DHCP range, lease, DNS, and IPv6 settings. A network that relays DHCP to another server reads `Relay` in the DHCP column, and its detail names the servers.
 
 | Mode | Key                 | Action                                   |
 | ---- | ------------------- | ---------------------------------------- |
@@ -193,9 +207,10 @@ The table filters by type and sorts by name, signal, traffic, or duration. `Ente
 | Form | `Enter`             | Save                                     |
 | Form | `Esc`               | Close without saving                     |
 
-- **The form** creates and edits with the same fields: name, VLAN ID, gateway and prefix, enabled, the DHCP server with its range and DNS servers, isolation, internet access, mDNS forwarding, and IPv6. A network only offers the fields its kind can take. A validation error sits under the field it is about and moves the focus there.
-- **Saving** locks the form while the controller has the draft and closes it once the new values are on screen. A save the controller refuses keeps the form open with your draft and the reason. A save that turns a network off or changes its VLAN, addressing, DHCP, or IPv6 lists what changes and asks first.
-- **Deleting** asks the controller what uses the network, and the confirmation names it (`In use by 14 clients, 1 WiFi network`). The default network cannot be deleted.
+- **The form** creates and edits with the same fields: name, VLAN ID, gateway and prefix, enabled, the DHCP server with its range and DNS servers, isolation, internet access, mDNS forwarding, and IPv6. A network only offers the fields its kind can take, and one whose kind the controller does not report offers name, VLAN ID, and enabled. IPv6 shows only on a network that has it on, and can only be turned off: the controller's own interface is where IPv6 is set up. A validation error sits under the field it is about and moves the focus there.
+- **Limits the form checks**: a VLAN ID from 2 to 4009 (the default network keeps VLAN 1), a prefix from /8 to /30, a DHCP range inside the subnet's usable addresses and clear of the gateway's own, and at most four DNS servers, each an IPv4 address.
+- **Saving** locks the form while the controller has the draft and closes it once the new values are on screen. A save the controller refuses keeps the form open with your draft and the reason. A save that turns a network off, cuts its internet access, isolates it, or changes its VLAN, addressing, DHCP, or IPv6 lists what changes and asks first. Turning the DHCP server off deletes its range, lease time, and options, turning one on replaces a relay, and turning IPv6 off deletes its settings; the form and the confirmation both say so.
+- **Deleting** asks the controller what uses the network, and the confirmation names it (`In use by 14 clients, 1 WiFi network`). If you have moved on by the time that check returns, no dialog opens: a toast says to press `D` on the network again. When the check itself fails, the confirmation says the controller refuses the delete if something uses the network. The default network cannot be deleted.
 
 ### Firewall
 
@@ -215,15 +230,17 @@ Four sub-tabs, each with its row count: Policies, Zones, ACL Rules, and NAT. Pol
 | ACL Rules, NAT    | `E`                  | Enable or disable the rule (asks first)             |
 | ACL Rules, NAT    | `D`                  | Delete the rule (asks first)                        |
 
-Reordering is pick up, move, apply. `K` or `J` picks the selected policy up and moves it one place on screen only; the row is marked while it is held and nothing reaches the controller. Keep moving it with `K`/`J`, `k`/`j`, or the arrows, then press `Enter` to write the result as one ordering, or `Esc` to put it back. A toast confirms the move, and a move the controller refuses raises an error and leaves the table as it was.
+Reordering is pick up, move, apply. `K` or `J` picks the selected policy up and moves it one place on screen only; the row is marked while it is held and nothing reaches the controller. Keep moving it with `K`/`J`, `k`/`j`, or the arrows, then press `Enter` to write the result as one ordering, or `Esc` to put it back. A toast confirms the move, and a move the controller refuses raises an error and leaves the table as it was. The move is written only if the controller still has the order the table showed. When it does not, nothing is written, the list is refreshed, and a warning says to move the policy again.
 
-System-defined policies carry a mark and keep their place: they refuse a move or a delete on the spot, as does a system-defined NAT rule. Zones are read-only.
+Rules the controller owns carry a mark and are not yours to change. A system-defined policy, a policy derived from another rule, and an ACL or NAT rule the controller manages refuse `E`, `D`, and a move on the spot, each with its reason, and the hint bar and help leave those keys out for such a row. Logging is the exception: `L` works on a system-defined policy too. A move steps over the system-defined policies of a zone pair as one block. Zones are read-only.
+
+Every `E` and `L` is checked against the list read back from the controller. A switch the controller accepted but did not apply is an error (`The controller accepted the change, but X is still enabled`), not a success.
 
 ### Topology
 
 The screen draws the uplink tree the controller reports: the gateway at the top, every switch and access point under the device it uplinks through, and the parent's port number on each wired link. Dashed lines are uplinks the controller reports as wireless (mesh); a link whose medium is unknown is drawn as a plain line. A device with no reported uplink hangs off the gateway on a dim dotted line, so missing uplink data shows up as such instead of being guessed. Boxes are sized to their names, and when a parent's children would not fit across the screen they wrap onto extra rows hanging off a trunk.
 
-The map opens fitted: the largest zoom that shows the whole tree, following the terminal size. The title shows the zoom, which way more of the tree lies when it does not all fit, and the selected device.
+The map opens fitted: the largest zoom that shows the whole tree, following the terminal size. The fit never goes below 80%, the smallest zoom that keeps names whole, so a tree too tall for that starts at the gateway and runs off the bottom. The title shows the zoom, which way more of the tree lies when it does not all fit (`80% fit · more ↓`), and the selected device.
 
 | Key                      | Action                                         |
 | ------------------------ | ---------------------------------------------- |
@@ -239,7 +256,7 @@ The map opens fitted: the largest zoom that shows the whole tree, following the 
 
 ### Events
 
-The feed orders events by time and drops repeat deliveries. Its status line says how events arrive: `live` over the WebSocket, `polling (no live stream)` when the profile has session access without a cookie login, or `no event access`. It also counts the active alarms.
+The feed orders events by time and drops repeat deliveries. Its status line says how events arrive: `live` over the WebSocket, `polling (no live stream)` when the profile has session access without a cookie login, or `no event access`. It also counts the active alarms and, once older history is loaded, says how far back the feed reaches (`back to 11-06 17:51`, with `+ blocks` when firewall blocks are in).
 
 | View        | Key         | Action                                          |
 | ----------- | ----------- | ----------------------------------------------- |
@@ -248,7 +265,8 @@ The feed orders events by time and drops repeat deliveries. Its status line says
 | Feed        | `Enter`     | Open the selected event                         |
 | Feed        | `h` / `l`   | Filter by category                              |
 | Feed        | `/`         | Filter by message text                          |
-| Feed        | `o`         | Load older events                               |
+| Feed        | `o`         | Load the events before the oldest one shown     |
+| Feed        | `Esc`       | Cancel a history load that is running           |
 | Feed        | `f`         | Bring firewall blocks in, or take them out      |
 | Feed        | `p`         | Show or hide the events-by-hour heatmap         |
 | Feed        | `v`         | Show the alarms                                 |
@@ -262,8 +280,9 @@ The feed orders events by time and drops repeat deliveries. Its status line says
 
 - **Detail**: the whole message, type, severity, and dated time. Opening it pauses a live feed so the event stays put, and a paused feed counts what arrived below it.
 - **Categories**: All, Device, Client, Network, System, Admin, Firewall, VPN, and Other.
-- **Older history**: each press of `o` widens the window, from 24 hours to 3 days, 7 days, and 30 days. The feed keeps up to 10,000 events.
-- **Alarms**: the controller's unarchived alarms, newest first, read again every minute and after an archive.
+- **Older history**: each press of `o` loads the events before the oldest one in the feed, a page at a time. A full page says `o for more`. A window with nothing in it widens by itself, from 24 hours to 3 days, 7 days, and 30 days, and the status says so when nothing older is left (`no older events in 30d`). The feed keeps the newest 10,000 events and says when that limit is reached. `f` does nothing while a load runs.
+- **Heatmap**: `p` on a terminal too small to draw it says so.
+- **Alarms**: the controller's unarchived alarms, newest first, read again every minute while the Dashboard or Events is in front, and after every archive. Archiving one alarm also archives the alerts the controller groups with it, and the confirmation says so. An archive the controller accepted while still listing the alarm as active is a warning, not a success. An empty view offers only `v` and `r`.
 
 Events, older history, firewall blocks, and alarms all need a direct controller session.
 
@@ -274,9 +293,9 @@ WAN bandwidth, client counts, and DPI application and category breakdowns for on
 | Key       | Action                            |
 | --------- | --------------------------------- |
 | `h` / `l` | Shorter / longer period, wrapping |
-| `r`       | Reload this period                |
+| `r`       | Reload this period and the DPI    |
 
-Charts are only drawn under the period they belong to. While a period loads the screen says so, a failed load shows its reason in place of the charts, and a profile without session access is told statistics need one. The DPI panels cover all time and show their own read failures.
+Charts are only drawn under the period they belong to. While a period loads the screen says so, a failed load shows its reason in place of the charts, and a profile without session access is told statistics need one. The DPI panels cover all time and show their own read failures. Their totals are reused for two minutes when you step between periods; `r`, a click on the active period, and `Ctrl+r` always read them again.
 
 ### WiFi
 
@@ -298,20 +317,23 @@ Five sub-tabs: Overview, Clients, SSIDs, Neighbors, and Roaming. Each keeps its 
 | Clients   | `s`             | Cycle the sort (health, signal, name)                                   |
 | Clients   | `b` / `x` / `F` | Block or unblock / disconnect / forget the client (each asks first)     |
 | SSIDs     | `Enter`         | Show or hide the SSID's detail                                          |
-| SSIDs     | `E`             | Enable the SSID, or disable it (asks first)                             |
-| SSIDs     | `N`             | Rename the SSID                                                         |
-| SSIDs     | `P`             | Change the passphrase                                                   |
-| SSIDs     | `H`             | Hide the SSID, or announce its name again                               |
+| SSIDs     | `E`             | Enable or disable the SSID (asks first, both ways)                      |
+| SSIDs     | `N`             | Rename the SSID (asks first)                                            |
+| SSIDs     | `P`             | Change the passphrase, typed twice (asks first)                         |
+| SSIDs     | `H`             | Hide the SSID, or announce its name again (asks first, both ways)       |
 | SSIDs     | `D`             | Delete the SSID (asks first)                                            |
 | Neighbors | `s`             | Cycle the sort (signal, channel, security, name)                        |
 | Neighbors | `f` / `[` `]`   | Next band / previous and next band                                      |
 | Roaming   | `r` / `Enter`   | Refresh the history                                                     |
 
 - **AP focus** narrows the Overview, Clients, and Neighbors sub-tabs to one access point. It shows as a chip beside the sub-tabs, and `Esc` clears it once the sub-tab's panel is closed.
-- **Channel map**: every radio of every online access point counts on its band, next to the neighbors heard there, with DFS channels marked.
+- **Channel map**: every radio of every online access point counts on its band, next to the neighbors heard there, with DFS channels marked. A neighbor heard by several of your access points counts once, by its BSSID.
 - **WiFi experience** shows a client's signal, rates, and the uplink path between it and the gateway.
-- **SSIDs** lists every broadcast with its state, client count, security, bands, network, and hidden flag. A rename takes up to 32 characters and a passphrase 8 to 63; the current passphrase cannot be read back from the controller. Open and enterprise networks have no passphrase to change.
-- **Roaming** shows the history of the client selected on the Clients sub-tab, in local time, and stays up when that client leaves the list.
+- **SSIDs** lists every broadcast with its state, client count, security, bands, network, and hidden flag. The controller's list leaves out visibility, isolation, band steering, fast roaming, and MLO, so the sub-tab reads each SSID in full. Until that read lands the Hidden column shows `…`, and `?` when it failed. The detail rows show `…` while reading, `unknown` when the read failed, and `─` for a setting the controller's record does not carry. A setting is never drawn as "no" before it is known.
+- **SSID writes**: `H` reads the SSID from the controller first, then asks `Hide X?` or `Announce X again?` by what it found. `E` asks before enabling as well as before disabling, since either one reprovisions the access points. A second write to an SSID while one is still being applied is refused with a toast. Each write is checked against the record read back, and one the controller accepted but did not apply is reported as a failure.
+- **Rename**: a name holds up to 32 bytes (32 plain characters, fewer with accents or emoji), and a name another SSID already has is refused. In a `--demo` session the prompt opens empty, so a stand-in name is never written back.
+- **Passphrase**: 8 to 63 ASCII characters, asked for twice because it is typed hidden (`Ctrl+t` shows it). The current passphrase is never shown: the detail's Passphrase row reads `not shown (P to set)`, a count such as `3 per-network keys`, `RADIUS sign-in`, or `none`. `P` is refused on open and enterprise SSIDs, which have no passphrase, and on an SSID that gives each network its own key, which has no single passphrase to change.
+- **Roaming** shows the history of the client selected on the Clients sub-tab, in local time, and stays up when that client leaves the list. When a refresh fails, the history already on screen stays and the title adds `· refresh failed`.
 
 The access point list comes with the devices. SSIDs come from the Integration API. Wireless client data, WiFi experience, the channel map, neighbor scans, and roam history need a direct controller session, and each panel says so when the profile has none.
 
@@ -319,7 +341,7 @@ The access point list comes with the devices. SSIDs come from the Integration AP
 
 Every list screen orders its rows the way the CLI does: devices by name, clients by display name, networks by name, and firewall policies grouped by source zone, then destination zone, in the order they apply. The cursor stays on the same device, client, or policy when data refreshes or the order changes, so an action key always targets the row you see highlighted.
 
-`/` opens a search bar on the Devices, Clients, Events, and WiFi screens that filters the list as you type. `Enter` closes the bar and keeps the filter, which stays on show above the list; `/` reopens the bar on that filter to refine it, and `Esc` clears it. `Up`, `Down`, and the page keys still move the filtered list while the bar is open. The other screens (and the Alarms view and the WiFi Roaming sub-tab) have nothing to filter, so `/` there only says where search works, and their status bar has no search button.
+`/` opens a search bar on the Devices, Clients, Events, and WiFi screens that filters the list as you type. `Enter` closes the bar and keeps the filter, which stays on show above the list; `/` reopens the bar on that filter to refine it, and `Esc` clears it. `Up`, `Down`, and the page keys still move the filtered list while the bar is open. The other screens (and the Alarms view and the WiFi Roaming sub-tab) have nothing to filter, so `/` there only says where search works, and their status bar and help overlay leave it out.
 
 Columns size themselves to their content, and wider terminals reveal more of them:
 
@@ -354,6 +376,7 @@ DS -->|"watch channels"| TUI["TUI Screens"]
 - **Bandwidth**: sampled from device stats on each refresh cycle
 - **After a command**: fetched again as soon as the command lands
 - **On demand**: `Ctrl+r` refreshes now, and on the Stats screen reloads the period too
+- **One at a time**: refreshes never overlap, so data fetched before a change cannot land on top of data fetched after it
 
 ## Access by Authentication Mode
 
@@ -371,7 +394,7 @@ The TUI works with every authentication mode. What a screen can read and change 
 - **Hybrid** reaches everything, with live events.
 - **Cloud** routes Integration API traffic through the [Site Manager connector](/guide/cloud), one console at a time, with no controller session. Session-backed screens say so and stay empty, and client rows miss their session enrichment fields.
 
-On a cloud profile's Devices screen, `R` restart, `L` locate, and the port power cycle work, since they go through the Integration API the connector proxies. `U` upgrade, `P` provision, the speed test, and port profiles with their PoE and rename keys need a controller session: the Ports tab says so in place of the profile columns, and the commands fail with an error.
+On a cloud profile's Devices screen, `R` restart, `L` locate, `A` adopt, `F` remove, and the port power cycle work, since they go through the Integration API the connector proxies. `U` upgrade, `P` provision, the speed test, and port profiles with their PoE and rename keys need a controller session: the Ports tab says so in place of the profile columns, and each of those keys says so and sends nothing. On the Clients screen the same goes for `I` fixed IP, `A` guest authorization, and `F` forget, and the Blocked filter lists only the blocked clients that are connected.
 
 {% tip() %}
 **API Key mode** works for most of the TUI on UniFi OS. Use **Hybrid mode** when you want events pushed live over the WebSocket instead of picked up by polling.
@@ -381,7 +404,7 @@ On a cloud profile's Devices screen, `R` restart, `L` locate, and the port power
 
 Two flags make the TUI safe to show on screen.
 
-`--demo` (or `UNIFI_DEMO=1`, or `[demo] enabled = true` in config) connects to your real controller and swaps names, MACs, IPs, and SSIDs for deterministic fakes before anything is drawn.
+`--demo` (or `UNIFI_DEMO=1`, or `[demo] enabled = true` in config) connects to your real controller and swaps names, MACs, IPs, and SSIDs for deterministic fakes before anything is drawn. Switch port labels are swapped with their device, and an error toast shows `controller.example` where it would name the controller's address. The setup wizard is redacted too when it opens in such a session: every field is masked and `Ctrl+T` is refused, sites read `Site 1`, `Site 2`, and the profile name, the launch error, the controller address, and the config path are not shown.
 
 `--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) skips the controller entirely and never reads the config file, so the theme comes from `--theme` or `UNIFLY_THEME`. The TUI runs against a synthetic, offline network for a fictional creative studio, Neon Harbor Studios, and a simulation animates it about once a second:
 
@@ -407,14 +430,14 @@ When `--demo` is set and no controller can be resolved from flags, environment, 
 
 Most of what the TUI can change plays out in the simulation, with the events and the validation a controller would give:
 
-- **Devices and ports**: restart, locate, upgrade, provision, speed test, port power cycle, PoE off and on, and port rename.
+- **Devices and ports**: restart, locate, upgrade, provision, speed test, port power cycle, PoE off and on, and port rename. An access point can be removed, after which it waits as a pending device, and adopted again.
 - **Clients**: block, unblock, kick, forget, guest authorization, and fixed IPs.
 - **Networks**: create, edit, and delete, including the refusals (a VLAN in use, a DHCP server without a range).
 - **Firewall**: policy enable, logging, delete, and reorder, and ACL and NAT rule toggles and deletes.
-- **WiFi**: SSID enable, hide, rename, and passphrase.
+- **WiFi**: SSID enable, hide, rename, passphrase, and delete.
 - **Alarms**: archive one or all.
 
-Forgetting a device and deleting an SSID are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
+Removing the gateway or a switch is refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
 
 `--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 
@@ -424,28 +447,33 @@ For recordings, `--no-effects` (or `NO_EFFECTS=1`) skips the launch animation.
 
 The setup wizard opens when the launch has no profile it can connect with: a first run, a profile named with `-p` that does not exist yet, or a saved profile that could not connect (the first step then says why). It asks how unifly signs in, the controller address and whether to verify its certificate (skipped for Cloud), and the credentials, then tests the connection. With several sites on the controller it asks which one. Nothing is saved until a test passes.
 
-Settings (`,`) is the same form for the profile the session runs on, plus the theme and the sponsor button. `Enter` tests the connection with what the form holds; a test that passes saves the profile and reconnects with exactly what was tested. `Esc` cancels a running test, and on a form with unsaved edits asks before dropping them.
+Settings (`,`) is the same form for the profile the session runs on, plus the theme and the sponsor button. `Enter` tests the connection with what the form holds; a test that passes saves the profile and reconnects with exactly what was tested. `Esc` cancels a running test. Closing the form, switching profiles, or starting a new profile with unsaved edits asks first in the usual confirmation dialog: `y` drops the edits, `n` or `Esc` keeps them, and `Enter` does not answer it.
 
-| Key                | Action                                                      |
-| ------------------ | ----------------------------------------------------------- |
-| `Tab` / `Down`     | Next field                                                  |
-| `Shift+Tab` / `Up` | Previous field                                              |
-| `Left` / `Right`   | Change a picker (profile, auth mode, site); move in a field |
-| `Space`            | Toggle a checkbox                                           |
-| `Ctrl+T`           | Show or hide the API key or password in the focused field   |
-| `n` on Profile     | Name a new profile and set it up in the wizard              |
-| `Enter`            | Test, save, and reconnect (next step in the wizard)         |
-| `Esc`              | Cancel a test, go back a step, or close Settings            |
-| `F1`               | Help (`?` would type into the field)                        |
+| Key                | Action                                                           |
+| ------------------ | ---------------------------------------------------------------- |
+| `Tab` / `Down`     | Next field                                                       |
+| `Shift+Tab` / `Up` | Previous field                                                   |
+| `Left` / `Right`   | Change a picker (profile, auth mode, site); move in a field      |
+| `Space`            | Toggle a checkbox                                                |
+| `Ctrl+T`           | Show or hide the API key or password in the focused field        |
+| `n` on Profile     | Name a new profile and set it up in the wizard                   |
+| `Enter`            | Test, save, and reconnect (next step in the wizard)              |
+| `r` in the wizard  | Retry a test that failed                                         |
+| `t` in the wizard  | Turn TLS verification off and retry, after a certificate failure |
+| `Esc`              | Cancel a test, go back a step, or close Settings                 |
+| `F1`               | Help (`?` would type into the field)                             |
 
 Text fields take the usual line-editing keys (`Home`, `End`, `Ctrl+A`, `Ctrl+E`, `Ctrl+W`, `Ctrl+U`, `Ctrl+K`) and a paste; a newline in a paste never submits the form. Both forms take every key themselves, so the global shortcuts wait until they close; `F1`, `Ctrl+c`, and `Ctrl+l` still work, and so do the dialogs the forms raise.
 
 - **Profiles**: the Profile row walks the saved profiles. Picking another one and passing its test moves the session to it.
 - **Sites**: once a test or the running session has read the controller's sites, the Site field offers them as a picker. Typing a letter switches back to a name typed by hand.
-- **MFA**: the One-time code field takes a current 6-digit code for the next sign-in. The code is never saved, and the session it opens is the one the dashboard continues with, so one code is enough. A profile's `totp_command` or `totp_env` is shown under it.
-- **Secrets**: a typed API key or password is stored in the OS keyring. Without a usable keyring it falls back to plaintext in `config.toml`, and the form says so before you move on. An empty field shows where the value in use comes from (the keyring, or an environment variable).
-- **Launch flags**: `--site`, `--insecure`, and the other connection flags keep overriding the profile after Settings reconnects, and the fields they override are marked. They stay with the profile the launch selected. In the wizard they fill in the steps ahead of time instead, and what the steps show is what gets tested and saved.
-- **CA certificate and timeout** are edited here too. An empty timeout inherits `[defaults]`.
+- **MFA**: the One-time code field takes a current 6-digit code for the next sign-in. The code is never saved, the field empties after every test result, and the session it opens is the one the dashboard continues with, so one code is enough. A profile's `totp_command` or `totp_env` is shown under it, the command by its program name only (`from a command (oathtool)`), never its arguments. A code given once (typed, `--totp`, or `totp_env`) is sent once per controller and never replayed: a later reconnect asks `totp_command` for a fresh one, or stops and says a two-factor code is required.
+- **Secrets**: a typed API key or password is stored in the OS keyring. Without a usable keyring it falls back to plaintext in `config.toml`, and the form says so before you move on. An empty field shows where the value in use comes from (the keyring, or an environment variable), and a key or host ID field says `$NAME is used while it is set` when an environment variable still wins over what the field shows.
+- **What a save writes**: only what the form changed. A profile's `api_key_env` and `host_id_env` and the credentials of the auth modes not in use are kept as they were.
+- **TLS verification**: the checkbox says what ticking it does (`turns certificate checks off`), and once ticked reads `off: any certificate is accepted` in the warning color. Left alone, it follows the CA certificate field as you edit it. The wizard's last step warns when the saved profile skips verification.
+- **Launch flags**: `--site`, `--insecure`, and the other connection flags keep overriding the profile after Settings reconnects, and the fields they override are marked. They stay with the profile the launch selected. Once the form changes a value a flag covers, the flag stands down: its mark goes, a notice says the test and the session after it use what is typed, and the session runs without that flag after the save. In the wizard the flags fill in the steps ahead of time instead, and what the steps show is what gets tested and saved. A `--site` given at launch is always shown on the Site step before anything is saved. `--timeout` and `--no-cache` stay with the session and are never written to the profile.
+- **CA certificate and timeout** are edited here too. An empty timeout inherits `[defaults]`. A draft that could not be loaded again (a CA file that does not exist, a timeout of 0) goes back to the step with that field before any test runs.
+- **Test sessions**: a sign-in a test opened is logged out when its result is discarded (the form closes, or another test replaces it). A session left behind by a unifly that exited mid-setup is cleaned up at the next launch.
 
 The test signs in with the credentials typed in the form, not a cached session or `UNIFI_PASSWORD`. When it fails, the form explains the failure and what to do next (an unverified certificate, rejected credentials, a missing second factor, an unknown site, an unreachable address, an address that is not a UniFi controller), and moves focus to the field it is about.
 
@@ -457,9 +485,11 @@ The TUI uses the [Opaline](https://crates.io/crates/opaline) theme engine with t
 
 When a connection attempt fails or the controller drops mid-session, the TUI reconnects automatically. Retries use exponential backoff starting at 2 seconds and doubling up to a 30-second cap, and they continue indefinitely; the status bar shows the current attempt number while reconnecting. Press `Ctrl+r` while disconnected to retry immediately instead of waiting out the backoff.
 
-A link lost after a good connect shows too: each periodic refresh that fails turns the status bar to `reconnecting`, and the first one that succeeds turns it back to `connected`, so stale data is never shown under a connected status.
+A link lost after a good connect shows too. One failed refresh is treated as a slow answer: the status stays `connected` and nothing on screen changes. The second failure in a row turns the status bar to `reconnecting`, and any refresh that succeeds (the next poll, a `Ctrl+r`, or the one after a command) turns it back to `connected`. While it reads `reconnecting` the screens keep the data they have, and a network save, a policy move, or any other command is still sent, since the controller may well answer it.
 
-On `SIGTERM`, `SIGHUP`, or a closed input stream the TUI quits through its normal path and restores the terminal.
+Switching to another profile from Settings shows `connecting` at once and does not wait for the controller being left to answer.
+
+On `SIGTERM`, `SIGHUP`, `SIGINT`, `SIGQUIT`, or a closed input stream the TUI quits through its normal path and restores the terminal.
 
 ## Next Steps
 

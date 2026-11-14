@@ -365,15 +365,19 @@ from App state during render. No direct Controller access from screens.
 order: `Ctrl+c` (quit) and `Ctrl+l` (repaint) from every state; `F1`
 help; an open confirm dialog; an open prompt; the help and notification
 overlays; Setup and Settings, which take every remaining key; the
-search bar; the About overlay; `Ctrl+r`; the active screen; and last the
-global keys (`handle_global_key_event`). A screen sees a key before the
-globals do, so a key it returns `None` for falls through to them.
+search bar; the About overlay; `Ctrl+r` (not while the screen captures
+input, since a refresh could swap the record a form is editing); the
+active screen; and last the global keys (`handle_global_key_event`). A
+screen sees a key before the globals do, so a key it returns `None` for
+falls through to them.
 
 Each screen implements `Component` (`component.rs`):
 
 - `help()` returns `(keys, description)` for the mode on screen and
-  feeds the help overlay, beside `GLOBAL_KEYS` (or `FORM_KEYS` over
-  Setup and Settings). List screens start from `LIST_HELP`.
+  feeds the help overlay, beside `GLOBAL_KEYS` (or `FORM_KEYS` while a
+  form has the keyboard: Setup, Settings, the Networks form). The `/`
+  row is dropped where `search_query()` is `None`. List screens start
+  from `LIST_HELP`.
 - `captures_input()` is true while a field has the keyboard. Keys then
   reach the screen raw and never go on to the global shortcuts, and
   `handle_paste()` receives pasted text.
@@ -384,7 +388,9 @@ Each screen also draws its own hint bar from `click::Hint`s. A hint
 with a key is a button that sends `Action::PressKey`, so a tap goes
 through the same key path. Keep `help()`, the hint bar, and the key
 handler in step: all three list only what works for the row, sub-tab,
-and mode on screen.
+and mode on screen. The status bar follows the same rule
+(`status_hints` in `app/render.rs`): while the screen captures input it
+shows only `F1 help` and `^c quit`.
 
 **Writes** never touch the Controller from a screen. A screen returns
 an action and the App runs it:
@@ -395,7 +401,10 @@ an action and the App runs it:
   into `notice.done`, and a failure becomes an error toast.
 - `Action::ShowConfirm(ConfirmRequest)` asks first. The request carries
   the prompt, a `detail` line saying what yes costs, and the action to
-  dispatch on yes.
+  dispatch on yes. `open_confirm` never replaces a pending confirm and
+  never opens over a prompt or the search bar: a confirm that arrives
+  late, from background work, is dropped with a toast to press the key
+  again.
 - `Action::OpenPrompt(PromptRequest)` asks for one value. The answer
   comes back to the asking screen as `Action::PromptSubmitted`; the
   screen remembers what it asked for, and reopens the prompt with a
@@ -403,6 +412,12 @@ an action and the App runs it:
 - The `Request*` actions (restart, block, fixed IP, port update, network
   delete) are resolved App-side, where the store supplies names and
   MACs. That is what keeps them correct under `--demo` redaction.
+- A write whose result the store can show is checked after the refresh,
+  not assumed: `app/rule_switch.rs` (firewall `E` and `L`),
+  `app/wifi/ssids.rs` (SSID writes, against the record read back), and
+  the port and fixed IP paths in `app/devices_clients.rs` report "the
+  controller accepted the change but still shows the old value" as an
+  error or warning.
 
 **Access** arrives once per connect as `Action::AccessUpdated(Access)`
 with three flags: `integration`, `session`, and `live_events`. Screens
@@ -717,7 +732,11 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **Integration clients lack fields** the UI shows: `wireless`,
   `uplink_device_mac`, `vlan`, `tx_bytes`, `rx_bytes`, `hostname`. These
   must come from Session API. Hybrid merge is by IP-address match in
-  `controller::refresh::full_refresh`.
+  `controller::refresh::full_refresh`. Guest, authorized, and blocked
+  state is merged by MAC from `stat/sta` and `rest/user`, and block,
+  unblock, and kick go to `cmd/stamgr` whenever a session exists: a
+  blocked client that left the connected list has no Integration UUID
+  to act on.
 - **`stat/rogueap` uses epoch seconds**, not milliseconds. Passing
   millisecond-style values or assuming stats-report semantics returns empty
   data silently.
@@ -745,6 +764,30 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **Device `radios` come from the session `radio_table`**, merged with
   `radio_table_stats` by `convert.rs::parse_session_radios`. The
   Integration `interfaces` JSON is not the source.
+- **An Integration PUT replaces the whole record.** An update must send
+  back every field it fetched, including ones unifly does not model
+  (the flattened `extra` on the ACL types). An ACL rule written without
+  its `protocolFilter` matches every protocol. Unset optional fields are
+  left out, not sent as null.
+- **The Integration WiFi list is a summary** without `hidden`,
+  `client_isolation`, `band_steering`, `mlo_enabled`, or `fast_roaming`.
+  Those `WifiBroadcast` fields are `Option<bool>` and stay `None` until
+  the broadcast's detail is read. An SSID with per-network preshared
+  keys (`preshared_key_count > 0`) has no single passphrase to write.
+- **A fixed IP is keyed by the session network `_id`**, not the
+  Integration UUID. `controller/commands/fixed_ip.rs` maps a UUID
+  through `rest/networkconf`'s `external_id`, accepts an `_id` or a
+  name, and with no network picks the LAN whose subnet holds the
+  address.
+- **Pending devices come from `/v1/pending-devices`** on Integration
+  profiles, as an optional fetch, keyed `pending:<mac>` in the device
+  snapshot.
+- **Network writes are checked by kind.** Isolation, internet access,
+  mDNS, and IPv6 exist only on some network kinds and are refused on
+  the others. IPv6 can be turned off but not on (the API needs an
+  address assignment and a prefix source), an emptied DNS list removes
+  the override key, and delete sends `force` as a query parameter only
+  when set.
 
 ### CLI Quirks
 
@@ -775,9 +818,10 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **`nat policies update`** uses `--name` or `--description` (mutually
   exclusive) for the display label. Both map to the v2 API `description`
   field. The `--name` flag is the user-friendly alias.
-- **`firewall policies patch`** is a fast partial-update path for toggling
-  `enabled`/`logging`/`reportFlowEnabled`; use it instead of `update` when
-  only those fields change.
+- **`firewall policies patch`** is the partial-update path for `logging`
+  and `reportFlowEnabled`, the only fields the controller's PATCH takes.
+  `patch --enabled` is sent as a full update (GET, then PUT of the whole
+  record), and `FirewallPolicyPatch` has no `enabled` field.
 - **`firewall groups`** uses the Session API (`rest/firewallgroup`), not
   Integration. The `external_id` (UUID) in group responses is what
   firewall policies reference. Policy create/update supports
@@ -850,17 +894,29 @@ remote-access suggest-port` and `vpn remote-access download-config
   `tracing_appender` with a `WorkerGuard` held by `launch()`.
 - **Panic hooks must be installed before terminal setup** so that panics
   restore the terminal state before crashing. `terminal::install_hooks`
-  handles this.
+  handles this. `event.rs::stop_signal` turns `SIGTERM`, `SIGHUP`,
+  `SIGINT`, and `SIGQUIT` into a normal quit, which restores it too.
 - **The data bridge auto-reconnects.** Failed connects retry with
   exponential backoff (2s doubling to a 30s cap, indefinitely), emitting
   `Reconnecting`/`Disconnected` actions so the status bar stays
   truthful. `Ctrl+r` forces an immediate retry while disconnected by
   cancelling the old bridge and spawning a fresh one. Bridge lifetimes
-  are serialized: each new bridge task first awaits its predecessor's
-  `JoinHandle`, so teardown always completes before the next connect
-  starts. While connected, `Ctrl+r` runs `full_refresh()` instead. A
-  periodic refresh that fails publishes `ConnectionState::Reconnecting`
-  from `unifly-api`, so a lost link shows without a reconnect.
+  on one controller are serialized: each new bridge task first awaits
+  its predecessor's `JoinHandle`, so teardown always completes before
+  the next connect starts. A switch to another controller
+  (`apply_connection`) does not wait on the one being left, and sets
+  `Connecting` at once. While connected, `Ctrl+r` runs `full_refresh()`
+  instead; the `refreshing` flag makes a held key one refresh.
+- **`Reconnecting` has two meanings.** `unifly-api` publishes
+  `ConnectionState::Reconnecting` from the second failed periodic
+  refresh in a row (`refresh/periodic.rs`), with the clients still
+  installed, and any successful `full_refresh()` publishes `Connected`
+  again. So after a connect it means "the link is failing", and data,
+  fetches, and writes must carry on; before one it means "still
+  connecting". Screens tell the two apart with `screens/link.rs`
+  (`Link::Unsteady`), and the App with `controller_reachable()`. Only
+  `Disconnected`, `Connecting`, and `Failed` may refuse a write up
+  front. `full_refresh()` is single-flight (`refresh_gate`).
 - **`Tab` belongs to the App.** It always switches screens. Sub-tabs,
   filters, and periods step with `h`/`l` and the left and right arrows
   on every screen; never bind `Tab` in a list screen. A form may use it
@@ -880,8 +936,10 @@ remote-access suggest-port` and `vpn remote-access download-config
   is on: text arrives as one event for the search bar, a prompt, or a
   screen that captures input, and is dropped anywhere else.
 - **Help descriptions have about 24 columns** in the overlay, and key
-  labels have 12. Longer text is cut mid-word, so word it to fit; several
-  screens have a test that holds their descriptions to the column.
+  labels have 12. A longer description wraps onto the next row and a
+  wider key takes a row of its own, so nothing is cut, but both cost
+  rows on an 80x24 terminal. Word them to fit; several screens have a
+  test that holds their keys and descriptions to the column.
 - **Do not close a form before its save lands.** The Networks save is
   App-side: the form locks, closes once the refreshed data has arrived,
   and stays open with the draft and the reason on a failure.
@@ -893,6 +951,24 @@ remote-access suggest-port` and `vpn remote-access download-config
   `Esc` drops the draft. Nothing is written per keypress.
 - **Background fetch failures belong in their panel**, not in a toast on
   a timer. Stats, WiFi, and Alarms carry the error in the screen state.
+- **A late answer must not land on the wrong controller or the wrong
+  moment.** History, alarm, and stats results travel in
+  `Action::MonitorFetched { generation, .. }` and WiFi answers carry
+  the WiFi generation; a result from before a controller switch is
+  dropped where it is handled. A background check that ends in a
+  question (`Action::NetworkDeleteChecked`, the SSID visibility read)
+  asks only if the user is still on that row with nothing open.
+- **Refuse locally, with the reason.** A key the row or the profile's
+  access cannot serve returns an info toast from the screen (`refusal`,
+  `not_ours`, `NEEDS_SESSION`, `NEEDS_INTEGRATION`) and is left out of
+  the hint bar and `help()`. Do not confirm first and fail afterwards.
+- **An unknown setting is not `false`.** The WiFi list is a summary, so
+  the SSIDs tab reads each record (`screens/wifi/ssid_detail.rs`) and
+  draws `Setting::Reading`, `Unknown`, or `Absent` until it knows. A
+  toggle such as `H` reads the record before it asks which way to go.
+- **Locate state follows the controller's answer.** `locating` is
+  updated when the command succeeds, never before it runs, and is
+  cleared on a controller switch.
 - **`Action::ControllerChanged` clears everything a screen holds**: open
   details, forms, drafts, and fetched data. Applying a connection from
   Settings sends it.
@@ -901,14 +977,24 @@ remote-access suggest-port` and `vpn remote-access download-config
   `resolve_session_connection` (a typed password ahead of
   `UNIFI_PASSWORD`; Settings puts the launch flags on top, the wizard
   prefills its steps from them instead), and fails a hybrid connect that
-  only warned. Each test has a generation; a cancelled or replaced one
+  only warned. A launch flag stands down once the form changes a value
+  it covers, and `ApplyConnection` carries the `ConnectionOverrides`
+  the test ran under. `--timeout` and `--no-cache` stay session flags
+  and are never written. A save writes back what the form did not
+  change (`api_key_env`, `host_id_env`, unused-mode credentials) as
+  loaded. Each test has a generation; a cancelled or replaced one
   reports nothing. The save runs after that check, off the UI loop, and
   `ApplyConnection` carries the tested `ControllerConfig`, never one
   rebuilt from the form. A sign-in test never reads the profile's
   session cookie cache: it parks its cookie in a private cache
   (`Handover`), and only a successful save moves it into the profile's,
-  which is how one MFA code serves both the test and the dashboard. In
-  a test build `ProbeSlot` starts nothing, so unit tests hand the
+  which is how one MFA code serves both the test and the dashboard. A
+  discarded test logs its session out through
+  `Controller::logout_session()`, and `forms/parked.rs` sweeps parked
+  cookies whose owner process is gone at launch (not under
+  `--demo-fleet`). In a redacting session the wizard masks every value
+  (`OnboardingScreen::hide_values`). In a test build `ProbeSlot` starts
+  nothing, so unit tests hand the
   screens results directly and never reach the network, the keyring, or
   the real config.
 
