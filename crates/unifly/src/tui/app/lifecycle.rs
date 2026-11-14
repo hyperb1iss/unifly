@@ -54,6 +54,10 @@ impl App {
             );
         }
 
+        // Toasts are drawn over Settings, and a standing one (the failed
+        // connection that sent the user here) would sit on top of the form
+        // it is about. It stays in the notification history.
+        self.notices.dismiss_sticky();
         self.previous_screen = Some(self.active_screen);
         self.install_screen(ScreenId::Settings, screen)?;
         self.set_active_screen(ScreenId::Settings);
@@ -61,7 +65,13 @@ impl App {
         Ok(())
     }
 
+    /// Close Settings. When a warning or error toast is standing over it,
+    /// that goes first, as Esc dismisses it on every other screen.
     pub(super) fn close_settings(&mut self) {
+        if self.active_screen == ScreenId::Settings && self.notices.has_sticky() {
+            self.notices.dismiss_sticky();
+            return;
+        }
         self.screens.remove(&ScreenId::Settings);
         let target = self.previous_screen.take().unwrap_or(ScreenId::Dashboard);
         self.set_active_screen(target);
@@ -220,6 +230,29 @@ mod tests {
                 .expect("dashboard screen should exist")
                 .focused()
         );
+    }
+
+    /// Settings takes every key, so a standing toast over it has no other
+    /// way out: opening Settings clears the ones already up, and Esc
+    /// dismisses one that arrives later before it closes the screen.
+    #[test]
+    fn a_standing_toast_never_traps_the_settings_form() {
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        app.show_notification(Notification::error("connection failed: refused"));
+        assert!(app.notices.has_sticky());
+
+        app.open_settings_with(crate::tui::screens::settings::SettingsScreen::blank)
+            .expect("settings should open");
+        assert!(!app.notices.has_sticky(), "the form is not covered");
+
+        app.show_notification(Notification::warning("certificate expires soon"));
+        app.close_settings();
+        assert_eq!(app.active_screen, ScreenId::Settings, "Esc took the toast");
+        assert!(!app.notices.has_sticky());
+
+        app.close_settings();
+        assert_eq!(app.active_screen, ScreenId::Dashboard);
     }
 
     #[tokio::test]
