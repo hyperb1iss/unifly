@@ -279,6 +279,9 @@ impl App {
         };
         if self.policy_move.swap(true, atomic::Ordering::AcqRel) {
             self.show_notification(Notification::info("A policy move is still in progress"));
+            // This move will not run, so its row goes back; the one in
+            // flight reports for itself.
+            let _ = self.action_tx.send(settle(false));
             return;
         }
 
@@ -594,6 +597,11 @@ mod tests {
                 "A policy move is still in progress"
             ],
             "the progress shows at once and the second press is held"
+        );
+        let held = app.action_rx.try_recv().expect("the held move is settled");
+        assert!(
+            matches!(held, Action::PolicyMoveSettled { moved: false }),
+            "the screen puts the held move's row back: {held:?}"
         );
         let landed = outcome(&mut app).await;
         assert_eq!(landed.message, "Moved policy-2 down");

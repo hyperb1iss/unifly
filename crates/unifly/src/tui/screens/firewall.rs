@@ -91,7 +91,7 @@ impl Component for FirewallScreen {
     fn help(&self) -> Vec<(&'static str, &'static str)> {
         if self.is_drafting() {
             return vec![
-                ("K/J k/j \u{2191}/\u{2193}", "Move the policy up / down"),
+                ("K/J k/j \u{2191}/\u{2193}", "Move it up / down"),
                 ("Enter", "Apply the move"),
                 ("Esc", "Put it back"),
             ];
@@ -104,13 +104,13 @@ impl Component for FirewallScreen {
         ]);
         match self.sub_tab {
             FirewallSubTab::Policies => keys.extend([
-                ("E", "Enable / disable the policy"),
-                ("L", "Turn its logging on / off"),
+                ("E", "Enable / disable"),
+                ("L", "Logging on / off"),
                 ("K/J", "Pick it up to move it"),
                 ("D", "Delete the policy"),
             ]),
             FirewallSubTab::AclRules | FirewallSubTab::NatPolicies => {
-                keys.extend([("E", "Enable / disable the rule"), ("D", "Delete the rule")]);
+                keys.extend([("E", "Enable / disable"), ("D", "Delete the rule")]);
             }
             FirewallSubTab::Zones => {}
         }

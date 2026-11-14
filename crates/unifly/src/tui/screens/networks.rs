@@ -89,7 +89,7 @@ impl Component for NetworksScreen {
                 ("Space", "Flip an on/off field"),
                 ("\u{2190}/\u{2192}", "Move in the text"),
                 ("Home/End", "Start / end of the text"),
-                ("^w  ^u", "Delete a word / to the start"),
+                ("^w  ^u", "Delete word / to start"),
                 ("Enter", "Save"),
                 ("Esc", "Close without saving"),
             ];
