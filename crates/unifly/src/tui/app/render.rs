@@ -622,7 +622,7 @@ const GLOBAL_KEYS: &[(&str, &str)] = &[
     ("1-9", "Jump to screen"),
     ("Tab", "Next screen"),
     ("Shift+Tab", "Previous screen"),
-    ("Esc", "Close / clear filter / back"),
+    ("Esc", "Close, unfilter, or back"),
     ("/", "Search the list"),
     ("^r", "Refresh now, or retry"),
     ("n", "Notifications"),
