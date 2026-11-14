@@ -565,53 +565,97 @@ fn one_failed_refresh_leaves_the_feed_live() {
     ));
 }
 
+/// The history request a key press asked for.
+fn asked(action: Option<Action>) -> (u64, unifly_api::EventHistoryQuery) {
+    match action {
+        Some(Action::RequestEventHistory { id, query }) => (id, query),
+        other => panic!("expected a history request, got {other:?}"),
+    }
+}
+
+fn loaded(
+    screen: &mut EventsScreen,
+    (id, query): (u64, unifly_api::EventHistoryQuery),
+    events: Vec<Arc<Event>>,
+) -> Option<Action> {
+    screen
+        .update(&Action::EventHistoryLoaded {
+            id,
+            query,
+            events: Arc::new(events),
+        })
+        .expect("loaded")
+}
+
+/// `count` events a second apart, ending a minute before `event(0)`.
+fn older_events(count: usize) -> Vec<Arc<Event>> {
+    let first = event(0).timestamp - chrono::Duration::minutes(1);
+    (0..count)
+        .map(|back| {
+            let mut older = (*event(0)).clone();
+            older.id = Some(format!("old-{back}").as_str().into());
+            older.timestamp = first - chrono::Duration::seconds(i64::try_from(back).unwrap_or(0));
+            older.message = format!("older-{back} connected");
+            Arc::new(older)
+        })
+        .collect()
+}
+
 #[test]
-fn older_history_loads_in_widening_windows_without_duplicates() {
+fn older_history_pages_back_from_the_oldest_event_held() {
     let mut screen = connected(FULL);
     receive(&mut screen, 3..6);
 
-    let first = press(&mut screen, KeyCode::Char('o'));
-    assert!(
-        matches!(
-            first,
-            Some(Action::RequestEventHistory {
-                within_hours: 24,
-                limit: 500,
-                include_firewall: false
-            })
-        ),
-        "{first:?}"
+    let first = asked(press(&mut screen, KeyCode::Char('o')));
+    assert_eq!(
+        first.1,
+        unifly_api::EventHistoryQuery {
+            within_hours: 24,
+            limit: 500,
+            include_firewall: false,
+            until: Some(event(3).timestamp),
+        }
     );
-    assert!(draw(&screen).join("\n").contains("loading 24h"));
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("loading 24h of older events"), "{text}");
+    assert!(text.contains("Esc cancel load"), "{text}");
     // A second press while the load is in flight asks for nothing.
     let busy = press(&mut screen, KeyCode::Char('o'));
     assert!(matches!(busy, Some(Action::Invalidate)), "{busy:?}");
 
-    screen
-        .update(&Action::EventHistoryLoaded {
-            within_hours: 24,
-            include_firewall: false,
-            events: Arc::new((0..6).map(event).collect()),
-        })
-        .expect("loaded");
+    assert!(loaded(&mut screen, first, (0..6).map(event).collect()).is_none());
     assert_eq!(screen.feed.len(), 6);
     let text = draw(&screen).join("\n");
     assert!(text.contains("3 more events"), "{text}");
     assert!(shown_events(&screen)[0].contains("client-00"));
+    // The status names the oldest event's own time, not a window.
+    let oldest = event(0)
+        .timestamp
+        .with_timezone(&chrono::Local)
+        .format("back to %m-%d %H:%M")
+        .to_string();
+    assert!(text.contains(&oldest), "{text}");
 
-    let second = press(&mut screen, KeyCode::Char('o'));
-    assert!(
-        matches!(
-            second,
-            Some(Action::RequestEventHistory {
-                within_hours: 72,
-                ..
-            })
-        ),
-        "{second:?}"
-    );
+    // The window came back short, so the next one reaches further, from
+    // the event that is the oldest now.
+    let second = asked(press(&mut screen, KeyCode::Char('o')));
+    assert_eq!(second.1.within_hours, 72);
+    assert_eq!(second.1.until, Some(event(0).timestamp));
+    assert_ne!(second.0, first.0);
+
+    // A failure for a request that is no longer waited on changes nothing.
     screen
-        .update(&Action::EventHistoryFailed("session expired".into()))
+        .update(&Action::EventHistoryFailed {
+            id: first.0,
+            message: "stale".into(),
+        })
+        .expect("stale failure");
+    assert!(screen.history.loading.is_some());
+    screen
+        .update(&Action::EventHistoryFailed {
+            id: second.0,
+            message: "session expired".into(),
+        })
         .expect("failed");
     assert!(
         draw(&screen)
@@ -619,16 +663,94 @@ fn older_history_loads_in_widening_windows_without_duplicates() {
             .contains("history: session expired")
     );
     // The failed window is asked for again.
-    let retry = press(&mut screen, KeyCode::Char('o'));
+    let retry = asked(press(&mut screen, KeyCode::Char('o')));
+    assert_eq!(retry.1.within_hours, 72);
+}
+
+#[test]
+fn a_full_page_stays_on_its_window_and_says_more_remain() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..3);
+
+    let first = asked(press(&mut screen, KeyCode::Char('o')));
+    let page = older_events(500);
+    let oldest = page.last().expect("a page").timestamp;
+    loaded(&mut screen, first, page);
+
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("500 more events, o for more"), "{text}");
+    let next = asked(press(&mut screen, KeyCode::Char('o')));
+    assert_eq!(next.1.within_hours, 24, "the window is not spent yet");
+    assert_eq!(next.1.until, Some(oldest));
+}
+
+#[test]
+fn an_empty_window_widens_by_itself_until_there_is_nothing_older() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..3);
+
+    let mut request = asked(press(&mut screen, KeyCode::Char('o')));
+    let mut windows = vec![request.1.within_hours];
+    // Each empty answer asks for the next window without another press.
+    while let Some(next) = loaded(&mut screen, request, Vec::new()) {
+        assert!(screen.history.loading.is_some(), "still shown as loading");
+        request = asked(Some(next));
+        windows.push(request.1.within_hours);
+    }
+
+    assert_eq!(windows, [24, 72, 168, 720]);
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("no older events in 30d"), "{text}");
+    assert!(!text.contains("nothing more"), "{text}");
+}
+
+#[test]
+fn a_full_feed_says_the_limit_is_why_nothing_older_shows() {
+    let mut screen = connected(FULL);
+    screen.feed = super::feed::Feed::new(6);
+    receive(&mut screen, 10..14);
+
+    // The page fills the feed and its oldest rows have nowhere to go.
+    let request = asked(press(&mut screen, KeyCode::Char('o')));
+    loaded(&mut screen, request, (0..10).map(event).collect());
+    assert_eq!(screen.feed.len(), 6);
+    let text = draw(&screen).join("\n");
     assert!(
-        matches!(
-            retry,
-            Some(Action::RequestEventHistory {
-                within_hours: 72,
-                ..
-            })
-        ),
-        "{retry:?}"
+        text.contains("limit reached: the newest 6 events are kept"),
+        "{text}"
+    );
+
+    // Asking again reads nothing from the controller.
+    let again = press(&mut screen, KeyCode::Char('o'));
+    assert!(matches!(again, Some(Action::Invalidate)), "{again:?}");
+    assert!(screen.history.loading.is_none());
+}
+
+#[test]
+fn esc_cancels_a_load_and_its_late_result_is_dropped() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 3..6);
+    let first = asked(press(&mut screen, KeyCode::Char('o')));
+    assert!(screen.help().iter().any(|(key, _)| *key == "Esc"));
+
+    let cancel = press(&mut screen, KeyCode::Esc);
+    assert!(
+        matches!(cancel, Some(Action::CancelEventHistory)),
+        "{cancel:?}"
+    );
+    assert!(draw(&screen).join("\n").contains("load cancelled"));
+    // With nothing to cancel, Esc is the app's again.
+    assert!(press(&mut screen, KeyCode::Esc).is_none());
+
+    // The result was already on its way: nobody is waiting for it.
+    assert!(loaded(&mut screen, first, (0..3).map(event).collect()).is_none());
+    assert_eq!(screen.feed.len(), 3);
+
+    let second = asked(press(&mut screen, KeyCode::Char('o')));
+    assert_ne!(second.0, first.0);
+    assert_eq!(
+        second.1.within_hours, 24,
+        "the cancelled window is not skipped"
     );
 }
 
@@ -654,32 +776,133 @@ fn firewall_blocks_come_and_go_with_f() {
     let mut screen = connected(FULL);
     receive(&mut screen, 0..3);
 
-    let on = press(&mut screen, KeyCode::Char('f'));
-    assert!(
-        matches!(
-            on,
-            Some(Action::RequestEventHistory {
-                include_firewall: true,
-                ..
-            })
-        ),
-        "{on:?}"
-    );
+    let on = asked(press(&mut screen, KeyCode::Char('f')));
+    assert!(on.1.include_firewall);
+    assert_eq!(on.1.until, None, "the blocks of the span on screen");
     let block = custom(4, "Firewall", "Blocked 203.0.113.9 to nas-vault:445", None);
-    screen
-        .update(&Action::EventHistoryLoaded {
-            within_hours: 24,
-            include_firewall: true,
-            events: Arc::new(vec![event(1), block]),
-        })
-        .expect("loaded");
+    loaded(&mut screen, on, vec![event(1), block]);
     assert_eq!(screen.feed.len(), 4);
-    assert!(draw(&screen).join("\n").contains("+ firewall blocks"));
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("+ blocks"), "{text}");
+    assert!(text.contains("1 firewall block"), "{text}");
+    assert!(!text.contains("1 firewall blocks"), "{text}");
+
+    // Older pages bring their blocks along while blocks are on.
+    let older = asked(press(&mut screen, KeyCode::Char('o')));
+    assert!(older.1.include_firewall);
+    press(&mut screen, KeyCode::Esc);
 
     let off = press(&mut screen, KeyCode::Char('f'));
     assert!(matches!(off, Some(Action::Invalidate)), "{off:?}");
     assert_eq!(screen.feed.len(), 3);
     assert!(!draw(&screen).join("\n").contains("Blocked 203.0.113.9"));
+}
+
+#[test]
+fn firewall_blocks_are_on_only_once_their_load_succeeds() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..3);
+
+    let on = asked(press(&mut screen, KeyCode::Char('f')));
+    assert!(!screen.history.include_firewall, "asking is not having");
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("loading firewall blocks"), "{text}");
+    assert!(!text.contains("+ blocks"), "{text}");
+    // `f` does nothing while the load runs, in either direction.
+    let busy = press(&mut screen, KeyCode::Char('f'));
+    assert!(matches!(busy, Some(Action::Invalidate)), "{busy:?}");
+    assert!(screen.history.loading.is_some());
+
+    screen
+        .update(&Action::EventHistoryFailed {
+            id: on.0,
+            message: "forbidden".into(),
+        })
+        .expect("failed");
+    assert!(!screen.history.include_firewall);
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("history: forbidden"), "{text}");
+    assert!(!text.contains("firewall blocks"), "{text}");
+
+    // The next press asks again, and an older page leaves blocks out.
+    let older = asked(press(&mut screen, KeyCode::Char('o')));
+    assert!(!older.1.include_firewall);
+    press(&mut screen, KeyCode::Esc);
+    let again = asked(press(&mut screen, KeyCode::Char('f')));
+    assert!(again.1.include_firewall);
+}
+
+#[test]
+fn a_paused_feed_holds_its_rows_when_older_history_lands() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 20..50);
+    press(&mut screen, KeyCode::Char(' '));
+    for _ in 0..8 {
+        press(&mut screen, KeyCode::Char('k'));
+    }
+    let before = shown_events(&screen);
+    let cursor = screen.selected().expect("cursor").message.clone();
+
+    let request = asked(press(&mut screen, KeyCode::Char('o')));
+    loaded(&mut screen, request, (0..20).map(event).collect());
+
+    assert_eq!(screen.feed.len(), 50);
+    assert_eq!(shown_events(&screen), before, "no row moved");
+    assert_eq!(screen.selected().expect("cursor").message, cursor);
+}
+
+#[test]
+fn a_paused_feed_at_its_cap_holds_its_rows_as_new_events_arrive() {
+    let mut screen = connected(FULL);
+    screen.feed = super::feed::Feed::new(40);
+    receive(&mut screen, 10..50);
+    press(&mut screen, KeyCode::Char(' '));
+    let before = shown_events(&screen);
+    let cursor = screen.selected().expect("cursor").message.clone();
+
+    // Each arrival pushes the oldest event out of a full feed.
+    receive(&mut screen, 50..55);
+
+    assert_eq!(screen.feed.len(), 40);
+    assert_eq!(shown_events(&screen), before, "no row moved");
+    assert_eq!(screen.selected().expect("cursor").message, cursor);
+}
+
+#[test]
+fn a_detail_closes_when_its_event_falls_off_a_full_feed() {
+    let mut screen = connected(FULL);
+    screen.feed = super::feed::Feed::new(5);
+    receive(&mut screen, 0..5);
+    press(&mut screen, KeyCode::Char('g'));
+    press(&mut screen, KeyCode::Enter);
+    assert!(screen.detail_open);
+    assert_eq!(
+        screen.selected().expect("cursor").message,
+        "client-00 connected"
+    );
+
+    receive(&mut screen, [5]);
+
+    assert!(!screen.detail_open, "the event it described is gone");
+    assert_eq!(
+        screen.selected().expect("cursor").message,
+        "client-01 connected"
+    );
+}
+
+#[test]
+fn p_says_why_the_heatmap_cannot_show_on_a_small_terminal() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..40);
+    render_lines(100, 12, |frame, area| screen.render(frame, area));
+
+    let refused = press(&mut screen, KeyCode::Char('p'));
+    assert!(matches!(refused, Some(Action::Notify(_))), "{refused:?}");
+    assert_eq!(screen.heatmap, None, "nothing was toggled");
+
+    render_lines(100, 30, |frame, area| screen.render(frame, area));
+    let toggled = press(&mut screen, KeyCode::Char('p'));
+    assert!(matches!(toggled, Some(Action::Invalidate)), "{toggled:?}");
 }
 
 #[test]

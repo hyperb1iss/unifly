@@ -56,6 +56,7 @@ pub async fn handle(
                     within_hours: within,
                     limit,
                     include_firewall,
+                    until: None,
                 })
                 .await?;
             let out = output::render_list(

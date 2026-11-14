@@ -45,8 +45,9 @@ const CATEGORIES: [EventCategory; 8] = [
     EventCategory::Unknown,
 ];
 
-/// How far back each press of `o` reaches, in hours, and how many events
-/// it asks for.
+/// How far back of the oldest event held each load of older history
+/// reaches, in hours, and how many events it asks for. A load that finds
+/// nothing moves on to the next, wider step by itself.
 const HISTORY_STEPS: [(u32, u32); 4] = [(24, 500), (72, 1_000), (168, 2_500), (720, 5_000)];
 
 /// The screen's two lists.
@@ -59,14 +60,40 @@ enum View {
     Alarms,
 }
 
-/// The history window the feed has been filled from.
+/// What a history load is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryLoad {
+    /// Events older than the oldest one held.
+    Older,
+    /// The firewall blocks of the span the feed already covers.
+    Firewall,
+}
+
+/// A history load in flight.
+#[derive(Debug, Clone, Copy)]
+struct PendingHistory {
+    /// Names the request, so a result that arrives after a cancel, or for
+    /// an earlier request, is not taken for this one's.
+    id: u64,
+    load: HistoryLoad,
+    /// Hours the load reaches back.
+    hours: u32,
+}
+
+/// Older history loaded into the feed on request.
 #[derive(Debug, Default)]
 struct History {
-    /// Index into [`HISTORY_STEPS`] of the widest window loaded so far.
-    loaded: Option<usize>,
+    /// Index into [`HISTORY_STEPS`] of the window the next load asks for.
+    step: usize,
+    /// Whether a load has come back, so the status says how far the feed
+    /// reaches.
+    loaded: bool,
+    /// Whether firewall blocks are loaded. Set by the load that brings
+    /// them, never by asking.
     include_firewall: bool,
-    /// Hours the load in flight reaches back.
-    loading: Option<u32>,
+    loading: Option<PendingHistory>,
+    /// The id the last request went out under.
+    last_id: u64,
     /// The outcome of the last load, shown until the next one.
     note: Option<String>,
 }
@@ -80,6 +107,10 @@ pub struct EventsScreen {
     /// The first filtered row drawn while paused, kept so the list holds
     /// still as the cursor moves inside it.
     top: Cell<usize>,
+    /// Index into the feed of the event that row shows. It follows its
+    /// event as others land before it, as the cursor does, so a history
+    /// load or an eviction does not slide the rows.
+    anchor: Cell<usize>,
     /// Rows the list drew last frame, for paging.
     page: Cell<usize>,
     /// Events that arrived since the feed was paused.
@@ -92,6 +123,8 @@ pub struct EventsScreen {
     heatmap: Option<bool>,
     /// Whether the last frame drew the heatmap.
     heatmap_shown: Cell<bool>,
+    /// Whether the last frame had room for the heatmap.
+    heatmap_fits: Cell<bool>,
     access: Option<Access>,
     link: Link,
     history: History,

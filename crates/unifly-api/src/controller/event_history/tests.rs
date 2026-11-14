@@ -348,6 +348,113 @@ async fn legacy_pagination_counts_filtered_raw_rows_and_keeps_ips() {
     assert_eq!(ids(&events), ["ips"]);
 }
 
+#[tokio::test]
+async fn an_end_bound_pages_the_system_log_from_that_moment_back() {
+    let (server, client) = setup().await;
+    // The oldest event a caller holds: it asks for the 72 hours before.
+    let until = Utc::now() - chrono::Duration::days(5);
+    let until_ms = until.timestamp_millis();
+    let mut older = event("older", "CLIENT_CONNECTION");
+    older["timestamp"] = json!(until_ms - 60_000);
+    let mut at_bound = event("at-bound", "CLIENT_CONNECTION");
+    at_bound["timestamp"] = json!(until_ms);
+    let mut newer = event("newer", "CLIENT_CONNECTION");
+    newer["timestamp"] = json!(until_ms + 1);
+    Mock::given(method("POST"))
+        .and(path(MODERN))
+        .and(wiremock::matchers::body_json(json!({
+            "timestampFrom": until_ms - 72 * 3_600_000,
+            "timestampTo": until_ms,
+            "pageNumber": 0,
+            "pageSize": 1000,
+            "sortByField": "TIMESTAMP",
+            "sortDirection": "DESCENDING"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [newer, at_bound, older],
+            "page_number": 0,
+            "total_page_count": 1,
+            "total_element_count": 3
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let events = fetch_events(
+        &client,
+        EventHistoryQuery {
+            within_hours: 72,
+            limit: 500,
+            until: Some(until),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("history");
+
+    // A row past the bound is dropped even if the controller sends it.
+    assert_eq!(ids(&events), ["at-bound", "older"]);
+}
+
+#[tokio::test]
+async fn an_end_bound_on_a_legacy_controller_asks_back_from_now_and_filters() {
+    let (server, client) = setup().await;
+    Mock::given(method("POST"))
+        .and(path(MODERN))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // `stat/event` only counts back from now: a 24-hour window that ended
+    // 47.5 hours ago starts 71.5 hours back, so the last 72 hours are
+    // asked for and the newest 47.5 left out.
+    let now = Utc::now();
+    let until = now - chrono::Duration::minutes(47 * 60 + 30);
+    let row = |id: &str, hours_ago: i64| {
+        json!({
+            "_id": id,
+            "time": (now - chrono::Duration::hours(hours_ago)).timestamp_millis(),
+            "msg": id
+        })
+    };
+    Mock::given(method("POST"))
+        .and(path(LEGACY))
+        .and(wiremock::matchers::body_json(json!({
+            "_sort": "-time", "within": 72, "type": null, "_start": 0, "_limit": 1000
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "meta": {"rc": "ok"},
+            "data": [row("too-new", 1), row("wanted", 50), row("too-old", 80)]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let events = fetch_events(
+        &client,
+        EventHistoryQuery {
+            within_hours: 24,
+            until: Some(until),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("history");
+
+    assert_eq!(ids(&events), ["wanted"]);
+}
+
+#[test]
+fn an_end_bound_in_the_future_is_now() {
+    let ahead = Utc::now() + chrono::Duration::hours(3);
+    let history = History::new(EventHistoryQuery {
+        until: Some(ahead),
+        ..Default::default()
+    });
+    assert!(history.end <= Utc::now().timestamp_millis());
+    assert_eq!(history.end - history.start, 24 * 3_600_000);
+}
+
 #[test]
 fn huge_history_window_clamps_to_epoch() {
     let history = History::new(EventHistoryQuery {
@@ -398,10 +505,23 @@ async fn demo_history_remains_offline_and_obeys_limit_and_visibility() {
             limit: 2000,
             within_hours: 168,
             include_firewall: true,
+            until: None,
         })
         .await
         .expect("demo history");
     assert!(!filtered.is_empty());
+    // An end bound pages the demo's history too.
+    let oldest = filtered.last().expect("an event").timestamp;
+    let before = controller
+        .list_events(EventHistoryQuery {
+            limit: 2000,
+            within_hours: 168,
+            until: Some(oldest),
+            ..Default::default()
+        })
+        .await
+        .expect("demo history");
+    assert!(before.iter().all(|event| event.timestamp <= oldest));
     assert!(
         filtered
             .iter()

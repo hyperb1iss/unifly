@@ -36,6 +36,9 @@ pub(super) struct MonitorState {
     pub(super) dpi: Option<(Instant, super::stats::DpiSnapshot)>,
     /// When alarms were last asked for.
     alarms_fetched_at: Option<Instant>,
+    /// The history fetch in flight, aborted when it is cancelled or a
+    /// newer one replaces it.
+    history_task: Option<AbortHandle>,
     /// The controller connected and has not been lost since. A failed
     /// refresh leaves this set: the clients are still up.
     connected: bool,
@@ -77,7 +80,13 @@ impl App {
                 return Ok(false);
             }
             Action::ControllerChanged => {
-                if let Some(task) = self.monitor.stats_task.take() {
+                for task in [
+                    self.monitor.stats_task.take(),
+                    self.monitor.history_task.take(),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     task.abort();
                 }
                 // Whatever is still in flight was asked of the controller
@@ -109,17 +118,14 @@ impl App {
             Action::StatsLoading(_) | Action::StatsFailed { .. } => {
                 self.forward_to_screen(ScreenId::Stats, action)?;
             }
-            Action::RequestEventHistory {
-                within_hours,
-                limit,
-                include_firewall,
-            } => self.fetch_event_history(EventHistoryQuery {
-                within_hours: *within_hours,
-                limit: *limit,
-                include_firewall: *include_firewall,
-            }),
-            Action::EventHistoryLoaded { .. } | Action::EventHistoryFailed(_) => {
+            Action::RequestEventHistory { id, query } => self.fetch_event_history(*id, *query),
+            Action::EventHistoryLoaded { .. } | Action::EventHistoryFailed { .. } => {
                 self.forward_to_screen(ScreenId::Events, action)?;
+            }
+            Action::CancelEventHistory => {
+                if let Some(task) = self.monitor.history_task.take() {
+                    task.abort();
+                }
             }
             Action::RequestAlarms => self.fetch_alarms(),
             Action::AlarmsLoaded(_) | Action::AlarmsFailed(_) => {
@@ -257,15 +263,23 @@ impl App {
     }
 
     /// Fetch a window of event history and hand it to the Events screen.
-    fn fetch_event_history(&self, query: EventHistoryQuery) {
+    /// One runs at a time: a walk through a busy controller's log can
+    /// take minutes, and the screen can cancel it.
+    fn fetch_event_history(&mut self, id: u64, query: EventHistoryQuery) {
+        if let Some(task) = self.monitor.history_task.take() {
+            task.abort();
+        }
         let tx = self.action_tx.clone();
         let Some(controller) = self.controller.clone() else {
-            let _ = tx.send(Action::EventHistoryFailed("not connected".into()));
+            let _ = tx.send(Action::EventHistoryFailed {
+                id,
+                message: "not connected".into(),
+            });
             return;
         };
         let sanitizer = self.sanitizer.clone();
         let fenced = self.fenced();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let action = match controller.list_events(query).await {
                 Ok(events) => {
                     let events: Vec<_> = events.into_iter().map(Arc::new).collect();
@@ -274,18 +288,22 @@ impl App {
                         None => events,
                     };
                     Action::EventHistoryLoaded {
-                        within_hours: query.within_hours,
-                        include_firewall: query.include_firewall,
+                        id,
+                        query,
                         events: Arc::new(events),
                     }
                 }
-                Err(error) => Action::EventHistoryFailed(match &sanitizer {
-                    Some(sanitizer) => sanitizer.sanitize_text(&error.to_string()),
-                    None => error.to_string(),
-                }),
+                Err(error) => Action::EventHistoryFailed {
+                    id,
+                    message: match &sanitizer {
+                        Some(sanitizer) => sanitizer.sanitize_text(&error.to_string()),
+                        None => error.to_string(),
+                    },
+                },
             };
             let _ = tx.send(fenced(action));
         });
+        self.monitor.history_task = Some(task.abort_handle());
     }
 }
 
@@ -352,9 +370,12 @@ mod tests {
     async fn a_history_request_comes_back_as_events_for_the_events_screen() {
         let mut app = demo_app().await;
         app.process_action(&Action::RequestEventHistory {
-            within_hours: 24 * 30,
-            limit: 50,
-            include_firewall: false,
+            id: 1,
+            query: EventHistoryQuery {
+                within_hours: 24 * 30,
+                limit: 50,
+                ..EventHistoryQuery::default()
+            },
         })
         .expect("request");
 
@@ -457,9 +478,11 @@ mod tests {
     async fn a_result_that_outlives_its_controller_is_dropped() {
         let mut app = demo_app().await;
         app.process_action(&Action::RequestEventHistory {
-            within_hours: 24,
-            limit: 50,
-            include_firewall: false,
+            id: 1,
+            query: EventHistoryQuery {
+                limit: 50,
+                ..EventHistoryQuery::default()
+            },
         })
         .expect("request");
         let asked_under = app.monitor.generation;
@@ -484,6 +507,28 @@ mod tests {
         let current = app.fenced()(Action::Quit);
         app.process_action(&current).expect("current result");
         assert!(!app.running, "a result for this controller is acted on");
+    }
+
+    #[tokio::test]
+    async fn one_history_load_runs_at_a_time_and_a_cancel_stops_it() {
+        let mut app = demo_app().await;
+        let request = |id| Action::RequestEventHistory {
+            id,
+            query: EventHistoryQuery::default(),
+        };
+        app.process_action(&request(1)).expect("first");
+        let first = app.monitor.history_task.clone().expect("a load started");
+        app.process_action(&request(2)).expect("second");
+        let second = app.monitor.history_task.clone().expect("a newer load");
+        // Aborting is asynchronous: give the runtime a turn to act on it.
+        tokio::task::yield_now().await;
+        assert!(first.is_finished(), "the load it replaced was stopped");
+
+        app.process_action(&Action::CancelEventHistory)
+            .expect("cancel");
+        assert!(app.monitor.history_task.is_none());
+        tokio::task::yield_now().await;
+        assert!(second.is_finished());
     }
 
     #[tokio::test]
@@ -544,15 +589,17 @@ mod tests {
     fn a_history_request_without_a_controller_fails_inline() {
         let mut app = App::new(None, None, false, true);
         app.process_action(&Action::RequestEventHistory {
-            within_hours: 24,
-            limit: 50,
-            include_firewall: false,
+            id: 1,
+            query: EventHistoryQuery {
+                limit: 50,
+                ..EventHistoryQuery::default()
+            },
         })
         .expect("request");
 
         let failed = app.action_rx.try_recv().expect("a failure is reported");
         assert!(
-            matches!(failed, Action::EventHistoryFailed(_)),
+            matches!(failed, Action::EventHistoryFailed { id: 1, .. }),
             "{failed:?}"
         );
     }

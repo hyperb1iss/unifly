@@ -167,6 +167,7 @@ impl EventsScreen {
         let left = free.saturating_sub(detail_height);
         let list_rows = left.saturating_sub(PUNCHCARD_HEIGHT);
         let fits = left > PUNCHCARD_HEIGHT && list_rows >= MIN_LIST_ROWS && width >= 48;
+        self.heatmap_fits.set(fits);
         let wanted = self
             .heatmap
             .unwrap_or(list_rows >= ROOMY_LIST_ROWS && detail_height == 0);
@@ -199,21 +200,36 @@ impl EventsScreen {
                 Style::default().fg(theme::warning()),
             )),
         }
-        if self.history.loaded.is_some() || self.history.include_firewall {
-            let (hours, _) = self.history_window();
-            let mut window = format!("  \u{00B7}  history {}", window_label(hours));
-            if self.history.include_firewall {
-                window.push_str(" + firewall blocks");
-            }
-            spans.push(Span::styled(window, muted));
-        }
-        if let Some(hours) = self.history.loading {
+        // A load and its outcome come before the steady facts: a narrow
+        // terminal cuts the end of the line.
+        if let Some(pending) = self.history.loading {
+            let what = match pending.load {
+                super::HistoryLoad::Older => {
+                    format!("loading {} of older events", window_label(pending.hours))
+                }
+                super::HistoryLoad::Firewall => "loading firewall blocks".to_owned(),
+            };
             spans.push(Span::styled(
-                format!("  \u{00B7}  loading {}\u{2026}", window_label(hours)),
+                format!("  \u{00B7}  {what}\u{2026} Esc cancels"),
                 Style::default().fg(theme::warning()),
             ));
         } else if let Some(note) = &self.history.note {
             spans.push(Span::styled(format!("  \u{00B7}  {note}"), muted));
+        }
+        // How far back the feed really reaches, not the window asked for.
+        let reach = self.history_reach().map(|oldest| {
+            format!(
+                "back to {}",
+                oldest.with_timezone(&Local).format("%m-%d %H:%M")
+            )
+        });
+        let blocks = self.history.include_firewall.then_some("blocks");
+        let covers: Vec<&str> = reach.as_deref().into_iter().chain(blocks).collect();
+        if !covers.is_empty() {
+            spans.push(Span::styled(
+                format!("  \u{00B7}  {}", covers.join(" + ")),
+                muted,
+            ));
         }
         if !self.search.is_empty() {
             spans.push(Span::styled("  \u{00B7}  /", muted));
@@ -330,17 +346,18 @@ impl EventsScreen {
     /// cursor on screen, never past either end.
     fn first_row(&self, view: &[usize], rows: usize) -> usize {
         let last_first = view.len().saturating_sub(rows);
-        if !self.paused {
-            self.top.set(last_first);
-            return last_first;
-        }
-        let cursor = self.cursor_row(view);
-        let first = self
-            .top
-            .get()
-            .clamp((cursor + 1).saturating_sub(rows), cursor)
-            .min(last_first);
+        let first = if self.paused {
+            // The row the anchored event is on now, wherever arrivals and
+            // evictions have moved it.
+            let cursor = self.cursor_row(view);
+            view.partition_point(|index| *index < self.anchor.get())
+                .clamp((cursor + 1).saturating_sub(rows), cursor)
+                .min(last_first)
+        } else {
+            last_first
+        };
         self.top.set(first);
+        self.anchor.set(view.get(first).copied().unwrap_or(0));
         first
     }
 
@@ -397,7 +414,14 @@ impl EventsScreen {
             if self.paused { "resume" } else { "pause" },
             click::char_key(' '),
         );
-        let hints = if self.detail_open {
+        let hints = if self.history.loading.is_some() && !self.detail_open {
+            vec![
+                Hint::button("Esc", "cancel load", crossterm::event::KeyCode::Esc),
+                pause,
+                Hint::info("j/k", if self.paused { "move" } else { "scroll" }),
+                Hint::button("Enter", "details", crossterm::event::KeyCode::Enter),
+            ]
+        } else if self.detail_open {
             let mut hints = vec![
                 Hint::button("Esc", "close", crossterm::event::KeyCode::Esc),
                 Hint::info("j/k", "move"),

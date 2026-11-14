@@ -75,6 +75,16 @@ impl Feed {
         self.events.is_empty()
     }
 
+    /// How many events the buffer keeps.
+    pub(in crate::tui::screens) fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Whether another event can only come in by pushing the oldest out.
+    pub(in crate::tui::screens) fn is_full(&self) -> bool {
+        self.events.len() >= self.capacity
+    }
+
     pub(in crate::tui::screens) fn get(&self, index: usize) -> Option<&Arc<Event>> {
         self.events.get(index)
     }

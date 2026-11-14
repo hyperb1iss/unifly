@@ -92,6 +92,10 @@ pub(crate) struct SpeedTest {
     pub(crate) ping_ms: u64,
 }
 
+/// The event type of a firewall block, which history queries leave out
+/// unless asked.
+pub(crate) const FIREWALL_BLOCK: &str = "EVT_GW_FirewallBlock";
+
 pub(crate) struct Simulation {
     pub(crate) fleet: Fleet,
     pub(crate) rng: DemoRng,
@@ -210,7 +214,16 @@ impl Simulation {
             dns: Some(Vec::new()),
             vouchers: Some(Vec::new()),
             sites: vec![fleet.site.clone()],
-            events: Some(fleet.events.clone()),
+            // A refresh lists events without firewall blocks, which are
+            // read only when history is asked for them.
+            events: Some(
+                fleet
+                    .events
+                    .iter()
+                    .filter(|event| event.event_type != FIREWALL_BLOCK)
+                    .cloned()
+                    .collect(),
+            ),
             traffic_matching_lists: Vec::new(),
             firewall_groups: Some(Vec::new()),
         }

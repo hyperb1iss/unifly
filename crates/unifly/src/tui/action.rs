@@ -9,7 +9,8 @@ use unifly_api::model::{
 };
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
-    Client, CreateNetworkRequest, Device, EntityId, Event, Network, Site, UpdateNetworkRequest,
+    Client, CreateNetworkRequest, Device, EntityId, Event, EventHistoryQuery, Network, Site,
+    UpdateNetworkRequest,
 };
 
 use crate::tui::screen::ScreenId;
@@ -607,19 +608,24 @@ pub enum Action {
     /// The regulatory channel list could not be read.
     WifiChannelsFailed(String),
     // ── monitor ───────────────────────────────────────────────────
-    /// Fetch events from further back than the feed holds.
+    /// Fetch events from further back than the feed holds. `id` names the
+    /// request, so its result can be told from one that was cancelled.
     RequestEventHistory {
-        within_hours: u32,
-        limit: u32,
-        include_firewall: bool,
+        id: u64,
+        query: EventHistoryQuery,
     },
     /// The events a history fetch returned, for the Events screen to merge.
     EventHistoryLoaded {
-        within_hours: u32,
-        include_firewall: bool,
+        id: u64,
+        query: EventHistoryQuery,
         events: Arc<Vec<Arc<Event>>>,
     },
-    EventHistoryFailed(String),
+    EventHistoryFailed {
+        id: u64,
+        message: String,
+    },
+    /// Stop the history fetch in flight.
+    CancelEventHistory,
     /// Fetch the controller's alarms.
     RequestAlarms,
     AlarmsLoaded(Arc<Vec<Alarm>>),

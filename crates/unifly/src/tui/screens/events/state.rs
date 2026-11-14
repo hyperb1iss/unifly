@@ -6,7 +6,7 @@ use unifly_api::Event;
 use unifly_api::model::EventCategory;
 
 use super::feed::{EventKey, Feed};
-use super::{CAPACITY, EventsScreen, HISTORY_STEPS, History};
+use super::{CAPACITY, EventsScreen, HISTORY_STEPS, History, HistoryLoad, PendingHistory};
 use crate::tui::action::Action;
 use crate::tui::screens::link::Link;
 
@@ -18,6 +18,7 @@ impl EventsScreen {
             paused: false,
             cursor: 0,
             top: Cell::new(0),
+            anchor: Cell::new(0),
             page: Cell::new(10),
             unseen: 0,
             category: None,
@@ -25,6 +26,7 @@ impl EventsScreen {
             detail_open: false,
             heatmap: None,
             heatmap_shown: Cell::new(false),
+            heatmap_fits: Cell::new(true),
             access: None,
             link: Link::default(),
             history: History::default(),
@@ -194,18 +196,30 @@ impl EventsScreen {
         if !self.paused {
             return true;
         }
-        // The cursor names a feed index, so it follows its event when one
-        // lands before it or the oldest falls off the front.
-        let mut cursor = self.cursor;
-        if landed.evicted {
-            cursor = cursor.saturating_sub(1);
+        // The cursor and the first drawn row name feed indices, so each
+        // follows its event when one lands before it or the oldest falls
+        // off the front.
+        let last = self.feed.len().saturating_sub(1);
+        let follow = |index: usize| {
+            let index = if landed.evicted {
+                index.saturating_sub(1)
+            } else {
+                index
+            };
+            let pushed = landed.at <= index && last > 0;
+            ((index + usize::from(pushed)).min(last), pushed)
+        };
+        // The cursor's own event fell off the front: a detail open on it
+        // would go on to describe the event that took its place.
+        if landed.evicted && self.cursor == 0 {
+            self.detail_open = false;
         }
-        if landed.at <= cursor && self.feed.len() > 1 {
-            cursor += 1;
-        } else if live && self.passes(event, &self.search.to_lowercase()) {
+        let (cursor, pushed) = follow(self.cursor);
+        if !pushed && live && self.passes(event, &self.search.to_lowercase()) {
             self.unseen += 1;
         }
-        self.cursor = cursor.min(self.feed.len().saturating_sub(1));
+        self.cursor = cursor;
+        self.anchor.set(follow(self.anchor.get()).0);
         true
     }
 
@@ -214,14 +228,14 @@ impl EventsScreen {
             Action::EventReceived(event) => {
                 self.receive(event, true);
             }
-            Action::EventHistoryLoaded {
-                within_hours,
-                include_firewall,
-                events,
-            } => self.history_loaded(*within_hours, *include_firewall, events),
-            Action::EventHistoryFailed(message) => {
-                self.history.loading = None;
-                self.history.note = Some(format!("history: {message}"));
+            Action::EventHistoryLoaded { id, query, events } => {
+                return self.history_loaded(*id, query, events);
+            }
+            Action::EventHistoryFailed { id, message } => {
+                if self.history.loading.is_some_and(|load| load.id == *id) {
+                    self.history.loading = None;
+                    self.history.note = Some(format!("history: {message}"));
+                }
             }
             Action::ToggleEventPause => self.toggle_pause(),
             Action::AlarmsLoaded(alarms) => self.alarms.loaded(alarms),
@@ -253,57 +267,156 @@ impl EventsScreen {
         None
     }
 
-    fn history_loaded(&mut self, within_hours: u32, include_firewall: bool, events: &[Arc<Event>]) {
+    /// Merge what a history load returned. A result nobody is waiting for
+    /// (the load was cancelled, or a newer one replaced it) is dropped.
+    fn history_loaded(
+        &mut self,
+        id: u64,
+        query: &unifly_api::EventHistoryQuery,
+        events: &[Arc<Event>],
+    ) -> Option<Action> {
+        let pending = self.history.loading.filter(|load| load.id == id)?;
+        self.history.loading = None;
+        self.history.loaded = true;
         let mut added = 0_usize;
         for event in events {
             if !self.receive(event, false) {
                 continue;
             }
             added += 1;
-            if include_firewall && event.category == EventCategory::Firewall {
+            if query.include_firewall && event.category == EventCategory::Firewall {
                 self.firewall_extra.insert(EventKey::of(event));
             }
         }
-        self.history.loading = None;
-        let step = HISTORY_STEPS
-            .iter()
-            .position(|(hours, _)| *hours == within_hours);
-        self.history.loaded = self.history.loaded.max(step);
-        self.history.note = Some(match added {
-            0 => "nothing more".into(),
-            1 => "1 more event".into(),
-            count => format!("{count} more events"),
+        // Blocks are on once a load that asked for them has come back.
+        self.history.include_firewall |= query.include_firewall;
+        let hit_limit = events.len() >= usize::try_from(query.limit).unwrap_or(usize::MAX);
+        if pending.load == HistoryLoad::Firewall {
+            let blocks = self.firewall_extra.len();
+            self.history.note = Some(match (blocks, hit_limit) {
+                (0, _) => "no firewall blocks in this span".into(),
+                (1, false) => "1 firewall block".into(),
+                (blocks, false) => format!("{blocks} firewall blocks"),
+                (blocks, true) => format!("{blocks} firewall blocks, limit reached"),
+            });
+            return None;
+        }
+
+        let last_step = HISTORY_STEPS.len() - 1;
+        if added == 0 && !self.feed.is_full() && self.history.step < last_step {
+            // Nothing in this window: look further back without making
+            // the user ask again.
+            self.history.step += 1;
+            return Some(self.request_older());
+        }
+        if !hit_limit {
+            // The window is spent, so the next load reaches further.
+            self.history.step = (self.history.step + 1).min(last_step);
+        }
+        self.history.note = Some(if self.feed.is_full() {
+            self.cap_note()
+        } else {
+            match (added, hit_limit) {
+                (0, _) => format!("no older events in {}", window_label(query.within_hours)),
+                (1, false) => "1 more event".into(),
+                (count, false) => format!("{count} more events"),
+                (count, true) => format!("{count} more events, o for more"),
+            }
         });
+        None
     }
 
-    /// The next, wider history window to ask for: `(hours, limit)`.
-    pub(super) fn next_history_window(&self) -> (u32, u32) {
-        let step = self
-            .history
+    /// Ask for the window of history before the oldest event held.
+    pub(super) fn request_older(&mut self) -> Action {
+        let (within_hours, limit) = HISTORY_STEPS[self.history.step];
+        self.request_history(
+            HistoryLoad::Older,
+            unifly_api::EventHistoryQuery {
+                within_hours,
+                limit,
+                include_firewall: self.history.include_firewall,
+                until: self.feed.events().front().map(|oldest| oldest.timestamp),
+            },
+        )
+    }
+
+    /// Ask for the firewall blocks of the span the feed covers.
+    pub(super) fn request_firewall_blocks(&mut self) -> Action {
+        let (widest, limit) = HISTORY_STEPS[HISTORY_STEPS.len() - 1];
+        let span_hours = self.feed.events().front().map_or(24, |oldest| {
+            let hours = (chrono::Utc::now() - oldest.timestamp).num_hours() + 1;
+            u32::try_from(hours).unwrap_or(widest).clamp(1, widest)
+        });
+        self.request_history(
+            HistoryLoad::Firewall,
+            unifly_api::EventHistoryQuery {
+                within_hours: span_hours,
+                limit,
+                include_firewall: true,
+                until: None,
+            },
+        )
+    }
+
+    fn request_history(
+        &mut self,
+        load: HistoryLoad,
+        query: unifly_api::EventHistoryQuery,
+    ) -> Action {
+        self.history.last_id += 1;
+        let id = self.history.last_id;
+        self.history.loading = Some(PendingHistory {
+            id,
+            load,
+            hours: query.within_hours,
+        });
+        self.history.note = None;
+        Action::RequestEventHistory { id, query }
+    }
+
+    /// What the status says when the feed is full, which is why nothing
+    /// older can be shown.
+    pub(super) fn cap_note(&self) -> String {
+        format!(
+            "limit reached: the newest {} events are kept",
+            self.feed.capacity()
+        )
+    }
+
+    /// Stop waiting for the history load in flight.
+    pub(super) fn cancel_history(&mut self) -> Action {
+        self.history.loading = None;
+        self.history.note = Some("load cancelled".into());
+        Action::CancelEventHistory
+    }
+
+    /// When the oldest event held happened, once history has been loaded.
+    pub(super) fn history_reach(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.history
             .loaded
-            .map_or(0, |step| (step + 1).min(HISTORY_STEPS.len() - 1));
-        HISTORY_STEPS[step]
-    }
-
-    /// The window the feed has been filled from so far: `(hours, limit)`.
-    pub(super) fn history_window(&self) -> (u32, u32) {
-        HISTORY_STEPS[self.history.loaded.unwrap_or(0)]
+            .then(|| self.feed.events().front().map(|oldest| oldest.timestamp))
+            .flatten()
     }
 
     /// Take back out the firewall blocks a history load brought in.
     pub(super) fn drop_firewall_blocks(&mut self) -> usize {
         let extra = std::mem::take(&mut self.firewall_extra);
-        let cursor_key = self.feed.get(self.cursor).map(|event| EventKey::of(event));
+        let key_at = |feed: &Feed, index: usize| feed.get(index).map(|event| EventKey::of(event));
+        let cursor_key = key_at(&self.feed, self.cursor);
+        let anchor_key = key_at(&self.feed, self.anchor.get());
         let dropped = self
             .feed
             .remove_where(|event| extra.contains(&EventKey::of(event)));
-        // Indices shifted: find the cursor's event again, or the one that
-        // took its place.
+        // Indices shifted: find the cursor's event and the first drawn
+        // row's again, or the ones that took their places.
         if self.paused && dropped > 0 {
             let events = self.feed.events();
-            self.cursor = cursor_key
-                .and_then(|key| events.iter().position(|event| EventKey::of(event) == key))
-                .unwrap_or_else(|| self.cursor.min(events.len().saturating_sub(1)));
+            let find = |key: Option<EventKey>, was: usize| {
+                key.and_then(|key| events.iter().position(|event| EventKey::of(event) == key))
+                    .unwrap_or_else(|| was.min(events.len().saturating_sub(1)))
+            };
+            self.cursor = find(cursor_key, self.cursor);
+            self.anchor.set(find(anchor_key, self.anchor.get()));
             self.refilter();
         }
         dropped
