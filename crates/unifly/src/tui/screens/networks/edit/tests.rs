@@ -251,7 +251,7 @@ fn a_prefix_and_a_dhcp_range_are_ones_the_controller_takes() {
 }
 
 /// A new network with no gateway address is created VLAN-only, which
-/// has neither setting. They used to be dropped without a word.
+/// has neither setting. Saving it anyway would drop what was asked for.
 #[test]
 fn a_new_vlan_only_network_cannot_be_isolated_or_cut_off() {
     let draft = || {

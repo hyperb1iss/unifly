@@ -255,7 +255,7 @@ async fn a_delete_check_that_comes_back_to_something_else_does_not_ask() {
     };
 
     // Typing a new network's name while the check is out: the `y` in
-    // "Lobby" used to run the delete.
+    // "Lobby" belongs to the form, not to a delete question.
     select(&mut app, &demo, "Studio");
     press(&mut app, KeyCode::Char('D'));
     press(&mut app, KeyCode::Char('c'));
