@@ -298,17 +298,18 @@ impl SignIn {
 /// again right after (a one-time MFA code could not do it twice), and a
 /// test that is never saved must not leave its cookie in the profile's
 /// cache. So the cookie waits here: a save that succeeds moves it into
-/// the profile's cache, and anything else drops it.
+/// the profile's cache, and anything else drops it and logs the session
+/// out, so the controller does not keep it open until it expires.
 struct Handover {
     /// The cache name the test signs in under, in place of the profile's.
     name: String,
     sign_in: SignIn,
+    /// The connection the last test under this name left signed in. It is
+    /// what can still log the session out if nothing comes to use it.
+    client: Option<Controller>,
 }
 
 type HandoverSlot = Arc<Mutex<Option<Handover>>>;
-
-/// Numbers the private caches this process makes.
-static HANDOVERS: AtomicU64 = AtomicU64::new(1);
 
 impl Handover {
     /// The cache name a test making `sign_in` for `profile` signs in
@@ -325,31 +326,31 @@ impl Handover {
         if let Some(stale) = slot.take() {
             stale.discard();
         }
-        let name = format!(
-            "{profile}.setup-{}-{}",
-            std::process::id(),
-            HANDOVERS.fetch_add(1, Ordering::Relaxed)
-        );
+        let name = super::parked::next_name(profile);
         *slot = Some(Self {
             name: name.clone(),
             sign_in,
+            client: None,
         });
         Some(name)
     }
 
-    /// Clear the cache a cancelled test signed in under, unless the form
-    /// still holds it for a retest. A form that closed or moved on to
-    /// another sign-in has already dropped its own reference, and the
-    /// test may have written its cookie after that.
-    fn drop_if_orphaned(slot: &HandoverSlot, cache_name: &str, url: &str) {
-        let held = slot
-            .lock()
-            .is_ok_and(|slot| slot.as_ref().is_some_and(|held| held.name == cache_name));
-        if !held
-            && !cfg!(test)
-            && let Some(cache) = SessionCache::new(cache_name, url)
-        {
-            cache.clear();
+    /// Leave `client`, the connection a test under `cache_name` ended on,
+    /// with the hand-over of that name, and return the one it replaces.
+    /// A form that closed or moved on to another sign-in no longer holds
+    /// that hand-over: `client` then comes back as the error, for the
+    /// caller to end the session nobody is waiting for.
+    fn adopt(
+        slot: &HandoverSlot,
+        cache_name: &str,
+        client: Controller,
+    ) -> Result<Option<Controller>, Controller> {
+        let Ok(mut slot) = slot.lock() else {
+            return Err(client);
+        };
+        match slot.as_mut().filter(|held| held.name == cache_name) {
+            Some(held) => Ok(held.client.replace(client)),
+            None => Err(client),
         }
     }
 
@@ -360,16 +361,24 @@ impl Handover {
             .flatten()
     }
 
-    /// Drop the parked session.
-    fn discard(&self) {
+    /// Drop the parked session: forget its cookie, and log it out through
+    /// the connection the test left, when there is one.
+    fn discard(mut self) {
         if let Some(cache) = self.cache() {
             cache.clear();
+        }
+        if let Some(client) = self.client.take() {
+            retire(client, true);
         }
     }
 
     /// Move the parked session into the cache `live` reads, so its first
-    /// connect restores it.
-    fn promote(&self, live: &ControllerConfig) {
+    /// connect restores it. The session lives on there, so the test's
+    /// connection closes without logging it out.
+    fn promote(mut self, live: &ControllerConfig) {
+        if let Some(client) = self.client.take() {
+            retire(client, false);
+        }
         let Some(parked) = self.cache() else {
             return;
         };
@@ -383,6 +392,45 @@ impl Handover {
             cache.save(&cookie, csrf.as_deref(), expires_at);
         }
         parked.clear();
+    }
+}
+
+/// Close `client` in the background, logging its session out first when
+/// nothing will use that session again.
+fn retire(client: Controller, log_out: bool) {
+    // Outside a runtime (the process is on its way out) there is nothing
+    // left to run the request on.
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    runtime.spawn(async move {
+        if log_out {
+            client.logout_session().await;
+        }
+        client.disconnect().await;
+    });
+}
+
+/// Finish with `controller` once a test is over. A session parked under
+/// `parked` stays signed in on it for the form's retest or save; one the
+/// form no longer holds is logged out and its cookie forgotten. A test
+/// that parked nothing just disconnects.
+async fn settle(handover: &HandoverSlot, parked: Option<&str>, url: &str, controller: Controller) {
+    let Some(cache_name) = parked else {
+        controller.disconnect().await;
+        return;
+    };
+    match Handover::adopt(handover, cache_name, controller) {
+        // The same session, on the connection of the test before.
+        Ok(Some(previous)) => previous.disconnect().await,
+        Ok(None) => {}
+        Err(orphan) => {
+            orphan.logout_session().await;
+            orphan.disconnect().await;
+            if let Some(cache) = SessionCache::new(cache_name, url) {
+                cache.clear();
+            }
+        }
     }
 }
 
@@ -501,10 +549,8 @@ async fn run(
     let controller = Controller::new(probe);
     let connected = tokio::select! {
         () = cancel.cancelled() => {
-            controller.disconnect().await;
-            if let Some(cache_name) = parked {
-                Handover::drop_if_orphaned(&handover, &cache_name, &target_url);
-            }
+            // It may have signed in before it was stopped.
+            settle(&handover, parked.as_deref(), &target_url, controller).await;
             return None;
         }
         connected = controller.connect_inventory() => connected,
@@ -523,11 +569,8 @@ async fn run(
         }
         Err(error) => Err(explain(&error, &context)),
     };
-    controller.disconnect().await;
+    settle(&handover, parked.as_deref(), &target_url, controller).await;
     if cancel.is_cancelled() {
-        if let Some(cache_name) = parked {
-            Handover::drop_if_orphaned(&handover, &cache_name, &target_url);
-        }
         return None;
     }
     Some(result)
@@ -1099,6 +1142,41 @@ mod tests {
         assert_ne!(retyped, first, "a new password signs in afresh");
         let another = name(sign_in("root", "other")).expect("name");
         assert_ne!(another, retyped, "so does a new user");
+    }
+
+    /// The connection a test ends on stays with the session it parked, so
+    /// that session can be logged out if nothing comes to use it. A test
+    /// whose hand-over the form has dropped gets its connection back, to
+    /// end the session itself.
+    #[test]
+    fn a_tests_connection_stays_with_the_session_the_form_still_holds() {
+        let slot = super::HandoverSlot::default();
+        let client = || unifly_api::Controller::new(unifly_api::ControllerConfig::default());
+        let held = super::Handover::cache_name(&slot, "home", sign_in("admin", "pw"))
+            .expect("a parked name");
+
+        assert!(matches!(
+            super::Handover::adopt(&slot, &held, client()),
+            Ok(None)
+        ));
+        assert!(
+            matches!(super::Handover::adopt(&slot, &held, client()), Ok(Some(_))),
+            "a retest hands back the connection it replaces"
+        );
+
+        // Another sign-in starts a new hand-over; the old test is orphaned.
+        let next = super::Handover::cache_name(&slot, "home", sign_in("admin", "other"))
+            .expect("a parked name");
+        assert_ne!(next, held);
+        assert!(super::Handover::adopt(&slot, &held, client()).is_err());
+        assert!(matches!(
+            super::Handover::adopt(&slot, &next, client()),
+            Ok(None)
+        ));
+
+        // So is one whose form has closed.
+        drop(slot.lock().expect("slot").take());
+        assert!(super::Handover::adopt(&slot, &next, client()).is_err());
     }
 
     /// A one-time code signs in once, and the test is that once. The

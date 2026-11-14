@@ -41,6 +41,10 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
 
     let _log_guard = setup_tracing(global.verbose, &args.log_file);
 
+    // A launch that was killed mid-setup may have left a test's session
+    // cookie behind. Nothing is parked by this process yet.
+    forms::parked::sweep_at_launch();
+
     // A config that fails to load is reported, not taken for a first run:
     // the setup wizard would only refuse to save over it.
     let mut load_error = None;
