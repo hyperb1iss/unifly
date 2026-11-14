@@ -74,7 +74,7 @@ impl Simulation {
             Command::UpgradeDevice { mac, .. } => self.upgrade(&mac, now, &mut delta)?,
             Command::LocateDevice { mac, enable } => self.locate(&mac, enable, now, &mut delta)?,
             Command::ProvisionDevice { mac } => self.provision(&mac, now, &mut delta)?,
-            Command::SpeedtestDevice => self.speedtest(now, &mut delta),
+            Command::SpeedtestDevice => self.speedtest(now),
             Command::PowerCyclePort {
                 device_id,
                 port_idx,
@@ -172,14 +172,15 @@ impl Simulation {
         Ok(())
     }
 
-    fn speedtest(&mut self, now: DateTime<Utc>, delta: &mut Delta) {
-        let event = self.event(
-            now,
-            (EventCategory::Network, EventSeverity::Info),
-            "EVT_GW_SpeedTest",
-            "Speed test complete: 2.31 Gbps down, 1.94 Gbps up, 6 ms".into(),
-        );
-        delta.events.push(event);
+    /// A speed test reports through site health, never as an event, so
+    /// the result lands in the next health snapshot.
+    fn speedtest(&mut self, now: DateTime<Utc>) {
+        self.speed_test = super::sim::SpeedTest {
+            ran_at: now,
+            down_mbps: (self.rng.between(2_180.0, 2_390.0) * 10.0).round() / 10.0,
+            up_mbps: (self.rng.between(1_860.0, 1_990.0) * 10.0).round() / 10.0,
+            ping_ms: self.rng.range(5, 9),
+        };
     }
 
     /// UniFi kicks wireless stations off their AP; a wired port has

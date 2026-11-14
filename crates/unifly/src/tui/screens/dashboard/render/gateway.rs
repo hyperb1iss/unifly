@@ -134,6 +134,18 @@ impl DashboardScreen {
             Span::styled("   Up ", Style::default().fg(theme::text_secondary())),
             Span::styled(up_str, Style::default().fg(theme::accent_secondary())),
         ]));
+        let speed = [www_health, wan_health]
+            .into_iter()
+            .flatten()
+            .find_map(|health| SpeedTest::read(&health.extra));
+        if let Some(speed) = speed {
+            // The label takes six columns; the rest is the result's.
+            let text = speed.fitted(chrono::Utc::now().timestamp(), w.saturating_sub(6));
+            lines.push(Line::from(vec![
+                Span::styled(" Spd  ", Style::default().fg(theme::text_secondary())),
+                Span::styled(text, Style::default().fg(theme::accent_secondary())),
+            ]));
+        }
         if let Some(ref d) = dns {
             lines.push(kv("DNS", d, theme::text_secondary()));
         }
@@ -147,5 +159,157 @@ impl DashboardScreen {
         ));
 
         frame.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// The gateway's last WAN speed test, as site health reports it. A test
+/// produces no event: its result replaces these fields about a minute
+/// after it starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SpeedTest {
+    down_mbps: f64,
+    up_mbps: f64,
+    ping_ms: Option<f64>,
+    /// When it ran, in epoch seconds.
+    ran_at: Option<i64>,
+}
+
+impl SpeedTest {
+    /// Read the result out of a health subsystem's fields. A gateway that
+    /// never ran a test reports no rates, or zeros.
+    fn read(health: &serde_json::Value) -> Option<Self> {
+        let number = |key: &str| health.get(key).and_then(serde_json::Value::as_f64);
+        let down_mbps = number("xput_down").unwrap_or(0.0);
+        let up_mbps = number("xput_up").unwrap_or(0.0);
+        if down_mbps <= 0.0 && up_mbps <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            down_mbps,
+            up_mbps,
+            ping_ms: number("speedtest_ping").filter(|ping| *ping > 0.0),
+            ran_at: health
+                .get("speedtest_lastrun")
+                .and_then(serde_json::Value::as_i64)
+                .filter(|at| *at > 0)
+                // Some firmware reports milliseconds.
+                .map(|at| if at > 100_000_000_000 { at / 1000 } else { at }),
+        })
+    }
+
+    /// The fullest wording that fits `width` columns at `now`, in epoch
+    /// seconds: both rates always, then how long ago, then the ping.
+    fn fitted(self, now: i64, width: usize) -> String {
+        let age = self.ran_at.map(|at| age_text(now.saturating_sub(at)));
+        let ago = age.as_ref().map(|age| match age.as_str() {
+            "now" => "just now".to_owned(),
+            age => format!("{age} ago"),
+        });
+        let long = format!(
+            "\u{2193} {}  \u{2191} {}",
+            long_rate(self.down_mbps),
+            long_rate(self.up_mbps)
+        );
+        let short = format!(
+            "\u{2193}{} \u{2191}{}",
+            short_rate(self.down_mbps),
+            short_rate(self.up_mbps)
+        );
+        let mut wordings = Vec::new();
+        if let (Some(ping), Some(ago)) = (self.ping_ms, &ago) {
+            wordings.push(format!("{long}  {ping:.0} ms  {ago}"));
+        }
+        if let Some(ago) = &ago {
+            wordings.push(format!("{long}  {ago}"));
+            wordings.push(format!("{short} {ago}"));
+        }
+        if let Some(age) = &age {
+            wordings.push(format!("{short} {age}"));
+        }
+        wordings.push(long);
+        wordings
+            .into_iter()
+            .find(|wording| Span::raw(wording.as_str()).width() <= width)
+            .unwrap_or(short)
+    }
+}
+
+fn long_rate(mbps: f64) -> String {
+    if mbps >= 1000.0 {
+        format!("{:.2} Gbps", mbps / 1000.0)
+    } else {
+        format!("{mbps:.0} Mbps")
+    }
+}
+
+fn short_rate(mbps: f64) -> String {
+    if mbps >= 1000.0 {
+        format!("{:.1}G", mbps / 1000.0)
+    } else {
+        format!("{mbps:.0}M")
+    }
+}
+
+/// How long ago, from seconds: "now", "4m", "5h", "3d".
+fn age_text(secs: i64) -> String {
+    match secs {
+        ..60 => "now".into(),
+        60..3_600 => format!("{}m", secs / 60),
+        3_600..86_400 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::SpeedTest;
+
+    const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn a_speed_test_result_is_read_from_site_health() {
+        let health = json!({
+            "subsystem": "www", "xput_down": 2317.2, "xput_up": 941.6,
+            "speedtest_ping": 6, "speedtest_lastrun": NOW - 5 * 3600,
+            "speedtest_status": "Success"
+        });
+        let test = SpeedTest::read(&health).expect("a result");
+
+        assert_eq!(
+            test.fitted(NOW, 60),
+            "\u{2193} 2.32 Gbps  \u{2191} 942 Mbps  6 ms  5h ago"
+        );
+        assert_eq!(
+            test.fitted(NOW, 32),
+            "\u{2193} 2.32 Gbps  \u{2191} 942 Mbps  5h ago"
+        );
+        assert_eq!(test.fitted(NOW, 18), "\u{2193}2.3G \u{2191}942M 5h ago");
+        assert_eq!(test.fitted(NOW, 14), "\u{2193}2.3G \u{2191}942M 5h");
+        assert_eq!(test.fitted(NOW, 4), "\u{2193}2.3G \u{2191}942M");
+    }
+
+    #[test]
+    fn a_fresh_result_says_so_and_millisecond_times_are_understood() {
+        let health = json!({
+            "xput_down": 80.0, "xput_up": 20.0,
+            "speedtest_lastrun": (NOW - 30) * 1000
+        });
+        let test = SpeedTest::read(&health).expect("a result");
+        assert_eq!(
+            test.fitted(NOW, 60),
+            "\u{2193} 80 Mbps  \u{2191} 20 Mbps  just now"
+        );
+    }
+
+    #[test]
+    fn a_gateway_that_never_ran_a_test_shows_no_result() {
+        for health in [
+            json!({"subsystem": "www"}),
+            json!({"xput_down": 0, "xput_up": 0.0, "speedtest_lastrun": 0}),
+        ] {
+            assert_eq!(SpeedTest::read(&health), None, "{health}");
+        }
     }
 }

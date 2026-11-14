@@ -337,6 +337,38 @@ fn commands_simulate_or_refuse() {
 }
 
 #[test]
+fn a_speed_test_reports_through_site_health_and_not_as_an_event() {
+    let mut sim = Simulation::new(fleet());
+    let lastrun = |sim: &Simulation| {
+        sim.health()
+            .iter()
+            .find(|health| health.subsystem == "www")
+            .and_then(|www| www.extra.get("speedtest_lastrun"))
+            .and_then(serde_json::Value::as_i64)
+            .expect("the www subsystem reports the last run")
+    };
+    let before = lastrun(&sim);
+    assert!(before < anchor().timestamp(), "an earlier test stands");
+
+    let now = anchor() + chrono::Duration::minutes(3);
+    let (_, delta) = sim
+        .apply_command(Command::SpeedtestDevice, now)
+        .expect("a speed test works in demo mode");
+
+    assert!(delta.events.is_empty(), "a controller sends no event");
+    assert_eq!(lastrun(&sim), now.timestamp());
+    let www = sim
+        .health()
+        .into_iter()
+        .find(|health| health.subsystem == "www")
+        .expect("www");
+    for rate in ["xput_down", "xput_up"] {
+        let mbps = www.extra.get(rate).and_then(serde_json::Value::as_f64);
+        assert!(mbps.is_some_and(|mbps| mbps > 0.0), "{rate}: {mbps:?}");
+    }
+}
+
+#[test]
 fn power_cycling_the_dark_camera_port_brings_it_back() {
     let mut sim = Simulation::new(fleet());
     let core = sim.fleet.devices[super::fleet::SWITCH_BASE].id.clone();

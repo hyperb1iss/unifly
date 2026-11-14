@@ -82,6 +82,16 @@ pub(crate) struct PortEdit {
     pub was_delivering: bool,
 }
 
+/// A finished WAN speed test. A controller reports no event for one: the
+/// result replaces these fields of the `www` health subsystem.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpeedTest {
+    pub(crate) ran_at: DateTime<Utc>,
+    pub(crate) down_mbps: f64,
+    pub(crate) up_mbps: f64,
+    pub(crate) ping_ms: u64,
+}
+
 pub(crate) struct Simulation {
     pub(crate) fleet: Fleet,
     pub(crate) rng: DemoRng,
@@ -106,6 +116,8 @@ pub(crate) struct Simulation {
     pub(crate) ssid_renames: Vec<(String, String)>,
     /// IDs of the alarms an admin archived this session.
     pub(crate) archived_alarms: std::collections::HashSet<String>,
+    /// The gateway's last WAN speed test, as site health reports it.
+    pub(crate) speed_test: SpeedTest,
     /// Ports an admin edited during the session, keyed by device index
     /// and port index.
     pub(crate) port_edits: std::collections::HashMap<(usize, u32), PortEdit>,
@@ -115,6 +127,7 @@ pub(crate) struct Simulation {
 impl Simulation {
     pub(crate) fn new(fleet: Fleet) -> Self {
         let rng = DemoRng::new(fleet.seed).fork(0x51A1);
+        let fleet_anchor = fleet.anchor;
         let initial_clients = fleet.clients.len();
         let wan = fleet.devices[super::fleet::GATEWAY]
             .stats
@@ -143,6 +156,12 @@ impl Simulation {
             wan,
             ssid_renames: Vec::new(),
             archived_alarms: std::collections::HashSet::new(),
+            speed_test: SpeedTest {
+                ran_at: fleet_anchor - chrono::Duration::hours(5),
+                down_mbps: 2_317.2,
+                up_mbps: 1_941.6,
+                ping_ms: 6,
+            },
             port_edits: std::collections::HashMap::new(),
             initial_clients,
         }

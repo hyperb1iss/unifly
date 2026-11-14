@@ -252,6 +252,43 @@ fn a_rate_that_stopped_arriving_reads_its_real_age() {
 }
 
 #[test]
+fn the_gateway_panel_shows_the_last_speed_test_from_site_health() {
+    let mut screen = connected();
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![device(
+            "gw-harbor",
+            "00:00:00:00:00:01",
+            "Gateway",
+        )])))
+        .expect("devices");
+    assert!(!draw(&screen, 120, 40).contains(" Spd "));
+
+    let ran = chrono::Utc::now().timestamp() - 2 * 3600;
+    screen
+        .update(&Action::HealthUpdated(Arc::new(vec![
+            health("wan", &json!({})),
+            health(
+                "www",
+                &json!({"extra": {
+                    "xput_down": 913.4, "xput_up": 41.2,
+                    "speedtest_ping": 9, "speedtest_lastrun": ran
+                }}),
+            ),
+        ])))
+        .expect("health");
+
+    let wide = draw(&screen, 160, 40);
+    assert!(
+        wide.contains("Spd  \u{2193} 913 Mbps  \u{2191} 41 Mbps"),
+        "{wide}"
+    );
+    assert!(wide.contains("2h ago"), "{wide}");
+    // The narrow panel keeps both rates.
+    let narrow = draw(&screen, 80, 24);
+    assert!(narrow.contains("\u{2193}913M \u{2191}41M"), "{narrow}");
+}
+
+#[test]
 fn health_without_a_wan_rate_reports_none_instead_of_zero() {
     let mut screen = connected();
     screen

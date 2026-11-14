@@ -144,7 +144,7 @@ impl DashboardScreen {
                     command: Box::new(Command::SpeedtestDevice),
                     notice: Notice::new(
                         "Starting the speed test\u{2026}",
-                        "Speed test started: the result arrives as an event",
+                        "Speed test started: its result shows on the Gateway panel in about a minute",
                     ),
                 },
             )
@@ -397,10 +397,13 @@ pub(super) mod tests {
         };
         assert!(confirm.prompt.contains("speed test"));
         assert!(confirm.detail.is_some(), "the cost is spelled out");
-        assert!(matches!(
-            *confirm.action,
-            Action::Run { ref command, .. } if matches!(**command, Command::SpeedtestDevice)
-        ));
+        let Action::Run { command, notice } = *confirm.action else {
+            panic!("expected a command");
+        };
+        assert!(matches!(*command, Command::SpeedtestDevice));
+        // No controller event reports a speed test, so none is promised.
+        assert!(!notice.done.contains("event"), "{}", notice.done);
+        assert!(notice.done.contains("Gateway panel"), "{}", notice.done);
 
         screen
             .update(&Action::AccessUpdated(Access {
