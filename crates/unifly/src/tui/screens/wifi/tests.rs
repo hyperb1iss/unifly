@@ -788,7 +788,14 @@ fn client_detail_screen() -> WifiScreen {
 fn detail_loaded(ip: &str, signal: i32) -> Action {
     Action::WifiClientDetailLoaded {
         ip: ip.to_owned(),
-        data: Arc::new(json!({ "signal": signal, "wlan_band": "5g" })),
+        data: Arc::new(json!({
+            "signal": signal,
+            "wlan_band": "5g",
+            "uplink_devices": [
+                { "display_name": "ap-a", "experience": 97 },
+                { "display_name": "sw-core", "experience": 99 }
+            ]
+        })),
     }
 }
 
@@ -806,6 +813,10 @@ fn the_client_detail_shows_only_the_selected_clients_data() {
     assert!(
         shown.contains("5 GHz \u{00B7} ch"),
         "band reads like the app: {shown}"
+    );
+    assert!(
+        shown.contains("Uplink ap-a (97) \u{203A} sw-core (99)"),
+        "{shown}"
     );
 
     screen.handle_key_input(key(KeyCode::Char('j')));

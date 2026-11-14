@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use unifly_api::Device;
+use unifly_api::{Device, DeviceState};
 
 use super::WifiScreen;
 use super::state::{band_from_channel, band_from_frequency, band_from_neighbor};
@@ -24,10 +24,12 @@ pub(super) struct ChannelOccupancy {
 }
 
 impl WifiScreen {
-    /// The APs the channel map counts: the focused one, or every AP.
+    /// The APs the channel map counts: the focused one, or every AP, as
+    /// long as it is online. A radio that is off holds no channel.
     fn map_aps(&self) -> impl Iterator<Item = &Arc<Device>> {
         let focus = self.focused_ap.as_ref().map(|focused| &focused.id);
         self.all_aps()
+            .filter(|ap| ap.state == DeviceState::Online)
             .filter(move |ap| focus.is_none_or(|id| &ap.id == id))
     }
 
@@ -307,6 +309,23 @@ mod tests {
             .map(|cell| cell.channel)
             .collect();
         assert_eq!(channels, [36, 40, 52, 100]);
+    }
+
+    #[test]
+    fn an_ap_that_is_not_online_holds_no_channel() {
+        let mut screen = screen(WifiBand::FiveGhz);
+        let mut devices: Vec<Arc<Device>> = screen.devices.to_vec();
+        let mut down = (*devices[1]).clone();
+        down.state = unifly_api::DeviceState::Offline;
+        devices[1] = Arc::new(down);
+        screen.apply_action(&Action::DevicesUpdated(Arc::new(devices)));
+
+        let channels: Vec<_> = screen
+            .channel_occupancy()
+            .iter()
+            .map(|cell| (cell.channel, cell.your_count))
+            .collect();
+        assert_eq!(channels, [(36, 2)], "channel 52 was the offline AP's");
     }
 
     #[test]

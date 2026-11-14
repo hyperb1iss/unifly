@@ -438,6 +438,8 @@ fn experience_lines(detail: &serde_json::Value) -> Vec<Line<'static>> {
         ]),
     ];
 
+    lines.extend(uplink_line(detail));
+
     let neighbors: Vec<_> = detail
         .get("nearest_neighbors")
         .and_then(|value| value.as_array())
@@ -466,6 +468,29 @@ fn experience_lines(detail: &serde_json::Value) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+/// The devices between the client and the gateway, nearest first, each
+/// with the experience score the controller gives its link.
+fn uplink_line(detail: &serde_json::Value) -> Option<Line<'static>> {
+    let hops: Vec<String> = detail
+        .get("uplink_devices")
+        .and_then(|value| value.as_array())?
+        .iter()
+        .filter_map(|hop| {
+            let name = json_string(hop, &["display_name", "name", "mac"])?;
+            Some(match json_u64(hop, &["experience", "wifi_experience"]) {
+                Some(score) => format!("{name} ({score})"),
+                None => name,
+            })
+        })
+        .collect();
+    (!hops.is_empty()).then(|| {
+        Line::from(vec![
+            Span::styled(" Uplink ", muted()),
+            Span::styled(hops.join(" \u{203A} "), secondary()),
+        ])
+    })
 }
 
 fn ap_heading(ap: &Device) -> Line<'static> {
