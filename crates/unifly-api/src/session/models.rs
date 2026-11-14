@@ -379,6 +379,17 @@ pub struct SessionUserEntry {
     pub noted: Option<bool>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Whether the client is barred from the network. A blocked wireless
+    /// client cannot associate, so this record is the only place it shows.
+    #[serde(default)]
+    pub blocked: Option<bool>,
+    #[serde(default)]
+    pub is_wired: Option<bool>,
+    #[serde(default)]
+    pub is_guest: Option<bool>,
+    /// When the client was last connected, in epoch seconds.
+    #[serde(default)]
+    pub last_seen: Option<i64>,
 }
 
 // ── Site ─────────────────────────────────────────────────────────────

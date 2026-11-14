@@ -566,6 +566,69 @@ fn client_records_follow_admin_commands() {
 }
 
 #[test]
+fn a_blocked_wireless_client_leaves_the_list_and_is_reached_by_mac() {
+    use crate::model::ClientType;
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let pick = |sim: &Simulation, kind: ClientType| {
+        sim.fleet
+            .clients
+            .iter()
+            .find(|client| client.client.client_type == kind)
+            .map(|client| client.client.mac.clone())
+            .expect("a client of that kind")
+    };
+    let phone = pick(&sim, ClientType::Wireless);
+    let desk = pick(&sim, ClientType::Wired);
+    let user_blocked = |sim: &Simulation, mac: &crate::model::MacAddress| {
+        sim.users()
+            .iter()
+            .find(|user| user.mac == mac.as_str())
+            .and_then(|user| user.blocked)
+    };
+
+    let (_, delta) = sim
+        .apply_command(Command::BlockClient { mac: phone.clone() }, now)
+        .expect("block the phone");
+    assert_eq!(
+        delta.removed,
+        std::slice::from_ref(&phone),
+        "it drops off its AP"
+    );
+    assert!(sim.client_index_by_mac(&phone).is_none());
+    assert_eq!(user_blocked(&sim, &phone), Some(true));
+
+    // A wired client keeps its link and is only marked.
+    let (_, delta) = sim
+        .apply_command(Command::BlockClient { mac: desk.clone() }, now)
+        .expect("block the desk");
+    assert_eq!(delta.removed.len(), 0);
+    assert!(delta.clients.iter().any(|client| client.blocked));
+    assert_eq!(user_blocked(&sim, &desk), Some(true));
+
+    // The phone is gone from the connected list, so only its MAC finds it.
+    let (_, delta) = sim
+        .apply_command(Command::UnblockClient { mac: phone.clone() }, now)
+        .expect("unblock the phone");
+    assert!(
+        delta
+            .clients
+            .iter()
+            .any(|client| client.mac == phone && !client.blocked)
+    );
+    assert!(sim.client_index_by_mac(&phone).is_some(), "it rejoins");
+    assert_eq!(user_blocked(&sim, &phone), Some(false));
+
+    let stranger = crate::model::MacAddress::new("02:00:00:00:00:99");
+    let unknown = sim.apply_command(Command::UnblockClient { mac: stranger }, now);
+    assert!(
+        matches!(unknown, Err(CoreError::ClientNotFound { .. })),
+        "{unknown:?}"
+    );
+}
+
+#[test]
 fn poe_power_only_returns_where_an_admin_left_it_on() {
     use crate::controller::PortProfileUpdate;
     use crate::model::PortState;

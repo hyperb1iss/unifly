@@ -19,6 +19,7 @@ use crate::model::{
     ClientType, DeviceState, EntityId, EventCategory, EventSeverity, GuestAuth, MacAddress,
     PoeMode, PortState,
 };
+use crate::session::models::SessionUserEntry;
 
 const DEVICE_INFO: (EventCategory, EventSeverity) = (EventCategory::Device, EventSeverity::Info);
 const CLIENT_INFO: (EventCategory, EventSeverity) = (EventCategory::Client, EventSeverity::Info);
@@ -369,6 +370,9 @@ impl Simulation {
         Ok(())
     }
 
+    /// Block or unblock a client. A blocked wireless client is thrown
+    /// off its AP and stays off the connected list, as on a controller;
+    /// a wired one keeps its link and is only marked.
     fn set_blocked(
         &mut self,
         mac: &MacAddress,
@@ -376,11 +380,40 @@ impl Simulation {
         now: DateTime<Utc>,
         delta: &mut Delta,
     ) -> Result<(), CoreError> {
-        let index = self.require_client(mac)?;
-        let client = &mut self.fleet.clients[index].client;
-        client.blocked = blocked;
-        let label = client_label(client);
-        let updated = client.clone();
+        let barred = self.blocked.iter().position(|demo| &demo.client.mac == mac);
+        let updated = match (self.client_index_by_mac(mac), barred) {
+            (Some(index), _) => {
+                self.fleet.clients[index].client.blocked = blocked;
+                if blocked && self.fleet.clients[index].client.client_type == ClientType::Wireless {
+                    let mut demo = self.fleet.clients.remove(index);
+                    demo.client.bandwidth = None;
+                    let client = demo.client.clone();
+                    self.blocked.push(demo);
+                    delta.removed.push(client.mac.clone());
+                    client
+                } else {
+                    let client = self.fleet.clients[index].client.clone();
+                    delta.clients.push(client.clone());
+                    client
+                }
+            }
+            (None, Some(index)) if !blocked => {
+                let mut demo = self.blocked.remove(index);
+                demo.client.blocked = false;
+                demo.client.connected_at = Some(now);
+                let client = demo.client.clone();
+                self.fleet.clients.push(demo);
+                delta.clients.push(client.clone());
+                client
+            }
+            (None, Some(index)) => self.blocked[index].client.clone(),
+            (None, None) => {
+                return Err(CoreError::ClientNotFound {
+                    identifier: mac.to_string(),
+                });
+            }
+        };
+        let label = client_label(&updated);
         let (key, verb) = if blocked {
             ("EVT_AD_ClientBlocked", "blocked")
         } else {
@@ -388,10 +421,35 @@ impl Simulation {
         };
         let message = format!("{label} was {verb} by crew-lead@neonharbor.example");
         let mut event = self.event(now, CLIENT_INFO, key, message);
-        event.client_mac = Some(updated.mac.clone());
+        event.client_mac = Some(updated.mac);
         delta.events.push(event);
-        delta.clients.push(updated);
         Ok(())
+    }
+
+    /// `rest/user` rows: every connected client and every blocked one,
+    /// with its reservation.
+    pub(crate) fn users(&self) -> Vec<SessionUserEntry> {
+        let connected = self.fleet.clients.iter().map(|demo| &demo.client);
+        let barred = self.blocked.iter().map(|demo| &demo.client);
+        connected
+            .chain(barred)
+            .map(|client| SessionUserEntry {
+                id: client.id.to_string(),
+                mac: client.mac.to_string(),
+                name: client.name.clone(),
+                hostname: client.hostname.clone(),
+                use_fixedip: Some(client.use_fixedip),
+                fixed_ip: client.fixed_ip.map(|ip| ip.to_string()),
+                network_id: self.reservations.get(&client.mac).cloned(),
+                site_id: None,
+                noted: None,
+                note: None,
+                blocked: Some(client.blocked),
+                is_wired: Some(client.client_type == ClientType::Wired),
+                is_guest: Some(client.is_guest),
+                last_seen: None,
+            })
+            .collect()
     }
 
     /// Apply an SSID edit. The name, enabled state, and visibility change;
@@ -480,8 +538,17 @@ impl Simulation {
         now: DateTime<Utc>,
         delta: &mut Delta,
     ) -> Result<(), CoreError> {
-        let index = self.require_client(mac)?;
-        let client = self.fleet.clients.remove(index).client;
+        let barred = self.blocked.iter().position(|demo| &demo.client.mac == mac);
+        let client = match (self.client_index_by_mac(mac), barred) {
+            (Some(index), _) => self.fleet.clients.remove(index).client,
+            (None, Some(index)) => self.blocked.remove(index).client,
+            (None, None) => {
+                return Err(CoreError::ClientNotFound {
+                    identifier: mac.to_string(),
+                });
+            }
+        };
+        self.reservations.remove(mac);
         let message = format!(
             "{} was forgotten by crew-lead@neonharbor.example",
             client_label(&client)

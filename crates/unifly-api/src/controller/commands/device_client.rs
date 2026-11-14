@@ -1,10 +1,36 @@
 use crate::command::{Command, CommandResult};
 use crate::core_error::CoreError;
+use crate::model::MacAddress;
 
 use super::{
     CommandContext, client_mac, device_mac, fixed_ip, require_integration, require_session,
     require_uuid,
 };
+
+/// Run a client action through the Integration API, for a connection
+/// with no Session API. The station manager is preferred where there is
+/// one: it takes a MAC, so it also reaches a blocked client that has left
+/// the connected list, and the Integration API documents only the guest
+/// authorization actions.
+async fn integration_client_action(
+    ctx: &CommandContext,
+    mac: &MacAddress,
+    action: &str,
+) -> Result<(), CoreError> {
+    let (integration, site_id) =
+        require_integration(ctx.integration.as_ref(), ctx.site_id, action)?;
+    let client = ctx
+        .store
+        .client_by_mac(mac)
+        .ok_or_else(|| CoreError::ClientNotFound {
+            identifier: mac.to_string(),
+        })?;
+    let client_uuid = require_uuid(&client.id)?;
+    integration
+        .client_action(&site_id, &client_uuid, action)
+        .await?;
+    Ok(())
+}
 
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandResult, CoreError> {
@@ -89,50 +115,26 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             Ok(CommandResult::Ok)
         }
         Command::BlockClient { mac } => {
-            if let (Some(ic), Some(sid)) = (integration, site_id) {
-                let client =
-                    store
-                        .client_by_mac(&mac)
-                        .ok_or_else(|| CoreError::ClientNotFound {
-                            identifier: mac.to_string(),
-                        })?;
-                let client_uuid = require_uuid(&client.id)?;
-                ic.client_action(&sid, &client_uuid, "BLOCK").await?;
-            } else {
-                let session = require_session(session)?;
+            if let Some(session) = session {
                 session.block_client(mac.as_str()).await?;
+            } else {
+                integration_client_action(ctx, &mac, "BLOCK").await?;
             }
             Ok(CommandResult::Ok)
         }
         Command::UnblockClient { mac } => {
-            if let (Some(ic), Some(sid)) = (integration, site_id) {
-                let client =
-                    store
-                        .client_by_mac(&mac)
-                        .ok_or_else(|| CoreError::ClientNotFound {
-                            identifier: mac.to_string(),
-                        })?;
-                let client_uuid = require_uuid(&client.id)?;
-                ic.client_action(&sid, &client_uuid, "UNBLOCK").await?;
-            } else {
-                let session = require_session(session)?;
+            if let Some(session) = session {
                 session.unblock_client(mac.as_str()).await?;
+            } else {
+                integration_client_action(ctx, &mac, "UNBLOCK").await?;
             }
             Ok(CommandResult::Ok)
         }
         Command::KickClient { mac } => {
-            if let (Some(ic), Some(sid)) = (integration, site_id) {
-                let client =
-                    store
-                        .client_by_mac(&mac)
-                        .ok_or_else(|| CoreError::ClientNotFound {
-                            identifier: mac.to_string(),
-                        })?;
-                let client_uuid = require_uuid(&client.id)?;
-                ic.client_action(&sid, &client_uuid, "RECONNECT").await?;
-            } else {
-                let session = require_session(session)?;
+            if let Some(session) = session {
                 session.kick_client(mac.as_str()).await?;
+            } else {
+                integration_client_action(ctx, &mac, "RECONNECT").await?;
             }
             Ok(CommandResult::Ok)
         }

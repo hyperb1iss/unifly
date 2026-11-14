@@ -128,6 +128,9 @@ pub(crate) struct Simulation {
     /// The networkconf `_id` each fixed IP set this session was written
     /// under, as `rest/user` keeps it.
     pub(crate) reservations: std::collections::HashMap<MacAddress, String>,
+    /// Wireless clients an admin blocked. They cannot associate, so they
+    /// are off the connected list until they are unblocked.
+    pub(crate) blocked: Vec<super::fleet::DemoClient>,
     initial_clients: usize,
 }
 
@@ -171,6 +174,7 @@ impl Simulation {
             },
             port_edits: std::collections::HashMap::new(),
             reservations: std::collections::HashMap::new(),
+            blocked: Vec::new(),
             initial_clients,
         }
     }

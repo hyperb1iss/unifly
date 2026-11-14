@@ -12,6 +12,7 @@ pub(super) fn merge_session_clients(
 ) {
     merge_client_traffic(clients, session_clients);
     merge_user_reservations(clients, session_clients, session_users);
+    super::client_state::merge(clients, session_clients, session_users);
 }
 
 pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[SessionDevice]) {

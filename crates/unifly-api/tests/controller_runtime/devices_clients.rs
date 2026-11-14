@@ -243,3 +243,125 @@ async fn removing_a_fixed_ip_on_a_named_network_matches_its_session_id() {
     );
     controller.disconnect().await;
 }
+
+#[tokio::test]
+async fn guest_and_blocked_state_reach_clients_on_an_api_key_profile() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let api = "/proxy/network/api/s/default";
+    let client = |id: &str, name: &str, mac: &str, ip: &str, access: serde_json::Value| {
+        json!({"id": id, "name": name, "type": "WIRELESS", "ipAddress": ip,
+            "macAddress": mac, "access": access})
+    };
+    mount_get(
+        &server,
+        &integration_route("clients"),
+        json!({"offset": 0, "limit": 200, "count": 3, "totalCount": 3, "data": [
+            // Integration says guest, not yet through the portal.
+            client("c56a4180-65aa-42ec-a945-5fd21dec0001", "Visitor phone",
+                "aa:bb:cc:00:00:01", "10.0.60.21", json!({"type": "GUEST", "authorized": false})),
+            // Integration reports nothing; only the station list knows.
+            client("c56a4180-65aa-42ec-a945-5fd21dec0002", "Lobby tablet",
+                "aa:bb:cc:00:00:02", "10.0.60.22", json!({})),
+            client("c56a4180-65aa-42ec-a945-5fd21dec0003", "Kiosk",
+                "aa:bb:cc:00:00:03", "10.0.0.23", json!({"type": "DEFAULT"})),
+        ]}),
+    )
+    .await;
+    // Station addresses differ from Integration's on purpose: the MAC is
+    // what ties the two lists together.
+    mount_get(
+        &server,
+        &format!("{api}/stat/sta"),
+        legacy_envelope(&json!([
+            {"_id": "sta-1", "mac": "AA:BB:CC:00:00:01", "ip": "10.0.60.91",
+                "is_guest": true, "authorized": true},
+            {"_id": "sta-2", "mac": "aa:bb:cc:00:00:02", "ip": "10.0.60.92",
+                "is_guest": true, "authorized": false},
+            {"_id": "sta-3", "mac": "aa:bb:cc:00:00:03", "ip": "10.0.0.93"},
+        ])),
+    )
+    .await;
+    mount_get(
+        &server,
+        &format!("{api}/rest/user"),
+        legacy_envelope(&json!([
+            {"_id": "user-3", "mac": "aa:bb:cc:00:00:03", "blocked": true},
+        ])),
+    )
+    .await;
+    let controller = api_key_controller(&server).await;
+    let stored = |mac: &str| {
+        controller
+            .store()
+            .client_by_mac(&MacAddress::new(mac))
+            .expect("client present")
+    };
+    let authorized = |mac: &str| stored(mac).guest_auth.as_ref().map(|auth| auth.authorized);
+
+    assert!(stored("aa:bb:cc:00:00:01").is_guest);
+    assert_eq!(
+        authorized("aa:bb:cc:00:00:01"),
+        Some(true),
+        "the station list is where an authorization lands"
+    );
+    assert!(stored("aa:bb:cc:00:00:02").is_guest);
+    assert_eq!(authorized("aa:bb:cc:00:00:02"), Some(false));
+    let kiosk = stored("aa:bb:cc:00:00:03");
+    assert!(!kiosk.is_guest && kiosk.guest_auth.is_none());
+    assert!(kiosk.blocked, "the user record says it is blocked");
+    assert!(!stored("aa:bb:cc:00:00:01").blocked);
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn block_unblock_and_kick_go_to_the_station_manager_by_mac() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    mount_write(&server, "POST", "/proxy/network/api/s/default/cmd/stamgr").await;
+    let controller = api_key_controller(&server).await;
+    // A blocked client is off the connected list, so the store has no
+    // record of this MAC and no Integration ID to act on.
+    let gone = MacAddress::new("aa:bb:cc:00:00:99");
+    assert!(controller.store().client_by_mac(&gone).is_none());
+
+    controller
+        .execute(Command::UnblockClient { mac: gone.clone() })
+        .await
+        .unwrap();
+    controller
+        .execute(Command::BlockClient {
+            mac: MacAddress::new(CLIENT_MAC),
+        })
+        .await
+        .unwrap();
+    controller
+        .execute(Command::KickClient {
+            mac: MacAddress::new(CLIENT_MAC),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        bodies(&server, "POST", "/cmd/stamgr").await,
+        [
+            json!({"cmd": "unblock-sta", "mac": "aa:bb:cc:00:00:99"}),
+            json!({"cmd": "block-sta", "mac": CLIENT_MAC}),
+            json!({"cmd": "kick-sta", "mac": CLIENT_MAC}),
+        ]
+    );
+    let integration_actions = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path().ends_with("/actions"))
+        .count();
+    assert_eq!(
+        integration_actions, 0,
+        "the Integration API documents no block or reconnect action"
+    );
+
+    controller.disconnect().await;
+}

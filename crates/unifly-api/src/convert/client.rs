@@ -4,7 +4,7 @@ use crate::integration_types;
 use crate::model::client::{Client, ClientType, GuestAuth, WirelessInfo};
 use crate::model::common::DataSource;
 use crate::model::entity_id::{EntityId, MacAddress};
-use crate::session::models::SessionClientEntry;
+use crate::session::models::{SessionClientEntry, SessionUserEntry};
 
 use super::helpers::{parse_ip, parse_iso};
 
@@ -105,7 +105,64 @@ impl From<SessionClientEntry> for Client {
     }
 }
 
+/// A client the controller remembers but that is not connected, such as
+/// one it blocks. It has no address, uplink, or traffic to report.
+impl From<SessionUserEntry> for Client {
+    fn from(user: SessionUserEntry) -> Self {
+        let client_type = match user.is_wired {
+            Some(true) => ClientType::Wired,
+            Some(false) => ClientType::Wireless,
+            None => ClientType::Unknown,
+        };
+        Client {
+            id: EntityId::from(user.id),
+            mac: MacAddress::new(&user.mac),
+            ip: None,
+            name: user.name.filter(|name| !name.is_empty()),
+            hostname: user.hostname.filter(|name| !name.is_empty()),
+            client_type,
+            connected_at: None,
+            uplink_device_id: None,
+            uplink_device_mac: None,
+            switch_port: None,
+            network_id: None,
+            network_name: None,
+            vlan: None,
+            wireless: None,
+            guest_auth: None,
+            is_guest: user.is_guest.unwrap_or(false),
+            tx_bytes: None,
+            rx_bytes: None,
+            bandwidth: None,
+            os_name: None,
+            device_class: None,
+            use_fixedip: user.use_fixedip.unwrap_or(false),
+            fixed_ip: user.fixed_ip.as_deref().and_then(|ip| ip.parse().ok()),
+            blocked: user.blocked.unwrap_or(false),
+            source: DataSource::SessionApi,
+            updated_at: Utc::now(),
+        }
+    }
+}
+
 // ── Integration API ──────────────────────────────────────────────
+
+/// Guest state from an Integration client's `access` object: its `type`
+/// is `GUEST` for a client behind the portal, with `authorized` beside it.
+fn integration_guest_auth(access: &serde_json::Value) -> Option<GuestAuth> {
+    let text = |key: &str| access.get(key).and_then(serde_json::Value::as_str);
+    (text("type") == Some("GUEST")).then(|| GuestAuth {
+        authorized: access
+            .get("authorized")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        method: None,
+        expires_at: None,
+        tx_bytes: None,
+        rx_bytes: None,
+        elapsed_minutes: None,
+    })
+}
 
 impl From<integration_types::ClientResponse> for Client {
     fn from(c: integration_types::ClientResponse) -> Self {
@@ -117,6 +174,7 @@ impl From<integration_types::ClientResponse> for Client {
             _ => ClientType::Unknown,
         };
 
+        let guest_auth = integration_guest_auth(&c.access);
         let uuid_fallback = c.id.to_string();
         let mac_str = c
             .mac_address
@@ -139,8 +197,8 @@ impl From<integration_types::ClientResponse> for Client {
             network_name: None,
             vlan: None,
             wireless: None,
-            guest_auth: None,
-            is_guest: false,
+            is_guest: guest_auth.is_some(),
+            guest_auth,
             tx_bytes: None,
             rx_bytes: None,
             bandwidth: None,
@@ -165,6 +223,56 @@ mod tests {
         assert_eq!(channel_to_frequency(Some(36)), Some(5.0));
         assert_eq!(channel_to_frequency(Some(149)), Some(5.0));
         assert_eq!(channel_to_frequency(None), None);
+    }
+
+    #[test]
+    fn an_integration_guest_carries_its_portal_state() {
+        let client = |access: serde_json::Value| -> Client {
+            serde_json::from_value::<integration_types::ClientResponse>(serde_json::json!({
+                "id": "c56a4180-65aa-42ec-a945-5fd21dec0538",
+                "name": "Visitor phone",
+                "type": "WIRELESS",
+                "macAddress": "aa:bb:cc:dd:ee:ff",
+                "access": access,
+            }))
+            .expect("deserialize")
+            .into()
+        };
+
+        let waiting = client(serde_json::json!({ "type": "GUEST", "authorized": false }));
+        assert!(waiting.is_guest);
+        assert!(waiting.guest_auth.is_some_and(|auth| !auth.authorized));
+
+        let through = client(serde_json::json!({ "type": "GUEST", "authorized": true }));
+        assert!(through.guest_auth.is_some_and(|auth| auth.authorized));
+
+        let regular = client(serde_json::json!({ "type": "DEFAULT" }));
+        assert!(!regular.is_guest);
+        assert!(regular.guest_auth.is_none());
+    }
+
+    #[test]
+    fn a_remembered_user_becomes_an_offline_client() {
+        let user: SessionUserEntry = serde_json::from_value(serde_json::json!({
+            "_id": "user-9",
+            "mac": "AA:BB:CC:DD:EE:09",
+            "hostname": "old-tablet",
+            "name": "",
+            "blocked": true,
+            "is_wired": false,
+            "use_fixedip": true,
+            "fixed_ip": "10.0.0.9"
+        }))
+        .expect("deserialize");
+        let client: Client = user.into();
+        assert_eq!(client.id, EntityId::from("user-9"));
+        assert_eq!(client.mac.as_str(), "aa:bb:cc:dd:ee:09");
+        assert_eq!(client.name, None, "an empty alias is no name");
+        assert_eq!(client.hostname.as_deref(), Some("old-tablet"));
+        assert_eq!(client.client_type, ClientType::Wireless);
+        assert!(client.blocked);
+        assert!(client.ip.is_none() && client.connected_at.is_none());
+        assert_eq!(client.fixed_ip, "10.0.0.9".parse().ok());
     }
 
     #[test]

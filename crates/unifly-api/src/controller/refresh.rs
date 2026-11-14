@@ -9,6 +9,7 @@ use crate::store::RefreshSnapshot;
 use super::Controller;
 
 mod carry;
+mod client_state;
 mod events;
 mod integration;
 mod merge;

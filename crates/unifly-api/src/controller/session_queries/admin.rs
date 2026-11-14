@@ -41,9 +41,15 @@ impl Controller {
             .collect())
     }
 
+    /// Every client the controller remembers, connected or not, with its
+    /// reservation and whether it is blocked.
     pub async fn list_users(
         &self,
     ) -> Result<Vec<crate::session::models::SessionUserEntry>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.users()));
+        }
         let session = self.inner.session_client.lock().await.clone();
         let session = require_session(session.as_ref())?;
         Ok(session.list_users().await?)
