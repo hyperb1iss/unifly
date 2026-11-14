@@ -88,15 +88,6 @@ impl App {
         );
     }
 
-    /// Whether the controller answers the Session calls ports go through.
-    fn has_port_access(&self) -> bool {
-        self.access.session
-            || self
-                .controller
-                .as_ref()
-                .is_some_and(unifly_api::Controller::is_demo)
-    }
-
     /// Fetch a device's port profiles and hand them to the Devices screen,
     /// or tell it why they cannot be read.
     fn fetch_port_profiles(&self, id: &EntityId) {
@@ -110,7 +101,7 @@ impl App {
             let _ = tx.send(failed("not connected"));
             return;
         };
-        if !self.has_port_access() {
+        if !self.access.session {
             let _ = tx.send(failed(NEEDS_SESSION));
             return;
         }
@@ -148,7 +139,7 @@ impl App {
             return;
         };
         let name = self.resolve_device_name(id);
-        if !self.has_port_access() {
+        if !self.access.session {
             self.show_notification(Notification::warning(format!(
                 "Port {port} on {name} was not changed: {NEEDS_SESSION}"
             )));
@@ -302,6 +293,15 @@ mod tests {
         demo
     }
 
+    /// What the data bridge reports for the demo fleet: everything.
+    fn demo_access() -> crate::tui::action::Access {
+        crate::tui::action::Access {
+            integration: true,
+            session: true,
+            live_events: true,
+        }
+    }
+
     async fn next_action(app: &mut App) -> Action {
         tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
             .await
@@ -414,6 +414,7 @@ mod tests {
         let switch = first_switch(&demo);
         let mut app = App::new(Some(demo), None, false, true);
 
+        app.access = demo_access();
         app.process_action(&Action::RequestPortUpdate {
             device: switch.id.clone(),
             port: 3,
@@ -465,6 +466,7 @@ mod tests {
         let store = Arc::clone(demo.store());
         let mut app = App::new(Some(demo), None, false, true);
 
+        app.access = demo_access();
         app.process_action(&Action::RequestPortUpdate {
             device: switch.id.clone(),
             port,
