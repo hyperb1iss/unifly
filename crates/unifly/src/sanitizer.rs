@@ -659,7 +659,10 @@ impl Sanitizer {
                         serde_json::Value::String(name),
                     ) = (k.as_str(), v)
                     {
-                        serde_json::Value::String(self.sanitize_name(name))
+                        // A name can be an address: an access point nobody
+                        // named reports its MAC. The text pass catches
+                        // what the name mapping lets through.
+                        serde_json::Value::String(self.sanitize_text(&self.sanitize_name(name)))
                     } else {
                         self.clean_json(v, Some(k))
                     };
@@ -1366,6 +1369,40 @@ mod tests {
         assert!(
             !s.sanitize_text("NeighborNet is loud")
                 .contains("NeighborNet")
+        );
+    }
+
+    #[test]
+    fn a_json_name_that_is_a_mac_or_wan_address_is_redacted_like_any_other() {
+        let s = Sanitizer::new(&DemoConfig {
+            enabled: true,
+            redact_names: vec!["Alice".into()],
+            redact_macs: true,
+            redact_wan_ips: true,
+            ..DemoConfig::default()
+        });
+        let ap = s.sanitize_mac(&MacAddress::new("aa:bb:cc:00:11:22"));
+        let alice = s.sanitize_name("Alice's Phone");
+        assert_ne!(alice, "Alice's Phone");
+
+        // A roam row for an AP nobody named, and a WiFi detail's uplink.
+        let roam = s.sanitize_json_value(&serde_json::json!({
+            "parameters": {
+                "DEVICE_FROM": { "name": "aa:bb:cc:00:11:22" },
+                "DEVICE_TO": { "name": "Lobby AP" },
+                "CLIENT": { "name": "Alice's Phone" },
+            },
+            "uplink": { "display_name": "AA-BB-CC-00-11-22", "hostname": "8.8.4.4" },
+        }));
+        assert_eq!(roam["parameters"]["DEVICE_FROM"]["name"], ap.as_str());
+        assert_eq!(roam["parameters"]["DEVICE_TO"]["name"], "Lobby AP");
+        assert_eq!(roam["parameters"]["CLIENT"]["name"], alice.as_str());
+        assert_eq!(roam["uplink"]["display_name"], ap.as_str());
+        let drawn = roam.to_string();
+        assert!(!drawn.contains("8.8.4.4"), "{drawn}");
+        assert!(
+            !drawn.to_lowercase().contains("aa:bb:cc:00:11:22"),
+            "{drawn}"
         );
     }
 
