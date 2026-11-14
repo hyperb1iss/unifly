@@ -11,6 +11,7 @@ mod networks_firewall;
 mod notify;
 mod render;
 mod screens;
+mod setup;
 mod stats;
 mod wifi;
 

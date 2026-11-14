@@ -17,31 +17,11 @@ impl App {
         self.controller.as_ref().is_some_and(Controller::is_demo)
     }
 
-    pub(super) fn handle_onboarding_complete(
-        &mut self,
-        config: &unifly_api::ControllerConfig,
-    ) -> Result<()> {
-        if self.demo_fleet_active() {
-            return self.refuse_in_demo_fleet();
-        }
-        self.screens.remove(&ScreenId::Setup);
-
-        let controller = Controller::new(config.clone());
-        self.controller = Some(controller.clone());
-        self.set_active_screen(ScreenId::Dashboard);
-
-        self.spawn_data_bridge(controller);
-        self.action_tx
-            .send(Action::Notify(Notification::success("Connected!")))?;
-
-        Ok(())
-    }
-
     pub(super) fn open_settings(&mut self) -> Result<()> {
         self.open_settings_with(crate::tui::screens::settings::SettingsScreen::new)
     }
 
-    fn open_settings_with(
+    pub(super) fn open_settings_with(
         &mut self,
         build: impl FnOnce() -> crate::tui::screens::settings::SettingsScreen,
     ) -> Result<()> {
@@ -54,8 +34,28 @@ impl App {
             return self.refuse_in_demo_fleet();
         }
 
+        let mut screen = build();
+        if self.sanitizer.is_some() {
+            // The session is redacting what it shows, and Settings holds
+            // the controller's real address, user, and site.
+            screen.hide_values();
+        } else if self.connection_status == super::ConnectionStatus::Connected
+            && let Some(controller) = &self.controller
+        {
+            screen.set_known_sites(
+                controller
+                    .sites_snapshot()
+                    .iter()
+                    .map(|site| unifly_api::SiteHint {
+                        internal_reference: site.internal_name.clone(),
+                        display_name: site.name.clone(),
+                    })
+                    .collect(),
+            );
+        }
+
         self.previous_screen = Some(self.active_screen);
-        self.install_screen(ScreenId::Settings, build())?;
+        self.install_screen(ScreenId::Settings, screen)?;
         self.set_active_screen(ScreenId::Settings);
 
         Ok(())
@@ -67,23 +67,70 @@ impl App {
         self.set_active_screen(target);
     }
 
-    pub(super) fn apply_settings(&mut self, config: &unifly_api::ControllerConfig) -> Result<()> {
+    /// Open the setup wizard for a new profile, from a running session.
+    pub(super) fn open_setup_for(&mut self, profile_name: &str) -> Result<()> {
+        if self.demo_fleet_active() {
+            return self.refuse_in_demo_fleet();
+        }
+        self.screens.remove(&ScreenId::Settings);
+        self.install_screen(
+            ScreenId::Setup,
+            crate::tui::screens::onboarding::OnboardingScreen::for_new_profile(profile_name),
+        )?;
+        self.set_active_screen(ScreenId::Setup);
+        Ok(())
+    }
+
+    /// Leave a setup wizard that was opened from a running session.
+    pub(super) fn close_setup(&mut self) {
+        if self.controller.is_none() {
+            // Nothing to go back to: the wizard is the session.
+            return;
+        }
+        self.screens.remove(&ScreenId::Setup);
+        let target = self.previous_screen.take().unwrap_or(ScreenId::Dashboard);
+        self.set_active_screen(target);
+    }
+
+    /// Connect the session with `config`, which a form tested and saved
+    /// as `profile_name`. Everything from the previous controller goes.
+    pub(super) fn apply_connection(
+        &mut self,
+        profile_name: &str,
+        config: &unifly_api::ControllerConfig,
+        notices: &[String],
+    ) -> Result<()> {
         if self.demo_fleet_active() {
             self.screens.remove(&ScreenId::Settings);
             return self.refuse_in_demo_fleet();
         }
         self.reset_data_bridge();
+        self.action_tx.send(Action::ControllerChanged)?;
+        self.connection_error = None;
 
         let controller = Controller::new(config.clone());
         self.controller = Some(controller.clone());
         self.spawn_data_bridge(controller);
+        crate::tui::forms::session::switch_to(profile_name);
 
         self.screens.remove(&ScreenId::Settings);
+        self.screens.remove(&ScreenId::Setup);
+        // Esc on the dashboard must not walk back to where Settings was
+        // opened from.
+        self.previous_screen = None;
         self.set_active_screen(ScreenId::Dashboard);
 
-        self.action_tx.send(Action::Notify(Notification::success(
-            "Settings saved, reconnecting\u{2026}",
-        )))?;
+        // A secret that fell back to plaintext must not slip past: it
+        // stays on screen until dismissed.
+        for notice in notices {
+            self.action_tx
+                .send(Action::Notify(Notification::warning(notice.clone())))?;
+        }
+        self.action_tx
+            .send(Action::Notify(Notification::success(format!(
+                "Saved profile {}, connecting\u{2026}",
+                self.shown_text(profile_name)
+            ))))?;
 
         Ok(())
     }
@@ -187,12 +234,12 @@ mod tests {
         let notice = app.action_rx.try_recv().expect("a notice is sent");
         assert!(matches!(notice, Action::Notify(_)));
 
-        // Even a forged apply cannot swap a real controller in.
-        app.apply_settings(&unifly_api::ControllerConfig::default())
-            .expect("apply settings");
+        // Even a forged apply cannot swap a real controller in, and no
+        // wizard opens to make one.
+        app.apply_connection("home", &unifly_api::ControllerConfig::default(), &[])
+            .expect("apply connection");
         assert!(app.demo_fleet_active(), "the demo controller must stay");
-        app.handle_onboarding_complete(&unifly_api::ControllerConfig::default())
-            .expect("onboarding complete");
-        assert!(app.demo_fleet_active(), "the demo controller must stay");
+        app.open_setup_for("lab").expect("open setup");
+        assert!(!app.screens.contains_key(&ScreenId::Setup));
     }
 }

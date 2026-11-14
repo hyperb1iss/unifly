@@ -1,112 +1,179 @@
-use super::{AuthMode, OnboardingScreen, WizardStep};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
+use super::{OnboardingScreen, TestPhase, WizardField, WizardHit, WizardStep};
 use crate::tui::action::Action;
+use crate::tui::forms::controller_profile::AuthMode;
+use crate::tui::widgets::click::Click;
+use crate::tui::widgets::line_input::Edit;
+
+/// A plain letter: lists and the Testing step read their shortcuts as
+/// these, never as a Ctrl or Alt chord.
+fn plain_char(key: KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Char(ch)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            Some(ch)
+        }
+        _ => None,
+    }
+}
+
+/// `index` moved one step through a list of `len`, stopping at its ends.
+fn moved(index: usize, len: usize, forward: bool) -> usize {
+    if forward {
+        (index + 1).min(len.saturating_sub(1))
+    } else {
+        index.saturating_sub(1)
+    }
+}
 
 impl OnboardingScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
-        if key.code != KeyCode::Enter {
-            self.error = None;
-        }
-
         match self.step {
-            WizardStep::Welcome => {
-                if key.code == KeyCode::Enter {
-                    self.advance();
-                }
-            }
-            WizardStep::Url | WizardStep::Site => self.handle_text_step_key(key),
-            WizardStep::AuthMode => self.handle_auth_mode_key(key),
-            WizardStep::Credentials => self.handle_credentials_key(key),
-            WizardStep::Testing => {
-                if key.code == KeyCode::Esc {
-                    self.go_back();
-                }
-            }
-            WizardStep::Done => match key.code {
-                KeyCode::Enter => self.send_completion(),
+            WizardStep::Welcome | WizardStep::Done => match key.code {
+                KeyCode::Enter => self.advance(),
                 KeyCode::Esc => self.go_back(),
-                _ => {}
+                _ => None,
             },
+            WizardStep::AuthMode => {
+                let len = AuthMode::ALL.len();
+                self.handle_list_key(key, |screen, forward| {
+                    screen.auth_mode_index = moved(screen.auth_mode_index, len, forward);
+                })
+            }
+            WizardStep::Site if self.picks_site() => {
+                let len = self.known_sites.len();
+                self.handle_list_key(key, |screen, forward| {
+                    screen.site_index = moved(screen.site_index, len, forward);
+                })
+            }
+            WizardStep::Url | WizardStep::Credentials | WizardStep::Site => {
+                self.handle_form_key(key)
+            }
+            WizardStep::Testing => self.handle_testing_key(key),
         }
+    }
 
+    fn handle_list_key(
+        &mut self,
+        key: KeyEvent,
+        step: impl FnOnce(&mut Self, bool),
+    ) -> Option<Action> {
+        match (key.code, plain_char(key)) {
+            (KeyCode::Up, _) | (_, Some('k')) => step(self, false),
+            (KeyCode::Down, _) | (_, Some('j')) => step(self, true),
+            (KeyCode::Enter, _) => return self.advance(),
+            (KeyCode::Esc, _) => return self.go_back(),
+            _ => return None,
+        }
+        self.error = None;
         None
     }
 
-    pub(super) fn apply_action(&mut self, action: &Action) {
+    fn handle_form_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Enter => return self.advance(),
+            KeyCode::Esc => return self.go_back(),
+            KeyCode::Tab | KeyCode::Down => self.step_field(true),
+            KeyCode::BackTab | KeyCode::Up => self.step_field(false),
+            KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL => self.toggle_reveal(),
+            _ => {
+                self.handle_field_key(key);
+                return None;
+            }
+        }
+        self.error = None;
+        self.notice = None;
+        None
+    }
+
+    fn handle_field_key(&mut self, key: KeyEvent) {
+        let changed = match self.active_field() {
+            Some(WizardField::Insecure) if plain_char(key) == Some(' ') => {
+                self.draft.toggle_insecure();
+                true
+            }
+            Some(WizardField::Text(field)) => self.draft.input_mut(field).is_some_and(|input| {
+                input.handle_key_accepting(key, |ch| field.accepts(ch)) == Edit::Changed
+            }),
+            _ => false,
+        };
+        if changed {
+            self.error = None;
+            self.notice = None;
+        }
+    }
+
+    fn handle_testing_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match (key.code, plain_char(key)) {
+            (KeyCode::Esc, _) => return self.go_back(),
+            (KeyCode::Enter, _) | (_, Some('r')) if self.phase == TestPhase::Idle => {
+                self.start_test();
+            }
+            (_, Some('t')) => self.trust_and_retry(),
+            _ => {}
+        }
+        None
+    }
+
+    /// Show or hide the secret in the focused field.
+    fn toggle_reveal(&mut self) {
+        if let Some(field) = self.active_text_field() {
+            self.reveal.toggle(field);
+        }
+    }
+
+    /// Insert pasted text into the field being typed in.
+    pub(super) fn paste(&mut self, text: &str) {
+        let Some(field) = self.active_text_field() else {
+            return;
+        };
+        if let Some(input) = self.draft.input_mut(field)
+            && input.paste(text, |ch| field.accepts(ch)) == Edit::Changed
+        {
+            self.error = None;
+            self.notice = None;
+        }
+    }
+
+    pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {
         match action {
-            Action::OnboardingTestResult(result) => {
-                self.testing = false;
-                match result {
-                    Ok(()) => {
-                        self.test_error = None;
-                        self.step = WizardStep::Done;
-                    }
-                    Err(message) => {
-                        self.test_error = Some(message.clone());
-                    }
-                }
+            Action::SetupProbeFinished { generation, result } => {
+                self.finish_test(*generation, result);
+                Some(Action::Invalidate)
             }
-            Action::Tick if self.testing => {
+            Action::SetupSaveFinished { generation, result } => {
+                self.finish_save(*generation, result);
+                Some(Action::Invalidate)
+            }
+            // The spinner only turns when a frame is drawn for it.
+            Action::Tick if self.phase != TestPhase::Idle => {
                 self.throbber_state.calc_next();
+                Some(Action::Invalidate)
             }
-            _ => {}
+            _ => None,
         }
     }
 
-    fn handle_text_step_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Enter => self.advance(),
-            KeyCode::Esc => self.go_back(),
-            KeyCode::Backspace => {
-                if let Some(input) = self.active_input_mut() {
-                    input.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(input) = self.active_input_mut() {
-                    input.push(c);
+    pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if let Some(Click::Key(key)) = self.hits.borrow().clicked(mouse) {
+            return Some(Action::PressKey(key));
+        }
+        let hit = self.targets.borrow().clicked(mouse)?;
+        match (hit, self.step) {
+            (WizardHit::Choice(index), WizardStep::AuthMode) => self.auth_mode_index = index,
+            (WizardHit::Choice(index), WizardStep::Site) => self.site_index = index,
+            (WizardHit::Field(index), _) if index < self.fields().len() => {
+                self.field = index;
+                if self.active_field() == Some(WizardField::Insecure) {
+                    self.draft.toggle_insecure();
                 }
             }
             _ => {}
         }
-    }
-
-    fn handle_auth_mode_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') if self.auth_mode_index > 0 => {
-                self.auth_mode_index -= 1;
-            }
-            KeyCode::Down | KeyCode::Char('j')
-                if self.auth_mode_index < AuthMode::ALL.len() - 1 =>
-            {
-                self.auth_mode_index += 1;
-            }
-            KeyCode::Enter => self.advance(),
-            KeyCode::Esc => self.go_back(),
-            _ => {}
-        }
-    }
-
-    fn handle_credentials_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Tab => self.next_cred_field(),
-            KeyCode::Enter => self.advance(),
-            KeyCode::Esc => self.go_back(),
-            KeyCode::Backspace => {
-                if let Some(input) = self.active_input_mut() {
-                    input.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'u' {
-                    self.show_password = !self.show_password;
-                } else if let Some(input) = self.active_input_mut() {
-                    input.push(c);
-                }
-            }
-            _ => {}
-        }
+        None
     }
 }

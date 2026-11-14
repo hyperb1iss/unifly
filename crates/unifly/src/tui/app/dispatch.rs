@@ -16,6 +16,7 @@ impl App {
             || self.handle_command_action(action)?
             || self.handle_networks_firewall_action(action)?
             || self.handle_devices_clients_action(action)?
+            || self.handle_setup_action(action)?
         {
             if invalidates {
                 self.needs_redraw = true;
@@ -156,24 +157,14 @@ impl App {
                 self.access = *access;
                 self.forward_to_all_screens(action)?;
             }
-            Action::RequestStats(period) => self.request_stats(*period)?,
-            Action::OnboardingComplete { config, .. } => {
-                self.handle_onboarding_complete(config)?;
-            }
-            Action::OnboardingTestResult(_) => {
-                self.forward_to_screen(ScreenId::Setup, action)?;
+            Action::RequestStats(period) => {
+                self.request_stats(*period)?;
             }
             Action::OpenSettings => {
                 self.open_settings()?;
             }
             Action::CloseSettings => {
                 self.close_settings();
-            }
-            Action::SettingsTestResult(_) => {
-                self.forward_to_screen(ScreenId::Settings, action)?;
-            }
-            Action::SettingsApply { config, .. } => {
-                self.apply_settings(config)?;
             }
             Action::Notify(notification) => {
                 self.show_notification(notification.clone());

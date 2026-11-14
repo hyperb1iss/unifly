@@ -1,18 +1,28 @@
-use super::{AuthMode, ControllerProfileDraft, CredentialField, OnboardingScreen, WizardStep};
+use super::{OnboardingScreen, Purpose, TestPhase, WizardField, WizardStep};
+use crate::config::resolve::ConnectionOverrides;
+use crate::tui::action::Action;
+use crate::tui::forms::controller_profile::{AuthMode, ControllerProfileDraft, DraftField, Reveal};
+use crate::tui::forms::probe::{
+    FailureKind, ProbeFailure, ProbeRequest, ProbeResult, ProbeSlot, Tested,
+};
+use crate::tui::forms::session::{self, Session};
 
 impl WizardStep {
+    /// The step's position in the step indicator.
     pub(super) fn index(self) -> usize {
         match self {
             Self::Welcome => 0,
-            Self::Url => 1,
-            Self::AuthMode => 2,
+            Self::AuthMode => 1,
+            Self::Url => 2,
             Self::Credentials => 3,
-            Self::Site => 4,
-            Self::Testing => 5,
+            Self::Testing => 4,
+            Self::Site => 5,
             Self::Done => 6,
         }
     }
 }
+
+// ── Construction ────────────────────────────────────────────────────
 
 impl OnboardingScreen {
     pub fn new() -> Self {
@@ -22,19 +32,41 @@ impl OnboardingScreen {
     /// A wizard that sets up `profile_name`: the profile the launch asked
     /// for, so finishing it never writes over a different one.
     pub fn for_profile(profile_name: &str) -> Self {
+        Self::in_session(profile_name, session::current())
+    }
+
+    /// A wizard for `profile_name` opened in `session`.
+    pub(super) fn in_session(profile_name: &str, session: Session) -> Self {
+        let mut draft = ControllerProfileDraft::default();
+        // A code given at launch is for this sign-in.
+        if let Some(code) = session.launch_totp.as_deref() {
+            draft.totp.set(code);
+        }
         Self {
             focused: false,
             action_tx: None,
             step: WizardStep::Welcome,
-            draft: ControllerProfileDraft::default(),
+            draft,
             auth_mode_index: 0,
-            cred_field: CredentialField::ApiKey,
-            show_password: false,
-            testing: false,
-            test_error: None,
+            field: 0,
+            reveal: Reveal::default(),
+            phase: TestPhase::Idle,
+            failure: None,
             error: None,
+            notice: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             profile_name: profile_name.to_owned(),
+            session,
+            purpose: Purpose::FirstRun,
+            probe: ProbeSlot::default(),
+            held: None,
+            tested: None,
+            known_sites: Vec::new(),
+            site_index: 0,
+            site_confirmed: false,
+            notices: Vec::new(),
+            hits: std::cell::RefCell::default(),
+            targets: std::cell::RefCell::default(),
         }
     }
 
@@ -49,480 +81,380 @@ impl OnboardingScreen {
         store: &dyn crate::config::SecretStore,
     ) -> Self {
         let mut screen = Self::for_profile(profile_name);
+        let launch_totp = screen.draft.totp.clone();
         screen.draft = ControllerProfileDraft::from_profile(existing)
             .with_keyring_origins(profile_name, store)
             .with_inherited_insecure(defaults);
-        screen.auth_mode_index = AuthMode::ALL
-            .iter()
-            .position(|&mode| mode == screen.draft.auth_mode)
-            .unwrap_or(0);
+        screen.draft.totp = launch_totp;
+        screen.auth_mode_index = screen.draft.auth_mode.index();
+        screen.purpose = Purpose::Repair;
+        // Its site was chosen when the profile was made.
+        screen.site_confirmed = true;
         screen
     }
 
-    pub(super) fn advance(&mut self) {
-        self.error = None;
+    /// A wizard opened from a running session to add `profile_name`.
+    /// Leaving its first step goes back to that session.
+    pub(crate) fn for_new_profile(profile_name: &str) -> Self {
+        let mut screen = Self::in_session(profile_name, Session::default());
+        screen.purpose = Purpose::NewProfile;
+        screen
+    }
+
+    /// Why the wizard opened for a profile that already exists, when the
+    /// launch recorded a reason.
+    pub(super) fn repair_reason(&self) -> Option<&str> {
+        (self.purpose == Purpose::Repair)
+            .then_some(self.session.setup_reason.as_deref())
+            .flatten()
+    }
+}
+
+// ── Fields ──────────────────────────────────────────────────────────
+
+impl OnboardingScreen {
+    /// What the current step lets the user focus, in order.
+    pub(super) fn fields(&self) -> Vec<WizardField> {
+        let text = |field| WizardField::Text(field);
         match self.step {
-            WizardStep::Welcome => self.step = WizardStep::Url,
-            WizardStep::Url => {
-                if let Err(message) = self.draft.validate_url() {
-                    self.error = Some(message);
-                    return;
+            WizardStep::Url => vec![text(DraftField::Url), WizardField::Insecure],
+            WizardStep::Credentials => {
+                let mode = self.draft.auth_mode;
+                let mut fields = Vec::new();
+                if mode.uses_api_key() {
+                    fields.push(text(DraftField::ApiKey));
                 }
-                self.step = WizardStep::AuthMode;
+                if mode == AuthMode::Cloud {
+                    fields.push(text(DraftField::HostId));
+                }
+                if mode.uses_login() {
+                    fields.extend([
+                        text(DraftField::Username),
+                        text(DraftField::Password),
+                        text(DraftField::Totp),
+                    ]);
+                }
+                fields
             }
+            WizardStep::Site if !self.picks_site() => vec![text(DraftField::Site)],
+            _ => Vec::new(),
+        }
+    }
+
+    pub(super) fn active_field(&self) -> Option<WizardField> {
+        self.fields().get(self.field).copied()
+    }
+
+    /// The text field typed characters go into, when one has focus.
+    pub(super) fn active_text_field(&self) -> Option<DraftField> {
+        match self.active_field()? {
+            WizardField::Text(field) => Some(field),
+            WizardField::Insecure => None,
+        }
+    }
+
+    pub(super) fn step_field(&mut self, forward: bool) {
+        let count = self.fields().len();
+        if count == 0 {
+            return;
+        }
+        self.field = if forward {
+            (self.field + 1) % count
+        } else {
+            (self.field + count - 1) % count
+        };
+    }
+
+    /// Focus `field` if the current step has it.
+    fn focus(&mut self, field: DraftField) {
+        let wanted = match field {
+            DraftField::Insecure => WizardField::Insecure,
+            other => WizardField::Text(other),
+        };
+        if let Some(index) = self.fields().iter().position(|have| *have == wanted) {
+            self.field = index;
+        }
+    }
+
+    /// Whether the Site step lists the controller's sites to pick from.
+    pub(super) fn picks_site(&self) -> bool {
+        !self.known_sites.is_empty()
+    }
+
+    /// The step that asks for `field`.
+    fn step_for(&self, field: DraftField) -> WizardStep {
+        match field {
+            DraftField::AuthMode => WizardStep::AuthMode,
+            DraftField::Url | DraftField::Insecure | DraftField::CaCert | DraftField::Timeout
+                if self.draft.auth_mode != AuthMode::Cloud =>
+            {
+                WizardStep::Url
+            }
+            DraftField::Site => WizardStep::Site,
+            _ => WizardStep::Credentials,
+        }
+    }
+
+    /// Go to `step` with focus on its first field and nothing reported.
+    pub(super) fn show_step(&mut self, step: WizardStep) {
+        self.step = step;
+        self.field = 0;
+        self.error = None;
+        self.notice = None;
+    }
+}
+
+// ── Moving between steps ────────────────────────────────────────────
+
+impl OnboardingScreen {
+    pub(super) fn advance(&mut self) -> Option<Action> {
+        self.error = None;
+        self.notice = None;
+        match self.step {
+            WizardStep::Welcome => self.show_step(WizardStep::AuthMode),
             WizardStep::AuthMode => {
                 self.draft.auth_mode = AuthMode::ALL[self.auth_mode_index];
-                self.draft.apply_auth_mode_defaults();
-                self.cred_field = match self.draft.auth_mode {
-                    AuthMode::ApiKey | AuthMode::Hybrid | AuthMode::Cloud => {
-                        CredentialField::ApiKey
-                    }
-                    AuthMode::Session => CredentialField::Username,
-                };
-                self.step = WizardStep::Credentials;
-            }
-            WizardStep::Credentials => {
-                if let Err(message) = self.validate_credentials() {
-                    self.error = Some(message);
-                    return;
-                }
-                self.step = WizardStep::Site;
-            }
-            WizardStep::Site => {
-                if self.draft.site.trim().is_empty() {
-                    self.error = Some("Site name cannot be empty".into());
-                    return;
-                }
-                self.step = WizardStep::Testing;
-                self.start_connection_test();
-            }
-            WizardStep::Testing => {}
-            WizardStep::Done => {
-                self.send_completion();
-            }
-        }
-    }
-
-    pub(super) fn go_back(&mut self) {
-        self.error = None;
-        self.test_error = None;
-        match self.step {
-            WizardStep::Welcome => {}
-            WizardStep::Url => self.step = WizardStep::Welcome,
-            WizardStep::AuthMode => self.step = WizardStep::Url,
-            WizardStep::Credentials => self.step = WizardStep::AuthMode,
-            WizardStep::Site => self.step = WizardStep::Credentials,
-            WizardStep::Testing => {
-                self.testing = false;
-                self.step = WizardStep::Site;
-            }
-            WizardStep::Done => self.step = WizardStep::Site,
-        }
-    }
-
-    pub(super) fn validate_credentials(&self) -> std::result::Result<(), String> {
-        self.draft.validate_credentials()
-    }
-
-    fn build_profile(&self) -> crate::config::Profile {
-        self.draft.to_profile()
-    }
-
-    fn start_connection_test(&mut self) {
-        self.testing = true;
-        self.test_error = None;
-
-        let profile = self.build_profile();
-        let profile_name = self.profile_name.clone();
-        let save = self.draft.plan_save(&profile_name);
-
-        let Some(tx) = self.action_tx.clone() else {
-            return;
-        };
-
-        tokio::spawn(async move {
-            let defaults = crate::config::load_config()
-                .map(|cfg| cfg.defaults)
-                .unwrap_or_default();
-            let result = match crate::config::profile_to_controller_config(
-                &profile,
-                &profile_name,
-                &defaults,
-            ) {
-                Ok(config) => {
-                    let controller = unifly_api::Controller::new(config);
-                    match controller.connect().await {
-                        Ok(()) => {
-                            controller.disconnect().await;
-                            // A refused secret or a failed config write undoes
-                            // the keyring changes; the message becomes the
-                            // test result.
-                            let saved = save_setup(
-                                save,
-                                &crate::config::OsKeyring,
-                                &crate::config::config_path(),
-                                &profile_name,
-                            );
-                            saved.map(|notices| {
-                                for notice in notices {
-                                    let _ = tx.send(crate::tui::action::Action::Notify(
-                                        crate::tui::action::Notification::info(notice),
-                                    ));
-                                }
-                            })
-                        }
-                        Err(error) => Err(format!("{error}")),
-                    }
-                }
-                Err(error) => Err(format!("{error}")),
-            };
-
-            let _ = tx.send(crate::tui::action::Action::OnboardingTestResult(result));
-        });
-    }
-
-    pub(super) fn send_completion(&self) {
-        let profile = self.build_profile();
-        let profile_name = self.profile_name.as_str();
-
-        let Some(tx) = self.action_tx.clone() else {
-            return;
-        };
-
-        let defaults = crate::config::load_config()
-            .map(|cfg| cfg.defaults)
-            .unwrap_or_default();
-        match crate::config::profile_to_controller_config(&profile, profile_name, &defaults) {
-            Ok(config) => {
-                let _ = tx.send(crate::tui::action::Action::OnboardingComplete {
-                    profile_name: profile_name.to_string(),
-                    config: Box::new(config),
+                // Cloud goes through the connector: there is no address
+                // to ask for.
+                self.show_step(if self.draft.auth_mode == AuthMode::Cloud {
+                    WizardStep::Credentials
+                } else {
+                    WizardStep::Url
                 });
             }
-            Err(error) => {
-                let _ = tx.send(crate::tui::action::Action::Notify(
-                    crate::tui::action::Notification::error(format!("{error}")),
-                ));
+            WizardStep::Url => self.advance_from_url(),
+            WizardStep::Credentials => {
+                if let Err(error) = self.draft.validate_credentials() {
+                    self.focus(error.field);
+                    self.error = Some(error.message);
+                } else {
+                    self.start_test();
+                }
             }
+            WizardStep::Site => self.advance_from_site(),
+            WizardStep::Testing if self.phase == TestPhase::Idle => self.start_test(),
+            WizardStep::Testing => {}
+            WizardStep::Done => return self.complete(),
+        }
+        None
+    }
+
+    fn advance_from_url(&mut self) {
+        if self.draft.add_missing_scheme() {
+            self.focus(DraftField::Url);
+            self.notice = Some("Added https:// to the address. Press Enter to continue.".into());
+            return;
+        }
+        if let Err(error) = self.draft.validate_url() {
+            self.focus(DraftField::Url);
+            self.error = Some(error.message);
+            return;
+        }
+        self.show_step(WizardStep::Credentials);
+    }
+
+    fn advance_from_site(&mut self) {
+        if self.picks_site() {
+            if let Some(site) = self.known_sites.get(self.site_index) {
+                self.draft.site.set(site.internal_reference.clone());
+            }
+        } else if self.draft.site.text().trim().is_empty() {
+            self.error = Some("Site name cannot be empty".into());
+            return;
+        }
+        self.site_confirmed = true;
+
+        // A test that already passed with this very site needs no repeat.
+        let chosen = self.draft.site.text().trim().to_owned();
+        match self.held.take() {
+            Some((tested, site)) if site == chosen => self.start_save(tested),
+            _ => self.start_test(),
         }
     }
 
-    pub(super) fn active_input_mut(&mut self) -> Option<&mut String> {
+    /// Step back. On the first step this leaves a wizard that was opened
+    /// from a running session.
+    pub(super) fn go_back(&mut self) -> Option<Action> {
         match self.step {
-            WizardStep::Url => Some(&mut self.draft.url),
-            WizardStep::Site => Some(&mut self.draft.site),
-            WizardStep::Credentials => match self.cred_field {
-                CredentialField::ApiKey => Some(&mut self.draft.api_key),
-                CredentialField::HostId => Some(&mut self.draft.host_id),
-                CredentialField::Username => Some(&mut self.draft.username),
-                CredentialField::Password => Some(&mut self.draft.password),
-            },
-            _ => None,
+            WizardStep::Welcome => {
+                return (self.purpose == Purpose::NewProfile).then_some(Action::SetupCancelled);
+            }
+            WizardStep::AuthMode => self.show_step(WizardStep::Welcome),
+            WizardStep::Url => self.show_step(WizardStep::AuthMode),
+            WizardStep::Credentials => self.show_step(self.step_before_credentials()),
+            WizardStep::Site => {
+                self.held = None;
+                self.show_step(WizardStep::Credentials);
+            }
+            WizardStep::Testing => self.leave_testing(),
+            // The profile is saved; there is nothing to go back to.
+            WizardStep::Done => {}
+        }
+        None
+    }
+
+    fn step_before_credentials(&self) -> WizardStep {
+        if self.draft.auth_mode == AuthMode::Cloud {
+            WizardStep::AuthMode
+        } else {
+            WizardStep::Url
         }
     }
 
-    pub(super) fn next_cred_field(&mut self) {
-        self.cred_field = match (self.draft.auth_mode, self.cred_field) {
-            (AuthMode::Session | AuthMode::Hybrid, CredentialField::Username) => {
-                CredentialField::Password
+    /// Leave the Testing step: cancel a running test, or go back to the
+    /// field a failed one was about. A save runs to its end.
+    fn leave_testing(&mut self) {
+        match self.phase {
+            TestPhase::Saving => {}
+            TestPhase::Testing => {
+                self.probe.cancel();
+                self.phase = TestPhase::Idle;
+                self.show_step(WizardStep::Credentials);
+                self.notice = Some("Test cancelled. Nothing was saved.".into());
             }
-            (AuthMode::Hybrid, CredentialField::Password) => CredentialField::ApiKey,
-            (AuthMode::Cloud, CredentialField::ApiKey) => CredentialField::HostId,
-            (AuthMode::Cloud, CredentialField::HostId) | (AuthMode::ApiKey, _) => {
-                CredentialField::ApiKey
+            TestPhase::Idle => {
+                let at = self.failure.take().and_then(|failure| failure.field);
+                let step = at.map_or(WizardStep::Credentials, |field| self.step_for(field));
+                self.show_step(step);
+                if let Some(field) = at {
+                    self.focus(field);
+                }
             }
-            (AuthMode::Session, _)
-            | (AuthMode::Hybrid, CredentialField::ApiKey | CredentialField::HostId)
-            | (AuthMode::Cloud, CredentialField::Username | CredentialField::Password) => {
-                CredentialField::Username
-            }
+        }
+    }
+}
+
+// ── Connection test and save ────────────────────────────────────────
+
+impl OnboardingScreen {
+    /// The launch flags that apply to this wizard's profile: the ones the
+    /// session was launched with, when it is the session's profile.
+    fn overrides(&self) -> ConnectionOverrides {
+        if self.session.profile.as_deref() == Some(self.profile_name.as_str()) {
+            self.session.overrides.clone()
+        } else {
+            ConnectionOverrides::default()
+        }
+    }
+
+    pub(super) fn start_test(&mut self) {
+        self.step = WizardStep::Testing;
+        self.phase = TestPhase::Testing;
+        self.failure = None;
+        self.held = None;
+        self.tested = None;
+        self.error = None;
+        self.notice = None;
+
+        let request = ProbeRequest {
+            profile: self.draft.to_profile(),
+            profile_name: self.profile_name.clone(),
+            overrides: self.overrides(),
+            totp: self.draft.totp_code(),
         };
+        let plan = self.draft.plan_save(&self.profile_name);
+        self.probe.start(self.action_tx.as_ref(), request, plan);
     }
-}
 
-/// Store the wizard's secrets in `store` and its profile in the config file
-/// at `path`. A refused secret or a failed config write undoes the keyring
-/// changes and comes back as the message to show.
-fn save_setup(
-    save: crate::tui::forms::controller_profile::SavePlan,
-    store: &dyn crate::config::SecretStore,
-    path: &std::path::Path,
-    profile_name: &str,
-) -> Result<Vec<String>, String> {
-    save.commit(store, |profile| {
-        save_profile(path, profile_name, profile)
-            .map_err(|error| format!("Connected, but failed to save config: {error}"))
-    })
-}
-
-/// Write the profile the wizard set up into the config file at `path`,
-/// keeping every other profile and setting in it. It becomes the default
-/// only when the config has no default naming a saved profile.
-fn save_profile(
-    path: &std::path::Path,
-    profile_name: &str,
-    profile: crate::config::Profile,
-) -> Result<(), crate::config::ConfigError> {
-    let mut cfg = crate::config::load_config_from(path)?;
-    cfg.profiles.insert(profile_name.to_owned(), profile);
-    if !cfg
-        .default_profile
-        .as_ref()
-        .is_some_and(|name| cfg.profiles.contains_key(name))
-    {
-        cfg.default_profile = Some(profile_name.to_owned());
+    fn start_save(&mut self, tested: Tested) {
+        self.step = WizardStep::Testing;
+        self.phase = TestPhase::Saving;
+        self.probe.save(self.action_tx.as_ref(), tested);
     }
-    crate::config::save_config_to(path, &cfg)
-}
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        AuthMode, CredentialField, OnboardingScreen, WizardStep, save_profile, save_setup,
-    };
-
-    /// In-memory stand-in for the OS keyring.
-    #[derive(Default)]
-    struct MemoryStore(std::cell::RefCell<std::collections::HashMap<String, String>>);
-
-    impl MemoryStore {
-        fn secret(&self, key: &str) -> Option<String> {
-            self.0.borrow().get(key).cloned()
+    /// Take the result of test `generation`. A result from a test that was
+    /// cancelled or replaced is dropped, whatever step is showing.
+    pub(super) fn finish_test(&mut self, generation: u64, result: &ProbeResult) {
+        let Some(tested) = self.probe.claim(generation) else {
+            return;
+        };
+        match result {
+            Ok(pass) => {
+                self.known_sites.clone_from(&pass.sites);
+                self.tested = Some(pass.config.clone());
+                if self.site_confirmed || pass.sites.len() < 2 {
+                    self.start_save(tested);
+                } else {
+                    // Several sites and none chosen yet: ask before saving
+                    // the one the test happened to use.
+                    let site = self.draft.site.text().trim().to_owned();
+                    self.held = Some((tested, site));
+                    self.show_site_step(None);
+                }
+            }
+            Err(failure) => self.show_failure(failure.clone()),
         }
     }
 
-    impl crate::config::SecretStore for MemoryStore {
-        fn get(&self, key: &str) -> Result<Option<String>, crate::config::SecretStoreError> {
-            Ok(self.secret(key))
+    fn show_failure(&mut self, failure: ProbeFailure) {
+        self.phase = TestPhase::Idle;
+        if failure.kind == FailureKind::Site {
+            // The controller answered; only the site is wrong, and it may
+            // have said which ones it has.
+            self.known_sites.clone_from(&failure.sites);
+            self.site_confirmed = false;
+            self.show_site_step(Some(failure.summary));
+            return;
         }
+        self.failure = Some(failure);
+    }
 
-        fn set(&self, key: &str, secret: &str) -> Result<(), crate::config::SecretStoreError> {
-            self.0
-                .borrow_mut()
-                .insert(key.to_owned(), secret.to_owned());
-            Ok(())
+    fn show_site_step(&mut self, error: Option<String>) {
+        let current = self.draft.site.text().trim().to_owned();
+        self.site_index = self
+            .known_sites
+            .iter()
+            .position(|site| site.internal_reference == current)
+            .unwrap_or(0);
+        self.phase = TestPhase::Idle;
+        self.show_step(WizardStep::Site);
+        self.error = error;
+    }
+
+    /// Take the result of the save that followed test `generation`.
+    pub(super) fn finish_save(&mut self, generation: u64, result: &Result<Vec<String>, String>) {
+        if self.phase != TestPhase::Saving || !self.probe.owns(generation) {
+            return;
         }
-
-        fn delete(&self, key: &str) -> Result<(), crate::config::SecretStoreError> {
-            self.0.borrow_mut().remove(key);
-            Ok(())
+        self.phase = TestPhase::Idle;
+        match result {
+            Ok(notices) => {
+                self.notices.clone_from(notices);
+                self.show_step(WizardStep::Done);
+            }
+            Err(message) => self.failure = Some(ProbeFailure::save(message.clone())),
         }
     }
 
-    /// The wizard also opens for a profile that exists but cannot connect
-    /// (an unset `api_key_env`, a locked keyring). Finishing it keeps the
-    /// settings the wizard does not show.
-    #[test]
-    fn setup_for_an_existing_profile_keeps_what_the_wizard_does_not_show() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "[profiles.work]\n\
-             controller = \"https://10.0.0.1\"\n\
-             site = \"lab\"\n\
-             api_key_env = \"WORK_KEY\"\n\
-             ca_cert = \"/etc/ssl/work-ca.pem\"\n\
-             timeout = 45\n\
-             totp_command = [\"op\", \"item\", \"get\", \"work\", \"--otp\"]\n",
-        )
-        .expect("write config");
-        let cfg = crate::config::load_config_from(&path).expect("load config");
-        let store = MemoryStore::default();
-
-        let mut screen = OnboardingScreen::for_existing_profile(
-            "work",
-            &cfg.profiles["work"],
-            &cfg.defaults,
-            &store,
-        );
-        screen.draft.url = "https://10.0.0.2".into();
-        let save = screen.draft.plan_save(&screen.profile_name);
-        save_setup(save, &store, &path, &screen.profile_name).expect("save");
-
-        let cfg = crate::config::load_config_from(&path).expect("load saved config");
-        let work = &cfg.profiles["work"];
-        assert_eq!(work.controller, "https://10.0.0.2");
-        assert_eq!(
-            work.ca_cert.as_deref(),
-            Some(std::path::Path::new("/etc/ssl/work-ca.pem"))
-        );
-        assert_eq!(work.timeout, Some(45));
-        assert_eq!(work.api_key_env.as_deref(), Some("WORK_KEY"));
-        assert_eq!(work.site, "lab");
-        assert_eq!(
-            work.totp_command.as_deref(),
-            Some(&["op", "item", "get", "work", "--otp"].map(String::from)[..])
-        );
+    /// Accept the certificate the controller presented and test again: the
+    /// answer to a certificate that could not be verified.
+    pub(super) fn trust_and_retry(&mut self) {
+        if self.offers_trust() {
+            self.draft.toggle_insecure();
+            self.start_test();
+        }
     }
 
-    /// The wizard starts on the profile's auth mode, so stepping through it
-    /// keeps that mode instead of resetting it to the first one.
-    #[test]
-    fn setup_for_an_existing_profile_starts_on_its_auth_mode() {
-        let profile: crate::config::Profile = toml::from_str(
-            "controller = \"https://10.0.0.1\"\nauth_mode = \"session\"\nusername = \"admin\"\n",
-        )
-        .expect("profile parses");
-        let mut screen = OnboardingScreen::for_existing_profile(
-            "work",
-            &profile,
-            &crate::config::Defaults::default(),
-            &MemoryStore::default(),
-        );
-        screen.step = WizardStep::AuthMode;
-
-        screen.advance();
-
-        assert_eq!(screen.draft.auth_mode, AuthMode::Session);
-        assert_eq!(screen.draft.username, "admin");
+    /// Whether the failure showing is a certificate the user can choose
+    /// to accept.
+    pub(super) fn offers_trust(&self) -> bool {
+        self.phase == TestPhase::Idle
+            && !self.draft.insecure
+            && self.draft.auth_mode != AuthMode::Cloud
+            && self
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.kind == FailureKind::Tls)
+            && self.failure.as_ref().and_then(|failure| failure.field) == Some(DraftField::Insecure)
     }
 
-    /// `unifly tui -p work` opens the wizard when `work` is missing.
-    /// Finishing it adds `work` and leaves the working `default` profile,
-    /// its keyring secret, and the default pointer as they were.
-    #[test]
-    fn setup_for_a_named_profile_leaves_the_other_profiles_alone() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "default_profile = \"default\"\n\n\
-             [profiles.default]\ncontroller = \"https://10.0.0.1\"\n",
-        )
-        .expect("write config");
-        let store = MemoryStore::default();
-        crate::config::SecretStore::set(&store, "default/api-key", "default-secret")
-            .expect("seed keyring");
-
-        let mut screen = OnboardingScreen::for_profile("work");
-        screen.draft.url = "https://192.168.1.1".into();
-        screen.draft.api_key = "work-secret".into();
-        let save = screen.draft.plan_save(&screen.profile_name);
-        save_setup(save, &store, &path, &screen.profile_name).expect("save");
-
-        let cfg = crate::config::load_config_from(&path).expect("load saved config");
-        assert_eq!(cfg.default_profile.as_deref(), Some("default"));
-        assert_eq!(cfg.profiles["default"].controller, "https://10.0.0.1");
-        assert_eq!(cfg.profiles["work"].controller, "https://192.168.1.1");
-        assert_eq!(
-            store.secret("default/api-key").as_deref(),
-            Some("default-secret")
-        );
-        assert_eq!(store.secret("work/api-key").as_deref(), Some("work-secret"));
-    }
-
-    /// Onboarding also opens when the selected profile is missing or fails
-    /// to resolve, so the file it saves into can hold other profiles and
-    /// settings. Finishing the wizard adds its profile and keeps the rest,
-    /// including a default that still names a saved profile.
-    #[test]
-    fn save_profile_keeps_the_rest_of_the_config() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "default_profile = \"work\"\n\n\
-             [defaults]\ntimeout = 45\ntheme = \"nord\"\n\n\
-             [profiles.work]\ncontroller = \"https://10.0.0.1\"\n\n\
-             [demo]\nredact_names = [\"Bliss\"]\n",
-        )
-        .expect("write config");
-
-        let mut screen = OnboardingScreen::new();
-        screen.draft.url = "https://192.168.1.1".into();
-        screen.draft.api_key = "api-key".into();
-        save_profile(&path, "default", screen.build_profile()).expect("save");
-
-        let cfg = crate::config::load_config_from(&path).expect("load saved config");
-        assert_eq!(cfg.default_profile.as_deref(), Some("work"));
-        assert_eq!(cfg.profiles["default"].controller, "https://192.168.1.1");
-        assert_eq!(cfg.profiles["work"].controller, "https://10.0.0.1");
-        assert_eq!(cfg.defaults.timeout, 45);
-        assert_eq!(cfg.defaults.theme.as_deref(), Some("nord"));
-        assert_eq!(cfg.demo.redact_names, ["Bliss"]);
-    }
-
-    /// On a first run the config has no saved profile to be the default, so
-    /// the wizard's profile becomes it.
-    #[test]
-    fn save_profile_makes_a_first_profile_the_default() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-
-        save_profile(&path, "work", OnboardingScreen::new().build_profile()).expect("save");
-
-        let cfg = crate::config::load_config_from(&path).expect("load saved config");
-        assert_eq!(cfg.default_profile.as_deref(), Some("work"));
-        assert!(cfg.profiles.contains_key("work"));
-    }
-
-    /// A config that fails to load must fail the save and stay as it was.
-    #[test]
-    fn save_profile_leaves_a_config_that_fails_to_load_untouched() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        let broken = "[defaults]\ntimeout = \"thirty\"\n";
-        std::fs::write(&path, broken).expect("write config");
-
-        let result = save_profile(&path, "default", OnboardingScreen::new().build_profile());
-
-        assert!(result.is_err(), "the save should fail");
-        assert_eq!(std::fs::read_to_string(&path).expect("read config"), broken);
-    }
-
-    #[test]
-    fn advance_rejects_invalid_url() {
-        let mut screen = OnboardingScreen::new();
-        screen.step = WizardStep::Url;
-        screen.draft.url = "not a url".into();
-
-        screen.advance();
-
-        assert_eq!(screen.step, WizardStep::Url);
-        assert_eq!(screen.error.as_deref(), Some("Invalid URL format"));
-    }
-
-    #[test]
-    fn auth_mode_step_sets_legacy_credential_field() {
-        let mut screen = OnboardingScreen::new();
-        screen.step = WizardStep::AuthMode;
-        screen.auth_mode_index = 1;
-
-        screen.advance();
-
-        assert_eq!(screen.step, WizardStep::Credentials);
-        assert_eq!(screen.draft.auth_mode, AuthMode::Session);
-        assert_eq!(screen.cred_field, CredentialField::Username);
-    }
-
-    #[test]
-    fn validate_credentials_requires_password_for_hybrid() {
-        let mut screen = OnboardingScreen::new();
-        screen.draft.auth_mode = AuthMode::Hybrid;
-        screen.draft.api_key = "api-key".into();
-        screen.draft.username = "bliss".into();
-        screen.draft.password.clear();
-
-        assert_eq!(
-            screen.validate_credentials(),
-            Err("Password cannot be empty".into())
-        );
-    }
-
-    #[test]
-    fn cloud_auth_mode_starts_with_api_key_then_cycles_to_host_id() {
-        let mut screen = OnboardingScreen::new();
-        screen.step = WizardStep::AuthMode;
-        screen.auth_mode_index = 3;
-
-        screen.advance();
-
-        assert_eq!(screen.step, WizardStep::Credentials);
-        assert_eq!(screen.draft.auth_mode, AuthMode::Cloud);
-        assert_eq!(screen.cred_field, CredentialField::ApiKey);
-
-        screen.next_cred_field();
-        assert_eq!(screen.cred_field, CredentialField::HostId);
+    /// Hand the tested connection to the app.
+    fn complete(&mut self) -> Option<Action> {
+        let config = self.tested.clone()?;
+        Some(Action::ApplyConnection {
+            profile_name: self.profile_name.clone(),
+            config,
+            notices: self.notices.clone(),
+        })
     }
 }

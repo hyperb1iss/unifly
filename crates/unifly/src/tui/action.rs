@@ -571,21 +571,9 @@ pub enum Action {
     PageUp,
     PageDown,
 
-    // ── Onboarding ─────────────────────────────────────────────────
-    OnboardingComplete {
-        profile_name: String,
-        config: Box<unifly_api::ControllerConfig>,
-    },
-    OnboardingTestResult(Result<(), String>),
-
     // ── Settings ────────────────────────────────────────────────────
     OpenSettings,
     CloseSettings,
-    SettingsTestResult(Result<(), String>),
-    SettingsApply {
-        profile_name: String,
-        config: Box<unifly_api::ControllerConfig>,
-    },
 
     // ── Donate ───────────────────────────────────────────────────
     OpenDonate,
@@ -666,4 +654,33 @@ pub enum Action {
     },
     /// Drop a client's reserved address, after a confirmation.
     RequestRemoveFixedIp(EntityId),
+    // ── setup ────────────────────────────────────────────────────
+    /// A connection test started by the setup wizard or Settings finished.
+    /// Only the test with this generation may act on it.
+    SetupProbeFinished {
+        generation: u64,
+        result: Box<crate::tui::forms::probe::ProbeResult>,
+    },
+    /// The save that follows a passed test finished: the notices to show,
+    /// or why nothing was saved.
+    SetupSaveFinished {
+        generation: u64,
+        result: Result<Vec<String>, String>,
+    },
+    /// Which credentials the keyring holds for a profile a form is showing.
+    SetupKeyringChecked {
+        profile: String,
+        api_key: bool,
+        password: bool,
+    },
+    /// Connect the session with a profile a form has tested and saved.
+    ApplyConnection {
+        profile_name: String,
+        config: Box<unifly_api::ControllerConfig>,
+        notices: Vec<String>,
+    },
+    /// Open the setup wizard for a new profile with this name.
+    SetupNewProfile(String),
+    /// Leave a setup wizard that was opened from a running session.
+    SetupCancelled,
 }
