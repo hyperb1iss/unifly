@@ -77,7 +77,7 @@ impl WifiScreen {
             // Which way this goes is read from the controller first: the
             // list does not say whether an SSID hides its name.
             KeyCode::Char('H') => Some(Action::RequestSsidVisibilityToggle(ssid.id.clone())),
-            KeyCode::Char('N') => Some(self.prompt_ssid_rename(&ssid, None)),
+            KeyCode::Char('N') => Some(self.prompt_ssid_rename(&ssid.id, None)),
             KeyCode::Char('P') => Some(self.prompt_ssid_passphrase(&ssid, None)),
             KeyCode::Char('D') => Some(self.delete_ssid(&ssid)),
             _ => None,
@@ -130,19 +130,14 @@ impl WifiScreen {
         )
     }
 
-    fn prompt_ssid_rename(&mut self, ssid: &WifiBroadcast, typed: Option<&str>) -> Action {
-        self.ssid_prompt = Some(SsidPrompt::Rename(ssid.id.clone()));
-        Action::OpenPrompt(PromptRequest {
-            title: format!("Rename {}", ssid.name),
-            label: "Network name (SSID)".to_owned(),
-            initial: typed.unwrap_or(&ssid.name).to_owned(),
-            hint: Some(
-                "Up to 32 bytes: 32 plain characters, fewer with accents or emoji. Clients must \
-                 rejoin under the new name."
-                    .to_owned(),
-            ),
-            secret: false,
-        })
+    /// Ask the App to open the rename prompt. The App seeds it: under
+    /// redaction the name this screen holds is a stand-in.
+    fn prompt_ssid_rename(&mut self, id: &EntityId, typed: Option<&str>) -> Action {
+        self.ssid_prompt = Some(SsidPrompt::Rename(id.clone()));
+        Action::RequestSsidRename {
+            id: id.clone(),
+            typed: typed.map(str::to_owned),
+        }
     }
 
     /// Why `ssid` has no passphrase to change, when it has none.
@@ -241,7 +236,7 @@ impl WifiScreen {
             return Some(warn("That SSID is no longer on the controller"));
         };
         match prompt {
-            SsidPrompt::Rename(_) => self.submit_ssid_rename(&ssid, text),
+            SsidPrompt::Rename(_) => Some(self.submit_ssid_rename(&ssid, text)),
             SsidPrompt::Passphrase(_) => Some(self.submit_ssid_passphrase(&ssid, text)),
             SsidPrompt::ConfirmPassphrase { first, .. } => {
                 Some(self.confirm_ssid_passphrase(&ssid, &first, text))
@@ -249,37 +244,22 @@ impl WifiScreen {
         }
     }
 
-    fn submit_ssid_rename(&mut self, ssid: &WifiBroadcast, text: &str) -> Option<Action> {
-        if text == ssid.name {
-            return None;
-        }
+    /// A name that fits goes to the App, which knows the controller's real
+    /// names: whether this one is new and free is its to say. The prompt
+    /// stays armed, since the App reopens it on a name already taken.
+    fn submit_ssid_rename(&mut self, ssid: &WifiBroadcast, text: &str) -> Action {
         if text.len() > SSID_MAX_BYTES {
             self.send(warn(format!(
                 "A network name is at most {SSID_MAX_BYTES} bytes; that one is {}",
                 text.len()
             )));
-            return Some(self.prompt_ssid_rename(ssid, Some(text)));
+            return self.prompt_ssid_rename(&ssid.id, Some(text));
         }
-        if self.ssids.iter().any(|other| other.name == text) {
-            self.send(warn(format!("Another SSID is already named {text}")));
-            return Some(self.prompt_ssid_rename(ssid, Some(text)));
+        self.ssid_prompt = Some(SsidPrompt::Rename(ssid.id.clone()));
+        Action::RequestSsidRenameTo {
+            id: ssid.id.clone(),
+            name: text.to_owned(),
         }
-        let old = &ssid.name;
-        let run = update(
-            ssid,
-            UpdateWifiBroadcastRequest {
-                name: Some(text.to_owned()),
-                ..Default::default()
-            },
-            Notice::new(
-                format!("Renaming {old} to {text}\u{2026}"),
-                format!("Renamed {old} to {text}"),
-            ),
-        );
-        Some(Action::ShowConfirm(
-            ConfirmRequest::new(format!("Rename {old} to {text}?"), run)
-                .detail("Clients drop off and must rejoin under the new name."),
-        ))
     }
 
     fn submit_ssid_passphrase(&mut self, ssid: &WifiBroadcast, text: &str) -> Action {
@@ -643,28 +623,48 @@ mod tests {
     }
 
     #[test]
-    fn renaming_prompts_with_the_name_then_confirms_the_new_one() {
+    fn renaming_is_handed_to_the_app_which_knows_the_real_names() {
         let mut screen = ssid_screen();
-        let prompt = press(&mut screen, 'N');
+        let guest = ssid(1, "Guest", "Open").id.clone();
+        let asked = press(&mut screen, 'N');
         assert!(
-            matches!(&prompt, Some(Action::OpenPrompt(request)) if request.initial == "Guest" && !request.secret),
-            "{prompt:?}"
+            matches!(&asked, Some(Action::RequestSsidRename { id, typed: None }) if *id == guest),
+            "the screen does not seed the prompt: {asked:?}"
         );
 
-        let (question, run) =
-            confirmed(screen.apply_action(&Action::PromptSubmitted("Visitors".into())));
-        assert_eq!(question, "Rename Guest to Visitors?");
-        assert_eq!(update_of(&run).name.as_deref(), Some("Visitors"));
+        let named = screen.apply_action(&Action::PromptSubmitted("Visitors".into()));
+        assert!(
+            matches!(&named, Some(Action::RequestSsidRenameTo { id, name })
+                if *id == guest && name == "Visitors"),
+            "{named:?}"
+        );
+        // The App reopens the prompt when the name is taken, and the
+        // answer to that still finds its way.
+        let again = screen.apply_action(&Action::PromptSubmitted("Lobby".into()));
+        assert!(
+            matches!(&again, Some(Action::RequestSsidRenameTo { name, .. }) if name == "Lobby"),
+            "{again:?}"
+        );
     }
 
     #[test]
-    fn a_name_already_taken_reopens_the_prompt_on_what_was_typed() {
+    fn a_name_over_32_bytes_reopens_the_prompt_on_what_was_typed() {
         let mut screen = ssid_screen();
         press(&mut screen, 'N');
-        let again = screen.apply_action(&Action::PromptSubmitted("Studio".into()));
+        // Nine characters, thirty-three bytes.
+        let long = "\u{1f4e1}".repeat(8) + "x";
+        assert_eq!(long.len(), 33);
+        let again = screen.apply_action(&Action::PromptSubmitted(long.clone()));
         assert!(
-            matches!(&again, Some(Action::OpenPrompt(request)) if request.initial == "Studio"),
+            matches!(&again, Some(Action::RequestSsidRename { typed: Some(typed), .. })
+                if *typed == long),
             "{again:?}"
+        );
+        let fits = "\u{1f4e1}".repeat(8);
+        let named = screen.apply_action(&Action::PromptSubmitted(fits));
+        assert!(
+            matches!(named, Some(Action::RequestSsidRenameTo { .. })),
+            "32 bytes fit"
         );
     }
 

@@ -686,6 +686,18 @@ pub enum Action {
         id: EntityId,
         detail: Arc<WifiBroadcast>,
     },
+    /// Open the rename prompt for an SSID, on `typed` when a first answer
+    /// could not be used. The App seeds it from the controller's own name.
+    RequestSsidRename {
+        id: EntityId,
+        typed: Option<String>,
+    },
+    /// Check a new SSID name against the controller's names, then ask
+    /// before renaming.
+    RequestSsidRenameTo {
+        id: EntityId,
+        name: String,
+    },
     /// Change or delete one SSID, check that it took, and read it again.
     /// A second write to an SSID waits for the first to end.
     WifiSsidWrite {

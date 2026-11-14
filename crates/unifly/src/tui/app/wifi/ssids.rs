@@ -8,7 +8,7 @@ use tracing::warn;
 use unifly_api::model::WifiBroadcast;
 use unifly_api::{Command, Controller, EntityId, UpdateWifiBroadcastRequest};
 
-use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, SsidChange};
+use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PromptRequest, SsidChange};
 use crate::tui::app::App;
 use crate::tui::screen::ScreenId;
 
@@ -24,12 +24,18 @@ impl App {
             .map_or_else(|| wifi.clone(), |sanitizer| sanitizer.sanitize_wifi(wifi))
     }
 
-    /// The name the screens show for the SSID `id`, from the store.
-    fn shown_ssid_name(&self, id: &EntityId) -> Option<String> {
+    /// The SSID `id`'s name on the controller, and the name the screens
+    /// show for it.
+    fn ssid_names(&self, id: &EntityId) -> Option<(String, String)> {
         let controller = self.controller.as_ref()?;
         let snapshot = controller.wifi_broadcasts_snapshot();
         let ssid = snapshot.iter().find(|ssid| &ssid.id == id)?;
-        Some(self.shown_wifi(ssid).name)
+        Some((ssid.name.clone(), self.shown_wifi(ssid).name))
+    }
+
+    /// The name the screens show for the SSID `id`, from the store.
+    fn shown_ssid_name(&self, id: &EntityId) -> Option<String> {
+        self.ssid_names(id).map(|(_, shown)| shown)
     }
 
     /// Read one SSID's full record for the WiFi screen.
@@ -166,6 +172,80 @@ impl App {
         };
         self.confirm(ConfirmRequest::new(prompt, write).detail(format!("{REPROVISION} {effect}")));
         Ok(())
+    }
+
+    /// Open the rename prompt for the SSID `id`. Under redaction the name
+    /// on screen is a stand-in, and a prompt seeded with it would have an
+    /// edit of the stand-in written to the controller, so it opens empty.
+    pub(super) fn prompt_ssid_rename(&mut self, id: &EntityId, typed: Option<&str>) {
+        let Some((real, shown)) = self.ssid_names(id) else {
+            self.report_gone("That SSID");
+            return;
+        };
+        let initial = match typed {
+            Some(typed) => typed.to_owned(),
+            None if real == shown => real,
+            None => String::new(),
+        };
+        let _ = self.action_tx.send(Action::OpenPrompt(PromptRequest {
+            title: format!("Rename {shown}"),
+            label: "Network name (SSID)".to_owned(),
+            initial,
+            hint: Some(
+                "Up to 32 bytes: 32 plain characters, fewer with accents or emoji. Clients must \
+                 rejoin under the new name."
+                    .to_owned(),
+            ),
+            secret: false,
+        }));
+    }
+
+    /// Ask before renaming the SSID `id` to `name`. The name is checked
+    /// against the controller's real names, which a screen under
+    /// redaction never holds.
+    pub(super) fn confirm_ssid_rename(&mut self, id: &EntityId, name: &str) {
+        let Some((real, shown)) = self.ssid_names(id) else {
+            self.report_gone("That SSID");
+            return;
+        };
+        // The same name again, real or as shown, changes nothing.
+        if name == real || name == shown {
+            return;
+        }
+        let taken = self.controller.as_ref().is_some_and(|controller| {
+            controller
+                .wifi_broadcasts_snapshot()
+                .iter()
+                .filter(|other| &other.id != id)
+                .any(|other| other.name == name || self.shown_wifi(other).name == name)
+        });
+        if taken {
+            self.show_notification(Notification::warning(format!(
+                "Another SSID is already named {name}"
+            )));
+            let _ = self.action_tx.send(Action::RequestSsidRename {
+                id: id.clone(),
+                typed: Some(name.to_owned()),
+            });
+            return;
+        }
+        let write = Action::WifiSsidWrite {
+            id: id.clone(),
+            change: SsidChange::Update(Box::new(UpdateWifiBroadcastRequest {
+                name: Some(name.to_owned()),
+                ..Default::default()
+            })),
+            notice: Notice::new(
+                format!("Renaming {shown} to {name}\u{2026}"),
+                format!("Renamed {shown} to {name}"),
+            ),
+        };
+        self.confirm(
+            ConfirmRequest::new(format!("Rename {shown} to {name}?"), write).detail(
+                "Access points reprovision, and clients drop off until they rejoin under the \
+                 new name.",
+            ),
+        );
     }
 
     /// Write `change` to the SSID `id`. The toast reports success only
@@ -474,6 +554,145 @@ mod tests {
             assert_eq!(toast.level, NotificationLevel::Success);
             assert!(toast.message.contains(says), "{}", toast.message);
         }
+        controller.disconnect().await;
+    }
+
+    /// The SSIDs tab under redaction: every SSID is shown by a stand-in.
+    async fn redacted_ssids_app() -> (App, Controller) {
+        let controller = Controller::demo(DemoFleetOptions::default());
+        controller.connect().await.expect("demo");
+        let sanitizer = Arc::new(crate::sanitizer::Sanitizer::new(
+            &crate::config::DemoConfig {
+                enabled: true,
+                redact_ssids: true,
+                ..crate::config::DemoConfig::default()
+            },
+        ));
+        let mut app = App::new(
+            Some(controller.clone()),
+            Some(Arc::clone(&sanitizer)),
+            false,
+            true,
+        );
+        app.active_screen = ScreenId::Wifi;
+        app.process_action(&Action::WifiBroadcastsUpdated(
+            sanitizer.sanitize_wifi_broadcasts(&controller.wifi_broadcasts_snapshot()),
+        ))
+        .expect("SSIDs reach the screen");
+        app.process_action(&Action::WifiSubTab(WifiSubTab::Ssids))
+            .expect("sub-tab");
+        (app, controller)
+    }
+
+    fn opened_prompt(app: &mut App) -> PromptRequest {
+        match app.action_rx.try_recv() {
+            Ok(Action::OpenPrompt(request)) => request,
+            other => panic!("expected a prompt, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_rename_prompt_starts_from_the_real_name_and_never_from_a_stand_in() {
+        let (mut app, controller) = ssids_app().await;
+        let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
+        let rename = |typed: Option<&str>| Action::RequestSsidRename {
+            id: ssid.id.clone(),
+            typed: typed.map(str::to_owned),
+        };
+        app.process_action(&rename(None)).expect("N");
+        let prompt = opened_prompt(&mut app);
+        assert_eq!(prompt.initial, ssid.name);
+        assert_eq!(prompt.title, format!("Rename {}", ssid.name));
+        controller.disconnect().await;
+
+        let (mut app, controller) = redacted_ssids_app().await;
+        app.process_action(&rename(None)).expect("N");
+        let prompt = opened_prompt(&mut app);
+        assert_eq!(
+            prompt.initial, "",
+            "an edit of the stand-in would be written as the real name"
+        );
+        assert!(!prompt.title.contains(&ssid.name), "{}", prompt.title);
+
+        app.process_action(&rename(Some("typed before")))
+            .expect("reopened");
+        assert_eq!(opened_prompt(&mut app).initial, "typed before");
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn a_new_name_is_checked_against_the_names_on_the_controller() {
+        let (mut app, controller) = redacted_ssids_app().await;
+        let listed = controller.wifi_broadcasts_snapshot();
+        let (ssid, other) = (listed[0].clone(), listed[1].clone());
+        let shown = app.shown_wifi(&ssid).name;
+        assert_ne!(shown, ssid.name);
+        let rename_to = |name: &str| Action::RequestSsidRenameTo {
+            id: ssid.id.clone(),
+            name: name.to_owned(),
+        };
+
+        // Its own name, real or as shown, changes nothing.
+        for unchanged in [ssid.name.as_str(), shown.as_str()] {
+            app.process_action(&rename_to(unchanged)).expect("rename");
+            assert!(app.action_rx.try_recv().is_err(), "{unchanged} queued work");
+            assert!(app.notices.latest().is_none());
+        }
+
+        // Another SSID's real name is taken, though no screen shows it.
+        app.process_action(&rename_to(&other.name)).expect("rename");
+        let toast = app.notices.latest().expect("a warning");
+        assert!(toast.message.contains("already named"), "{}", toast.message);
+        assert!(
+            !toast.message.contains(&other.name),
+            "the toast shows the stand-in: {}",
+            toast.message
+        );
+        let reopened = app.action_rx.try_recv().expect("the prompt reopens");
+        assert!(
+            matches!(&reopened, Action::RequestSsidRename { typed: Some(typed), .. }
+                if *typed == other.name),
+            "{reopened:?}"
+        );
+
+        app.process_action(&rename_to("Visitors")).expect("rename");
+        let Ok(Action::ShowConfirm(confirm)) = app.action_rx.try_recv() else {
+            panic!("a free name is asked about");
+        };
+        assert_eq!(confirm.prompt, format!("Rename {shown} to Visitors?"));
+        assert!(matches!(
+            &*confirm.action,
+            Action::WifiSsidWrite { change: SsidChange::Update(update), .. }
+                if update.name.as_deref() == Some("Visitors")
+        ));
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn a_rename_runs_from_the_key_to_the_controller() {
+        let (mut app, controller) = ssids_app().await;
+        let before = controller.wifi_broadcasts_snapshot();
+        let mut names: Vec<&str> = before.iter().map(|ssid| ssid.name.as_str()).collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        let first = names[0].to_owned();
+
+        press(&mut app, 'N');
+        let (request, _) = app.prompt.as_ref().expect("the prompt is open");
+        assert_eq!(request.initial, first);
+        app.prompt = None;
+        app.process_action(&Action::PromptSubmitted("Loft Net".into()))
+            .expect("answer");
+        drain(&mut app);
+        let confirm = app.pending_confirm.clone().expect("a confirmation");
+        assert_eq!(confirm.prompt, format!("Rename {first} to Loft Net?"));
+        press(&mut app, 'y');
+        finish_write(&mut app).await;
+
+        let after = controller.wifi_broadcasts_snapshot();
+        assert!(after.iter().any(|ssid| ssid.name == "Loft Net"));
+        assert!(after.iter().all(|ssid| ssid.name != first));
+        let toast = app.notices.latest().expect("a toast");
+        assert_eq!(toast.message, format!("Renamed {first} to Loft Net"));
         controller.disconnect().await;
     }
 

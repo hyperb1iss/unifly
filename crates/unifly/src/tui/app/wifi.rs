@@ -51,6 +51,10 @@ impl App {
             Action::WifiSsidVisibilityRead { id, detail } => {
                 self.confirm_ssid_visibility(id, detail)?;
             }
+            Action::RequestSsidRename { id, typed } => {
+                self.prompt_ssid_rename(id, typed.as_deref());
+            }
+            Action::RequestSsidRenameTo { id, name } => self.confirm_ssid_rename(id, name),
             Action::WifiSsidWrite { id, change, notice } => self.write_ssid(id, change, notice),
             Action::WifiSsidWriteSettled(id) => self.ssid_write_settled(id)?,
             Action::WifiNeighborsFailed(_)
