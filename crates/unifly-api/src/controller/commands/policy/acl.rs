@@ -36,6 +36,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                     req.protocol.as_deref(),
                 )),
                 enforcing_device_filter: req.enforcing_device_filter,
+                extra: std::collections::HashMap::new(),
             };
             let created = ic.create_acl_rule(&sid, &body).await?;
             Ok(CommandResult::AclRule(created.into()))
@@ -69,6 +70,10 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
                     update.protocol.as_deref(),
                 ),
                 enforcing_device_filter: existing.enforcing_device_filter,
+                // The PUT replaces the rule. Whatever the request did not
+                // name goes back as fetched, or an IPv4 rule would lose
+                // its protocols and widen to all of them.
+                extra: existing.extra,
             };
             ic.update_acl_rule(&sid, &uuid, &body).await?;
             Ok(CommandResult::Ok)

@@ -471,11 +471,11 @@ pub struct FirewallPolicyCreateUpdate {
     pub connection_state_filter: Option<Vec<String>>,
 }
 
+/// The fields the controller's PATCH takes. Whether a policy is enabled is
+/// not one of them: that goes through a full update.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirewallPolicyPatch {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -526,6 +526,11 @@ pub struct AclRuleResponse {
     pub destination_filter: Option<Value>,
     pub enforcing_device_filter: Option<Value>,
     pub metadata: Value,
+    /// Everything else the controller returned, such as an IPv4 rule's
+    /// `protocolFilter` and a MAC rule's `networkIdFilter`. An update
+    /// replaces the whole rule, so these go back with it.
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -536,10 +541,18 @@ pub struct AclRuleCreateUpdate {
     pub rule_type: String,
     pub action: String,
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_filter: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_filter: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub enforcing_device_filter: Option<Value>,
+    /// Fields this type does not name. An update carries the fetched
+    /// rule's here, so the replacement keeps them.
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

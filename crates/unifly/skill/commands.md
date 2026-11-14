@@ -180,9 +180,11 @@ RADIUS settings and other fields absent from inline flags. Network 11 controls
 and WAN inventory are available through their Integration reference commands.
 Use `--network native` for the native network or a UUID for a specific network.
 
-Firewall policy patch changes enabled, logging, or flow reporting without the
-full update path. The `--report-flow true|false` flag also works for create
-and update. New allow policies and block-to-allow updates do not create a mirrored return policy unless
+Firewall policy patch changes logging or flow reporting without the full
+update path. The controller's PATCH has no `enabled` field, so
+`patch --enabled true|false` fetches the policy and writes it back whole with
+only that changed, which system-defined policies refuse. The
+`--report-flow true|false` flag also works for create and update. New allow policies and block-to-allow updates do not create a mirrored return policy unless
 `--allow-return-traffic true` is explicit.
 Reorder reads two lists for a source/destination zone pair:
 `beforeSystemDefined` and `afterSystemDefined`. A set replaces only the

@@ -209,7 +209,8 @@ pub enum FirewallPoliciesCommand {
         /// Firewall policy ID (UUID)
         id: String,
 
-        /// Enable or disable the policy
+        /// Enable or disable the policy (sent as a full update: the
+        /// controller's PATCH takes only logging and flow reporting)
         #[arg(long, action = clap::ArgAction::Set)]
         enabled: Option<bool>,
 
