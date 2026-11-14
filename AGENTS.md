@@ -337,7 +337,8 @@ crates/unifly/src/tui/
                              #  Networks, Firewall, Topology, Events, Stats,
                              #  Wifi, Onboarding, Settings)
   widgets/                   # shared custom widgets
-  forms/                     # editable form overlays (Networks, Settings)
+  forms/                     # profile draft, connection test, and field
+                             #  widgets shared by Onboarding and Settings
 ```
 
 `mod.rs::launch()` sets up file-based tracing (stderr is unavailable in alt
@@ -802,6 +803,21 @@ remote-access suggest-port` and `vpn remote-access download-config
   are serialized: each new bridge task first awaits its predecessor's
   `JoinHandle`, so teardown always completes before the next connect
   starts.
+- **Onboarding and Settings save only what a test connected with.**
+  Both run `forms/probe.rs`: the test resolves the profile through
+  `resolve_session_connection` (a typed password ahead of
+  `UNIFI_PASSWORD`; Settings puts the launch flags on top, the wizard
+  prefills its steps from them instead), and fails a hybrid connect that
+  only warned. Each test has a generation; a cancelled or replaced one
+  reports nothing. The save runs after that check, off the UI loop, and
+  `ApplyConnection` carries the tested `ControllerConfig`, never one
+  rebuilt from the form. A sign-in test never reads the profile's
+  session cookie cache: it parks its cookie in a private cache
+  (`Handover`), and only a successful save moves it into the profile's,
+  which is how one MFA code serves both the test and the dashboard. In
+  a test build `ProbeSlot` starts nothing, so unit tests hand the
+  screens results directly and never reach the network, the keyring, or
+  the real config.
 
 ---
 
