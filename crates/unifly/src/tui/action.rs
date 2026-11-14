@@ -655,6 +655,12 @@ pub enum Action {
     WifiNeighborsFailed(String),
     /// The regulatory channel list could not be read.
     WifiChannelsFailed(String),
+    /// What a WiFi fetch brought back, tagged with the controller it asked:
+    /// an answer that outlived its controller is dropped.
+    WifiAnswer {
+        generation: u64,
+        answer: Box<Action>,
+    },
     // ── monitor ───────────────────────────────────────────────────
     /// Fetch events from further back than the feed holds. `id` names the
     /// request, so its result can be told from one that was cancelled.

@@ -135,6 +135,8 @@ pub struct App {
     policy_move: Arc<std::sync::atomic::AtomicBool>,
     /// In-flight work and caches for the monitoring screens.
     monitor: monitor::MonitorState,
+    /// What the WiFi screen's controller work is fenced by.
+    wifi: wifi::WifiState,
 }
 
 impl App {
@@ -201,6 +203,7 @@ impl App {
             needs_redraw: true,
             policy_move: Arc::default(),
             monitor: monitor::MonitorState::default(),
+            wifi: wifi::WifiState::default(),
         }
     }
 

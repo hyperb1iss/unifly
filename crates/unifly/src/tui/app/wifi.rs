@@ -7,11 +7,31 @@ use super::App;
 use crate::tui::action::Action;
 use crate::tui::screen::ScreenId;
 
+/// What the App keeps for the WiFi screen's work on the controller.
+#[derive(Default)]
+pub(super) struct WifiState {
+    /// Counts the controllers this session has had. A fetch carries the
+    /// count it started under, and its answer is dropped once that count
+    /// has moved on.
+    generation: u64,
+}
+
 impl App {
     /// The WiFi screen's fetches and their failures. Returns whether
     /// `action` was one of them.
     pub(super) fn handle_wifi_action(&mut self, action: &Action) -> Result<bool> {
         match action {
+            Action::ControllerChanged => {
+                self.wifi = WifiState {
+                    generation: self.wifi.generation + 1,
+                };
+                return Ok(false);
+            }
+            Action::WifiAnswer { generation, answer } => {
+                if *generation == self.wifi.generation {
+                    self.process_action(answer)?;
+                }
+            }
             Action::RequestWifiNeighbors(within_secs) => self.fetch_wifi_neighbors(*within_secs),
             Action::RequestWifiChannels => self.fetch_wifi_channels(),
             Action::RequestWifiClientDetail(ip) => self.fetch_wifi_client_detail(ip),
@@ -26,15 +46,29 @@ impl App {
         Ok(true)
     }
 
+    /// Where a WiFi fetch started now reports back. The answer is checked
+    /// when it is handled, after any controller change queued ahead of it,
+    /// so nothing from the old controller lands on the cleared screen.
+    fn wifi_reply(&self) -> impl Fn(Action) + Send + 'static {
+        let tx = self.action_tx.clone();
+        let generation = self.wifi.generation;
+        move |answer| {
+            let _ = tx.send(Action::WifiAnswer {
+                generation,
+                answer: Box::new(answer),
+            });
+        }
+    }
+
     fn fetch_wifi_neighbors(&self, within_secs: Option<i64>) {
         let Some(controller) = self.controller.clone() else {
             return;
         };
-        let tx = self.action_tx.clone();
+        let reply = self.wifi_reply();
         let sanitizer = self.sanitizer.clone();
 
         tokio::spawn(async move {
-            let action = match controller.list_rogue_aps(within_secs).await {
+            reply(match controller.list_rogue_aps(within_secs).await {
                 Ok(neighbors) => {
                     let clean = if let Some(ref san) = sanitizer {
                         san.sanitize_rogue_aps(&neighbors)
@@ -47,8 +81,7 @@ impl App {
                     || error.to_string(),
                     |san| san.sanitize_text(&error.to_string()),
                 )),
-            };
-            let _ = tx.send(action);
+            });
         });
     }
 
@@ -56,18 +89,17 @@ impl App {
         let Some(controller) = self.controller.clone() else {
             return;
         };
-        let tx = self.action_tx.clone();
+        let reply = self.wifi_reply();
         let sanitizer = self.sanitizer.clone();
 
         tokio::spawn(async move {
-            let action = match controller.list_channels().await {
+            reply(match controller.list_channels().await {
                 Ok(channels) => Action::WifiChannelsUpdated(Arc::new(channels)),
                 Err(error) => Action::WifiChannelsFailed(sanitizer.as_ref().map_or_else(
                     || error.to_string(),
                     |san| san.sanitize_text(&error.to_string()),
                 )),
-            };
-            let _ = tx.send(action);
+            });
         });
     }
 
@@ -75,34 +107,36 @@ impl App {
         let Some(controller) = self.controller.clone() else {
             return;
         };
-        let tx = self.action_tx.clone();
+        let reply = self.wifi_reply();
         let real_ip = self.real_client_ip(ip);
         let ip = ip.to_owned();
         let sanitizer = self.sanitizer.clone();
 
         tokio::spawn(async move {
-            match controller.get_client_wifi_experience(&real_ip).await {
-                Ok(data) => {
-                    let clean = if let Some(ref san) = sanitizer {
-                        san.sanitize_json_value(&data)
-                    } else {
-                        data
-                    };
-                    let _ = tx.send(Action::WifiClientDetailLoaded {
-                        ip,
-                        data: Arc::new(clean),
-                    });
-                }
-                Err(error) => {
-                    let error = error.to_string();
-                    let _ = tx.send(Action::WifiClientDetailFailed {
-                        ip,
-                        error: sanitizer
-                            .as_ref()
-                            .map_or_else(|| error.clone(), |san| san.sanitize_text(&error)),
-                    });
-                }
-            }
+            reply(
+                match controller.get_client_wifi_experience(&real_ip).await {
+                    Ok(data) => {
+                        let clean = if let Some(ref san) = sanitizer {
+                            san.sanitize_json_value(&data)
+                        } else {
+                            data
+                        };
+                        Action::WifiClientDetailLoaded {
+                            ip,
+                            data: Arc::new(clean),
+                        }
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        Action::WifiClientDetailFailed {
+                            ip,
+                            error: sanitizer
+                                .as_ref()
+                                .map_or_else(|| error.clone(), |san| san.sanitize_text(&error)),
+                        }
+                    }
+                },
+            );
         });
     }
 
@@ -136,34 +170,34 @@ impl App {
         let Some(controller) = self.controller.clone() else {
             return;
         };
-        let tx = self.action_tx.clone();
+        let reply = self.wifi_reply();
         let real_mac = self.real_client_mac(mac);
         let mac = mac.to_owned();
         let sanitizer = self.sanitizer.clone();
 
         tokio::spawn(async move {
-            match controller.get_client_roams(&real_mac, limit).await {
+            reply(match controller.get_client_roams(&real_mac, limit).await {
                 Ok(events) => {
                     let clean = if let Some(ref san) = sanitizer {
                         events.iter().map(|e| san.sanitize_json_value(e)).collect()
                     } else {
                         events
                     };
-                    let _ = tx.send(Action::WifiRoamHistoryLoaded {
+                    Action::WifiRoamHistoryLoaded {
                         mac,
                         events: Arc::new(clean),
-                    });
+                    }
                 }
                 Err(error) => {
                     let error = error.to_string();
-                    let _ = tx.send(Action::WifiRoamHistoryFailed {
+                    Action::WifiRoamHistoryFailed {
                         mac,
                         error: sanitizer
                             .as_ref()
                             .map_or_else(|| error.clone(), |san| san.sanitize_text(&error)),
-                    });
+                    }
                 }
-            }
+            });
         });
     }
 }
@@ -218,6 +252,84 @@ mod tests {
             assert!(app.notices.latest().is_none(), "{failed:?} toasted");
             assert!(app.action_rx.try_recv().is_err(), "{failed:?} queued work");
         }
+    }
+
+    fn wifi_frame(app: &App) -> String {
+        let screen = app.screens.get(&ScreenId::Wifi).expect("the WiFi screen");
+        crate::tui::table::render_lines(120, 20, |frame, area| screen.render(frame, area))
+            .join("\n")
+    }
+
+    fn heard(essid: &str) -> Action {
+        let neighbor = serde_json::from_value(serde_json::json!({
+            "bssid": "11:22:33:44:55:66", "essid": essid, "channel": 6,
+            "signal": -60, "radio": "ng"
+        }))
+        .expect("neighbor fixture should deserialize");
+        Action::WifiNeighborsUpdated(Arc::new(vec![neighbor]))
+    }
+
+    #[test]
+    fn an_answer_from_the_previous_controller_never_reaches_the_cleared_screen() {
+        use crate::tui::action::{Access, WifiSubTab};
+
+        let mut app = App::new(None, None, false, true);
+        let access = Action::AccessUpdated(Access {
+            integration: true,
+            session: true,
+            live_events: true,
+        });
+        app.process_action(&access).expect("access");
+        app.process_action(&Action::WifiSubTab(WifiSubTab::Neighbors))
+            .expect("sub-tab");
+        app.forward_to_screen(ScreenId::Wifi, &Action::WifiSubTab(WifiSubTab::Neighbors))
+            .expect("sub-tab");
+        let answer = |essid: &str, generation: u64| Action::WifiAnswer {
+            generation,
+            answer: Box::new(heard(essid)),
+        };
+
+        app.process_action(&answer("old-site-cafe", app.wifi.generation))
+            .expect("a current answer");
+        assert!(wifi_frame(&app).contains("old-site-cafe"));
+
+        // The switch is queued ahead of whatever the old controller still
+        // has in flight, so it is handled first.
+        let old = app.wifi.generation;
+        app.process_action(&Action::ControllerChanged)
+            .expect("switch");
+        app.process_action(&access).expect("the next controller");
+        app.process_action(&answer("old-site-late", old))
+            .expect("a late answer");
+        let frame = wifi_frame(&app);
+        assert!(!frame.contains("old-site"), "{frame}");
+
+        app.process_action(&answer("new-site-cafe", app.wifi.generation))
+            .expect("the next controller answers");
+        assert!(wifi_frame(&app).contains("new-site-cafe"));
+    }
+
+    #[tokio::test]
+    async fn a_fetch_reports_back_tagged_with_its_controller() {
+        let controller = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
+        controller.connect().await.expect("demo");
+        let mut app = App::new(Some(controller.clone()), None, false, true);
+        app.process_action(&Action::ControllerChanged)
+            .expect("switch");
+
+        app.process_action(&Action::RequestWifiChannels)
+            .expect("request");
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
+            .await
+            .expect("the fetch reports back")
+            .expect("the action channel stays open");
+        assert!(
+            matches!(&answer, Action::WifiAnswer { generation, answer }
+                if *generation == app.wifi.generation
+                    && matches!(**answer, Action::WifiChannelsUpdated(_))),
+            "{answer:?}"
+        );
+        controller.disconnect().await;
     }
 
     #[tokio::test]

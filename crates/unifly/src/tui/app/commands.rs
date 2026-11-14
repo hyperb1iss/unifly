@@ -639,6 +639,14 @@ mod tests {
         assert!(!app.locating.contains(&id));
     }
 
+    /// What a WiFi fetch brought back, out of its controller tag.
+    async fn next_wifi_answer(app: &mut App) -> Action {
+        match next_action(app).await {
+            Action::WifiAnswer { answer, .. } => *answer,
+            other => other,
+        }
+    }
+
     #[tokio::test]
     async fn under_a_sanitizer_dialogs_and_toasts_show_no_real_names_or_macs() {
         let demo = demo_fleet().await;
@@ -726,7 +734,7 @@ mod tests {
         let ip = client.ip.map(|ip| ip.to_string()).unwrap_or_default();
         app.process_action(&Action::RequestWifiClientDetail(ip))
             .expect("detail request");
-        let loaded = next_action(&mut app).await;
+        let loaded = next_wifi_answer(&mut app).await;
         let Action::WifiClientDetailLoaded { data, .. } = loaded else {
             panic!("expected the detail, got {loaded:?}");
         };
@@ -782,7 +790,7 @@ mod tests {
         })
         .expect("roam history request");
 
-        let loaded = next_action(&mut app).await;
+        let loaded = next_wifi_answer(&mut app).await;
         let Action::WifiRoamHistoryLoaded { mac, events } = loaded else {
             panic!("expected the roam history, got {loaded:?}");
         };

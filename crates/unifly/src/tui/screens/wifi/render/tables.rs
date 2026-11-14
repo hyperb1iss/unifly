@@ -496,8 +496,9 @@ impl WifiScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // Without a session the scan cannot be this controller's.
         let neighbors = self.visible_neighbors();
-        if neighbors.is_empty() {
+        if neighbors.is_empty() || self.session_missing() {
             render_notice(frame, inner, &self.neighbor_empty_reason());
             return;
         }

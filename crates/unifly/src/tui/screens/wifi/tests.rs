@@ -739,6 +739,28 @@ fn a_failed_neighbor_scan_is_drawn_in_the_panel_and_never_toasted() {
 }
 
 #[test]
+fn a_scan_on_hand_is_not_drawn_once_the_controller_has_no_session() {
+    let mut screen = site();
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Neighbors));
+    screen.apply_action(&Action::WifiBandSelect(WifiBand::FiveGhz));
+    screen.apply_action(&Action::WifiNeighborsUpdated(Arc::new(vec![neighbor(
+        "11:11:11:11:11:11",
+        Some("next-door"),
+        "01",
+        -60,
+    )])));
+    assert!(rendered(&screen).contains("next-door"));
+
+    screen.apply_action(&cloud_access());
+    let shown = rendered(&screen);
+    assert!(!shown.contains("next-door"), "{shown}");
+    assert!(
+        shown.contains("need a direct controller session"),
+        "{shown}"
+    );
+}
+
+#[test]
 fn a_changed_controller_drops_everything_it_showed() {
     let mut screen = client_detail_screen();
     screen.apply_action(&detail_loaded(FIRST_IP, -42));
