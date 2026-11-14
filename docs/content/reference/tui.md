@@ -89,13 +89,28 @@ Typing still needs a keyboard: search, the Networks edit form, the Settings fiel
 
 | Screen               | Key             | Action                                                            |
 | -------------------- | --------------- | ----------------------------------------------------------------- |
-| **Devices**          | `R`             | Restart selected device                                           |
-| **Devices**          | `L`             | Locate (flash LED)                                                |
-| **Devices**          | `U`             | Upgrade firmware (asks first)                                     |
+| **Devices**          | `h` / `l`       | Filter (All / Gateways / Switches / APs / Offline / Updates)      |
+| **Devices**          | `s` / `r`       | Sort by the next column / reverse the sort                        |
+| **Devices**          | `R`             | Restart selected device (asks first)                              |
+| **Devices**          | `L`             | Locate: flash the LED, and again to stop                          |
+| **Devices**          | `U`             | Upgrade firmware when an update is waiting (asks first)           |
+| **Devices**          | `A`             | Adopt a device that is pending adoption (asks first)              |
+| **Devices**          | `P`             | Provision the device again (asks first)                           |
+| **Devices**          | `T`             | Run a speed test on a gateway (asks first)                        |
 | **Devices** (detail) | `h` / `l`       | Previous / next detail tab                                        |
-| **Clients**          | `Tab`           | Cycle filter (All / Wireless / Wired / VPN / Guest)               |
-| **Clients**          | `b` / `B`       | Block / unblock client                                            |
-| **Clients**          | `x`             | Kick client                                                       |
+| **Devices** (detail) | `j` / `k`       | Move through the ports or clients; on other tabs, the next device |
+| **Devices** (detail) | `Enter`         | On the Clients tab, open that client on the Clients screen        |
+| **Devices** (detail) | `F`             | Forget the device (asks first)                                    |
+| **Devices** (ports)  | `C`             | Power cycle the selected PoE port (asks first)                    |
+| **Devices** (ports)  | `O`             | Turn the port's PoE off (asks first) or back on                   |
+| **Devices** (ports)  | `N`             | Rename the selected port                                          |
+| **Clients**          | `h` / `l`       | Filter (All / Wireless / Wired / VPN / Guest)                     |
+| **Clients**          | `s` / `r`       | Sort by the next column / reverse the sort                        |
+| **Clients**          | `b`             | Block the client, or unblock a blocked one (asks first)           |
+| **Clients**          | `x`             | Disconnect a wireless client (asks first)                         |
+| **Clients**          | `I`             | Set the fixed IP; clear the field to remove it                    |
+| **Clients**          | `A`             | Authorize a guest for some minutes, or revoke one (asks first)    |
+| **Clients**          | `F`             | Forget the client (asks first)                                    |
 | **Networks**         | `e`             | Edit selected network (opens overlay)                             |
 | **Firewall**         | `h` / `l`       | Cycle sub-tabs (Policies / Zones / ACL / NAT)                     |
 | **Firewall**         | `K` / `J`       | Move a policy up / down in its zone pair, saved to the controller |
@@ -137,8 +152,8 @@ The WAN and Stats charts draw as pixel images on terminals with a graphics proto
 
 Press `Enter` on any list item to open a detail panel with comprehensive information:
 
-- **Devices**: 5-tab panel (Overview, Performance, Radios, Clients, Ports)
-- **Clients**: Connection details, traffic history, DHCP info
+- **Devices**: a tab per aspect the device has (Overview, Performance, Radios on access points, Clients, Ports on anything with ports). The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border, so every row is reachable on a short terminal. Ports show each port's mode, native network, and tagged networks where the controller has a Session API
+- **Clients**: Address, network and VLAN, uplink, connection time, fixed IP, radio link for wireless clients, traffic, and guest and blocked state
 - **WiFi**: AP health decomposition, per-client WiFi metrics, channel occupancy, roam history
 - **Networks**: Full VLAN config with DHCP ranges and IPv6 settings
 - **Firewall**: Policy details with traffic filter breakdown
@@ -178,7 +193,7 @@ The TUI works with all authentication modes, but some screens degrade gracefully
 | **Hybrid**        | **Full**  | **Full** | **Full** | **Full** | **Full** | **Full** |
 | Cloud             | Partial   | Partial  | Partial  | No       | No       | No       |
 
-Cloud mode's Devices screen lists device data through the connector. `R` restart and `L` locate work there, since they go through the Integration API the connector proxies, but `U` upgrade needs a Session client, which the connector does not provide, so it fails with an error.
+Cloud mode's Devices screen lists device data through the connector. `R` restart, `L` locate, and the port power cycle work there, since they go through the Integration API the connector proxies. `U` upgrade, `P` provision, the speed test, and port profiles with their PoE and rename keys need a Session client, which the connector does not provide: the Ports tab says so in place of the profile columns, and the commands fail with an error.
 
 {% tip() %}
 **API Key mode** works for most TUI screens on UniFi OS. Use **Hybrid mode** only when you need live WebSocket event streaming (the Events screen). Statistics and device data are available via Session HTTP endpoints that API Key mode can reach.
@@ -218,7 +233,7 @@ Timestamps follow the wall clock, so the same history appears shifted to wheneve
 
 When `--demo` is set and no controller can be resolved from flags, environment, or config, the TUI opens the demo fleet instead of onboarding and logs that it did. The sanitizer never runs on the demo fleet, because its data is fictional already: documentation and private address ranges, locally administered MACs, and invented names.
 
-Device actions (restart, locate, upgrade) and client actions (block, unblock, kick) play out in the simulation and emit the events a controller would. Changes that need a real controller, such as editing a network or moving a firewall policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
+Device actions (restart, locate, upgrade, provision, speed test), port actions (power cycle, PoE off and on, rename), and client actions (block, unblock, kick, forget, guest authorization, fixed IP) play out in the simulation and emit the events a controller would. Changes that need a real controller, such as editing a network or moving a firewall policy, are refused with a clear error. Settings (`,`) stays closed while the demo fleet is on screen, so a recording never shows or connects a real profile.
 
 `--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 
