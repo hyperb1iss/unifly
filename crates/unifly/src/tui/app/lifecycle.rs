@@ -121,11 +121,16 @@ impl App {
         }
         self.reset_data_bridge();
         self.action_tx.send(Action::ControllerChanged)?;
+        // The status bar speaks for the controller being connected to, not
+        // the one just left, from this moment and not from whenever the
+        // bridge first reports. Nothing is being located on it either.
+        self.connection_status = super::ConnectionStatus::Connecting;
         self.connection_error = None;
+        self.locating.clear();
 
         let controller = Controller::new(config.clone());
         self.controller = Some(controller.clone());
-        self.spawn_data_bridge(controller);
+        self.spawn_data_bridge_for_new_controller(controller);
         crate::tui::forms::session::switch_to(profile_name, flags.clone());
 
         self.screens.remove(&ScreenId::Settings);
@@ -156,14 +161,34 @@ impl App {
         Ok(())
     }
 
+    /// Start the bridge for `controller`, after the bridge before it has
+    /// finished. Both drive the same controller here (a launch, a retry).
     pub(super) fn spawn_data_bridge(&mut self, controller: Controller) {
-        let cancel = self.data_cancel.clone();
-        let tx = self.action_tx.clone();
-        let sanitizer = self.sanitizer.clone();
         // Chain on the previous bridge so its teardown (including the
         // mid-connect disconnect cleanup) fully completes before the next
         // bridge touches shared controller state.
         let predecessor = self.bridge_handle.take();
+        self.spawn_data_bridge_after(controller, predecessor);
+    }
+
+    /// Start the bridge for a controller the session has just switched
+    /// to, at once. The bridge before it drives another controller and
+    /// shares nothing with this one: cancelled, it finishes its disconnect
+    /// in the background. Waiting on it would hold this connect for as
+    /// long as a controller that stopped answering takes to time out.
+    fn spawn_data_bridge_for_new_controller(&mut self, controller: Controller) {
+        drop(self.bridge_handle.take());
+        self.spawn_data_bridge_after(controller, None);
+    }
+
+    fn spawn_data_bridge_after(
+        &mut self,
+        controller: Controller,
+        predecessor: Option<tokio::task::JoinHandle<()>>,
+    ) {
+        let cancel = self.data_cancel.clone();
+        let tx = self.action_tx.clone();
+        let sanitizer = self.sanitizer.clone();
         self.bridge_handle = Some(tokio::spawn(async move {
             if let Some(previous) = predecessor {
                 let _ = previous.await;
@@ -258,6 +283,99 @@ mod tests {
 
         app.close_settings();
         assert_eq!(app.active_screen, ScreenId::Dashboard);
+    }
+
+    /// A config that points nowhere: nothing answers at that port.
+    fn nowhere() -> unifly_api::ControllerConfig {
+        unifly_api::ControllerConfig {
+            url: "http://127.0.0.1:1".parse().expect("url"),
+            ..unifly_api::ControllerConfig::default()
+        }
+    }
+
+    /// Switching controllers is not a reconnect. The status bar stops
+    /// vouching for the controller that was left the moment the switch
+    /// happens, and what was being located there is forgotten.
+    #[tokio::test]
+    async fn switching_controllers_resets_the_status_at_once() {
+        let mut app = App::new(Some(Controller::new(nowhere())), None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        app.connection_status = crate::tui::app::ConnectionStatus::Connected;
+        app.connection_error = Some("the old controller's last error".into());
+        app.locating
+            .insert(unifly_api::EntityId::Legacy("device-on-the-old-one".into()));
+
+        let flags = crate::config::resolve::ConnectionOverrides::default();
+        app.apply_connection("work", &nowhere(), &[], &flags)
+            .expect("apply connection");
+
+        // Read before any action is processed: no bridge has reported.
+        assert_eq!(
+            app.connection_status,
+            crate::tui::app::ConnectionStatus::Connecting
+        );
+        assert_eq!(app.connection_error, None);
+        assert!(app.locating.is_empty());
+        app.data_cancel.cancel();
+    }
+
+    /// The bridge of the controller being left may be stuck tearing down
+    /// (a controller that stopped answering holds its disconnect until the
+    /// request times out). The new controller's bridge must not wait for
+    /// it, while a retry on the same controller still waits its turn.
+    #[tokio::test]
+    async fn a_new_controller_connects_without_waiting_on_the_old_bridge() {
+        async fn bridge_reports(app: &mut App, within_ms: u64) -> bool {
+            tokio::time::timeout(std::time::Duration::from_millis(within_ms), async {
+                loop {
+                    match app.action_rx.recv().await {
+                        Some(Action::Connecting) => break true,
+                        Some(_) => {}
+                        None => break false,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false)
+        }
+        let stuck = || tokio::spawn(std::future::pending::<()>());
+
+        let mut app = App::new(Some(Controller::new(nowhere())), None, false, true);
+        app.active_screen = ScreenId::Dashboard;
+        let old_bridge = stuck();
+        let old_abort = old_bridge.abort_handle();
+        app.bridge_handle = Some(old_bridge);
+
+        let flags = crate::config::resolve::ConnectionOverrides::default();
+        app.apply_connection("work", &nowhere(), &[], &flags)
+            .expect("apply connection");
+        assert!(
+            bridge_reports(&mut app, 2000).await,
+            "the new bridge started while the old one was still tearing down"
+        );
+        assert!(!old_abort.is_finished(), "left to finish in the background");
+        old_abort.abort();
+
+        // A retry drives the same controller, so it still queues behind
+        // the bridge it replaces.
+        app.data_cancel.cancel();
+        app.data_cancel = CancellationToken::new();
+        while app.action_rx.try_recv().is_ok() {}
+        let predecessor = stuck();
+        let release = predecessor.abort_handle();
+        app.bridge_handle = Some(predecessor);
+        let controller = app.controller.clone().expect("controller");
+        app.spawn_data_bridge(controller);
+        assert!(
+            !bridge_reports(&mut app, 200).await,
+            "a retry waits for its predecessor"
+        );
+        release.abort();
+        assert!(
+            bridge_reports(&mut app, 2000).await,
+            "and starts once it is done"
+        );
+        app.data_cancel.cancel();
     }
 
     fn redacting() -> std::sync::Arc<crate::sanitizer::Sanitizer> {
