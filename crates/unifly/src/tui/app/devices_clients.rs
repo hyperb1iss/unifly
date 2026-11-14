@@ -445,11 +445,21 @@ mod tests {
     #[tokio::test]
     async fn turning_poe_off_reaches_the_device_list() {
         let demo = demo_fleet().await;
-        let switch = first_switch(&demo);
+        // The store lists devices in no fixed order, and not every switch
+        // supplies PoE.
+        let powers =
+            |port: &unifly_api::model::Port| port.poe.as_ref().is_some_and(|poe| poe.enabled);
+        let switch = demo
+            .store()
+            .devices_snapshot()
+            .iter()
+            .find(|device| device.ports.iter().any(powers))
+            .cloned()
+            .expect("a device supplying PoE");
         let port = switch
             .ports
             .iter()
-            .find(|port| port.poe.as_ref().is_some_and(|poe| poe.enabled))
+            .find(|port| powers(port))
             .map(|port| port.index)
             .expect("a port supplying PoE");
         let store = Arc::clone(demo.store());
