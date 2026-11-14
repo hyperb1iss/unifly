@@ -14,6 +14,7 @@ use super::App;
 use crate::sanitizer::Sanitizer;
 use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PortChange};
 use crate::tui::screen::ScreenId;
+use crate::tui::screens::devices::poe_mode_label;
 
 /// Why port profiles and port writes are out of reach without a session.
 const NEEDS_SESSION: &str = "port settings need a direct controller session, \
@@ -150,8 +151,9 @@ impl App {
         });
     }
 
-    /// Write one port's change, refresh the controller's data, and reload
-    /// the port profiles the Devices screen shows.
+    /// Write one port's change, refresh the controller's data, and read
+    /// the port's profile back: the Devices screen gets the fresh
+    /// profiles, and the toast only says done when they show the change.
     fn update_port(&mut self, id: &EntityId, port: u32, change: &PortChange) {
         let Some(controller) = self.controller.clone() else {
             self.show_notification(Notification::error("Not connected"));
@@ -178,7 +180,13 @@ impl App {
                 format!("Port {port} on {name} is now \"{label}\""),
             ),
             PortChange::Poe(mode) => {
-                let state = if *mode == PoeMode::Off { "off" } else { "on" };
+                let state = match mode {
+                    PoeMode::Off => "off".to_owned(),
+                    PoeMode::Auto | PoeMode::Other => "on".to_owned(),
+                    PoeMode::Passive24V | PoeMode::Passthrough => {
+                        format!("on ({})", poe_mode_label(*mode))
+                    }
+                };
                 (
                     PortProfileUpdate {
                         poe_mode: Some(*mode),
@@ -191,6 +199,8 @@ impl App {
         };
         let tx = self.action_tx.clone();
         let device = id.clone();
+        let change = change.clone();
+        let sanitizer = self.sanitizer.clone();
         self.spawn_op(&pending, async move {
             if let Err(error) = controller.update_device_port(&mac, port, &update).await {
                 warn!(%error, "port update failed");
@@ -199,8 +209,35 @@ impl App {
             if let Err(error) = controller.full_refresh().await {
                 warn!(%error, "refresh after a port update failed");
             }
-            let _ = tx.send(Action::RequestPortProfiles(device));
-            Notification::success(done)
+            let ports = match controller.list_device_ports(&mac).await {
+                Ok(ports) => ports,
+                Err(error) => {
+                    warn!(%error, "port profiles could not be read back");
+                    let _ = tx.send(Action::RequestPortProfiles(device));
+                    return Notification::warning(format!(
+                        "{done}, but its settings could not be read back to confirm"
+                    ));
+                }
+            };
+            let took = ports
+                .iter()
+                .find(|profile| profile.index == port)
+                .is_some_and(|profile| match &change {
+                    PortChange::Rename(label) => profile.name.as_deref() == Some(label),
+                    PortChange::Poe(mode) => profile.poe_mode == Some(*mode),
+                });
+            let _ = tx.send(Action::PortProfilesLoaded {
+                device,
+                ports: Arc::new(shown_profiles(ports, sanitizer.as_deref())),
+            });
+            if took {
+                Notification::success(done)
+            } else {
+                Notification::warning(format!(
+                    "The controller accepted the change to port {port} on {name}, \
+                     but its settings do not show it"
+                ))
+            }
         });
     }
 
@@ -545,13 +582,16 @@ mod tests {
         assert_eq!(device, switch.id);
         let renamed = ports.iter().find(|port| port.index == 3).expect("port 3");
         assert_eq!(renamed.name.as_deref(), Some("cam-dock"));
+        // The toast says done only once the profile read back shows it.
+        let finished = run_until(&mut app, |action| {
+            matches!(action, Action::OpFinished { .. })
+        })
+        .await;
         assert!(
-            app.notices
-                .messages()
-                .iter()
-                .any(|message| message.ends_with("is now \"cam-dock\"")),
-            "{:?}",
-            app.notices.messages()
+            matches!(&finished, Action::OpFinished { notification, .. }
+                if notification.level == NotificationLevel::Success
+                    && notification.message.ends_with("is now \"cam-dock\"")),
+            "{finished:?}"
         );
     }
 
@@ -605,6 +645,56 @@ mod tests {
             })
             .expect("the port still has PoE");
         assert!(!poe.enabled);
+    }
+
+    #[tokio::test]
+    async fn a_passive_24v_port_is_written_back_in_its_own_mode() {
+        let demo = demo_fleet().await;
+        let mut found = None;
+        for device in demo.store().devices_snapshot().iter() {
+            let Ok(ports) = demo.list_device_ports(&device.mac).await else {
+                continue;
+            };
+            if let Some(port) = ports
+                .iter()
+                .find(|port| port.poe_mode == Some(PoeMode::Passive24V))
+            {
+                found = Some((Arc::clone(device), port.index));
+            }
+        }
+        let (switch, port) = found.expect("a passive 24V port in the fleet");
+        let mut app = App::new(Some(demo.clone()), None, false, true);
+        app.access = demo_access();
+
+        for (mode, wanted) in [
+            (PoeMode::Off, "PoE turned off for port"),
+            (PoeMode::Passive24V, "PoE turned on (passive 24V) for port"),
+        ] {
+            app.process_action(&Action::RequestPortUpdate {
+                device: switch.id.clone(),
+                port,
+                change: PortChange::Poe(mode),
+            })
+            .expect("PoE");
+            let finished = run_until(&mut app, |action| {
+                matches!(action, Action::OpFinished { .. })
+            })
+            .await;
+            assert!(
+                matches!(&finished, Action::OpFinished { notification, .. }
+                    if notification.level == NotificationLevel::Success
+                        && notification.message.starts_with(wanted)),
+                "{finished:?}"
+            );
+            let read_back = demo
+                .list_device_ports(&switch.mac)
+                .await
+                .expect("profiles")
+                .into_iter()
+                .find(|profile| profile.index == port)
+                .and_then(|profile| profile.poe_mode);
+            assert_eq!(read_back, Some(mode));
+        }
     }
 
     #[tokio::test]

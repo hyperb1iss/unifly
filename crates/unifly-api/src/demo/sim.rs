@@ -80,6 +80,8 @@ pub(crate) struct PortEdit {
     /// Whether the port was delivering power when its PoE was turned off,
     /// so turning it back on powers the same device again and no other.
     pub was_delivering: bool,
+    /// The PoE mode the port was last set to.
+    pub poe_mode: Option<crate::model::PoeMode>,
 }
 
 /// A finished WAN speed test. A controller reports no event for one: the

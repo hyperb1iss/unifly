@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 
-use unifly_api::model::{Port, PortProfile};
+use unifly_api::model::{PoeMode, Port, PortProfile};
 use unifly_api::{Client, Device, EntityId};
 
 use super::DevicesScreen;
@@ -34,6 +34,9 @@ pub(super) struct Detail {
     pub(super) cursor: TableState,
     pub(super) scroll: TableScroll,
     pub(super) profiles: Profiles,
+    /// A request for fresh profiles is out; the ones shown stay until it
+    /// answers.
+    pub(super) refreshing: bool,
 }
 
 impl Detail {
@@ -44,6 +47,7 @@ impl Detail {
             cursor: TableState::default().with_selected(Some(0)),
             scroll: TableScroll::default(),
             profiles: Profiles::default(),
+            refreshing: false,
         }
     }
 
@@ -257,13 +261,37 @@ impl DevicesScreen {
     }
 
     /// Ask for what the open tab needs from the controller: the port
-    /// profiles, the first time the Ports tab shows.
+    /// profiles when the Ports tab shows without them. Coming back to the
+    /// tab after a failed read tries again.
     fn load_tab(&mut self) -> Option<Action> {
         let detail = self.detail.as_mut()?;
-        if detail.tab != DeviceDetailTab::Ports || !matches!(detail.profiles, Profiles::Unasked) {
+        if detail.tab != DeviceDetailTab::Ports
+            || detail.refreshing
+            || !matches!(
+                detail.profiles,
+                Profiles::Unasked | Profiles::Unavailable(_)
+            )
+        {
             return None;
         }
-        detail.profiles = Profiles::Loading;
+        if matches!(detail.profiles, Profiles::Unasked) {
+            detail.profiles = Profiles::Loading;
+        }
+        detail.refreshing = true;
+        Some(Action::RequestPortProfiles(detail.device_id.clone()))
+    }
+
+    /// Ask for the open Ports tab's profiles again, one request at a
+    /// time, keeping what is shown until the answer lands.
+    pub(super) fn refresh_profiles(&mut self) -> Option<Action> {
+        let detail = self.detail.as_mut()?;
+        if detail.tab != DeviceDetailTab::Ports
+            || detail.refreshing
+            || matches!(detail.profiles, Profiles::Unasked | Profiles::Loading)
+        {
+            return None;
+        }
+        detail.refreshing = true;
         Some(Action::RequestPortProfiles(detail.device_id.clone()))
     }
 
@@ -284,10 +312,20 @@ impl DevicesScreen {
     }
 
     pub(super) fn apply_port_profiles(&mut self, device: &EntityId, profiles: Profiles) {
+        if let Profiles::Loaded(ports) = &profiles {
+            for port in ports.iter() {
+                if let Some(mode @ (PoeMode::Auto | PoeMode::Passive24V | PoeMode::Passthrough)) =
+                    port.poe_mode
+                {
+                    self.poe_on_modes.insert((device.clone(), port.index), mode);
+                }
+            }
+        }
         if let Some(detail) = &mut self.detail
             && detail.device_id == *device
         {
             detail.profiles = profiles;
+            detail.refreshing = false;
         }
     }
 }

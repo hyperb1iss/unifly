@@ -27,12 +27,27 @@ use super::catalog::{OFFLINE_CAMERA, WIRED};
 use super::fleet::{Fleet, GATEWAY, SWITCH_BASE, network_index};
 use super::sim::Simulation;
 use crate::model::{
-    DeviceType, EntityId, MacAddress, Network, NetworkPurpose, Port, PortConnector, PortState,
+    DeviceType, EntityId, MacAddress, Network, NetworkPurpose, PoeMode, Port, PortConnector,
+    PortState,
 };
 
 /// Endpoints whose port the studio pinned to a fixed speed, in Mbps as the
 /// wire spells it. The ops printer's old NIC only holds a 100 Mbps link.
 const PINNED_SPEEDS: [(&str, &str); 1] = [("printer-ops", "100")];
+
+/// Endpoints fed passive 24V instead of negotiated PoE. The front door's
+/// badge reader predates 802.3af.
+const PASSIVE_24V: [&str; 1] = ["badge-front"];
+
+/// A PoE mode as `poe_mode` spells it on the wire.
+fn poe_wire(mode: PoeMode) -> &'static str {
+    match mode {
+        PoeMode::Off => "off",
+        PoeMode::Passive24V => "pasv24",
+        PoeMode::Passthrough => "passthrough",
+        PoeMode::Auto | PoeMode::Other => "auto",
+    }
+}
 
 /// Native network of trunks and unconfigured ports.
 const NATIVE: &str = "mgmt";
@@ -224,8 +239,14 @@ fn config(profile: &Profile, port: &Port, network_ids: &[String]) -> Map<String,
         config.insert("speed".into(), json!(speed));
     }
     if let Some(poe) = &port.poe {
-        let mode = if poe.enabled { "auto" } else { "off" };
-        config.insert("poe_mode".into(), json!(mode));
+        let passive = matches!(profile, Profile::Access { label, .. }
+            if PASSIVE_24V.contains(&label.as_str()));
+        let mode = match (poe.enabled, passive) {
+            (false, _) => PoeMode::Off,
+            (true, true) => PoeMode::Passive24V,
+            (true, false) => PoeMode::Auto,
+        };
+        config.insert("poe_mode".into(), json!(poe_wire(mode)));
     }
     config
 }
@@ -288,6 +309,11 @@ impl Simulation {
             let edit = self.port_edits.get(&(index, port.index));
             if let Some(label) = edit.and_then(|edit| edit.label.as_ref()) {
                 config.insert("name".into(), json!(label));
+            }
+            if let Some(mode) = edit.and_then(|edit| edit.poe_mode)
+                && port.poe.is_some()
+            {
+                config.insert("poe_mode".into(), json!(poe_wire(mode)));
             }
             let configured = matches!(profile, Profile::Access { .. } | Profile::Trunk { .. });
             if configured || edit.is_some() {

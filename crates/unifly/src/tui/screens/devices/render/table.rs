@@ -401,31 +401,34 @@ fn render_table_hints(screen: &DevicesScreen, frame: &mut Frame, area: Rect) {
         (3, Hint::button("s", "sort", click::char_key('s'))),
     ];
     if let Some(device) = screen.selected_device() {
-        hints.extend(command_hints(device));
+        hints.extend(command_hints(screen, device));
     }
     let hints = grid::fit_hints(hints, area.width);
     let line = click::key_hints(&hints).draw(area, &mut screen.hits.borrow_mut());
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Hints for the device commands `device` can take in its state, ranked
-/// for a narrow bar.
-pub(super) fn command_hints(device: &Device) -> Vec<(u8, Hint)> {
+/// Hints for the device commands `device` can take in its state and under
+/// the controller's access, ranked for a narrow bar.
+pub(super) fn command_hints(screen: &DevicesScreen, device: &Device) -> Vec<(u8, Hint)> {
     if is_pending(device) {
         return vec![(1, Hint::button("A", "adopt", click::char_key('A')))];
     }
     if !is_reachable(device) {
         return Vec::new();
     }
+    let session = screen.has_session();
     let mut hints = vec![
         (1, Hint::button("R", "restart", click::char_key('R'))),
         (4, Hint::button("L", "locate", click::char_key('L'))),
     ];
-    if device.firmware_updatable {
+    if session && device.firmware_updatable {
         hints.push((1, Hint::button("U", "upgrade", click::char_key('U'))));
     }
-    hints.push((6, Hint::button("P", "provision", click::char_key('P'))));
-    if is_gateway(device) {
+    if session {
+        hints.push((6, Hint::button("P", "provision", click::char_key('P'))));
+    }
+    if session && is_gateway(device) {
         hints.push((5, Hint::button("T", "speed test", click::char_key('T'))));
     }
     hints
@@ -815,6 +818,25 @@ mod tests {
         screen.select(2);
         press(&mut screen, KeyCode::Enter);
         screen.set_detail_tab(DeviceDetailTab::Ports);
+        // Until the port's profile loads, O has no direction to offer.
+        let loading = hints(&draw(&screen, 120, 30)).to_owned();
+        assert!(
+            loading.contains("N rename") && !loading.contains("PoE"),
+            "{loading}"
+        );
+        let profile: unifly_api::model::PortProfile = serde_json::from_value(json!({
+            "index": 1, "name": "Port 1", "link_state": "Up", "mode": "access",
+            "native_network_id": null, "native_vlan_id": null,
+            "native_network_name": null, "tagged_network_ids": [],
+            "tagged_vlan_ids": [], "tagged_network_names": [], "tagged_all": true,
+            "poe_mode": "auto", "speed_setting": "auto", "link_speed_mbps": 1000,
+            "stp_state": "forwarding", "port_profile_id": null
+        }))
+        .expect("profile fixture");
+        screen.apply_action(&Action::PortProfilesLoaded {
+            device: unifly_api::EntityId::from("device-2"),
+            ports: Arc::new(vec![profile]),
+        });
         let with_session = hints(&draw(&screen, 120, 30)).to_owned();
         assert!(
             with_session.contains("O PoE off") && with_session.contains("N rename"),
@@ -829,10 +851,55 @@ mod tests {
         let rows = draw(&screen, 120, 30);
         let cloud = hints(&rows);
         assert!(cloud.contains("C power cycle"), "{cloud}");
-        assert!(
-            !cloud.contains("PoE off") && !cloud.contains("rename"),
-            "{cloud}"
-        );
+        for dead in ["PoE off", "rename", "provision", "upgrade"] {
+            assert!(!cloud.contains(dead), "{dead} is offered: {cloud}");
+        }
+        assert!(cloud.contains("F remove"), "{cloud}");
+
+        // A Session-only profile has no Integration API to power cycle a
+        // port or remove a device with.
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: false,
+            session: true,
+            live_events: true,
+        }));
+        let session_only = hints(&draw(&screen, 120, 30)).to_owned();
+        assert!(session_only.contains("N rename"), "{session_only}");
+        for dead in ["power cycle", "F remove"] {
+            assert!(
+                !session_only.contains(dead),
+                "{dead} is offered: {session_only}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_port_marker_names_the_port_not_its_row() {
+        // A device whose port numbering has gaps: 1, 2, 9, 10.
+        let ports: Vec<serde_json::Value> = [1, 2, 9, 10]
+            .iter()
+            .map(|index| {
+                json!({
+                    "index": index, "name": format!("Port {index}"), "state": "Up",
+                    "speed_mbps": 1000, "max_speed_mbps": 1000, "connector": "Rj45",
+                    "poe": null
+                })
+            })
+            .collect();
+        let mut screen = DevicesScreen::new();
+        screen.apply_devices_update(&[device(
+            1,
+            "gapped",
+            &json!({ "device_type": "Switch", "has_access_point": false, "ports": ports }),
+        )]);
+        press(&mut screen, KeyCode::Enter);
+        screen.set_detail_tab(DeviceDetailTab::Ports);
+
+        let first = draw(&screen, 100, 24).join("\n");
+        assert!(first.contains("port 1 of 4"), "{first}");
+        screen.set_detail_cursor(2);
+        let third = draw(&screen, 100, 24).join("\n");
+        assert!(third.contains("port 9 \u{b7} 3 of 4"), "{third}");
     }
 
     #[test]

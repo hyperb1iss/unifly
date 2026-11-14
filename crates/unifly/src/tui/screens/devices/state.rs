@@ -28,6 +28,7 @@ impl DevicesScreen {
             hits: std::cell::RefCell::default(),
             detail_hits: std::cell::RefCell::default(),
             renaming: None,
+            poe_on_modes: std::collections::HashMap::new(),
         }
     }
 
@@ -98,10 +99,14 @@ impl DevicesScreen {
         self.select(usize::MAX);
     }
 
-    pub(super) fn apply_devices_update(&mut self, devices: &[Arc<Device>]) {
+    /// Store a refreshed device list. With the Ports tab open the port
+    /// profiles are asked for again, since a refresh is when a change made
+    /// elsewhere would show.
+    pub(super) fn apply_devices_update(&mut self, devices: &[Arc<Device>]) -> Option<Action> {
         self.devices = Arc::new(order::devices(devices));
         self.sync_selection(false);
         self.reconcile_detail();
+        self.refresh_profiles()
     }
 
     pub(super) fn set_search_query(&mut self, query: &str) {
@@ -192,7 +197,7 @@ impl DevicesScreen {
 
     pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {
         match action {
-            Action::DevicesUpdated(devices) => self.apply_devices_update(devices),
+            Action::DevicesUpdated(devices) => return self.apply_devices_update(devices),
             Action::ClientsUpdated(clients) => {
                 // By name, like the Clients table, so the tab's rows hold
                 // still between refreshes and the cursor can follow.
@@ -651,13 +656,109 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_a_device_is_only_offered_from_its_detail() {
+    fn removing_a_device_is_only_offered_from_its_detail() {
         let mut screen = fleet();
         assert!(press(&mut screen, 'F').is_none(), "F acted from the table");
         enter(&mut screen);
+        let Some(Action::ShowConfirm(confirm)) = press(&mut screen, 'F') else {
+            panic!("removing asks first");
+        };
+        assert_eq!(confirm.prompt, "Remove alpha from this site?");
         assert!(
-            matches!(press(&mut screen, 'F'), Some(Action::RequestUnadopt(ref id)) if *id == EntityId::from("device-1"))
+            confirm
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("factory reset")),
+            "{confirm:?}"
         );
+        assert!(matches!(
+            *confirm.action,
+            Action::Run { ref command, .. }
+                if matches!(**command, unifly_api::Command::RemoveDevice { ref id }
+                    if *id == EntityId::from("device-1"))
+        ));
+    }
+
+    #[test]
+    fn removing_follows_the_devices_state() {
+        let mut screen = screen(&[
+            device(1, "dark", &json!({ "state": "Offline" })),
+            device(2, "fresh", &json!({ "state": "PendingAdoption" })),
+        ]);
+        enter(&mut screen);
+        let Some(Action::ShowConfirm(confirm)) = press(&mut screen, 'F') else {
+            panic!("an offline device can still be removed");
+        };
+        assert!(
+            confirm
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("only dropped from the site")),
+            "an offline device is not factory reset: {confirm:?}"
+        );
+
+        press(&mut screen, 'j');
+        assert_eq!(shown(&screen).as_deref(), Some("fresh"));
+        let (_, message) = toast(press(&mut screen, 'F'));
+        assert_eq!(
+            message,
+            "fresh is not adopted, so there is nothing to remove"
+        );
+    }
+
+    #[test]
+    fn device_keys_the_controller_cannot_serve_say_so_instead_of_failing() {
+        use crate::tui::action::Access;
+
+        let mut screen = screen(&[device(
+            1,
+            "gw",
+            &json!({ "device_type": "Gateway", "firmware_updatable": true }),
+        )]);
+        // A cloud profile: the Integration API and no session.
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: false,
+            live_events: false,
+        }));
+        for (key, what) in [
+            ('U', "A firmware upgrade"),
+            ('P', "Provisioning"),
+            ('T', "The speed test"),
+        ] {
+            let (level, message) = toast(press(&mut screen, key));
+            assert_eq!(level, NotificationLevel::Info, "{key}");
+            assert!(
+                message.starts_with(what) && message.contains("direct controller session"),
+                "{key}: {message}"
+            );
+        }
+        // Restart and locate have a path through either API.
+        assert!(matches!(
+            press(&mut screen, 'R'),
+            Some(Action::RequestRestart(_))
+        ));
+        enter(&mut screen);
+        assert!(matches!(
+            press(&mut screen, 'F'),
+            Some(Action::ShowConfirm(_))
+        ));
+
+        // A Session-only profile: removal is the Integration API's.
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: false,
+            session: true,
+            live_events: true,
+        }));
+        let (_, message) = toast(press(&mut screen, 'F'));
+        assert!(
+            message.starts_with("Removing a device") && message.contains("Integration API"),
+            "{message}"
+        );
+        assert!(matches!(
+            press(&mut screen, 'P'),
+            Some(Action::RequestProvision(_))
+        ));
     }
 
     /// The fleet with the switch's Ports tab open, cursor on `port`.
@@ -687,35 +788,171 @@ mod tests {
         }
     }
 
-    #[test]
-    fn poe_turns_on_at_once_and_asks_before_turning_off() {
-        let mut screen = on_port(6);
-        assert!(matches!(
-            press(&mut screen, 'O'),
-            Some(Action::RequestPortUpdate {
-                port: 6,
-                change: PortChange::Poe(PoeMode::Auto),
+    /// A loaded profile for `port` of the fleet's switch, in `poe_mode`.
+    fn profile(port: u32, poe_mode: &str) -> unifly_api::model::PortProfile {
+        serde_json::from_value(json!({
+            "index": port, "name": format!("Port {port}"), "link_state": "Down",
+            "mode": "access", "native_network_id": null, "native_vlan_id": null,
+            "native_network_name": null, "tagged_network_ids": [],
+            "tagged_vlan_ids": [], "tagged_network_names": [], "tagged_all": true,
+            "poe_mode": poe_mode, "speed_setting": "auto", "link_speed_mbps": null,
+            "stp_state": "disabled", "port_profile_id": null
+        }))
+        .expect("profile fixture")
+    }
+
+    fn load_profiles(screen: &mut DevicesScreen, profiles: Vec<unifly_api::model::PortProfile>) {
+        screen.apply_action(&Action::PortProfilesLoaded {
+            device: EntityId::from("device-3"),
+            ports: Arc::new(profiles),
+        });
+    }
+
+    /// The PoE mode `O` asks to write, through a confirmation or not.
+    fn poe_written(action: Option<Action>) -> (bool, PoeMode) {
+        let (confirmed, action) = match action {
+            Some(Action::ShowConfirm(confirm)) => (true, *confirm.action),
+            Some(action) => (false, action),
+            None => panic!("O did nothing"),
+        };
+        match action {
+            Action::RequestPortUpdate {
+                change: PortChange::Poe(mode),
                 ..
-            })
-        ));
+            } => (confirmed, mode),
+            other => panic!("expected a PoE update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn poe_asks_before_turning_off_and_never_guesses_without_a_profile() {
+        // No profile yet: the live state cannot tell auto from passive.
+        for port in [1, 6] {
+            let mut screen = on_port(port);
+            let (level, message) = toast(press(&mut screen, 'O'));
+            assert_eq!(level, NotificationLevel::Info);
+            assert!(message.contains("still loading"), "{message}");
+        }
 
         let mut screen = on_port(1);
+        load_profiles(&mut screen, vec![profile(1, "auto")]);
         let Some(Action::ShowConfirm(confirm)) = press(&mut screen, 'O') else {
             panic!("turning PoE off asks first");
         };
         assert_eq!(confirm.prompt, "Turn PoE off on port 1 of core?");
-        assert!(matches!(
-            *confirm.action,
-            Action::RequestPortUpdate {
-                port: 1,
-                change: PortChange::Poe(PoeMode::Off),
-                ..
-            }
-        ));
+        assert_eq!(poe_written(press(&mut screen, 'O')), (true, PoeMode::Off));
 
         let mut screen = on_port(12);
         let (_, message) = toast(press(&mut screen, 'O'));
         assert_eq!(message, "Port 12 has no PoE");
+
+        // Profiles that cannot be read leave the port alone, and say why.
+        let mut screen = on_port(6);
+        screen.apply_action(&Action::PortProfilesFailed {
+            device: EntityId::from("device-3"),
+            error: "the controller timed out".into(),
+        });
+        let (_, message) = toast(press(&mut screen, 'O'));
+        assert!(
+            message.contains("stays as it is") && message.contains("the controller timed out"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn turning_poe_back_on_restores_the_mode_that_was_turned_off() {
+        for (wire, mode) in [
+            ("passive24v", PoeMode::Passive24V),
+            ("passthrough", PoeMode::Passthrough),
+            ("auto", PoeMode::Auto),
+        ] {
+            let mut screen = on_port(2);
+            load_profiles(&mut screen, vec![profile(2, wire)]);
+            assert_eq!(poe_written(press(&mut screen, 'O')), (true, PoeMode::Off));
+
+            // The write lands and the profiles reload with the port off.
+            load_profiles(&mut screen, vec![profile(2, "off")]);
+            assert_eq!(
+                poe_written(press(&mut screen, 'O')),
+                (false, mode),
+                "{wire} came back as something else"
+            );
+        }
+    }
+
+    #[test]
+    fn a_port_found_off_comes_on_in_auto_only_after_saying_so() {
+        // Port 6 was off before this session saw it in any other mode.
+        let mut screen = on_port(6);
+        load_profiles(&mut screen, vec![profile(6, "off")]);
+        let Some(Action::ShowConfirm(confirm)) = press(&mut screen, 'O') else {
+            panic!("an unknown previous mode asks first");
+        };
+        assert_eq!(
+            confirm.prompt,
+            "Turn PoE on for port 6 of core in auto mode?"
+        );
+        assert!(
+            confirm
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("passive 24V")),
+            "{confirm:?}"
+        );
+        assert_eq!(poe_written(press(&mut screen, 'O')), (true, PoeMode::Auto));
+
+        // A mode this build does not know is left to the controller.
+        let mut screen = on_port(3);
+        load_profiles(&mut screen, vec![profile(3, "other")]);
+        let (_, message) = toast(press(&mut screen, 'O'));
+        assert!(message.contains("does not know"), "{message}");
+    }
+
+    #[test]
+    fn port_profiles_are_retried_and_reloaded_with_the_devices() {
+        use crate::tui::screens::devices::detail::Profiles;
+
+        let devices = || {
+            vec![
+                switch(3, "core", 24),
+                device(1, "alpha", &json!({})),
+                device(2, "bravo", &json!({})),
+            ]
+        };
+        let asks = |action: Option<Action>| matches!(action, Some(Action::RequestPortProfiles(ref id)) if *id == EntityId::from("device-3"));
+        let mut screen = fleet();
+        screen.select(2);
+        enter(&mut screen);
+        assert!(asks(screen.set_detail_tab(DeviceDetailTab::Ports)));
+        // One request at a time: a refresh while it is out asks nothing.
+        assert!(screen.apply_devices_update(&devices()).is_none());
+
+        // A failed read is not the end: the next refresh tries again, and
+        // so does coming back to the tab.
+        let failed = Action::PortProfilesFailed {
+            device: EntityId::from("device-3"),
+            error: "the controller timed out".into(),
+        };
+        screen.apply_action(&failed);
+        assert!(asks(screen.apply_devices_update(&devices())));
+        screen.apply_action(&failed);
+        screen.set_detail_tab(DeviceDetailTab::Overview);
+        assert!(asks(screen.set_detail_tab(DeviceDetailTab::Ports)));
+
+        // Loaded profiles stay on screen while a refresh reloads them.
+        load_profiles(&mut screen, vec![profile(1, "auto")]);
+        assert!(asks(screen.apply_devices_update(&devices())));
+        assert!(matches!(
+            screen.detail.as_ref().map(|detail| &detail.profiles),
+            Some(Profiles::Loaded(_))
+        ));
+        assert!(screen.apply_devices_update(&devices()).is_none());
+        load_profiles(&mut screen, vec![profile(1, "off")]);
+        assert_eq!(screen.cursor_poe_mode(), Some(PoeMode::Off));
+
+        // Other tabs never ask.
+        screen.set_detail_tab(DeviceDetailTab::Overview);
+        assert!(screen.apply_devices_update(&devices()).is_none());
     }
 
     #[test]

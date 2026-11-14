@@ -5,6 +5,7 @@ use unifly_api::model::{PoeMode, Port, PortProfile};
 use unifly_api::{Command, Device, DeviceState, DeviceType};
 
 use super::DevicesScreen;
+use super::detail::Profiles;
 use super::view::is_down;
 use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PortChange, PromptRequest};
 
@@ -49,6 +50,23 @@ pub(super) fn port_powers(port: &Port, profile: Option<&PortProfile>) -> bool {
 const NO_PORT_WRITES: &str =
     "Port settings need a direct controller session, which a cloud profile does not have";
 
+/// Why a command that only the Session API serves cannot run here.
+const NEEDS_SESSION: &str =
+    "needs a direct controller session, which a cloud profile does not have";
+
+/// Why a command that only the Integration API serves cannot run here.
+const NEEDS_INTEGRATION: &str = "needs the Integration API, which this profile cannot reach";
+
+/// A PoE mode as the confirmations and toasts name it.
+pub(in crate::tui) fn poe_mode_label(mode: PoeMode) -> &'static str {
+    match mode {
+        PoeMode::Off => "off",
+        PoeMode::Passive24V => "passive 24V",
+        PoeMode::Passthrough => "passthrough",
+        PoeMode::Auto | PoeMode::Other => "auto",
+    }
+}
+
 /// What a command key on `device` does, or a toast saying why not.
 impl DevicesScreen {
     /// Why a command that needs a reachable device cannot run, if so.
@@ -88,6 +106,9 @@ impl DevicesScreen {
                 device_name(device)
             )));
         }
+        if !self.has_session() {
+            return Some(info(format!("A firmware upgrade {NEEDS_SESSION}")));
+        }
         Some(Action::RequestUpgrade(device.id.clone()))
     }
 
@@ -101,8 +122,13 @@ impl DevicesScreen {
 
     pub(super) fn request_provision(&self) -> Option<Action> {
         let device = self.action_device()?;
-        Self::refusal(device, "be provisioned")
-            .or_else(|| Some(Action::RequestProvision(device.id.clone())))
+        if let Some(refused) = Self::refusal(device, "be provisioned") {
+            return Some(refused);
+        }
+        if !self.has_session() {
+            return Some(info(format!("Provisioning {NEEDS_SESSION}")));
+        }
+        Some(Action::RequestProvision(device.id.clone()))
     }
 
     pub(super) fn request_speedtest(&self) -> Option<Action> {
@@ -115,6 +141,9 @@ impl DevicesScreen {
         }
         if let Some(refused) = Self::refusal(device, "run a speed test") {
             return Some(refused);
+        }
+        if !self.has_session() {
+            return Some(info(format!("The speed test {NEEDS_SESSION}")));
         }
         Some(Action::ShowConfirm(
             ConfirmRequest::new(
@@ -131,10 +160,57 @@ impl DevicesScreen {
         ))
     }
 
-    /// Forget the device the open detail shows.
+    /// Whether `device` can be removed from the site: it is adopted, and
+    /// the Integration API that removes it is within reach.
+    pub(super) fn can_remove(&self, device: &Device) -> bool {
+        !is_pending(device) && self.has_integration()
+    }
+
+    /// Remove the device the open detail shows from the site, after a
+    /// confirmation that says what happens to it in its state.
     pub(super) fn request_forget(&self) -> Option<Action> {
         let device = self.detail_device()?;
-        Some(Action::RequestUnadopt(device.id.clone()))
+        let name = device_name(device);
+        if is_pending(device) {
+            return Some(info(format!(
+                "{name} is not adopted, so there is nothing to remove"
+            )));
+        }
+        if !self.has_integration() {
+            return Some(info(format!("Removing a device {NEEDS_INTEGRATION}")));
+        }
+        let detail = if is_down(device.state) {
+            "It is offline, so it is only dropped from the site. \
+             Reset it by hand before adopting it again."
+        } else {
+            "It is factory reset and has to be adopted again."
+        };
+        Some(Action::ShowConfirm(
+            ConfirmRequest::new(
+                format!("Remove {name} from this site?"),
+                Action::Run {
+                    command: Box::new(Command::RemoveDevice {
+                        id: device.id.clone(),
+                    }),
+                    notice: Notice::new(
+                        format!("Removing {name}\u{2026}"),
+                        format!("Removed {name}"),
+                    ),
+                },
+            )
+            .detail(detail),
+        ))
+    }
+
+    /// Whether the commands that only the Session API serves can run: not
+    /// once the controller has said it has none.
+    pub(super) fn has_session(&self) -> bool {
+        !matches!(self.access, Some(access) if !access.session)
+    }
+
+    /// Whether the commands that only the Integration API serves can run.
+    pub(super) fn has_integration(&self) -> bool {
+        !matches!(self.access, Some(access) if !access.integration)
     }
 
     /// Whether the port under the cursor has its PoE switched on.
@@ -148,10 +224,9 @@ impl DevicesScreen {
         })
     }
 
-    /// Whether port settings can be written: not once the controller has
-    /// said it has no Session API, which is where they live.
+    /// Whether port settings can be written: they live in the Session API.
     pub(super) fn ports_writable(&self) -> bool {
-        !matches!(self.access, Some(access) if !access.session)
+        self.has_session()
     }
 
     pub(super) fn request_power_cycle(&self) -> Option<Action> {
@@ -159,35 +234,82 @@ impl DevicesScreen {
         if !self.cursor_port_powers() {
             return Some(info(format!("Port {} is not supplying PoE", port.index)));
         }
+        if !self.has_integration() {
+            return Some(info(format!("A power cycle {NEEDS_INTEGRATION}")));
+        }
         Some(Action::RequestPortPowerCycle(device.id.clone(), port.index))
     }
 
-    /// Flip the port's PoE between off and auto. Turning it off asks
-    /// first, since whatever the port powers goes dark.
+    /// The PoE mode the controller holds for the port under the cursor,
+    /// once its profile is loaded.
+    pub(super) fn cursor_poe_mode(&self) -> Option<PoeMode> {
+        let (_, port) = self.cursor_port()?;
+        port.poe.as_ref()?;
+        self.detail.as_ref()?.profile(port.index)?.poe_mode
+    }
+
+    /// Turn the port's PoE off, or back on in the mode it had. Both ways
+    /// wait for the port's profile: the live state cannot tell a passive
+    /// 24V port from a negotiated one, and writing the wrong mode leaves
+    /// the device dark or feeds it the wrong voltage.
     pub(super) fn request_poe_toggle(&self) -> Option<Action> {
         let (device, port) = self.cursor_port()?;
+        let index = port.index;
         if port.poe.is_none() {
-            return Some(info(format!("Port {} has no PoE", port.index)));
+            return Some(info(format!("Port {index} has no PoE")));
         }
         if !self.ports_writable() {
             return Some(info(NO_PORT_WRITES.into()));
         }
+        let Some(mode) = self.cursor_poe_mode() else {
+            let detail = self.detail.as_ref()?;
+            return Some(info(match &detail.profiles {
+                Profiles::Unavailable(reason) => format!(
+                    "PoE on port {index} stays as it is: its settings cannot be read ({reason})"
+                ),
+                Profiles::Loaded(_) => format!(
+                    "PoE on port {index} stays as it is: the controller reports no PoE mode for it"
+                ),
+                Profiles::Unasked | Profiles::Loading => format!(
+                    "The settings of port {index} are still loading; press O again in a moment"
+                ),
+            }));
+        };
         let name = device_name(device);
         let update = |mode| Action::RequestPortUpdate {
             device: device.id.clone(),
-            port: port.index,
+            port: index,
             change: PortChange::Poe(mode),
         };
-        if !self.cursor_port_powers() {
-            return Some(update(PoeMode::Auto));
+        match mode {
+            PoeMode::Other => Some(info(format!(
+                "Port {index} uses a PoE mode unifly does not know; change it in the controller"
+            ))),
+            PoeMode::Auto | PoeMode::Passive24V | PoeMode::Passthrough => {
+                Some(Action::ShowConfirm(
+                    ConfirmRequest::new(
+                        format!("Turn PoE off on port {index} of {name}?"),
+                        update(PoeMode::Off),
+                    )
+                    .detail("Whatever it powers shuts down."),
+                ))
+            }
+            PoeMode::Off => match self.poe_on_modes.get(&(device.id.clone(), index)) {
+                Some(previous) => Some(update(*previous)),
+                // Nothing here saw the mode the port had, and the
+                // controller does not keep it.
+                None => Some(Action::ShowConfirm(
+                    ConfirmRequest::new(
+                        format!("Turn PoE on for port {index} of {name} in auto mode?"),
+                        update(PoeMode::Auto),
+                    )
+                    .detail(
+                        "The mode it had before is not known. A passive 24V device \
+                         needs that mode set in the controller instead.",
+                    ),
+                )),
+            },
         }
-        Some(Action::ShowConfirm(
-            ConfirmRequest::new(
-                format!("Turn PoE off on port {} of {name}?", port.index),
-                update(PoeMode::Off),
-            )
-            .detail("Whatever it powers shuts down."),
-        ))
     }
 
     /// Ask for a new name for the port under the cursor.

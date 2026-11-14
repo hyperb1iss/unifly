@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use unifly_api::Device;
-use unifly_api::model::UplinkMedium;
+use unifly_api::model::{PoeMode, UplinkMedium};
 
 use super::grid::{self, Field};
 use super::table::command_hints;
@@ -79,14 +79,23 @@ pub(super) fn render_detail(
 }
 
 /// Where the cursor is in the open tab's list, such as `port 3 of 24`.
+/// A port goes by its own number, which on a device with gaps in its
+/// numbering is not its place in the list.
 fn position_marker(screen: &DevicesScreen, detail: &Detail) -> Option<String> {
-    let noun = match detail.tab {
-        DeviceDetailTab::Ports => "port",
-        DeviceDetailTab::Clients => "client",
-        _ => return None,
-    };
     let len = screen.detail_list_len();
-    (len > 0).then(|| format!(" {noun} {} of {len} ", detail.cursor_index() + 1))
+    let place = detail.cursor_index() + 1;
+    match detail.tab {
+        DeviceDetailTab::Ports => {
+            let (_, port) = screen.cursor_port()?;
+            Some(if usize::try_from(port.index) == Ok(place) {
+                format!(" port {place} of {len} ")
+            } else {
+                format!(" port {} \u{b7} {place} of {len} ", port.index)
+            })
+        }
+        DeviceDetailTab::Clients if len > 0 => Some(format!(" client {place} of {len} ")),
+        _ => None,
+    }
 }
 
 fn render_detail_tabs(
@@ -130,31 +139,41 @@ fn render_detail_hints(
         _ => hints.push((2, Hint::info("j/k", "device"))),
     }
     let own_commands = hints.len() > 2;
-    hints.extend(command_hints(device).into_iter().map(|(rank, hint)| {
-        // A tab with its own commands shows those first.
-        (if own_commands { rank + 4 } else { rank }, hint)
-    }));
-    hints.push((7, Hint::button("F", "forget", click::char_key('F'))));
+    hints.extend(
+        command_hints(screen, device)
+            .into_iter()
+            .map(|(rank, hint)| {
+                // A tab with its own commands shows those first.
+                (if own_commands { rank + 4 } else { rank }, hint)
+            }),
+    );
+    if screen.can_remove(device) {
+        hints.push((7, Hint::button("F", "remove", click::char_key('F'))));
+    }
     hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
     let hints = grid::fit_hints(hints, area.width);
     let line = click::key_hints(&hints).draw(area, &mut screen.hits.borrow_mut());
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Hints for the commands the port under the cursor can take.
+/// Hints for the commands the port under the cursor can take. `O` shows
+/// once the port's profile says which way it goes.
 fn port_hints(screen: &DevicesScreen) -> Vec<(u8, Hint)> {
-    let Some((_, port)) = screen.cursor_port() else {
+    if screen.cursor_port().is_none() {
         return Vec::new();
-    };
-    let powers = screen.cursor_port_powers();
+    }
     let mut hints = Vec::new();
-    if powers {
+    if screen.cursor_port_powers() && screen.has_integration() {
         hints.push((1, Hint::button("C", "power cycle", click::char_key('C'))));
     }
     // The settings keys need the Session API the profiles come from.
     if screen.ports_writable() {
-        if port.poe.is_some() {
-            let label = if powers { "PoE off" } else { "PoE on" };
+        let label = match screen.cursor_poe_mode() {
+            Some(PoeMode::Off) => Some("PoE on"),
+            Some(PoeMode::Auto | PoeMode::Passive24V | PoeMode::Passthrough) => Some("PoE off"),
+            Some(PoeMode::Other) | None => None,
+        };
+        if let Some(label) = label {
             hints.push((2, Hint::button("O", label, click::char_key('O'))));
         }
         hints.push((3, Hint::button("N", "rename", click::char_key('N'))));

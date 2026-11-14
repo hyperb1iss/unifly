@@ -429,6 +429,29 @@ fn an_edited_port_keeps_its_label_and_poe_mode() {
     assert_eq!(port(&after, powered).poe_mode, Some(PoeMode::Auto));
     assert_eq!(port(&after, powered).name.as_deref(), Some("cam-dock"));
 
+    // The badge reader's port feeds passive 24V, and a mode written to a
+    // port reads back as written instead of collapsing to auto.
+    let passive = profiles_at(&sim, SWITCH_BASE)
+        .iter()
+        .find(|profile| profile.poe_mode == Some(PoeMode::Passive24V))
+        .map(|profile| (profile.index, profile.name.clone()))
+        .expect("a passive 24V port");
+    assert_eq!(passive.1.as_deref(), Some("badge-front"));
+    for mode in [PoeMode::Off, PoeMode::Passive24V, PoeMode::Passthrough] {
+        sim.apply_port_update(
+            &mac,
+            passive.0,
+            &PortProfileUpdate {
+                poe_mode: Some(mode),
+                ..PortProfileUpdate::default()
+            },
+            now,
+        )
+        .expect("PoE mode edits are simulated");
+        let after = profiles_at(&sim, SWITCH_BASE);
+        assert_eq!(port(&after, passive.0).poe_mode, Some(mode));
+    }
+
     // What the simulation cannot mean is refused, not faked.
     let vlan = sim.apply_port_update(
         &mac,

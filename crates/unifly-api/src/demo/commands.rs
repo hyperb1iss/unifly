@@ -734,6 +734,7 @@ impl Simulation {
                 };
             }
             poe.enabled = on;
+            edit.poe_mode = Some(mode);
             changes.push(format!("PoE turned {}", if on { "on" } else { "off" }));
         }
         if let Some(label) = &update.name {

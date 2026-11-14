@@ -365,3 +365,56 @@ async fn block_unblock_and_kick_go_to_the_station_manager_by_mac() {
 
     controller.disconnect().await;
 }
+
+#[tokio::test]
+async fn a_poe_mode_is_written_into_its_port_and_every_other_override_survives() {
+    use unifly_api::PortProfileUpdate;
+    use unifly_api::model::PoeMode;
+
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let camera = json!({"port_idx": 1, "name": "cam-lobby", "poe_mode": "auto",
+        "op_mode": "switch", "native_networkconf_id": "net-cameras",
+        "tagged_vlan_mgmt": "block_all", "autoneg": true});
+    // The badge reader's port was turned off; everything else about it,
+    // including a field this client does not model, has to come back.
+    let badge = json!({"port_idx": 2, "name": "badge-front", "poe_mode": "off",
+        "op_mode": "switch", "native_networkconf_id": "net-iot",
+        "tagged_vlan_mgmt": "block_all", "autoneg": false, "speed": 100,
+        "storm_ctrl_bcast_enabled": true});
+    Mock::given(method("POST"))
+        .and(path("/api/s/default/stat/device"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(legacy_envelope(&json!([{
+                "_id": "dev-1", "mac": SWITCH_MAC, "type": "usw",
+                "port_table": [{"port_idx": 1}, {"port_idx": 2}, {"port_idx": 3}],
+                "port_overrides": [camera, badge],
+            }]))),
+        )
+        .mount(&server)
+        .await;
+    mount_write(&server, "PUT", "/api/s/default/rest/device/dev-1").await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+
+    controller
+        .update_device_port(
+            &MacAddress::new(SWITCH_MAC),
+            2,
+            &PortProfileUpdate {
+                poe_mode: Some(PoeMode::Passive24V),
+                ..PortProfileUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut restored = badge.clone();
+    restored["poe_mode"] = json!("pasv24");
+    assert_eq!(
+        bodies(&server, "PUT", "/rest/device/dev-1").await,
+        [json!({"port_overrides": [camera, restored]})]
+    );
+
+    controller.disconnect().await;
+}

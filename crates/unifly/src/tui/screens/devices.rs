@@ -11,6 +11,7 @@ mod state;
 pub(in crate::tui::screens) mod view;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
@@ -19,6 +20,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 
+use unifly_api::model::PoeMode;
 use unifly_api::{Client, Device, EntityId};
 
 use crate::tui::action::{Access, Action, DeviceDetailTab};
@@ -26,6 +28,7 @@ use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::{Click, HitMap};
 
+pub(in crate::tui) use commands::poe_mode_label;
 pub(in crate::tui::screens) use render::grid;
 
 pub struct DevicesScreen {
@@ -50,6 +53,10 @@ pub struct DevicesScreen {
     /// The device and port a rename prompt is open for, and the name the
     /// prompt started on.
     renaming: Option<(EntityId, u32, String)>,
+    /// The PoE mode each port was last seen switched on in, so turning
+    /// PoE back on restores it. The controller keeps no record of the mode
+    /// a port had before it was turned off.
+    poe_on_modes: HashMap<(EntityId, u32), PoeMode>,
 }
 
 impl Default for DevicesScreen {
@@ -101,7 +108,7 @@ impl Component for DevicesScreen {
             _ => DEVICE_STEP_KEYS,
         });
         keys.extend(DEVICE_KEYS);
-        keys.extend([("F", "Forget the device"), ("Esc", "Close the detail")]);
+        keys.extend([("F", "Remove from the site"), ("Esc", "Close the detail")]);
         keys
     }
 
