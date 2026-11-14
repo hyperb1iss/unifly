@@ -88,6 +88,13 @@ pub fn chip(
     line
 }
 
+/// Columns the right side can take in a toolbar `width` columns wide
+/// whose left side takes `left`, for a screen that picks what goes on
+/// the right by the room there is.
+pub fn right_room(width: u16, left: usize) -> usize {
+    usize::from(width).saturating_sub(left + usize::from(GAP + MARGIN))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +113,15 @@ mod tests {
         assert!(right_area(area, 10, 7).is_some());
         assert!(right_area(area, 10, 8).is_none());
         assert!(right_area(area, 10, 0).is_none());
+    }
+
+    #[test]
+    fn the_room_on_the_right_is_what_render_will_draw_in() {
+        let area = Rect::new(0, 0, 20, 1);
+        let room = right_room(area.width, 10);
+        assert_eq!(room, 7);
+        assert!(right_area(area, 10, room).is_some());
+        assert!(right_area(area, 10, room + 1).is_none());
+        assert_eq!(right_room(5, 10), 0);
     }
 }
