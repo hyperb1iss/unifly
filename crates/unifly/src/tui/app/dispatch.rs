@@ -142,7 +142,6 @@ impl App {
             | Action::WifiBroadcastsUpdated(_)
             | Action::EventReceived(_)
             | Action::HealthUpdated(_)
-            | Action::SiteUpdated(_)
             | Action::WifiNeighborsUpdated(_)
             | Action::WifiChannelsUpdated(_)
             | Action::WifiClientDetailLoaded { .. }

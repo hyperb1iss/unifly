@@ -9,18 +9,11 @@ use unifly_api::model::{
 };
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
-    Client, CreateNetworkRequest, Device, EntityId, Event, EventHistoryQuery, Network, Site,
+    Client, CreateNetworkRequest, Device, EntityId, Event, EventHistoryQuery, Network,
     UpdateNetworkRequest,
 };
 
 use crate::tui::screen::ScreenId;
-
-/// Direction for reorder operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Up,
-    Down,
-}
 
 /// Client type filter for the clients screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,24 +267,7 @@ pub struct StatsData {
     pub dpi_fetched: bool,
 }
 
-/// Sort field for table columns.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SortField {
-    Name,
-    Status,
-    Model,
-    Ip,
-    Cpu,
-    Memory,
-    Traffic,
-    Uptime,
-    Signal,
-    Duration,
-}
-
 /// Notification severity level.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationLevel {
     Info,
@@ -301,14 +277,12 @@ pub enum NotificationLevel {
 }
 
 /// A toast notification.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub message: String,
     pub level: NotificationLevel,
 }
 
-#[allow(dead_code)]
 impl Notification {
     pub fn success(msg: impl Into<String>) -> Self {
         Self {
@@ -449,7 +423,6 @@ impl ConfirmRequest {
 }
 
 /// Every state transition in the TUI is expressed as an Action.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Action {
     // ── Lifecycle ──────────────────────────────────────────────────
@@ -473,8 +446,6 @@ pub enum Action {
     /// Press a key as if it were typed, for a tapped key hint.
     PressKey(KeyEvent),
     GoBack,
-    FocusNext,
-    FocusPrev,
 
     // ── Data Events (from unifly-core streams) ─────────────────────
     DevicesUpdated(Arc<Vec<Arc<Device>>>),
@@ -487,7 +458,6 @@ pub enum Action {
     WifiBroadcastsUpdated(Arc<Vec<Arc<WifiBroadcast>>>),
     EventReceived(Arc<Event>),
     HealthUpdated(Arc<Vec<unifly_api::HealthSummary>>),
-    SiteUpdated(Arc<Site>),
     WifiNeighborsUpdated(Arc<Vec<RogueAp>>),
     WifiChannelsUpdated(Arc<Vec<ChannelAvailability>>),
     WifiClientDetailLoaded {
@@ -606,15 +576,6 @@ pub enum Action {
     // ── Events Screen ─────────────────────────────────────────────
     /// Pause the live event feed, or resume it.
     ToggleEventPause,
-
-    // ── Table Operations ──────────────────────────────────────────
-    SortColumn(SortField),
-    ScrollUp,
-    ScrollDown,
-    ScrollToTop,
-    ScrollToBottom,
-    PageUp,
-    PageDown,
 
     // ── Settings ────────────────────────────────────────────────────
     OpenSettings,

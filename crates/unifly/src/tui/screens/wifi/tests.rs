@@ -1426,10 +1426,6 @@ fn stays_on_the_screen(action: &Action) -> bool {
             | Action::WifiToggleChannelMap
             | Action::WifiSortColumn(_)
             | Action::WifiBandSelect(_)
-            | Action::ScrollToTop
-            | Action::ScrollToBottom
-            | Action::PageUp
-            | Action::PageDown
     )
 }
 

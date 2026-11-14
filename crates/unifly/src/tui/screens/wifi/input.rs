@@ -24,19 +24,19 @@ impl WifiScreen {
             }
             KeyCode::Char('g') => {
                 self.select_first();
-                Some(Action::ScrollToTop)
+                Some(Action::Invalidate)
             }
             KeyCode::Char('G') => {
                 self.select_last();
-                Some(Action::ScrollToBottom)
+                Some(Action::Invalidate)
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.move_selection(10);
-                Some(Action::PageDown)
+                Some(Action::Invalidate)
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.move_selection(-10);
-                Some(Action::PageUp)
+                Some(Action::Invalidate)
             }
             KeyCode::Char('l') | KeyCode::Right => Some(self.switch_sub_tab(self.sub_tab.next())),
             KeyCode::Char('h') | KeyCode::Left => Some(self.switch_sub_tab(self.sub_tab.prev())),
