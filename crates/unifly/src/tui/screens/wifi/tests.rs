@@ -1488,7 +1488,7 @@ fn a_short_ssid_detail_folds_into_two_columns() {
     screen.handle_key_input(key(KeyCode::Enter));
 
     let shown = rendered_at(&screen, 80, 20);
-    for expected in ["State", "Passphrase", "write-only", "Hotspot", "MLO", "ID"] {
+    for expected in ["State", "Passphrase", "not shown", "Hotspot", "MLO", "ID"] {
         assert!(shown.contains(expected), "missing {expected:?}:\n{shown}");
     }
     assert!(

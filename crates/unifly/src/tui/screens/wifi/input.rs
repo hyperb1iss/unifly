@@ -9,6 +9,10 @@ use crate::tui::widgets::click::{self, Click};
 
 impl WifiScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
+        // A prompt takes every key while it is open, so a key that gets
+        // here means none is. One that was cancelled leaves nothing
+        // behind, least of all a typed passphrase.
+        self.ssid_prompt = None;
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_selection(1);

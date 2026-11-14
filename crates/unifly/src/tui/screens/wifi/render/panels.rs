@@ -260,7 +260,7 @@ impl WifiScreen {
             | WifiSecurityMode::Wpa2Wpa3Enterprise => "RADIUS sign-in".to_owned(),
             _ if keys == 1 => "1 per-network key".to_owned(),
             _ if keys > 1 => format!("{keys} per-network keys"),
-            _ => "write-only (P to set)".to_owned(),
+            _ => "not shown (P to set)".to_owned(),
         }
     }
 

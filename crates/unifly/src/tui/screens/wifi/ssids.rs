@@ -13,14 +13,37 @@ use crate::tui::action::{Action, ConfirmRequest, Notice, Notification, PromptReq
 
 /// Longest network name the standard allows, in bytes.
 const SSID_MAX_BYTES: usize = 32;
-/// WPA passphrase length, in characters.
+/// WPA passphrase length, in bytes of printable ASCII.
 const PASSPHRASE_LENGTH: std::ops::RangeInclusive<usize> = 8..=63;
 
-/// What the open prompt was asked for, and for which SSID.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What the open prompt was asked for, and for which SSID. Not `Debug`:
+/// the second passphrase prompt holds the first entry.
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum SsidPrompt {
     Rename(EntityId),
     Passphrase(EntityId),
+    /// The passphrase again. It is typed hidden, so a slip in one entry
+    /// would otherwise lock every client out behind a passphrase nobody
+    /// knows.
+    ConfirmPassphrase {
+        id: EntityId,
+        first: String,
+    },
+}
+
+/// Why `text` cannot be a WPA passphrase, when it cannot.
+fn passphrase_problem(text: &str) -> Option<String> {
+    if !text.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
+        return Some(
+            "A passphrase is plain ASCII: letters, digits, punctuation, and spaces".to_owned(),
+        );
+    }
+    (!PASSPHRASE_LENGTH.contains(&text.len())).then(|| {
+        format!(
+            "A passphrase is 8 to 63 characters; that one is {}",
+            text.len()
+        )
+    })
 }
 
 fn update(ssid: &WifiBroadcast, update: UpdateWifiBroadcastRequest, notice: Notice) -> Action {
@@ -113,7 +136,11 @@ impl WifiScreen {
             title: format!("Rename {}", ssid.name),
             label: "Network name (SSID)".to_owned(),
             initial: typed.unwrap_or(&ssid.name).to_owned(),
-            hint: Some("Up to 32 characters. Clients must rejoin under the new name.".to_owned()),
+            hint: Some(
+                "Up to 32 bytes: 32 plain characters, fewer with accents or emoji. Clients must \
+                 rejoin under the new name."
+                    .to_owned(),
+            ),
             secret: false,
         })
     }
@@ -159,9 +186,25 @@ impl WifiScreen {
             label: "New passphrase".to_owned(),
             initial: typed.unwrap_or_default().to_owned(),
             hint: Some(
-                "8 to 63 characters. The current one cannot be read back from the controller."
+                "8 to 63 ASCII characters. It is typed hidden, so it is asked for twice."
                     .to_owned(),
             ),
+            secret: true,
+        })
+    }
+
+    /// Ask for the passphrase a second time, holding the first entry
+    /// until the answer comes.
+    fn prompt_ssid_passphrase_again(&mut self, ssid: &WifiBroadcast, first: &str) -> Action {
+        self.ssid_prompt = Some(SsidPrompt::ConfirmPassphrase {
+            id: ssid.id.clone(),
+            first: first.to_owned(),
+        });
+        Action::OpenPrompt(PromptRequest {
+            title: format!("Passphrase for {}", ssid.name),
+            label: "Type it again".to_owned(),
+            initial: String::new(),
+            hint: Some("It must match the first entry.".to_owned()),
             secret: true,
         })
     }
@@ -191,13 +234,18 @@ impl WifiScreen {
         if text.is_empty() {
             return None;
         }
-        let (SsidPrompt::Rename(id) | SsidPrompt::Passphrase(id)) = &prompt;
+        let (SsidPrompt::Rename(id)
+        | SsidPrompt::Passphrase(id)
+        | SsidPrompt::ConfirmPassphrase { id, .. }) = &prompt;
         let Some(ssid) = self.ssids.iter().find(|ssid| &ssid.id == id).cloned() else {
             return Some(warn("That SSID is no longer on the controller"));
         };
         match prompt {
             SsidPrompt::Rename(_) => self.submit_ssid_rename(&ssid, text),
             SsidPrompt::Passphrase(_) => Some(self.submit_ssid_passphrase(&ssid, text)),
+            SsidPrompt::ConfirmPassphrase { first, .. } => {
+                Some(self.confirm_ssid_passphrase(&ssid, &first, text))
+            }
         }
     }
 
@@ -235,18 +283,32 @@ impl WifiScreen {
     }
 
     fn submit_ssid_passphrase(&mut self, ssid: &WifiBroadcast, text: &str) -> Action {
-        let length = text.chars().count();
-        if !PASSPHRASE_LENGTH.contains(&length) {
-            self.send(warn(format!(
-                "A passphrase is 8 to 63 characters; that one is {length}"
-            )));
+        if let Some(problem) = passphrase_problem(text) {
+            self.send(warn(problem));
             return self.prompt_ssid_passphrase(ssid, Some(text));
+        }
+        self.prompt_ssid_passphrase_again(ssid, text)
+    }
+
+    /// The second entry. Only a passphrase typed the same way twice is
+    /// offered for writing; a mismatch starts over from an empty prompt.
+    fn confirm_ssid_passphrase(
+        &mut self,
+        ssid: &WifiBroadcast,
+        first: &str,
+        again: &str,
+    ) -> Action {
+        if again != first {
+            self.send(warn(
+                "The two entries do not match, so nothing was changed. Type the passphrase again.",
+            ));
+            return self.prompt_ssid_passphrase(ssid, None);
         }
         let name = &ssid.name;
         let run = update(
             ssid,
             UpdateWifiBroadcastRequest {
-                passphrase: Some(text.to_owned()),
+                passphrase: Some(first.to_owned()),
                 ..Default::default()
             },
             Notice::new(
@@ -255,8 +317,10 @@ impl WifiScreen {
             ),
         );
         Action::ShowConfirm(
-            ConfirmRequest::new(format!("Change the passphrase for {name}?"), run)
-                .detail("Every client on it must enter the new one to reconnect."),
+            ConfirmRequest::new(format!("Change the passphrase for {name}?"), run).detail(
+                "Access points reprovision, and every client on it must enter the new one to \
+                 reconnect.",
+            ),
         )
     }
 
@@ -276,6 +340,7 @@ mod tests {
     use serde_json::json;
     use unifly_api::model::WifiBroadcast;
 
+    use super::{SsidPrompt, passphrase_problem};
     use crate::tui::action::{Access, Action, SsidChange, WifiSubTab};
     use crate::tui::component::Component;
     use crate::tui::screens::wifi::WifiScreen;
@@ -603,29 +668,108 @@ mod tests {
         );
     }
 
+    fn submit(screen: &mut WifiScreen, text: &str) -> Option<Action> {
+        screen.apply_action(&Action::PromptSubmitted(text.to_owned()))
+    }
+
+    fn prompt_of(action: Option<&Action>) -> &crate::tui::action::PromptRequest {
+        match action {
+            Some(Action::OpenPrompt(request)) => request,
+            other => panic!("expected a prompt, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn a_passphrase_is_masked_and_held_to_8_to_63_characters() {
+    fn a_passphrase_is_typed_twice_and_only_a_match_is_offered_for_writing() {
         let mut screen = ssid_screen();
         press(&mut screen, 'j');
-        let prompt = press(&mut screen, 'P');
+        let first = press(&mut screen, 'P');
+        let request = prompt_of(first.as_ref());
+        assert!(request.secret && request.label == "New passphrase");
+        let hint = request.hint.as_deref().unwrap_or_default();
+        assert!(hint.contains("asked for twice"), "{hint}");
         assert!(
-            matches!(&prompt, Some(Action::OpenPrompt(request))
-                if request.secret && request.hint.as_deref().is_some_and(|hint| hint.contains("cannot be read back"))),
-            "{prompt:?}"
+            !hint.contains("cannot be read back"),
+            "the controller does return it: {hint}"
         );
 
-        let short = screen.apply_action(&Action::PromptSubmitted("short".into()));
-        assert!(
-            matches!(&short, Some(Action::OpenPrompt(request)) if request.initial == "short" && request.secret),
-            "{short:?}"
-        );
-        let long = screen.apply_action(&Action::PromptSubmitted("x".repeat(64)));
-        assert!(matches!(long, Some(Action::OpenPrompt(_))), "{long:?}");
+        let second = submit(&mut screen, "correct horse");
+        let request = prompt_of(second.as_ref());
+        assert!(request.secret && request.initial.is_empty());
+        assert_eq!(request.label, "Type it again");
 
-        let (question, run) =
-            confirmed(screen.apply_action(&Action::PromptSubmitted("correct horse".into())));
+        let (question, run) = confirmed(submit(&mut screen, "correct horse"));
         assert_eq!(question, "Change the passphrase for Studio?");
         assert_eq!(update_of(&run).passphrase.as_deref(), Some("correct horse"));
+        assert!(screen.ssid_prompt.is_none(), "the first entry is not kept");
+    }
+
+    #[test]
+    fn entries_that_differ_write_nothing_and_start_over_empty() {
+        let mut screen = ssid_screen();
+        press(&mut screen, 'j');
+        press(&mut screen, 'P');
+        submit(&mut screen, "correct horse");
+
+        let again = submit(&mut screen, "correct hrose");
+        let request = prompt_of(again.as_ref());
+        assert_eq!(request.label, "New passphrase", "back to the first prompt");
+        assert!(request.initial.is_empty(), "neither entry is carried over");
+        assert!(
+            matches!(&screen.ssid_prompt, Some(SsidPrompt::Passphrase(_))),
+            "the mismatched entry is dropped"
+        );
+    }
+
+    #[test]
+    fn a_passphrase_is_held_to_8_to_63_printable_ascii_bytes() {
+        for (text, problem) in [
+            ("short", Some("that one is 5")),
+            ("exactly8", None),
+            (&"x".repeat(63), None),
+            (&"x".repeat(64), Some("that one is 64")),
+            // Eight characters, sixteen bytes: the controller would refuse it.
+            ("pässwörd", Some("plain ASCII")),
+            ("tab\tin the middle", Some("plain ASCII")),
+            (" spaces at both ends ", None),
+        ] {
+            match (passphrase_problem(text), problem) {
+                (None, None) => {}
+                (Some(said), Some(expected)) => assert!(said.contains(expected), "{said}"),
+                (said, expected) => panic!("{text:?}: {said:?}, expected {expected:?}"),
+            }
+        }
+
+        let mut screen = ssid_screen();
+        press(&mut screen, 'j');
+        press(&mut screen, 'P');
+        let again = submit(&mut screen, "pässwörd");
+        let request = prompt_of(again.as_ref());
+        assert!(
+            request.secret && request.initial == "pässwörd" && request.label == "New passphrase",
+            "a bad first entry reopens on what was typed"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_passphrase_prompt_does_not_keep_the_first_entry() {
+        let mut screen = ssid_screen();
+        press(&mut screen, 'j');
+        press(&mut screen, 'P');
+        submit(&mut screen, "correct horse");
+        assert!(matches!(
+            &screen.ssid_prompt,
+            Some(SsidPrompt::ConfirmPassphrase { .. })
+        ));
+
+        // Esc closes the prompt in the App and tells the screen nothing;
+        // the next key to reach the screen shows no prompt is open.
+        press(&mut screen, 'j');
+        assert!(screen.ssid_prompt.is_none());
+        assert!(
+            submit(&mut screen, "correct horse").is_none(),
+            "a stray answer finds nothing waiting for it"
+        );
     }
 
     #[test]
