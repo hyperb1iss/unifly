@@ -192,7 +192,8 @@ impl NetworksScreen {
             Ok(Submit::Create(request)) => Some(Action::NetworkCreate(request)),
             Ok(Submit::Update { id, request }) => {
                 let save = Action::NetworkSave(id, request);
-                if !form.is_disruptive() {
+                let consequences = form.consequences();
+                if consequences.is_empty() {
                     return Some(save);
                 }
                 let name = match &form.target {
@@ -200,7 +201,7 @@ impl NetworksScreen {
                     Target::Create => String::new(),
                 };
                 let mut detail = form.changes();
-                detail.push("Devices on it can lose their connection while it applies.".into());
+                detail.extend(consequences);
                 Some(Action::ShowConfirm(
                     ConfirmRequest::new(format!("Save these changes to {name}?"), save)
                         .detail(detail.join("\n")),

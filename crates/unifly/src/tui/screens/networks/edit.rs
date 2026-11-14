@@ -3,7 +3,7 @@
 //! turned into the request the controller takes; only changed fields are
 //! sent on an edit.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use crossterm::event::KeyEvent;
 use unifly_api::model::NetworkManagement;
@@ -90,7 +90,7 @@ impl Field {
             Self::Vlan => ch.is_ascii_digit(),
             Self::Gateway => ch.is_ascii_digit() || matches!(ch, '.' | '/'),
             Self::RangeStart | Self::RangeStop => ch.is_ascii_digit() || ch == '.',
-            Self::Dns => ch.is_ascii_hexdigit() || matches!(ch, '.' | ':' | ',' | ' '),
+            Self::Dns => ch.is_ascii_digit() || matches!(ch, '.' | ',' | ' '),
             _ => false,
         }
     }
@@ -159,22 +159,36 @@ pub(super) struct NetworkForm {
     internet: bool,
     mdns: bool,
     ipv6: bool,
+    /// Whether this is the site's default network, whose VLAN is fixed.
+    is_default: bool,
+    /// The servers the network relays DHCP to, when it is a relay.
+    relay: Vec<String>,
     original: Snapshot,
     /// Set while the controller has the save: the form takes no input.
     pub(super) saving: bool,
     pub(super) error: Option<FormError>,
 }
 
-/// The fields a network of this kind can take. The controller only keeps
-/// IPv4 and DHCP settings for networks a gateway or switch manages, and
-/// internet, mDNS, and IPv6 settings for gateway networks.
-fn fields_for(management: Option<NetworkManagement>) -> Vec<Field> {
+/// The fields this network can take. The controller only keeps IPv4 and
+/// DHCP settings and isolation for networks a gateway or switch manages,
+/// and internet, mDNS, and IPv6 settings for gateway networks. A kind
+/// this version does not know gets what every kind takes.
+///
+/// IPv6 shows only where it is on, because it can only be turned off
+/// here: turning it on needs a prefix source and an address assignment
+/// that a yes/no field cannot give.
+fn fields_for(network: &Network) -> Vec<Field> {
+    let (addressed, routed) = match network.management {
+        Some(NetworkManagement::Gateway) => (true, true),
+        Some(NetworkManagement::Switch) => (true, false),
+        Some(NetworkManagement::Unmanaged) | None => (false, false),
+    };
     let mut fields = vec![Field::Name, Field::Vlan];
-    if management != Some(NetworkManagement::Unmanaged) {
+    if addressed {
         fields.push(Field::Gateway);
     }
     fields.push(Field::Enabled);
-    if management != Some(NetworkManagement::Unmanaged) {
+    if addressed {
         fields.extend([
             Field::Dhcp,
             Field::RangeStart,
@@ -183,14 +197,21 @@ fn fields_for(management: Option<NetworkManagement>) -> Vec<Field> {
             Field::Isolation,
         ]);
     }
-    if !matches!(
-        management,
-        Some(NetworkManagement::Unmanaged | NetworkManagement::Switch)
-    ) {
-        fields.extend([Field::Internet, Field::Mdns, Field::Ipv6]);
+    if routed {
+        fields.extend([Field::Internet, Field::Mdns]);
+        if network.ipv6_enabled {
+            fields.push(Field::Ipv6);
+        }
     }
     fields
 }
+
+/// The prefix lengths the controller takes for a network's subnet.
+const PREFIXES: std::ops::RangeInclusive<u32> = 8..=30;
+/// The VLAN IDs a network other than the default one may use.
+const VLANS: std::ops::RangeInclusive<u16> = 2..=4009;
+/// The most DNS servers a DHCP server hands out.
+const MAX_DNS_SERVERS: usize = 4;
 
 /// The gateway address with the subnet's prefix length, the form the
 /// controller takes a subnet in.
@@ -206,15 +227,20 @@ fn gateway_with_prefix(network: &Network) -> String {
     }
 }
 
-/// A `host/prefix` value as the host and the subnet's first and last
-/// address.
-fn parse_gateway(text: &str) -> Option<(Ipv4Addr, Ipv4Addr, Ipv4Addr)> {
+/// A `host/prefix` value as the host, its prefix length, and the
+/// subnet's first and last address.
+fn parse_gateway(text: &str) -> Option<(Ipv4Addr, u32, Ipv4Addr, Ipv4Addr)> {
     let (host, prefix) = text.split_once('/')?;
     let host: Ipv4Addr = host.parse().ok()?;
     let prefix: u32 = prefix.parse().ok().filter(|prefix| *prefix <= 32)?;
     let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
     let first = u32::from(host) & mask;
-    Some((host, Ipv4Addr::from(first), Ipv4Addr::from(first | !mask)))
+    Some((
+        host,
+        prefix,
+        Ipv4Addr::from(first),
+        Ipv4Addr::from(first | !mask),
+    ))
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -231,7 +257,7 @@ impl NetworkForm {
                 id: network.id.clone(),
                 name: network.name.clone(),
             },
-            fields: fields_for(network.management),
+            fields: fields_for(network),
             focus: 0,
             name: LineInput::new(network.name.clone()),
             vlan: LineInput::new(
@@ -255,6 +281,10 @@ impl NetworkForm {
             internet: network.internet_access_enabled,
             mdns: network.mdns_forwarding_enabled,
             ipv6: network.ipv6_enabled,
+            is_default: network.is_default,
+            relay: dhcp.map_or_else(Vec::new, |dhcp| {
+                dhcp.relay_servers.iter().map(ToString::to_string).collect()
+            }),
             original: Vec::new(),
             saving: false,
             error: None,
@@ -292,6 +322,8 @@ impl NetworkForm {
             internet: true,
             mdns: false,
             ipv6: false,
+            is_default: false,
+            relay: Vec::new(),
             original: Vec::new(),
             saving: false,
             error: None,
@@ -448,47 +480,120 @@ impl NetworkForm {
             .collect()
     }
 
-    /// Whether saving can take devices on the network offline: it turns
-    /// the network off, or changes its VLAN, addressing, DHCP, or IPv6.
-    pub(super) fn is_disruptive(&self) -> bool {
-        (self.changed(Field::Enabled) && !self.enabled)
-            || [
-                Field::Vlan,
-                Field::Gateway,
-                Field::Dhcp,
-                Field::RangeStart,
-                Field::RangeStop,
-                Field::Dns,
-                Field::Ipv6,
-            ]
-            .into_iter()
-            .any(|field| self.changed(field))
+    /// Where the network relays DHCP to, as `10.0.0.5` or `10.0.0.5 +1`.
+    fn relay_target(&self) -> Option<String> {
+        let (first, rest) = self.relay.split_first()?;
+        Some(if rest.is_empty() {
+            first.clone()
+        } else {
+            format!("{first} +{}", rest.len())
+        })
+    }
+
+    /// What to say beside a yes/no field: what its position means now,
+    /// or what saving it would delete.
+    pub(super) fn note(&self, field: Field) -> Option<String> {
+        match field {
+            Field::Dhcp if self.dhcp => None,
+            Field::Dhcp if self.changed(Field::Dhcp) => {
+                Some("deletes its range and options".into())
+            }
+            Field::Dhcp => self
+                .relay_target()
+                .map(|servers| format!("relays to {servers}")),
+            Field::Ipv6 if !self.ipv6 => Some("deletes its IPv6 settings".into()),
+            _ => None,
+        }
+    }
+
+    /// What saving costs beyond the listed changes, one line each. A
+    /// draft with any of these asks before it saves: it deletes
+    /// configuration, cuts devices off, or can drop their connection
+    /// while it applies.
+    pub(super) fn consequences(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.changed(Field::Dhcp) {
+            if !self.dhcp {
+                lines.push("The DHCP server's range, lease time, and options are deleted.".into());
+            } else if let Some(servers) = self.relay_target() {
+                lines.push(format!(
+                    "DHCP is relayed to {servers} today. A server here replaces the relay."
+                ));
+            }
+        }
+        if self.changed(Field::Ipv6) && !self.ipv6 {
+            lines.push(
+                "Its IPv6 settings are deleted. Only the controller's own interface can set \
+                 IPv6 up again."
+                    .into(),
+            );
+        }
+        if self.changed(Field::Internet) && !self.internet {
+            lines.push("Devices on it lose internet access.".into());
+        }
+        if self.changed(Field::Isolation) && self.isolation {
+            lines.push("Devices on it can no longer reach other networks.".into());
+        }
+        let readdressed = [
+            Field::Vlan,
+            Field::Gateway,
+            Field::Dhcp,
+            Field::RangeStart,
+            Field::RangeStop,
+            Field::Dns,
+            Field::Ipv6,
+        ]
+        .into_iter()
+        .any(|field| self.changed(field));
+        if readdressed || (self.changed(Field::Enabled) && !self.enabled) {
+            lines.push("Devices on it can lose their connection while it applies.".into());
+        }
+        lines
     }
 
     fn vlan_id(&self) -> Result<u16, FormError> {
-        self.vlan
-            .text()
-            .trim()
-            .parse::<u16>()
-            .ok()
-            .filter(|vlan| (1..=4094).contains(vlan))
-            .ok_or_else(|| FormError::at(Field::Vlan, "VLAN ID must be between 1 and 4094"))
+        let vlan = self.vlan.text().trim().parse::<u16>().ok();
+        if self.is_default {
+            return vlan
+                .filter(|vlan| *vlan == 1)
+                .ok_or_else(|| FormError::at(Field::Vlan, "The default network keeps VLAN 1"));
+        }
+        vlan.filter(|vlan| VLANS.contains(vlan)).ok_or_else(|| {
+            FormError::at(
+                Field::Vlan,
+                format!(
+                    "VLAN ID must be between {} and {}",
+                    VLANS.start(),
+                    VLANS.end()
+                ),
+            )
+        })
     }
 
+    /// The DNS servers the DHCP server hands out: up to four IPv4
+    /// addresses, or none for the gateway's own.
     fn dns_servers(&self) -> Result<Vec<String>, FormError> {
-        self.dns
+        let servers = self
+            .dns
             .text()
             .split([',', ' '])
             .filter(|server| !server.is_empty())
             .map(|server| {
                 server
-                    .parse::<IpAddr>()
+                    .parse::<Ipv4Addr>()
                     .map(|address| address.to_string())
                     .map_err(|_| {
-                        FormError::at(Field::Dns, format!("{server} is not an IP address"))
+                        FormError::at(Field::Dns, format!("{server} is not an IPv4 address"))
                     })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        if servers.len() > MAX_DNS_SERVERS {
+            return Err(FormError::at(
+                Field::Dns,
+                format!("A DHCP server takes at most {MAX_DNS_SERVERS} DNS servers"),
+            ));
+        }
+        Ok(servers)
     }
 
     /// Check the DHCP server's settings as a whole: they need the server
@@ -532,7 +637,11 @@ impl NetworkForm {
                 "DHCP stop must not be before DHCP start",
             ));
         }
-        if let Some((_, first, last)) = parse_gateway(gateway) {
+        if let Some((host, _, network, broadcast)) = parse_gateway(gateway) {
+            // The subnet's own address and its broadcast address are no
+            // host's, and the gateway already has its own.
+            let first = Ipv4Addr::from(u32::from(network).saturating_add(1));
+            let last = Ipv4Addr::from(u32::from(broadcast).saturating_sub(1));
             for (field, bound) in [(Field::RangeStart, start), (Field::RangeStop, stop)] {
                 if bound < first || bound > last {
                     return Err(FormError::at(
@@ -540,6 +649,12 @@ impl NetworkForm {
                         format!("Must be inside {first} to {last}"),
                     ));
                 }
+            }
+            if (start..=stop).contains(&host) {
+                return Err(FormError::at(
+                    Field::RangeStart,
+                    format!("The range must not include the gateway's own address, {host}"),
+                ));
             }
         }
         self.dns_servers().map(|_| ())
@@ -560,11 +675,43 @@ impl NetworkForm {
                     "The gateway address cannot be removed, only changed",
                 ));
             }
-        } else if parse_gateway(gateway).is_none() {
-            return Err(FormError::at(
-                Field::Gateway,
-                "Give the gateway address with its prefix, like 10.0.60.1/24",
-            ));
+        } else {
+            let Some((_, prefix, ..)) = parse_gateway(gateway) else {
+                return Err(FormError::at(
+                    Field::Gateway,
+                    "Give the gateway address with its prefix, like 10.0.60.1/24",
+                ));
+            };
+            let typed = self.target == Target::Create || self.changed(Field::Gateway);
+            if typed && !PREFIXES.contains(&prefix) {
+                return Err(FormError::at(
+                    Field::Gateway,
+                    format!(
+                        "The prefix must be between /{} and /{}",
+                        PREFIXES.start(),
+                        PREFIXES.end()
+                    ),
+                ));
+            }
+        }
+        // Without a gateway address the network is created VLAN-only,
+        // which has neither setting: they would be dropped unsaid.
+        if self.target == Target::Create && gateway.is_empty() {
+            for (field, set, setting) in [
+                (Field::Isolation, self.isolation, "be isolated"),
+                (
+                    Field::Internet,
+                    !self.internet,
+                    "have its internet access cut",
+                ),
+            ] {
+                if set {
+                    return Err(FormError::at(
+                        field,
+                        format!("A network needs a gateway address to {setting}"),
+                    ));
+                }
+            }
         }
         self.check_dhcp()
     }
@@ -646,3 +793,6 @@ impl NetworkForm {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

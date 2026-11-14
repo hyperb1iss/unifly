@@ -160,15 +160,47 @@ fn a_tap_focuses_a_field_and_flips_an_on_off_one() {
 fn an_edit_sends_only_what_changed() {
     let mut screen = screen_with(vec![network(1, "Primary LAN", 100)]);
     press(&mut screen, KeyCode::Char('e'));
-    toggle(&mut screen, Field::Isolation);
+    toggle(&mut screen, Field::Mdns);
 
     let Some(Action::NetworkSave(_, request)) = press(&mut screen, KeyCode::Enter) else {
         panic!("a harmless change saves without asking");
     };
     assert_eq!(
         serde_json::to_value(request).expect("request JSON"),
-        json!({"isolation_enabled": true})
+        json!({"mdns_forwarding_enabled": true})
     );
+}
+
+/// Isolating a network or cutting its internet access takes effect on
+/// every device on it at once, like a VLAN change does.
+#[test]
+fn isolating_a_network_or_cutting_its_internet_asks_first_and_says_what_it_costs() {
+    for (field, cost, request) in [
+        (
+            Field::Isolation,
+            "Devices on it can no longer reach other networks.",
+            json!({"isolation_enabled": true}),
+        ),
+        (
+            Field::Internet,
+            "Devices on it lose internet access.",
+            json!({"internet_access_enabled": false}),
+        ),
+    ] {
+        let mut screen = screen_with(vec![network(1, "Primary LAN", 100)]);
+        press(&mut screen, KeyCode::Char('e'));
+        toggle(&mut screen, field);
+
+        let Some(Action::ShowConfirm(confirm)) = press(&mut screen, KeyCode::Enter) else {
+            panic!("{field:?} must be confirmed");
+        };
+        let detail = confirm.detail.expect("the cost is said");
+        assert!(detail.contains(cost), "{detail}");
+        let Action::NetworkSave(_, sent) = *confirm.action else {
+            panic!("yes sends the save");
+        };
+        assert_eq!(serde_json::to_value(sent).expect("request JSON"), request);
+    }
 }
 
 #[test]
@@ -259,7 +291,7 @@ fn a_draft_that_cannot_be_saved_stays_open_with_the_reason_on_its_field() {
         .position(|row| row.contains("Stop") && row.contains("192.168.101.20"))
         .expect("the draft is intact");
     assert!(
-        rows[field + 1].contains("Must be inside 192.168.100.0 to 192.168.100.255"),
+        rows[field + 1].contains("Must be inside 192.168.100.1 to 192.168.100.254"),
         "the reason sits under its field:\n{}",
         rows.join("\n")
     );

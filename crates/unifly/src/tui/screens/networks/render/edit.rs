@@ -114,6 +114,9 @@ fn field_line(form: &NetworkForm, field: Field, width: usize) -> Line<'static> {
             ("\u{25CB} off", muted)
         };
         spans.push(Span::styled(glyph, style));
+        if let Some(note) = form.note(field) {
+            spans.push(Span::styled(format!("  {note}"), muted));
+        }
         return Line::from(spans);
     };
     // A DHCP setting means nothing while the server is off.

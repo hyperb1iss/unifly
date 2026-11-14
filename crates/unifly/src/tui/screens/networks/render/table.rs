@@ -12,7 +12,7 @@ use crate::tui::theme;
 use crate::tui::widgets::click::{self, Hint};
 use crate::tui::widgets::detail_grid::{NONE, render_empty, render_panel, split_detail};
 
-use super::detail::{detail_grid, management_label};
+use super::detail::{detail_grid, dhcp_label, management_label};
 use super::edit::render_form;
 
 /// Rows the table keeps when the detail panel opens: its header and three
@@ -171,10 +171,7 @@ impl NetworkCells {
                 .gateway_ip
                 .map_or_else(|| NONE.into(), |ip| ip.to_string()),
             subnet: network.subnet.clone().unwrap_or_else(|| NONE.into()),
-            dhcp: network
-                .dhcp
-                .as_ref()
-                .map_or(NONE, |dhcp| if dhcp.enabled { "On" } else { "Off" }),
+            dhcp: dhcp_label(network),
             management: management_label(network.management),
             ipv6: if network.ipv6_enabled {
                 network

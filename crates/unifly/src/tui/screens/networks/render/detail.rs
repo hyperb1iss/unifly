@@ -30,6 +30,17 @@ pub(super) fn management_label(management: Option<NetworkManagement>) -> &'stati
     }
 }
 
+/// How a network hands out addresses: its own server, a relay to
+/// another, or neither. A relay is not "off": clients still get leases.
+pub(super) fn dhcp_label(network: &Network) -> &'static str {
+    match network.dhcp.as_ref() {
+        None => NONE,
+        Some(dhcp) if dhcp.enabled => "On",
+        Some(dhcp) if !dhcp.relay_servers.is_empty() => "Relay",
+        Some(_) => "Off",
+    }
+}
+
 /// Everything known about a network, as the detail panel's fields.
 pub(super) fn detail_grid(network: &Network, zones: &[Arc<FirewallZone>]) -> DetailGrid {
     let value = Style::default().fg(theme::accent_secondary());
@@ -74,8 +85,8 @@ pub(super) fn detail_grid(network: &Network, zones: &[Arc<FirewallZone>]) -> Det
     );
 
     let dhcp = network.dhcp.as_ref();
-    let (label, style) = dhcp.map_or((NONE, off), |dhcp| switch(dhcp.enabled));
-    grid.field("DHCP", label, style);
+    let label = dhcp_label(network);
+    grid.field("DHCP", label, if label == "On" { on } else { off });
     let lease = dhcp
         .and_then(|dhcp| dhcp.lease_time_secs)
         .map(format_lease_time);
@@ -89,6 +100,10 @@ pub(super) fn detail_grid(network: &Network, zones: &[Arc<FirewallZone>]) -> Det
             format!("{} to {}", bound(dhcp.range_start), bound(dhcp.range_stop)),
             value,
         );
+    }
+    if let Some(dhcp) = dhcp.filter(|dhcp| !dhcp.enabled && !dhcp.relay_servers.is_empty()) {
+        let servers: Vec<String> = dhcp.relay_servers.iter().map(ToString::to_string).collect();
+        grid.wide("Relay to", servers.join(", "), value);
     }
     if let Some(dhcp) = dhcp.filter(|dhcp| !dhcp.dns_servers.is_empty()) {
         let servers: Vec<String> = dhcp.dns_servers.iter().map(ToString::to_string).collect();
