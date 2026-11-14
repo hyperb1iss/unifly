@@ -324,14 +324,8 @@ fn commands_simulate_or_refuse() {
     .expect("upgrade works in demo mode");
 
     let error = sim
-        .apply_command(
-            Command::DeleteWifiBroadcast {
-                id: sim.fleet.wifi[0].id.clone(),
-                force: false,
-            },
-            now,
-        )
-        .expect_err("WiFi CRUD is refused");
+        .apply_command(Command::CreateBackup, now)
+        .expect_err("site admin is refused");
     assert!(matches!(error, CoreError::Unsupported { .. }));
     assert!(error.to_string().contains("demo mode"), "{error}");
 }
@@ -388,6 +382,41 @@ fn the_list_is_summary_shaped_and_the_detail_fills_it_in() {
             .any(|detail| detail.hidden == Some(true)),
         "one SSID hides its name, which only its detail says"
     );
+}
+
+#[test]
+fn deleting_an_ssid_removes_it_from_the_list_and_the_detail() {
+    let mut sim = Simulation::new(fleet());
+    let doomed = sim.fleet.wifi[1].clone();
+    let before = sim.fleet.wifi.len();
+
+    let (_, delta) = sim
+        .apply_command(
+            Command::DeleteWifiBroadcast {
+                id: doomed.id.clone(),
+                force: false,
+            },
+            anchor(),
+        )
+        .expect("an SSID can be deleted in demo mode");
+
+    assert!(delta.config_changed, "the store is synced again");
+    assert_eq!(delta.events.len(), 1);
+    let listed = sim.refresh_snapshot().wifi;
+    assert_eq!(listed.len(), before - 1);
+    assert!(listed.iter().all(|wifi| wifi.id != doomed.id));
+    assert!(matches!(
+        sim.wifi_detail(&doomed.id),
+        Err(CoreError::NotFound { .. })
+    ));
+    let again = sim.apply_command(
+        Command::DeleteWifiBroadcast {
+            id: doomed.id,
+            force: false,
+        },
+        anchor(),
+    );
+    assert!(matches!(again, Err(CoreError::NotFound { .. })));
 }
 
 #[test]

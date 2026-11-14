@@ -2,11 +2,12 @@
 //
 // Device, port, and client actions succeed against the simulation and
 // emit the event a real controller would, and so do the network and
-// firewall edits in `config.rs` and edits to an SSID's name, enabled
-// state, and visibility. An access point can be removed from the site and
-// adopted again. Anything else that would need a real controller to mean
-// something (removing a gateway or switch, other WiFi and VPN CRUD, site
-// admin) is refused with a clear error instead of pretending.
+// firewall edits in `config.rs`, edits to an SSID's name, enabled state,
+// and visibility, and deleting an SSID. An access point can be removed
+// from the site and adopted again. Anything else that would need a real
+// controller to mean something (removing a gateway or switch, other WiFi
+// and VPN CRUD, site admin) is refused with a clear error instead of
+// pretending.
 
 use chrono::{DateTime, Utc};
 
@@ -172,6 +173,7 @@ impl Simulation {
             Command::UpdateWifiBroadcast { id, update } => {
                 self.update_wifi(&id, &update, now, &mut delta)?;
             }
+            Command::DeleteWifiBroadcast { id, .. } => self.delete_wifi(&id, now, &mut delta)?,
             Command::ArchiveAlarm { id } => self.archive_alarm(&id)?,
             Command::ArchiveAllAlarms => self.archive_all_alarms(),
             other => return Err(unavailable(&command_name(&other))),
@@ -624,6 +626,29 @@ impl Simulation {
         }
         // The store holds what the controller's list returns.
         delta.wifi.push(updated.summary());
+        Ok(())
+    }
+
+    /// Remove an SSID. Clients stay associated to it: the simulation does
+    /// not model the radios dropping them.
+    fn delete_wifi(
+        &mut self,
+        id: &EntityId,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self
+            .fleet
+            .wifi
+            .iter()
+            .position(|wifi| &wifi.id == id)
+            .ok_or_else(|| wifi_not_found(id))?;
+        let removed = self.fleet.wifi.remove(index);
+        let message = format!("WiFi \"{}\" was deleted", removed.name);
+        delta
+            .events
+            .push(self.event(now, ADMIN_INFO, "EVT_AD_WlanDeleted", message));
+        delta.config_changed = true;
         Ok(())
     }
 

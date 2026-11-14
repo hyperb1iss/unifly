@@ -697,6 +697,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_asks_then_removes_the_ssid_and_the_screen_stops_listing_it() {
+        let (mut app, controller) = ssids_app().await;
+        let before = controller.wifi_broadcasts_snapshot();
+        let mut names: Vec<&str> = before.iter().map(|ssid| ssid.name.as_str()).collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        let first = names[0].to_owned();
+
+        press(&mut app, 'D');
+        let confirm = app.pending_confirm.clone().expect("D asks first");
+        assert_eq!(confirm.prompt, format!("Delete {first}?"));
+        assert_eq!(
+            controller.wifi_broadcasts_snapshot().len(),
+            before.len(),
+            "nothing is deleted before the answer"
+        );
+        press(&mut app, 'y');
+        finish_write(&mut app).await;
+
+        let after = controller.wifi_broadcasts_snapshot();
+        assert_eq!(after.len(), before.len() - 1);
+        assert!(after.iter().all(|ssid| ssid.name != first));
+        let toast = app.notices.latest().expect("a toast");
+        assert_eq!(toast.level, NotificationLevel::Success);
+        assert_eq!(toast.message, format!("Deleted {first}"));
+        assert!(app.wifi.writes.is_empty());
+
+        // The store's new list reaches the screen as the data bridge
+        // sends it, and the deleted SSID is gone from the table.
+        app.process_action(&Action::WifiBroadcastsUpdated(after))
+            .expect("the list after the delete");
+        let screen = app.screens.get(&ScreenId::Wifi).expect("the WiFi screen");
+        let drawn = crate::tui::table::render_lines(120, 20, |frame, area| {
+            screen.render(frame, area);
+        })
+        .join("\n");
+        assert!(!drawn.contains(&first), "{drawn}");
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
     async fn a_second_write_to_an_ssid_waits_for_the_first() {
         let (mut app, controller) = ssids_app().await;
         let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
