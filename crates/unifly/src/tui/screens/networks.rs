@@ -69,6 +69,9 @@ impl Component for NetworksScreen {
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
+        if let Action::NetworkDeleteChecked { id, name, confirm } = action {
+            return Ok(Some(self.answer_delete_check(id, name, confirm)));
+        }
         self.apply_action(action);
         Ok(None)
     }

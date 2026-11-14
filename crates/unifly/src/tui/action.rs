@@ -622,6 +622,15 @@ pub enum Action {
     NetworkCreate(Box<CreateNetworkRequest>),
     /// Check what uses a network, then ask before deleting it.
     RequestDeleteNetwork(EntityId),
+    /// The check of what uses a network is back. `confirm` is the
+    /// question to ask, where the user is still on that network with
+    /// nothing else open; anywhere else it would take keys meant for
+    /// something else.
+    NetworkDeleteChecked {
+        id: EntityId,
+        name: String,
+        confirm: Box<ConfirmRequest>,
+    },
     /// Write this policy's drafted move to the controller. It names the
     /// policy and the order the draft was made on, so a refresh queued
     /// ahead of the action cannot redirect the move, and an order that

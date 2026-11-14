@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
+use unifly_api::EntityId;
+
 use super::NetworksScreen;
 use super::edit::{FormError, NetworkForm, Submit, Target};
 use crate::tui::action::{Action, ConfirmRequest, Notification};
@@ -67,6 +69,29 @@ impl NetworksScreen {
             ))));
         }
         Some(Action::RequestDeleteNetwork(network.id.clone()))
+    }
+
+    /// The check of what uses network `id` is back. Ask whether to
+    /// delete it only if the cursor is still on it and no form is open:
+    /// the answer is a single `y`, and the user may since have moved to
+    /// another network or started typing into a form.
+    pub(super) fn answer_delete_check(
+        &self,
+        id: &EntityId,
+        name: &str,
+        confirm: &ConfirmRequest,
+    ) -> Action {
+        let still_on_it = self.form.is_none()
+            && self
+                .selected_network()
+                .is_some_and(|network| &network.id == id);
+        if still_on_it {
+            Action::ShowConfirm(confirm.clone())
+        } else {
+            Action::Notify(Notification::info(format!(
+                "Checked what uses {name}. Press D on it again to delete it."
+            )))
+        }
     }
 
     /// Mouse and touch input: rows and key hints by click, the list by

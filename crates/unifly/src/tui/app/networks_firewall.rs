@@ -11,13 +11,23 @@ use super::App;
 use crate::tui::action::{Action, ConfirmRequest, Notice, Notification};
 use crate::tui::screen::ScreenId;
 
-/// Whether the controller has a live connection. Commands fail at once
-/// without one.
-pub(super) fn is_connected(controller: &Controller) -> bool {
-    matches!(
-        *controller.connection_state().borrow(),
-        ConnectionState::Connected
-    )
+/// Whether the controller can be sent a write.
+///
+/// `Reconnecting` counts: it means a periodic refresh failed while the
+/// clients and the command processor are still up, so the write is worth
+/// sending and reports its own failure if the link is really gone. Only a
+/// controller that is not connected at all fails every command at once.
+pub(super) fn accepts_writes(controller: &Controller) -> bool {
+    state_accepts_writes(&controller.connection_state().borrow())
+}
+
+fn state_accepts_writes(state: &ConnectionState) -> bool {
+    match state {
+        ConnectionState::Connected | ConnectionState::Reconnecting { .. } => true,
+        ConnectionState::Disconnected | ConnectionState::Connecting | ConnectionState::Failed => {
+            false
+        }
+    }
 }
 
 /// Fetch the controller's data after a write, so the screens show it
@@ -32,9 +42,10 @@ pub(super) async fn refresh_after_write(controller: &Controller) -> bool {
     }
 }
 
-/// What uses a network, as a sentence for the delete confirmation. The
-/// controller reports counts per kind of resource.
-fn reference_summary(references: &Value) -> String {
+/// What uses a network, as a sentence for the delete confirmation, and
+/// whether anything does. The controller reports counts per kind of
+/// resource.
+fn reference_summary(references: &Value) -> (String, bool) {
     let uses: Vec<String> = references
         .get("referenceResources")
         .and_then(Value::as_array)
@@ -57,11 +68,14 @@ fn reference_summary(references: &Value) -> String {
         })
         .collect();
     if uses.is_empty() {
-        "Nothing uses it. This cannot be undone.".to_owned()
+        ("Nothing uses it. This cannot be undone.".to_owned(), false)
     } else {
-        format!(
-            "In use by {}. They lose this network. This cannot be undone.",
-            uses.join(", ")
+        (
+            format!(
+                "In use by {}. They lose this network. This cannot be undone.",
+                uses.join(", ")
+            ),
+            true,
         )
     }
 }
@@ -93,6 +107,18 @@ impl App {
                 self.forward_to_screen(ScreenId::Networks, &Action::NetworkEditResult(shown))?;
             }
             Action::RequestDeleteNetwork(id) => self.request_delete_network(id),
+            Action::NetworkDeleteChecked { name, .. } => {
+                // The check took a moment, and the user may have moved on.
+                // A dialog opened now over a form, a search, or another
+                // screen would take the keys typed for that.
+                if self.networks_screen_has_the_keys() {
+                    self.forward_to_screen(ScreenId::Networks, action)?;
+                } else {
+                    self.show_notification(Notification::info(format!(
+                        "Checked what uses {name}. Press D on it again to delete it."
+                    )));
+                }
+            }
             Action::MovePolicy { policy, plan } => self.move_firewall_policy(policy, plan),
             Action::SetRuleSwitch { id, switch, on } => self.set_rule_switch(id, *switch, *on),
             // The move's own task has already freed the keys.
@@ -126,7 +152,7 @@ impl App {
             refused("Not connected to a controller");
             return Ok(());
         };
-        if !is_connected(&controller) {
+        if !accepts_writes(&controller) {
             refused("The controller is not connected, so nothing was sent");
             return Ok(());
         }
@@ -151,8 +177,22 @@ impl App {
         Ok(())
     }
 
-    /// Ask before deleting a network, once the controller has said what
-    /// uses it: the answer goes in the question.
+    /// Whether a key pressed now goes to the Networks list: it is the
+    /// screen in view and no dialog, prompt, search, or overlay is open
+    /// over it. The screen itself knows whether its form is.
+    fn networks_screen_has_the_keys(&self) -> bool {
+        self.active_screen == ScreenId::Networks
+            && self.pending_confirm.is_none()
+            && self.prompt.is_none()
+            && !self.search_active
+            && !self.help_visible
+            && !self.notices_visible
+            && !self.about_visible
+    }
+
+    /// Find out what uses a network before asking whether to delete it:
+    /// the answer goes in the question. The question itself is opened by
+    /// [`Action::NetworkDeleteChecked`], once the check is back.
     fn request_delete_network(&mut self, id: &EntityId) {
         let Some(controller) = self.controller.clone() else {
             self.show_notification(Notification::error("Not connected"));
@@ -170,24 +210,41 @@ impl App {
         let id = id.clone();
         let tx = self.action_tx.clone();
         tokio::spawn(async move {
-            let detail = match controller.get_network_references(&id).await {
+            // The controller refuses to delete a network that is in use
+            // unless told to. Yes to a question that listed the uses is
+            // that telling; with no uses, or none known, a plain delete
+            // is the one that cannot take more than was shown.
+            let (detail, force) = match controller.get_network_references(&id).await {
                 Ok(references) => reference_summary(&references),
                 Err(error) => {
                     warn!(%error, "network reference check failed");
-                    format!("What uses it could not be checked ({error}). This cannot be undone.")
+                    (
+                        format!(
+                            "What uses it could not be checked ({error}). The controller \
+                             refuses if something does. This cannot be undone."
+                        ),
+                        false,
+                    )
                 }
             };
             let delete = Action::Run {
-                command: Box::new(Command::DeleteNetwork { id, force: false }),
+                command: Box::new(Command::DeleteNetwork {
+                    id: id.clone(),
+                    force,
+                }),
                 notice: Notice::new(
                     format!("Deleting {name}\u{2026}"),
                     format!("Deleted network {name}"),
                 ),
             };
+            let confirm =
+                ConfirmRequest::new(format!("Delete network {name}?"), delete).detail(detail);
             let _ = tx.send(Action::DismissToast(checking));
-            let _ = tx.send(Action::ShowConfirm(
-                ConfirmRequest::new(format!("Delete network {name}?"), delete).detail(detail),
-            ));
+            let _ = tx.send(Action::NetworkDeleteChecked {
+                id,
+                name,
+                confirm: Box::new(confirm),
+            });
         });
     }
 }

@@ -11,7 +11,7 @@ use unifly_api::model::FirewallPolicy;
 use unifly_api::{Command, Controller, CoreError, EntityId};
 
 use super::App;
-use super::networks_firewall::{is_connected, refresh_after_write};
+use super::networks_firewall::{accepts_writes, refresh_after_write};
 use crate::tui::action::{Action, Notification, NotificationLevel, PairOrder, PolicyMove};
 
 fn pair_order(ordering: &FirewallPolicyOrdering) -> PairOrder {
@@ -255,7 +255,9 @@ async fn run_move(
         }
         // A connection lost mid-move is named as such: a refresh could
         // not run, and the next connect's refresh shows the real order.
-        Err(MoveFailure::Read(error) | MoveFailure::Write(error)) if !is_connected(&controller) => {
+        Err(MoveFailure::Read(error) | MoveFailure::Write(error))
+            if !accepts_writes(&controller) =>
+        {
             warn!(%error, "policy move failed with the connection down");
             (
                 Notification::error(format!(
@@ -310,7 +312,7 @@ impl App {
                 policy.source.zone_id.clone(),
                 policy.destination.zone_id.clone(),
             ) {
-                (Some(source), Some(destination)) if is_connected(&controller) => {
+                (Some(source), Some(destination)) if accepts_writes(&controller) => {
                     Ok((controller, (source, destination)))
                 }
                 (Some(_), Some(_)) => Err(format!("Not connected, so {name} stays where it is")),
