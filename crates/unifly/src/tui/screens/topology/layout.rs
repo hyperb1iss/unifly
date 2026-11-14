@@ -126,7 +126,71 @@ fn display_name(device: &Device) -> String {
 
 /// Lay `devices` out as an uplink tree that fits `columns` cells wide when
 /// it can.
+#[cfg(test)]
 pub(super) fn layout(devices: &[Arc<Device>], columns: f64) -> TopoLayout {
+    layout_within(devices, Wrap::full_size(columns))
+}
+
+/// How a tree is wrapped and its boxes sized. A view keeps the one it was
+/// laid out with, so panning and zooming never reshuffle the tree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Wrap {
+    /// Layout units a row of siblings may span.
+    columns: f64,
+    /// How much wider than its label needs each box is, so the label
+    /// still fits when the view is zoomed out.
+    label_scale: f64,
+}
+
+impl Wrap {
+    /// The wrap for a view at 100% on a canvas `columns` cells wide.
+    pub(super) fn full_size(columns: f64) -> Self {
+        Self {
+            columns,
+            label_scale: 1.0,
+        }
+    }
+}
+
+/// The zooms a fitted view tries, largest first.
+const FIT_ZOOMS: [f64; 9] = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
+
+/// The smallest zoom boxes widen for, to keep their labels whole. Below
+/// it the boxes would take back the room that zooming out made, and the
+/// rows are too short for a label anyway.
+const WIDEN_ABOVE: f64 = 0.8;
+
+/// Lay `devices` out for a canvas of `columns` by `rows` cells, with the
+/// largest zoom at which the whole tree fits. A smaller zoom has more
+/// layout units across, so the tree wraps less and gets shorter.
+pub(super) fn fitted(devices: &[Arc<Device>], columns: f64, rows: f64) -> (TopoLayout, f64, Wrap) {
+    let mut smallest = None;
+    for zoom in FIT_ZOOMS {
+        let wrap = Wrap {
+            columns: columns / zoom,
+            label_scale: if zoom >= WIDEN_ABOVE { 1.0 / zoom } else { 1.0 },
+        };
+        let tree = layout_within(devices, wrap);
+        let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
+        let fits = x_hi - x_lo + 2.0 * MARGIN <= (columns - 1.0) / zoom
+            && y_hi - y_lo + 2.0 * MARGIN <= (rows - 1.0) / zoom;
+        if fits {
+            return (tree, zoom, wrap);
+        }
+        smallest = Some((tree, zoom, wrap));
+    }
+    smallest.unwrap_or_else(|| {
+        let wrap = Wrap::full_size(columns);
+        (layout_within(devices, wrap), 1.0, wrap)
+    })
+}
+
+/// Lay `devices` out as an uplink tree wrapped as `wrap` says.
+pub(super) fn layout_within(devices: &[Arc<Device>], wrap: Wrap) -> TopoLayout {
+    let Wrap {
+        columns,
+        label_scale,
+    } = wrap;
     let parents = resolve_parents(devices);
 
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); devices.len()];
@@ -154,7 +218,7 @@ pub(super) fn layout(devices: &[Arc<Device>], columns: f64) -> TopoLayout {
             let label: String = display_name(device).chars().take(LABEL_MAX).collect();
             let ip = device.ip.map(|ip| ip.to_string()).unwrap_or_default();
             TopoNode {
-                width: place::box_width(&label, &ip),
+                width: (place::box_width(&label, &ip) * label_scale).ceil(),
                 height: place::NODE_HEIGHT,
                 label,
                 ip,

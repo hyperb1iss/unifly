@@ -553,12 +553,6 @@ pub enum Action {
     RequestStats(StatsPeriod),
     StatsUpdated(StatsData),
 
-    // ── Topology ──────────────────────────────────────────────────
-    TopologyPan(i16, i16),
-    TopologyZoom(f64),
-    TopologyFit,
-    TopologyReset,
-
     // ── Events Screen ─────────────────────────────────────────────
     /// Pause the live event feed, or resume it.
     ToggleEventPause,
