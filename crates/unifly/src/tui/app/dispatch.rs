@@ -15,6 +15,7 @@ impl App {
         if self.handle_monitor_action(action)?
             || self.handle_command_action(action)?
             || self.handle_networks_firewall_action(action)?
+            || self.handle_devices_clients_action(action)?
         {
             if invalidates {
                 self.needs_redraw = true;

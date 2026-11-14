@@ -1,6 +1,7 @@
 //! Application core — event loop, screen management, action dispatch.
 
 mod commands;
+mod devices_clients;
 mod dispatch;
 mod firewall;
 mod lifecycle;

@@ -1,168 +1,197 @@
 use super::DevicesScreen;
+use super::detail::tabs_for;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
-use crate::tui::action::{Action, DeviceDetailTab};
+use crate::tui::action::Action;
 use crate::tui::widgets::click::{self, Click};
+
+/// Rows a page key moves.
+const PAGE: isize = 10;
 
 impl DevicesScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
-        if self.detail_open {
+        if let Some(action) = self.handle_command_key(key) {
+            return Some(action);
+        }
+        if self.detail.is_some() {
             return self.handle_detail_key(key);
         }
 
+        if let Some(delta) = movement(key) {
+            self.move_list(delta);
+            return None;
+        }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.move_selection(1);
-                None
+            KeyCode::Char('l') | KeyCode::Right => self.set_filter(self.filter.stepped(1)),
+            KeyCode::Char('h') | KeyCode::Left => self.set_filter(self.filter.stepped(-1)),
+            KeyCode::Char('s') => self.set_sort(self.sort.next()),
+            KeyCode::Char('r') => self.set_sort(self.sort.reversed()),
+            KeyCode::Enter => {
+                self.open_selected_detail();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.move_selection(-1);
-                None
-            }
-            KeyCode::Char('g') => {
-                self.select(0);
-                Some(Action::ScrollToTop)
-            }
-            KeyCode::Char('G') => {
-                self.select_last();
-                Some(Action::ScrollToBottom)
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_selection(10);
-                Some(Action::PageDown)
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_selection(-10);
-                Some(Action::PageUp)
-            }
-            KeyCode::Enter => self.open_selected_detail().map(Action::OpenDeviceDetail),
-            KeyCode::Char('R') => self.current_action_device_id().map(Action::RequestRestart),
-            KeyCode::Char('L') => self.current_action_device_id().map(Action::RequestLocate),
-            KeyCode::Char('U') => self.current_action_device_id().map(Action::RequestUpgrade),
+            _ => {}
+        }
+        None
+    }
+
+    /// Commands that act on a device, in the table and in the detail.
+    fn handle_command_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Char('R') => self.request_restart(),
+            KeyCode::Char('L') => self.request_locate(),
+            KeyCode::Char('U') => self.request_upgrade(),
+            KeyCode::Char('A') => self.request_adopt(),
+            KeyCode::Char('P') => self.request_provision(),
+            KeyCode::Char('T') => self.request_speedtest(),
             _ => None,
         }
     }
 
-    pub(super) fn apply_action(&mut self, action: &Action) {
-        match action {
-            Action::DevicesUpdated(devices) => {
-                self.apply_devices_update(devices);
-            }
-            Action::ClientsUpdated(clients) => {
-                self.clients = std::sync::Arc::clone(clients);
-            }
-            Action::CloseDetail => {
-                self.close_detail();
-            }
-            Action::DeviceDetailTab(tab) => {
-                self.detail_tab = *tab;
-            }
-            Action::SearchInput(query) => {
-                self.set_search_query(query);
-            }
-            Action::CloseSearch => {
-                self.clear_search();
-            }
-            _ => {}
-        }
-    }
-
+    /// Keys with a detail open. On the Ports and Clients tabs movement
+    /// drives the tab's own list; on the other tabs it steps to the next
+    /// device, keeping the tab.
     fn handle_detail_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if let Some(delta) = movement(key) {
+            if self.detail_has_list() {
+                self.move_detail_list(delta);
+                return None;
+            }
+            self.move_list(delta);
+            return self.retarget_detail();
+        }
         match key.code {
             KeyCode::Esc => {
                 self.close_detail();
                 Some(Action::CloseDetail)
             }
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.detail_tab = previous_detail_tab(self.detail_tab);
-                None
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.detail_tab = next_detail_tab(self.detail_tab);
-                None
-            }
-            KeyCode::Char('R') => self.current_action_device_id().map(Action::RequestRestart),
-            KeyCode::Char('L') => self.current_action_device_id().map(Action::RequestLocate),
-            KeyCode::Char('U') => self.current_action_device_id().map(Action::RequestUpgrade),
+            KeyCode::Char('h') | KeyCode::Left => self.step_detail_tab(-1),
+            KeyCode::Char('l') | KeyCode::Right => self.step_detail_tab(1),
+            KeyCode::Enter => self
+                .cursor_client()
+                .map(|client| Action::ShowClient(client.id.clone())),
+            KeyCode::Char('F') => self.request_forget(),
+            KeyCode::Char('C') => self.request_power_cycle(),
+            KeyCode::Char('O') => self.request_poe_toggle(),
+            KeyCode::Char('N') => self.request_port_rename(),
             _ => None,
         }
     }
 
-    /// Mouse and touch input: tabs and rows by click, the list by wheel.
+    fn move_list(&mut self, movement: Movement) {
+        match movement {
+            Movement::By(delta) => self.move_selection(delta),
+            Movement::First => self.select(0),
+            Movement::Last => self.select_last(),
+        }
+    }
+
+    fn move_detail_list(&mut self, movement: Movement) {
+        match movement {
+            Movement::By(delta) => self.move_detail_cursor(delta),
+            Movement::First => self.set_detail_cursor(0),
+            Movement::Last => self.set_detail_cursor(usize::MAX),
+        }
+    }
+
+    /// Mouse and touch input: tabs, filters, and rows by click, and the
+    /// list under the pointer by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         if let Some(delta) = click::wheel_delta(mouse) {
-            return self.scroll(delta);
+            return self.scroll(mouse, delta);
+        }
+        let detail_row = self.detail_hits.borrow().rows.clicked(mouse);
+        if let Some(index) = detail_row {
+            return self.click_detail_row(index);
         }
         let target = self.hits.borrow().clicked(mouse)?;
         match target {
-            Click::Tab(index) => self.click_detail_tab(index),
+            Click::Tab(index) if self.in_detail(mouse) => self.click_detail_tab(index),
+            Click::Tab(index) => self.click_filter(index),
             Click::Row(index) => self.click_row(index),
             Click::Key(key) => Some(Action::PressKey(key)),
             _ => None,
         }
     }
 
+    fn in_detail(&self, mouse: MouseEvent) -> bool {
+        self.detail_hits.borrow().contains(mouse.column, mouse.row)
+    }
+
     /// A detail tab switches to it, like `h`/`l`.
     fn click_detail_tab(&mut self, index: usize) -> Option<Action> {
-        let tab = *DeviceDetailTab::ALL.get(index)?;
-        if tab == self.detail_tab {
-            return None;
-        }
-        self.detail_tab = tab;
-        Some(Action::DeviceDetailTab(tab))
+        let tab = *tabs_for(self.detail_device()?).get(index)?;
+        self.set_detail_tab(tab)
+    }
+
+    /// A filter selects it, like `h`/`l`.
+    fn click_filter(&mut self, index: usize) -> Option<Action> {
+        let filter = *super::view::DeviceFilter::ALL.get(index)?;
+        self.set_filter(filter);
+        None
+    }
+
+    /// A row in the detail's list moves the cursor to it, and a second tap
+    /// on a client opens it, like `Enter`.
+    fn click_detail_row(&mut self, index: usize) -> Option<Action> {
+        let again = self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.cursor_index() == index);
+        self.set_detail_cursor(index);
+        again
+            .then(|| self.cursor_client())
+            .flatten()
+            .map(|client| Action::ShowClient(client.id.clone()))
     }
 
     /// A row selects its device, and a second tap opens it, like `Enter`.
     /// With a detail open, the detail follows the tapped device.
     fn click_row(&mut self, index: usize) -> Option<Action> {
-        if self.detail_open {
+        if self.detail.is_some() {
             self.select(index);
             return self.retarget_detail();
         }
         if self.selected_row_index(&self.filtered_devices()) == Some(index) {
-            return self.open_selected_detail().map(Action::OpenDeviceDetail);
+            self.open_selected_detail();
+            return None;
         }
         self.select(index);
         None
     }
 
-    /// The wheel moves the selection, and an open detail follows it.
-    fn scroll(&mut self, delta: isize) -> Option<Action> {
-        self.move_selection(delta);
-        if self.detail_open {
-            self.retarget_detail()
-        } else {
-            None
+    /// The wheel moves the list under the pointer: the detail's own list
+    /// over the pane, the device table elsewhere, with an open detail
+    /// following the selection.
+    fn scroll(&mut self, mouse: MouseEvent, delta: isize) -> Option<Action> {
+        if self.detail_has_list() && self.in_detail(mouse) {
+            self.move_detail_cursor(delta);
+            return None;
         }
-    }
-
-    /// Point the open detail at the selected device, on the same tab, so
-    /// stepping from switch to switch stays on their ports.
-    fn retarget_detail(&mut self) -> Option<Action> {
-        let tab = self.detail_tab;
-        let opened = self.open_selected_detail();
-        self.detail_tab = tab;
-        opened.map(Action::OpenDeviceDetail)
+        self.move_selection(delta);
+        self.retarget_detail()
     }
 }
 
-fn previous_detail_tab(tab: DeviceDetailTab) -> DeviceDetailTab {
-    match tab {
-        DeviceDetailTab::Overview => DeviceDetailTab::Ports,
-        DeviceDetailTab::Performance => DeviceDetailTab::Overview,
-        DeviceDetailTab::Radios => DeviceDetailTab::Performance,
-        DeviceDetailTab::Clients => DeviceDetailTab::Radios,
-        DeviceDetailTab::Ports => DeviceDetailTab::Clients,
-    }
+/// A list movement a key asks for.
+#[derive(Debug, Clone, Copy)]
+enum Movement {
+    By(isize),
+    First,
+    Last,
 }
 
-fn next_detail_tab(tab: DeviceDetailTab) -> DeviceDetailTab {
-    match tab {
-        DeviceDetailTab::Overview => DeviceDetailTab::Performance,
-        DeviceDetailTab::Performance => DeviceDetailTab::Radios,
-        DeviceDetailTab::Radios => DeviceDetailTab::Clients,
-        DeviceDetailTab::Clients => DeviceDetailTab::Ports,
-        DeviceDetailTab::Ports => DeviceDetailTab::Overview,
+/// The movement `key` means in any list: `j`/`k` and the arrows, `g`/`G`,
+/// and the page keys, which arrive as `Ctrl+d`/`Ctrl+u`.
+fn movement(key: KeyEvent) -> Option<Movement> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('d') if ctrl => Some(Movement::By(PAGE)),
+        KeyCode::Char('u') if ctrl => Some(Movement::By(-PAGE)),
+        KeyCode::Char('j') | KeyCode::Down => Some(Movement::By(1)),
+        KeyCode::Char('k') | KeyCode::Up => Some(Movement::By(-1)),
+        KeyCode::Char('g') => Some(Movement::First),
+        KeyCode::Char('G') => Some(Movement::Last),
+        _ => None,
     }
 }

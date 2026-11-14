@@ -1,4 +1,7 @@
+mod clients;
 mod detail;
+pub(in crate::tui::screens) mod grid;
+mod ports;
 mod table;
 
 use ratatui::Frame;

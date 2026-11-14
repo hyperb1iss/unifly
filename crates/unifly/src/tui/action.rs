@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
 use serde_json::Value;
-use unifly_api::model::{AclRule, Alarm, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast};
+use unifly_api::model::{
+    AclRule, Alarm, FirewallPolicy, FirewallZone, NatPolicy, PoeMode, PortProfile, WifiBroadcast,
+};
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
     Client, CreateNetworkRequest, Device, EntityId, Event, Network, Site, UpdateNetworkRequest,
@@ -60,6 +62,15 @@ impl DeviceDetailTab {
         Self::Clients,
         Self::Ports,
     ];
+}
+
+/// One change to a switch port's configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortChange {
+    /// Give the port this label.
+    Rename(String),
+    /// Set how the port supplies PoE.
+    Poe(PoeMode),
 }
 
 /// Firewall view sub-tab.
@@ -467,15 +478,9 @@ pub enum Action {
     ControllerChanged,
 
     // ── Device Selection ──────────────────────────────────────────
-    SelectDevice(usize),
-    OpenDeviceDetail(EntityId),
     CloseDetail,
-    DeviceDetailTab(DeviceDetailTab),
 
     // ── Client Selection ──────────────────────────────────────────
-    SelectClient(usize),
-    OpenClientDetail(EntityId),
-    FilterClientType(ClientTypeFilter),
     WifiSubTab(WifiSubTab),
     WifiFocusAp(Option<EntityId>),
     WifiToggleChannelMap,
@@ -633,4 +638,32 @@ pub enum Action {
         period: StatsPeriod,
         message: String,
     },
+    // ── devices-clients ───────────────────────────────────────────
+    /// Adopt the pending device with this ID, after a confirmation.
+    RequestAdoptDevice(EntityId),
+    /// Push a device's configuration to it again, after a confirmation.
+    RequestProvision(EntityId),
+    /// Fetch a device's per-port configuration for the Devices screen.
+    RequestPortProfiles(EntityId),
+    PortProfilesLoaded {
+        device: EntityId,
+        ports: Arc<Vec<PortProfile>>,
+    },
+    PortProfilesFailed {
+        device: EntityId,
+        error: String,
+    },
+    /// Change one port's configuration on the controller.
+    RequestPortUpdate {
+        device: EntityId,
+        port: u32,
+        change: PortChange,
+    },
+    /// Reserve `ip` for a client on the network whose subnet holds it.
+    RequestSetFixedIp {
+        client: EntityId,
+        ip: std::net::Ipv4Addr,
+    },
+    /// Drop a client's reserved address, after a confirmation.
+    RequestRemoveFixedIp(EntityId),
 }
