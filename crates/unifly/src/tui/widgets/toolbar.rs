@@ -95,6 +95,47 @@ pub fn right_room(width: u16, left: usize) -> usize {
     usize::from(width).saturating_sub(left + usize::from(GAP + MARGIN))
 }
 
+/// Columns between two chips on the right side.
+const CHIP_GAP: usize = 3;
+
+/// Draw `left` from the left edge of `area` and, against its right edge,
+/// as many of `chips` as fit beside it. The chips are given least
+/// important first: on a row too narrow for all of them, the first ones
+/// are left out whole and the rest keep their place at the edge.
+pub fn render_chips<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    left: ClickLine<'a, Click>,
+    chips: Vec<ClickLine<'a, Click>>,
+    hits: &mut HitMap<Click>,
+) {
+    let room = right_room(area.width, left.width());
+    let widths: Vec<usize> = chips.iter().map(ClickLine::width).collect();
+    let mut right = ClickLine::default();
+    for (index, chip) in chips
+        .into_iter()
+        .skip(chips_left_out(&widths, room))
+        .enumerate()
+    {
+        if index > 0 {
+            right.push_gap(Span::raw(" ".repeat(CHIP_GAP)));
+        }
+        right.append(chip);
+    }
+    render(frame, area, left, right, hits);
+}
+
+/// How many chips, from the first, must go for the rest to fit `room`
+/// columns with their gaps.
+fn chips_left_out(widths: &[usize], room: usize) -> usize {
+    (0..widths.len())
+        .find(|skip| {
+            let shown = &widths[*skip..];
+            shown.iter().sum::<usize>() + CHIP_GAP * (shown.len() - 1) <= room
+        })
+        .unwrap_or(widths.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +164,16 @@ mod tests {
         assert!(right_area(area, 10, room).is_some());
         assert!(right_area(area, 10, room + 1).is_none());
         assert_eq!(right_room(5, 10), 0);
+    }
+
+    #[test]
+    fn a_narrow_row_leaves_out_the_first_chips_whole() {
+        let widths = [14, 21, 17];
+        assert_eq!(chips_left_out(&widths, 58), 0);
+        assert_eq!(chips_left_out(&widths, 57), 1);
+        assert_eq!(chips_left_out(&widths, 41), 1);
+        assert_eq!(chips_left_out(&widths, 40), 2);
+        assert_eq!(chips_left_out(&widths, 16), 3);
+        assert_eq!(chips_left_out(&[], 0), 0);
     }
 }
