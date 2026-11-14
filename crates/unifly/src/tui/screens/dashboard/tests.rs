@@ -503,6 +503,93 @@ fn the_title_counts_unarchived_alarms() {
     assert!(!draw(&screen, 120, 40).contains("\u{26A0}"));
 }
 
+/// A network on `vlan` with a /24 subnet, with or without IPv6.
+fn network(name: &str, vlan: u16, ipv6: bool) -> Arc<unifly_api::Network> {
+    let mut network = Arc::unwrap_or_clone(crate::tui::screens::devices::fixtures::network(
+        name, name, vlan,
+    ));
+    network.subnet = Some(format!("10.40.{vlan}.0/24"));
+    network.ipv6_enabled = ipv6;
+    network.ipv6_prefix = ipv6.then(|| format!("2001:db8:4e48:{vlan}::/64"));
+    Arc::new(network)
+}
+
+fn with_networks() -> DashboardScreen {
+    let mut screen = connected();
+    screen
+        .update(&Action::NetworksUpdated(Arc::new(vec![
+            network("Cameras", 50, false),
+            network("Mgmt", 1, true),
+            network("Studio", 10, false),
+        ])))
+        .expect("networks");
+    let mut on_studio = Arc::unwrap_or_clone(client("render-03", "00:00:00:00:10:02", 9_000));
+    on_studio.vlan = Some(10);
+    screen
+        .update(&Action::ClientsUpdated(Arc::new(vec![Arc::new(on_studio)])))
+        .expect("clients");
+    screen
+}
+
+/// The rows of the Networks panel, without its frame.
+fn networks_panel(screen: &DashboardScreen, width: u16, height: u16) -> Vec<String> {
+    let rows = render_lines(width, height, |frame, area| screen.render(frame, area));
+    let top = rows
+        .iter()
+        .position(|row| row.contains("Networks"))
+        .expect("the panel is drawn");
+    rows[top + 1..]
+        .iter()
+        .map_while(|row| {
+            let row = row.strip_prefix("\u{2502}\u{2502}")?;
+            Some(row.split('\u{2502}').next().unwrap_or(row).to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn a_network_is_one_headed_line_and_its_ipv6_is_only_a_mark() {
+    let screen = with_networks();
+    let panel = networks_panel(&screen, 103, 40);
+
+    assert_eq!(panel[0].trim_end(), " Name  VLAN Subnet  Clients v6");
+    assert_eq!(panel[1].trim_end(), " Mgmt     1 10.40.1.0/24  0 on");
+    assert_eq!(panel[2].trim_end(), " Studio  10 10.40.10.0/24 1");
+    assert_eq!(panel[3].trim_end(), " Cameras 50 10.40.50.0/24 0");
+    let text = panel.join("\n");
+    for gone in ["2001:db8", "\u{2026}", "\u{2B21}", "1c"] {
+        assert!(!text.contains(gone), "{gone:?} is drawn:\n{text}");
+    }
+}
+
+#[test]
+fn a_narrow_networks_panel_drops_columns_whole() {
+    let screen = with_networks();
+    let headers: Vec<String> = [96, 84, 80, 72]
+        .into_iter()
+        .map(|width| networks_panel(&screen, width, 40)[0].trim_end().to_owned())
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            " Name  VLAN Subnet  Clients",
+            " Name  VLAN Subnet",
+            " Name    Subnet",
+            " Name"
+        ]
+    );
+    // Whatever is dropped, what is left is drawn whole.
+    for width in [72, 80, 103, 140] {
+        let panel = networks_panel(&screen, width, 40);
+        let text = panel.join("\n");
+        assert!(text.contains("Cameras"), "{width}:\n{text}");
+        assert!(!text.contains('\u{2026}'), "{width}:\n{text}");
+        if panel[0].contains("Subnet") {
+            assert!(text.contains("10.40.50.0/24"), "{width}:\n{text}");
+        }
+    }
+}
+
 #[test]
 fn the_lists_take_the_rows_the_status_panels_do_not_fill() {
     let screen = connected();
