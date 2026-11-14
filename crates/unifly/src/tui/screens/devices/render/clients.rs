@@ -57,11 +57,14 @@ pub(super) fn render(
         headers.push("MAC");
         columns.push(Column::fixed(17));
     }
-    headers.extend(["Link", "Signal"]);
-    columns.extend([
-        Column::fit("Link", cells.iter().map(|c| &c.link), 12),
-        Column::fit("Signal", cells.iter().map(|c| &c.signal), 8),
-    ]);
+    headers.push("Link");
+    columns.push(Column::fit("Link", cells.iter().map(|c| &c.link), 12));
+    // A switch's clients are wired: a column of dashes says nothing.
+    let show_signal = clients.iter().any(|client| client.wireless.is_some());
+    if show_signal {
+        headers.push("Signal");
+        columns.push(Column::fit("Signal", cells.iter().map(|c| &c.signal), 8));
+    }
 
     let widths = plan_columns(&columns, area.width);
     let selected = detail.cursor_index();
@@ -79,10 +82,10 @@ pub(super) fn render(
             if show_mac {
                 row.push(Cell::from(cells.mac));
             }
-            row.extend([
-                Cell::from(cells.link),
-                Cell::from(cells.signal).style(Style::default().fg(cells.signal_color)),
-            ]);
+            row.push(Cell::from(cells.link));
+            if show_signal {
+                row.push(Cell::from(cells.signal).style(Style::default().fg(cells.signal_color)));
+            }
             Row::new(row).style(if is_selected {
                 theme::table_selected()
             } else {

@@ -428,7 +428,7 @@ mod tests {
 
     use crate::tui::action::{Access, Action, DeviceDetailTab};
     use crate::tui::screens::devices::DevicesScreen;
-    use crate::tui::screens::devices::fixtures::{client, device, switch};
+    use crate::tui::screens::devices::fixtures::{client, device, switch, wireless};
     use crate::tui::table::render_lines;
     use crate::tui::widgets::click::{self, click_label, mouse};
 
@@ -1258,6 +1258,31 @@ mod tests {
         screen.set_detail_tab(DeviceDetailTab::Overview);
         let rows = draw(&screen, 120, 40);
         assert_eq!(tab_row(&rows), 29, "{}", rows.join("\n"));
+    }
+
+    #[test]
+    fn the_clients_tab_shows_signal_only_where_a_client_has_one() {
+        let mut screen = screen();
+        screen.select(2);
+        press(&mut screen, KeyCode::Enter);
+        screen.set_detail_tab(DeviceDetailTab::Clients);
+        let wired = client(
+            1,
+            "nas-vault",
+            &json!({ "uplink_device_mac": "aa:bb:cc:dd:ee:02", "switch_port": 3 }),
+        );
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![wired.clone()])));
+        let text = draw(&screen, 120, 30).join("\n");
+        assert!(text.contains("Link"), "{text}");
+        assert!(!text.contains("Signal"), "a column of dashes:\n{text}");
+
+        let phone = client(2, "phone", &wireless(-58, "aa:bb:cc:dd:ee:02"));
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![wired, phone])));
+        let text = draw(&screen, 120, 30).join("\n");
+        assert!(
+            text.contains("Signal") && text.contains("-58 dBm"),
+            "{text}"
+        );
     }
 
     #[test]
