@@ -494,13 +494,22 @@ fn enter_with_a_problem_moves_focus_to_the_field_at_fault() {
         Some(Message::Error("Username cannot be empty".into()))
     );
 
-    // An address without a scheme is corrected and offered, not refused.
+    // An address without a scheme is corrected and offered, not refused,
+    // and so is one pasted from the browser with its page still on it.
     screen.draft.username.set("admin");
-    screen.draft.url.set("10.0.0.5:8443");
-    press(&mut screen, KeyCode::Enter);
-    assert_eq!(screen.state, SettingsState::Editing);
-    assert_eq!(screen.draft.url.text(), "https://10.0.0.5:8443");
-    assert!(matches!(screen.message, Some(Message::Notice(_))));
+    for (typed, fixed) in [
+        ("10.0.0.5:8443", "https://10.0.0.5:8443"),
+        (
+            "https://10.0.0.5/network/default/dashboard",
+            "https://10.0.0.5",
+        ),
+    ] {
+        screen.draft.url.set(typed);
+        press(&mut screen, KeyCode::Enter);
+        assert_eq!(screen.state, SettingsState::Editing, "{typed}");
+        assert_eq!(screen.draft.url.text(), fixed);
+        assert!(matches!(screen.message, Some(Message::Notice(_))));
+    }
     press(&mut screen, KeyCode::Enter);
     assert_eq!(screen.state, SettingsState::Testing);
 }
@@ -588,6 +597,7 @@ fn a_passed_test_saves_and_then_applies_what_was_tested() {
         profile_name,
         config,
         notices,
+        keep_flags,
     }) = applied
     else {
         panic!("a saved profile is applied: {applied:?}");
@@ -595,6 +605,7 @@ fn a_passed_test_saves_and_then_applies_what_was_tested() {
     assert_eq!(profile_name, "default");
     assert_eq!(config.site, "default");
     assert_eq!(notices.len(), 1);
+    assert!(keep_flags, "Settings reconnects under the launch flags");
 }
 
 #[test]
@@ -671,6 +682,47 @@ fn a_missing_site_offers_the_sites_the_controller_has() {
     type_text(&mut screen, "lobby");
     assert!(!screen.picks_site());
     assert_eq!(screen.draft.site.text(), "lobby");
+}
+
+/// A failed test against another controller says nothing about its
+/// sites, so the ones read from the previous controller stay withheld.
+#[test]
+fn a_failed_test_never_offers_another_controllers_sites() {
+    let mut screen = test_screen();
+    screen.set_known_sites(sites(&["default", "lab"]));
+    screen.focus(SettingsField::Url);
+    type_text(&mut screen, ":8443");
+
+    press(&mut screen, KeyCode::Enter);
+    finish(
+        &mut screen,
+        Err(failure(FailureKind::Unreachable, DraftField::Url)),
+    );
+
+    assert!(!screen.picks_site());
+}
+
+/// A key given at launch decides how the session signs in, whatever the
+/// form's auth mode says, so the form says so where the mode is picked.
+#[test]
+fn a_launch_key_is_shown_on_the_auth_mode_it_overrides() {
+    let (mut screen, _dir) = screen_for(TWO_PROFILES, "work");
+    screen.session = Session {
+        profile: Some("work".into()),
+        overrides: ConnectionOverrides {
+            api_key: Some("flag-key".into()),
+            ..ConnectionOverrides::default()
+        },
+        ..Session::default()
+    };
+    screen.focus(SettingsField::AuthMode);
+
+    let rows = frame(&screen, 120, 40);
+    let mode = field_row(&rows, "Auth mode").expect("auth row");
+    assert!(mode.contains("--api-key"), "{mode}");
+    let all = rows.join("\n");
+    assert!(all.contains("Launched with --api-key"), "{all}");
+    assert!(!all.contains("flag-key"), "{all}");
 }
 
 /// The sites read from one controller are not offered once the form

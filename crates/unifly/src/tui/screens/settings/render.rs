@@ -238,11 +238,12 @@ impl SettingsScreen {
         match field {
             SettingsField::Profile => self.render_profile(frame, row, active),
             SettingsField::AuthMode => {
-                let note = self
-                    .draft
-                    .unknown_auth_mode
-                    .as_ref()
-                    .map(|mode| format!("was \"{mode}\""))
+                let note = overridden
+                    .clone()
+                    .or_else(|| {
+                        let unknown = self.draft.unknown_auth_mode.as_ref()?;
+                        Some(format!("was \"{unknown}\""))
+                    })
                     .unwrap_or_default();
                 let arrows = render_choice_row(
                     frame,

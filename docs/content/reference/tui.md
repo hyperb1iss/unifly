@@ -260,9 +260,9 @@ Text fields take the usual line-editing keys (`Home`, `End`, `Ctrl+A`, `Ctrl+E`,
 
 - **Profiles**: the Profile row walks the saved profiles. Picking another one and passing its test moves the session to it.
 - **Sites**: once a test or the running session has read the controller's sites, the Site field offers them as a picker. Typing a letter switches back to a name typed by hand.
-- **MFA**: the One-time code field takes a current 6-digit code for the next sign-in. The code is never saved. A profile's `totp_command` or `totp_env` is shown under it.
+- **MFA**: the One-time code field takes a current 6-digit code for the next sign-in. The code is never saved, and the session it opens is the one the dashboard continues with, so one code is enough. A profile's `totp_command` or `totp_env` is shown under it.
 - **Secrets**: a typed API key or password is stored in the OS keyring. Without a usable keyring it falls back to plaintext in `config.toml`, and the form says so before you move on. An empty field shows where the value in use comes from (the keyring, or an environment variable).
-- **Launch flags**: `--site`, `--insecure`, and the other connection flags keep overriding the profile after Settings reconnects, and the fields they override are marked. They stay with the profile the launch selected.
+- **Launch flags**: `--site`, `--insecure`, and the other connection flags keep overriding the profile after Settings reconnects, and the fields they override are marked. They stay with the profile the launch selected. In the wizard they fill in the steps ahead of time instead, and what the steps show is what gets tested and saved.
 - **CA certificate and timeout** are edited here too. An empty timeout inherits `[defaults]`.
 
 When a test fails, the form explains the failure and what to do next (an unverified certificate, rejected credentials, a missing second factor, an unknown site, an unreachable address), and moves focus to the field it is about.

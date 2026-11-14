@@ -104,11 +104,13 @@ impl App {
 
     /// Connect the session with `config`, which a form tested and saved
     /// as `profile_name`. Everything from the previous controller goes.
+    /// `keep_flags` says whether the launch flags still apply to it.
     pub(super) fn apply_connection(
         &mut self,
         profile_name: &str,
         config: &unifly_api::ControllerConfig,
         notices: &[String],
+        keep_flags: bool,
     ) -> Result<()> {
         if self.demo_fleet_active() {
             self.screens.remove(&ScreenId::Settings);
@@ -121,7 +123,7 @@ impl App {
         let controller = Controller::new(config.clone());
         self.controller = Some(controller.clone());
         self.spawn_data_bridge(controller);
-        crate::tui::forms::session::switch_to(profile_name);
+        crate::tui::forms::session::switch_to(profile_name, keep_flags);
 
         self.screens.remove(&ScreenId::Settings);
         self.screens.remove(&ScreenId::Setup);
@@ -269,7 +271,7 @@ mod tests {
 
         // Even a forged apply cannot swap a real controller in, and no
         // wizard opens to make one.
-        app.apply_connection("home", &unifly_api::ControllerConfig::default(), &[])
+        app.apply_connection("home", &unifly_api::ControllerConfig::default(), &[], true)
             .expect("apply connection");
         assert!(app.demo_fleet_active(), "the demo controller must stay");
         app.open_setup_for("lab").expect("open setup");

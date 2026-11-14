@@ -164,6 +164,13 @@ pub(crate) enum SecretOrigin {
     Keyring,
 }
 
+/// First path segments of the pages a UniFi console serves in a browser.
+/// An address that starts with one was copied from the address bar: the
+/// API lives at the console's root, not under the page.
+const CONSOLE_PAGES: [&str; 8] = [
+    "network", "manage", "login", "protect", "access", "talk", "consoles", "setup",
+];
+
 /// The address shown as an example where a controller URL is asked for.
 pub(crate) const EXAMPLE_URL: &str = "https://192.168.1.1";
 
@@ -659,19 +666,42 @@ impl ControllerProfileDraft {
             .then(|| SecretString::from(code.to_owned()))
     }
 
-    /// Put `https://` in front of an address typed without a scheme, when
-    /// that makes it a usable URL. Returns whether the address changed.
-    pub(crate) fn add_missing_scheme(&mut self) -> bool {
+    /// Correct the two common slips in a typed address, and say what was
+    /// done: `https://` goes in front of one typed without a scheme, and
+    /// a page address copied from the browser is cut back to the
+    /// controller it is on. Returns `None` when the address was left
+    /// alone.
+    pub(crate) fn tidy_url(&mut self) -> Option<&'static str> {
         let typed = self.url.text().trim().to_owned();
-        if typed.is_empty() || typed.contains("://") {
-            return false;
+        if typed.is_empty() {
+            return None;
         }
-        let candidate = format!("https://{typed}");
-        if !is_controller_url(&candidate) {
-            return false;
+        if !typed.contains("://") {
+            let candidate = format!("https://{typed}");
+            if !is_controller_url(&candidate) {
+                return None;
+            }
+            self.url.set(candidate);
+            return Some("Added https:// to the address.");
         }
-        self.url.set(candidate);
-        true
+        let url = typed.parse::<url::Url>().ok()?;
+        let page = url
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+            .is_some_and(|first| CONSOLE_PAGES.contains(&first));
+        if !is_controller_url(&typed) || !page {
+            return None;
+        }
+        let origin = url.origin().ascii_serialization();
+        self.url.set(origin);
+        Some("Kept only the controller's address, without the page it was copied from.")
+    }
+
+    /// Set the insecure toggle to `insecure`, as a choice made for this
+    /// profile.
+    pub(crate) fn set_insecure(&mut self, insecure: bool) {
+        self.insecure = insecure;
+        self.insecure_touched = true;
     }
 
     pub(crate) fn validate_url(&self) -> Result<(), FieldError> {
@@ -765,7 +795,7 @@ impl ControllerProfileDraft {
         {
             return Err(FieldError::new(
                 DraftField::CaCert,
-                format!("No certificate file at {}", path.display()),
+                "No certificate file at that path",
             ));
         }
         let timeout = self.timeout.text().trim();
@@ -957,14 +987,42 @@ mod tests {
             ("localhost:8443", "https://localhost:8443"),
         ] {
             draft.url.set(typed);
-            assert!(draft.add_missing_scheme(), "{typed}");
+            assert!(draft.tidy_url().is_some(), "{typed}");
             assert_eq!(draft.url.text(), fixed);
             assert_eq!(draft.validate_url(), Ok(()));
         }
 
         for typed in ["", "ftp://unifi.local", "https://unifi.local", "not a url"] {
             draft.url.set(typed);
-            assert!(!draft.add_missing_scheme(), "{typed}");
+            assert!(draft.tidy_url().is_none(), "{typed}");
+            assert_eq!(draft.url.text(), typed);
+        }
+    }
+
+    /// An address pasted from the browser carries the page it was on. The
+    /// API is at the console's root, so the page is cut off; a path that
+    /// is not a console page (a reverse proxy prefix) is left alone.
+    #[test]
+    fn a_pasted_page_address_is_cut_back_to_the_controller() {
+        let mut draft = sample_draft();
+        for (typed, fixed) in [
+            (
+                "https://192.168.1.1/network/default/dashboard",
+                "https://192.168.1.1",
+            ),
+            (
+                "https://unifi.local:8443/manage/site/default",
+                "https://unifi.local:8443",
+            ),
+        ] {
+            draft.url.set(typed);
+            assert!(draft.tidy_url().is_some(), "{typed}");
+            assert_eq!(draft.url.text(), fixed);
+        }
+
+        for typed in ["https://proxy.example.com/unifi", "https://192.168.1.1/"] {
+            draft.url.set(typed);
+            assert!(draft.tidy_url().is_none(), "{typed}");
             assert_eq!(draft.url.text(), typed);
         }
     }

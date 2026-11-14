@@ -38,10 +38,7 @@ impl OnboardingScreen {
     /// A wizard for `profile_name` opened in `session`.
     pub(super) fn in_session(profile_name: &str, session: Session) -> Self {
         let mut draft = ControllerProfileDraft::default();
-        // A code given at launch is for this sign-in.
-        if let Some(code) = session.launch_totp.as_deref() {
-            draft.totp.set(code);
-        }
+        prefill(&mut draft, &session);
         Self {
             focused: false,
             action_tx: None,
@@ -58,6 +55,7 @@ impl OnboardingScreen {
             profile_name: profile_name.to_owned(),
             session,
             purpose: Purpose::FirstRun,
+            offers_ca: false,
             probe: ProbeSlot::default(),
             held: None,
             tested: None,
@@ -81,11 +79,11 @@ impl OnboardingScreen {
         store: &dyn crate::config::SecretStore,
     ) -> Self {
         let mut screen = Self::for_profile(profile_name);
-        let launch_totp = screen.draft.totp.clone();
         screen.draft = ControllerProfileDraft::from_profile(existing)
             .with_keyring_origins(profile_name, store)
             .with_inherited_insecure(defaults);
-        screen.draft.totp = launch_totp;
+        prefill(&mut screen.draft, &screen.session);
+        screen.offers_ca = !screen.draft.ca_cert.is_empty();
         screen.auth_mode_index = screen.draft.auth_mode.index();
         screen.purpose = Purpose::Repair;
         // Its site was chosen when the profile was made.
@@ -110,6 +108,38 @@ impl OnboardingScreen {
     }
 }
 
+/// Start `draft` from what the launch flags gave. The wizard asks for
+/// every value, so a flag is an answer filled in ahead of time, there to
+/// be seen and changed, and what gets tested is what the steps show. An
+/// API key given by flag or environment is left out: a secret is not
+/// copied into a saved profile without being typed there.
+fn prefill(draft: &mut ControllerProfileDraft, session: &Session) {
+    use secrecy::ExposeSecret;
+
+    let flags = &session.overrides;
+    if let Some(url) = &flags.controller {
+        draft.url.set(url.as_str());
+    }
+    if let Some(site) = &flags.site {
+        draft.site.set(site.as_str());
+    }
+    if let Some(host_id) = &flags.host_id {
+        draft.host_id.set(host_id.as_str());
+    }
+    if let Some(insecure) = flags.insecure
+        && insecure != draft.insecure
+    {
+        draft.set_insecure(insecure);
+    }
+    if let Some(timeout) = flags.timeout {
+        draft.timeout.set(timeout.to_string());
+    }
+    // A code given at launch is for this sign-in.
+    if let Some(code) = &session.launch_totp {
+        draft.totp.set(code.expose_secret());
+    }
+}
+
 // ── Fields ──────────────────────────────────────────────────────────
 
 impl OnboardingScreen {
@@ -117,7 +147,15 @@ impl OnboardingScreen {
     pub(super) fn fields(&self) -> Vec<WizardField> {
         let text = |field| WizardField::Text(field);
         match self.step {
-            WizardStep::Url => vec![text(DraftField::Url), WizardField::Insecure],
+            WizardStep::Url => {
+                let mut fields = vec![text(DraftField::Url), WizardField::Insecure];
+                // A profile being repaired may carry a CA certificate, and
+                // a broken one has to be fixable here.
+                if self.offers_ca {
+                    fields.push(text(DraftField::CaCert));
+                }
+                fields
+            }
             WizardStep::Credentials => {
                 let mode = self.draft.auth_mode;
                 let mut fields = Vec::new();
@@ -240,9 +278,9 @@ impl OnboardingScreen {
     }
 
     fn advance_from_url(&mut self) {
-        if self.draft.add_missing_scheme() {
+        if let Some(done) = self.draft.tidy_url() {
             self.focus(DraftField::Url);
-            self.notice = Some("Added https:// to the address. Press Enter to continue.".into());
+            self.notice = Some(format!("{done} Press Enter to continue."));
             return;
         }
         if let Err(error) = self.draft.validate_url() {
@@ -327,16 +365,6 @@ impl OnboardingScreen {
 // ── Connection test and save ────────────────────────────────────────
 
 impl OnboardingScreen {
-    /// The launch flags that apply to this wizard's profile: the ones the
-    /// session was launched with, when it is the session's profile.
-    fn overrides(&self) -> ConnectionOverrides {
-        if self.session.profile.as_deref() == Some(self.profile_name.as_str()) {
-            self.session.overrides.clone()
-        } else {
-            ConnectionOverrides::default()
-        }
-    }
-
     pub(super) fn start_test(&mut self) {
         self.step = WizardStep::Testing;
         self.phase = TestPhase::Testing;
@@ -349,7 +377,9 @@ impl OnboardingScreen {
         let request = ProbeRequest {
             profile: self.draft.to_profile(),
             profile_name: self.profile_name.clone(),
-            overrides: self.overrides(),
+            // The wizard asks for every value, so what its steps show is
+            // what gets tested, with nothing from the launch on top.
+            overrides: ConnectionOverrides::default(),
             totp: self.draft.totp_code(),
         };
         let plan = self.draft.plan_save(&self.profile_name);
@@ -359,7 +389,9 @@ impl OnboardingScreen {
     fn start_save(&mut self, tested: Tested) {
         self.step = WizardStep::Testing;
         self.phase = TestPhase::Saving;
-        self.probe.save(self.action_tx.as_ref(), tested);
+        if let Some(live) = &self.tested {
+            self.probe.save(self.action_tx.as_ref(), tested, live);
+        }
     }
 
     /// Take the result of test `generation`. A result from a test that was
@@ -455,6 +487,8 @@ impl OnboardingScreen {
             profile_name: self.profile_name.clone(),
             config,
             notices: self.notices.clone(),
+            // The steps asked for every value the flags could override.
+            keep_flags: false,
         })
     }
 }

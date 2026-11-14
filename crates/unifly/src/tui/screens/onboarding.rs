@@ -101,6 +101,9 @@ pub struct OnboardingScreen {
     /// The session the wizard opened in: launch flags, and why it opened.
     session: Session,
     purpose: Purpose,
+    /// Whether the address step shows the CA certificate, which it does
+    /// for a repaired profile that has one.
+    offers_ca: bool,
     probe: ProbeSlot,
     /// A test that passed and waits on the site choice before it is saved:
     /// what it tested, and the site it passed with.

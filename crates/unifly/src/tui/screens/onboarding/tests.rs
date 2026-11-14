@@ -532,6 +532,7 @@ fn done_applies_the_tested_connection_and_shows_what_the_save_reported() {
         profile_name,
         config,
         notices,
+        ..
     }) = press(&mut screen, KeyCode::Enter)
     else {
         panic!("Done connects");
@@ -717,7 +718,7 @@ fn a_repair_says_why_the_wizard_opened() {
 #[test]
 fn a_one_time_code_reaches_the_sign_in() {
     let session = Session {
-        launch_totp: Some("123456".into()),
+        launch_totp: Some(secrecy::SecretString::from("123456".to_owned())),
         ..Session::default()
     };
     let mut screen = OnboardingScreen::in_session("default", session);
@@ -817,6 +818,103 @@ fn hints_and_list_rows_take_clicks() {
 
     screen.handle_mouse_input(click_label(&rows, "Hybrid", "Hybrid"));
     assert_eq!(screen.auth_mode_index, AuthMode::Hybrid.index());
+}
+
+/// Launch flags are answers filled in ahead of time: the steps show them
+/// and test exactly what they show. A key from a flag or the environment
+/// is not copied into the profile, and once the wizard is done the flags
+/// have been asked for again, so they stop overriding.
+#[test]
+fn launch_flags_prefill_the_steps_and_then_stand_down() {
+    use crate::config::resolve::ConnectionOverrides;
+
+    let session = Session {
+        profile: Some("default".into()),
+        overrides: ConnectionOverrides {
+            controller: Some("https://10.9.9.9".into()),
+            site: Some("lab".into()),
+            api_key: Some("key-from-the-environment".into()),
+            insecure: Some(true),
+            ..ConnectionOverrides::default()
+        },
+        ..Session::default()
+    };
+    let mut screen = OnboardingScreen::in_session("default", session);
+
+    assert_eq!(screen.draft.url.text(), "https://10.9.9.9");
+    assert_eq!(screen.draft.site.text(), "lab");
+    assert!(screen.draft.insecure);
+    assert!(screen.draft.api_key.is_empty());
+    let rows = {
+        press(&mut screen, KeyCode::Enter);
+        press(&mut screen, KeyCode::Enter);
+        frame(&screen, 80, 24).join("\n")
+    };
+    assert!(rows.contains("https://10.9.9.9"), "{rows}");
+    assert!(rows.contains("[\u{2713}]"), "{rows}");
+
+    press(&mut screen, KeyCode::Enter);
+    type_text(&mut screen, "typed-key");
+    press(&mut screen, KeyCode::Enter);
+    finish(&mut screen, Ok(pass("lab", &["lab"])));
+    saved(&mut screen, Ok(Vec::new()));
+    let action = press(&mut screen, KeyCode::Enter);
+    assert!(
+        matches!(
+            action,
+            Some(Action::ApplyConnection {
+                keep_flags: false,
+                ..
+            })
+        ),
+        "{action:?}"
+    );
+}
+
+/// A repaired profile with a CA certificate can fix or clear it in the
+/// wizard: a failure that points at the certificate must have a field to
+/// point at.
+#[test]
+fn a_repair_can_fix_the_ca_certificate() {
+    let profile: crate::config::Profile = toml::from_str(
+        "controller = \"https://10.0.0.1\"\napi_key = \"k\"\nca_cert = \"/gone/ca.pem\"\n",
+    )
+    .expect("profile parses");
+    let mut screen = OnboardingScreen::for_existing_profile(
+        "work",
+        &profile,
+        &crate::config::Defaults::default(),
+        &MemoryStore::default(),
+    );
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.step, WizardStep::Url);
+    assert_eq!(
+        screen.fields(),
+        [
+            WizardField::Text(DraftField::Url),
+            WizardField::Insecure,
+            WizardField::Text(DraftField::CaCert)
+        ]
+    );
+
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    finish(
+        &mut screen,
+        Err(failure(FailureKind::Tls, DraftField::CaCert)),
+    );
+    press(&mut screen, KeyCode::Esc);
+    assert_eq!(screen.step, WizardStep::Url);
+    assert_eq!(screen.active_text_field(), Some(DraftField::CaCert));
+    ctrl(&mut screen, 'u');
+    assert_eq!(screen.draft.to_profile().ca_cert, None);
+
+    // A first-run wizard has no certificate to show.
+    let mut fresh = wizard();
+    press(&mut fresh, KeyCode::Enter);
+    press(&mut fresh, KeyCode::Enter);
+    assert_eq!(fresh.fields().len(), 2);
 }
 
 /// A wizard opened from a running session for a new profile can be left

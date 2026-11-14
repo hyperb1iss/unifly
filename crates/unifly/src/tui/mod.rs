@@ -96,7 +96,7 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     forms::session::begin(forms::session::Session {
         profile: Some(session_profile.clone()),
         overrides: config::resolve::ConnectionOverrides::from_flags(global),
-        launch_totp: global.totp.clone(),
+        launch_totp: global.totp.clone().map(secrecy::SecretString::from),
         setup_reason,
     });
     let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate)

@@ -84,6 +84,7 @@ impl SettingsField {
             Self::HostId => Some(Overridable::HostId),
             Self::Insecure => Some(Overridable::Insecure),
             Self::Timeout => Some(Overridable::Timeout),
+            Self::AuthMode => Some(Overridable::AuthMode),
             _ => None,
         }
     }
@@ -527,11 +528,13 @@ impl SettingsScreen {
     /// Test the connection the form describes. A problem the form can see
     /// without connecting is shown at the field it is in instead.
     pub(super) fn submit(&mut self) {
-        if self.draft.auth_mode != AuthMode::Cloud && self.draft.add_missing_scheme() {
+        if self.draft.auth_mode != AuthMode::Cloud
+            && let Some(done) = self.draft.tidy_url()
+        {
             self.focus(SettingsField::Url);
-            self.message = Some(Message::Notice(
-                "Added https:// to the address. Press Enter again to test it.".into(),
-            ));
+            self.message = Some(Message::Notice(format!(
+                "{done} Press Enter again to test it."
+            )));
             return;
         }
         if let Err(error) = self.draft.validate_complete() {
@@ -543,7 +546,6 @@ impl SettingsScreen {
         self.state = SettingsState::Testing;
         self.message = None;
         self.tested = None;
-        self.sites_for = self.draft.controller_identity();
         let request = ProbeRequest {
             profile: self.draft.to_profile(),
             profile_name: self.profile_name.clone(),
@@ -573,7 +575,8 @@ impl SettingsScreen {
                 self.remember_sites(&pass.sites);
                 self.tested = Some(pass.config.clone());
                 self.state = SettingsState::Saving;
-                self.probe.save(self.action_tx.as_ref(), tested);
+                self.probe
+                    .save(self.action_tx.as_ref(), tested, &pass.config);
             }
             Err(failure) => self.show_failure(failure.clone()),
         }
@@ -597,6 +600,7 @@ impl SettingsScreen {
                     profile_name: self.profile_name.clone(),
                     config,
                     notices: notices.clone(),
+                    keep_flags: true,
                 })
             }
             Err(message) => {
@@ -609,7 +613,10 @@ impl SettingsScreen {
 
     fn remember_sites(&mut self, sites: &[SiteHint]) {
         if !sites.is_empty() {
+            // A test runs with the form as it stands, so these are the
+            // sites of the controller the form points at now.
             self.known_sites = sites.to_vec();
+            self.sites_for = self.draft.controller_identity();
             self.site_typed = false;
         }
     }

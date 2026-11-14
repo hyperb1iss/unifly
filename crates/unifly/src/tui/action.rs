@@ -678,6 +678,8 @@ pub enum Action {
         profile_name: String,
         config: Box<unifly_api::ControllerConfig>,
         notices: Vec<String>,
+        /// Whether the launch flags still apply to this profile.
+        keep_flags: bool,
     },
     /// Open the setup wizard for a new profile with this name.
     SetupNewProfile(String),

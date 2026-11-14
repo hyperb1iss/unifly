@@ -183,10 +183,12 @@ pub struct ConnectionOverrides {
 }
 
 impl std::fmt::Debug for ConnectionOverrides {
-    /// The API key is a secret, so only its presence is printed.
+    /// The API key is a secret, so only its presence is printed, and the
+    /// controller URL goes without any credentials written into it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let controller = self.controller.as_deref().map(config::redact_url_userinfo);
         f.debug_struct("ConnectionOverrides")
-            .field("controller", &self.controller)
+            .field("controller", &controller)
             .field("site", &self.site)
             .field("api_key", &self.api_key.as_ref().map(|_| "<set>"))
             .field("host_id", &self.host_id)

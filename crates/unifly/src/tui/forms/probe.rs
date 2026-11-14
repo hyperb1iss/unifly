@@ -3,10 +3,14 @@
 //! tested is what gets saved and applied.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
+use unifly_api::session::session_cache::{
+    EXPIRY_MARGIN_SECS, SessionCache, fallback_expiry, jwt_expiry,
+};
 use unifly_api::{AuthCredentials, Controller, ControllerConfig, CoreError, SiteHint};
 
 use super::controller_profile::{AuthMode, DraftField, SavePlan};
@@ -157,6 +161,8 @@ pub(crate) struct ProbeSlot {
     generation: u64,
     cancel: Option<CancellationToken>,
     tested: Option<Tested>,
+    /// The session a sign-in test opened, kept for the dashboard.
+    handover: HandoverSlot,
 }
 
 impl ProbeSlot {
@@ -177,7 +183,13 @@ impl ProbeSlot {
         });
         let cancel = CancellationToken::new();
         self.cancel = Some(cancel.clone());
-        launch(tx, self.generation, request, cancel);
+        launch(
+            tx,
+            self.generation,
+            request,
+            cancel,
+            Arc::clone(&self.handover),
+        );
         self.generation
     }
 
@@ -212,10 +224,23 @@ impl ProbeSlot {
         self.tested.take()
     }
 
-    /// Save what a claimed test was started with. The result arrives as
-    /// [`Action::SetupSaveFinished`] for the same generation.
-    pub(crate) fn save(&self, tx: Option<&UnboundedSender<Action>>, tested: Tested) {
-        launch_save(tx, self.generation, tested);
+    /// Save what a claimed test was started with, and with it hand the
+    /// session that test opened to `live`, the connection it passed with.
+    /// The result arrives as [`Action::SetupSaveFinished`] for the same
+    /// generation.
+    pub(crate) fn save(
+        &self,
+        tx: Option<&UnboundedSender<Action>>,
+        tested: Tested,
+        live: &ControllerConfig,
+    ) {
+        launch_save(
+            tx,
+            self.generation,
+            tested,
+            live.clone(),
+            Arc::clone(&self.handover),
+        );
     }
 
     /// Whether `generation` is the save this slot is waiting on.
@@ -227,6 +252,121 @@ impl ProbeSlot {
 impl Drop for ProbeSlot {
     fn drop(&mut self) {
         self.cancel();
+        // A session nothing was saved for is nobody's to keep.
+        if let Some(handover) = self.handover.lock().ok().and_then(|mut slot| slot.take()) {
+            handover.discard();
+        }
+    }
+}
+
+/// What a test signed in as.
+#[derive(Clone)]
+struct SignIn {
+    url: String,
+    username: String,
+    password: SecretString,
+}
+
+impl SignIn {
+    /// The sign-in `config` makes, when it makes one.
+    fn of(config: &ControllerConfig) -> Option<Self> {
+        match &config.auth {
+            AuthCredentials::Credentials { username, password }
+            | AuthCredentials::Hybrid {
+                username, password, ..
+            } => Some(Self {
+                url: config.url.as_str().to_owned(),
+                username: username.clone(),
+                password: password.clone(),
+            }),
+            AuthCredentials::ApiKey(_) | AuthCredentials::Cloud { .. } => None,
+        }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.url == other.url
+            && self.username == other.username
+            && self.password.expose_secret() == other.password.expose_secret()
+    }
+}
+
+/// The session a test signed in with, parked in a session cache of its
+/// own until the profile is saved.
+///
+/// A test must sign in with what was typed, so it cannot share the
+/// profile's cached cookie. But the dashboard should not have to sign in
+/// again right after (a one-time MFA code could not do it twice), and a
+/// test that is never saved must not leave its cookie in the profile's
+/// cache. So the cookie waits here: a save that succeeds moves it into
+/// the profile's cache, and anything else drops it.
+struct Handover {
+    /// The cache name the test signs in under, in place of the profile's.
+    name: String,
+    sign_in: SignIn,
+}
+
+type HandoverSlot = Arc<Mutex<Option<Handover>>>;
+
+/// Numbers the private caches this process makes.
+static HANDOVERS: AtomicU64 = AtomicU64::new(1);
+
+impl Handover {
+    /// The cache name a test making `sign_in` for `profile` signs in
+    /// under. A repeat of the sign-in the last test made reuses its cache,
+    /// so the retest rides the session it opened instead of spending
+    /// another code; a different sign-in starts from an empty one.
+    fn cache_name(slot: &HandoverSlot, profile: &str, sign_in: SignIn) -> Option<String> {
+        let mut slot = slot.lock().ok()?;
+        if let Some(current) = slot.as_ref()
+            && current.sign_in.same_as(&sign_in)
+        {
+            return Some(current.name.clone());
+        }
+        if let Some(stale) = slot.take() {
+            stale.discard();
+        }
+        let name = format!(
+            "{profile}.setup-{}-{}",
+            std::process::id(),
+            HANDOVERS.fetch_add(1, Ordering::Relaxed)
+        );
+        *slot = Some(Self {
+            name: name.clone(),
+            sign_in,
+        });
+        Some(name)
+    }
+
+    fn cache(&self) -> Option<SessionCache> {
+        // Unit tests keep out of the user's cache directory.
+        (!cfg!(test))
+            .then(|| SessionCache::new(&self.name, &self.sign_in.url))
+            .flatten()
+    }
+
+    /// Drop the parked session.
+    fn discard(&self) {
+        if let Some(cache) = self.cache() {
+            cache.clear();
+        }
+    }
+
+    /// Move the parked session into the cache `live` reads, so its first
+    /// connect restores it.
+    fn promote(&self, live: &ControllerConfig) {
+        let Some(parked) = self.cache() else {
+            return;
+        };
+        if let Some((cookie, csrf)) = parked.load()
+            && let Some(name) = live.profile_name.as_deref()
+            && let Some(cache) = SessionCache::new(name, live.url.as_str())
+        {
+            let expires_at = jwt_expiry(&cookie).map_or_else(fallback_expiry, |expiry| {
+                expiry.saturating_sub(EXPIRY_MARGIN_SECS)
+            });
+            cache.save(&cookie, csrf.as_deref(), expires_at);
+        }
+        parked.clear();
     }
 }
 
@@ -238,12 +378,13 @@ fn launch(
     generation: u64,
     request: ProbeRequest,
     cancel: CancellationToken,
+    handover: HandoverSlot,
 ) {
     let Some(tx) = tx.cloned().filter(|_| !cfg!(test)) else {
         return;
     };
     tokio::spawn(async move {
-        if let Some(result) = run(request, cancel).await {
+        if let Some(result) = run(request, cancel, handover).await {
             let _ = tx.send(Action::SetupProbeFinished {
                 generation,
                 result: Box::new(result),
@@ -252,26 +393,52 @@ fn launch(
     });
 }
 
-fn launch_save(tx: Option<&UnboundedSender<Action>>, generation: u64, tested: Tested) {
+fn launch_save(
+    tx: Option<&UnboundedSender<Action>>,
+    generation: u64,
+    tested: Tested,
+    live: ControllerConfig,
+    handover: HandoverSlot,
+) {
     let Some(tx) = tx.cloned().filter(|_| !cfg!(test)) else {
         return;
     };
     // The keyring can block on an unlock prompt, so it stays off the UI
     // loop.
-    tokio::task::spawn_blocking(move || {
+    let save = tokio::task::spawn_blocking(move || {
         let result = super::controller_profile::save_to(
             tested.plan,
             &crate::config::OsKeyring,
             &crate::config::config_path(),
             &tested.profile_name,
         );
+        // Only a saved profile gets the session its test opened. After a
+        // failed save it stays parked, for the retest to ride.
+        if result.is_ok()
+            && let Some(handover) = handover.lock().ok().and_then(|mut slot| slot.take())
+        {
+            handover.promote(&live);
+        }
+        result
+    });
+    tokio::spawn(async move {
+        // The form waits on this result with no key to leave by, so a
+        // save that died still has to report.
+        let result = save.await.unwrap_or_else(|_| {
+            Err("The save stopped unexpectedly; nothing more was written".to_owned())
+        });
         let _ = tx.send(Action::SetupSaveFinished { generation, result });
     });
 }
 
 /// Connect with `request` and report how it went, or `None` when the test
 /// was cancelled.
-async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeResult> {
+async fn run(
+    request: ProbeRequest,
+    cancel: CancellationToken,
+    handover: HandoverSlot,
+) -> Option<ProbeResult> {
+    let profile_name = request.profile_name.clone();
     let site = request.profile.site.clone();
     let totp = request.totp.clone();
 
@@ -299,17 +466,24 @@ async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeRe
             )));
         }
     };
-    // A one-time code can sign in once, so the session the test opens with
-    // it has to be the one the dashboard picks up: that test keeps its
-    // cookie in the profile's cache. Every other test signs in apart from
-    // the cache and leaves it alone unless it passes.
-    let hands_over = totp.is_some();
-    if hands_over {
-        live.totp_token = totp;
-        forget_cached_session(&live);
-    }
+    // A sign-in test parks its session for the dashboard, unless the
+    // launch asked for no session cache. A typed one-time code overrules
+    // that: it can sign in once, so without the hand-over the dashboard
+    // could not sign in at all.
     let mut probe = probe_config(&live);
-    probe.no_session_cache |= !hands_over;
+    probe.no_session_cache = true;
+    if let Some(sign_in) = SignIn::of(&live)
+        && (totp.is_some() || !live.no_session_cache)
+        && let Some(cache_name) = Handover::cache_name(&handover, &profile_name, sign_in)
+    {
+        probe.profile_name = Some(cache_name);
+        probe.no_session_cache = false;
+        live.no_session_cache = false;
+    }
+    if totp.is_some() {
+        probe.totp_token.clone_from(&totp);
+        live.totp_token = totp;
+    }
     // What the connection signs in with once launch flags are applied,
     // which can differ from the mode the profile names.
     let mode = match &live.auth {
@@ -338,12 +512,6 @@ async fn run(request: ProbeRequest, cancel: CancellationToken) -> Option<ProbeRe
             if let Some(failure) = half_connected(mode, &warnings) {
                 Err(failure)
             } else {
-                if !hands_over {
-                    // The dashboard must sign in as what was just tested,
-                    // not ride a cookie an earlier account or password
-                    // earned.
-                    forget_cached_session(&live);
-                }
                 Ok(ProbePass {
                     sites: sites_of(&controller),
                     config: Box::new(live),
@@ -395,24 +563,6 @@ fn probe_config(live: &ControllerConfig) -> ControllerConfig {
     probe.polling_interval_secs = 0;
     probe.websocket_enabled = false;
     probe
-}
-
-/// Drop the session cookie cached for `config`'s profile and controller,
-/// so the next sign-in there uses its credentials instead of the cookie.
-fn forget_cached_session(config: &ControllerConfig) {
-    let signs_in = matches!(
-        config.auth,
-        AuthCredentials::Credentials { .. } | AuthCredentials::Hybrid { .. }
-    );
-    if !signs_in || config.no_session_cache {
-        return;
-    }
-    if let Some(name) = config.profile_name.as_deref()
-        && let Some(cache) =
-            unifly_api::session::session_cache::SessionCache::new(name, config.url.as_str())
-    {
-        cache.clear();
-    }
 }
 
 /// What a failure is explained against.
@@ -595,6 +745,7 @@ fn explain_unreachable(reason: &str, context: &Context) -> ProbeFailure {
 /// A sign-in that failed on its second factor, told from the lowercased
 /// error: a code was needed and none given, or the one given was refused.
 fn second_factor_problem(lower: &str) -> Option<ProbeFailure> {
+    let refused = ["totp", "mfa login failed", "mfa challenge", "mfa cookie"];
     let failure = if lower.contains("two-factor") {
         ProbeFailure::new(
             FailureKind::Mfa,
@@ -602,7 +753,7 @@ fn second_factor_problem(lower: &str) -> Option<ProbeFailure> {
             "Enter the current 6-digit code from your authenticator app in One-time code and \
              press Enter.",
         )
-    } else if lower.contains("totp") {
+    } else if refused.iter().any(|sign| lower.contains(sign)) {
         ProbeFailure::new(
             FailureKind::Mfa,
             "The one-time code was not accepted.",
@@ -776,6 +927,14 @@ mod tests {
 
         let code = rejected("TOTP token must be exactly 6 digits", AuthMode::Hybrid);
         assert_eq!(code.field, Some(DraftField::Totp));
+        // What the controller says when it refuses the code itself.
+        let refused = rejected(
+            "MFA login failed (HTTP 401 Unauthorized): {\"code\":\"AUTHENTICATION_FAILED\"}",
+            AuthMode::Session,
+        );
+        assert_eq!(refused.kind, FailureKind::Mfa);
+        assert_eq!(refused.field, Some(DraftField::Totp));
+        assert!(refused.summary.contains("not accepted"), "{refused:?}");
 
         let password = rejected("api.err.Invalid", AuthMode::Session);
         assert_eq!(password.kind, FailureKind::Credentials);
@@ -863,6 +1022,36 @@ mod tests {
         assert_eq!(tones(true), [Tone::Error]);
         let shown = failure.paragraphs(true)[0].1;
         assert!(!shown.contains("10.0.0.1"), "{shown}");
+    }
+
+    fn sign_in(username: &str, password: &str) -> super::SignIn {
+        super::SignIn {
+            url: "https://10.0.0.1/".into(),
+            username: username.into(),
+            password: secrecy::SecretString::from(password.to_owned()),
+        }
+    }
+
+    /// A retest of the same sign-in reuses the session the last test
+    /// opened (a one-time code cannot sign in twice); changing what is
+    /// signed in with starts over, so nothing typed goes untested.
+    #[test]
+    fn a_retest_rides_its_own_session_and_a_new_sign_in_starts_over() {
+        let slot = super::HandoverSlot::default();
+        let name = |who: super::SignIn| super::Handover::cache_name(&slot, "home", who);
+
+        let first = name(sign_in("admin", "pw")).expect("name");
+        assert!(first.starts_with("home.setup-"), "{first}");
+        assert_ne!(first, "home", "never the profile's own cache");
+        assert_eq!(
+            name(sign_in("admin", "pw")).as_deref(),
+            Some(first.as_str())
+        );
+
+        let retyped = name(sign_in("admin", "other")).expect("name");
+        assert_ne!(retyped, first, "a new password signs in afresh");
+        let another = name(sign_in("root", "other")).expect("name");
+        assert_ne!(another, retyped, "so does a new user");
     }
 
     fn request(name: &str) -> (super::ProbeRequest, super::SavePlan) {
