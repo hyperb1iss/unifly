@@ -545,18 +545,31 @@ impl WifiScreen {
             .unwrap_or_else(|| "─".to_string())
     }
 
-    /// How many wireless clients are on the SSID named `name`.
-    pub(super) fn ssid_client_count(&self, name: &str) -> usize {
-        self.clients
-            .iter()
-            .filter(|client| {
-                client
-                    .wireless
-                    .as_ref()
-                    .and_then(|wireless| wireless.ssid.as_deref())
-                    == Some(name)
-            })
-            .count()
+    /// How many wireless clients are on the SSID named `name`, or `None`
+    /// without the session that says which SSID a client is on.
+    pub(super) fn ssid_client_count(&self, name: &str) -> Option<usize> {
+        if self.session_missing() {
+            return None;
+        }
+        let on_ssid = |client: &&Arc<Client>| {
+            client
+                .wireless
+                .as_ref()
+                .and_then(|wireless| wireless.ssid.as_deref())
+                == Some(name)
+        };
+        Some(self.clients.iter().filter(on_ssid).count())
+    }
+
+    /// How many clients are on `ap`, or `None` without the session that
+    /// says which AP a client is on.
+    pub(super) fn ap_client_count(&self, ap: &Device) -> Option<usize> {
+        if self.session_missing() {
+            return ap
+                .client_count
+                .and_then(|count| usize::try_from(count).ok());
+        }
+        Some(self.ap_clients(ap).len())
     }
 
     /// Whether `neighbor` was seen by the focused AP, or no AP is focused.

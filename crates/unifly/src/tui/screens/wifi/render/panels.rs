@@ -10,6 +10,7 @@ use unifly_api::model::{EntityOrigin, WifiBroadcast, WifiBroadcastType, WifiSecu
 use unifly_api::{Device, DeviceState};
 
 use super::empty::NO_SESSION_CHANNELS;
+use super::tables::count_label;
 use super::{health_color, kbps_to_mbps, panel_block, render_notice, state_color, state_label};
 use crate::tui::action::WifiBand;
 use crate::tui::screens::wifi::WifiScreen;
@@ -64,6 +65,10 @@ impl WifiScreen {
                 ),
                 Span::styled(format!(" {health}/100"), secondary()),
             ]),
+            None if self.session_missing() => Line::from(vec![
+                Span::styled(" Health  ", muted()),
+                Span::styled("needs a direct controller session", secondary()),
+            ]),
             None if ap.state == DeviceState::Online => Line::from(vec![
                 Span::styled(" Health  ", muted()),
                 Span::styled("no clients connected, nothing to score", secondary()),
@@ -105,8 +110,10 @@ impl WifiScreen {
         lines.extend(ap.radios.iter().map(radio_line));
 
         lines.push(Line::from(""));
-        let room = usize::from(inner.height).saturating_sub(lines.len() + 1);
-        lines.extend(client_lines(clients, room));
+        if !self.session_missing() {
+            let room = usize::from(inner.height).saturating_sub(lines.len() + 1);
+            lines.extend(client_lines(clients, room));
+        }
 
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -193,39 +200,47 @@ impl WifiScreen {
         let theirs: usize = occupancy.iter().map(|row| row.neighbor_count).sum();
         let conflicts = occupancy.iter().filter(|row| row.conflict).count();
 
+        let count = |count: usize, one: &str, many: &str| {
+            format!("{count} {}", if count == 1 { one } else { many })
+        };
         let scope = self.focused_ap.as_ref().map_or_else(
-            || format!(" {yours} of your radios"),
-            |focused| format!(" {} · {yours} radios", focused.label),
+            || format!(" {}", count(yours, "radio of yours", "of your radios")),
+            |focused| format!(" {} · {}", focused.label, count(yours, "radio", "radios")),
         );
-        let mut summary = vec![
+        let mut header = vec![Line::from(vec![
             Span::styled(scope, secondary()),
-            Span::styled(format!(" · {theirs} neighbors"), secondary()),
-        ];
-        if conflicts > 0 {
-            summary.push(Span::styled(
-                format!(" · {conflicts} shared"),
+            Span::styled(
+                format!(" · {}", count(theirs, "neighbor", "neighbors")),
+                secondary(),
+            ),
+            Span::styled(
+                if conflicts > 0 {
+                    format!(" · {conflicts} shared")
+                } else {
+                    String::new()
+                },
                 Style::default()
                     .fg(theme::warning())
                     .add_modifier(Modifier::BOLD),
-            ));
-        }
-        let note = if let Some(error) = &self.neighbors_error {
-            format!(" Neighbor scan unavailable: {error}")
+            ),
+        ])];
+        if let Some(error) = &self.neighbors_error {
+            header.push(Line::from(Span::styled(
+                format!(" Neighbor scan unavailable: {error}"),
+                muted(),
+            )));
         } else if occupancy.iter().any(|row| row.dfs) {
-            " * DFS channel: the radio moves off it when it hears radar".to_owned()
-        } else {
-            String::new()
-        };
+            header.push(Line::from(Span::styled(
+                " * DFS channel: the radio moves off it when it hears radar",
+                muted(),
+            )));
+        }
+        header.push(Line::from(""));
 
-        let [header, map] =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(inner);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(summary),
-                Line::from(Span::styled(note, muted())),
-            ]),
-            header,
-        );
+        let rows = u16::try_from(header.len()).unwrap_or(u16::MAX);
+        let [top, map] =
+            Layout::vertical([Constraint::Length(rows), Constraint::Min(1)]).areas(inner);
+        frame.render_widget(Paragraph::new(header), top);
         frame.render_widget(HyperHeatmap::new(&cells), map);
     }
 
@@ -251,7 +266,7 @@ impl WifiScreen {
         );
         let mut rows = vec![
             ("State", enabled_label(ssid).to_owned()),
-            ("Clients", self.ssid_client_count(&ssid.name).to_string()),
+            ("Clients", count_label(self.ssid_client_count(&ssid.name))),
             ("Security", security_label(ssid.security).to_owned()),
             ("Passphrase", "write-only (P to set)".to_owned()),
             ("Bands", bands_label(ssid)),

@@ -89,6 +89,11 @@ fn fit(widths: &[Constraint], index: usize, text: String) -> String {
     cut
 }
 
+/// A count, or a dash when the controller cannot report it.
+pub(super) fn count_label(count: Option<usize>) -> String {
+    count.map_or_else(|| "─".to_owned(), |count| count.to_string())
+}
+
 /// How long ago a neighbor was last heard, from its age in seconds.
 fn age_label(age: Option<i64>) -> String {
     match age {
@@ -130,7 +135,7 @@ impl WifiScreen {
         let names: Vec<String> = aps.iter().map(|ap| display_device_name(ap)).collect();
         let clients: Vec<String> = aps
             .iter()
-            .map(|ap| self.ap_clients(ap).len().to_string())
+            .map(|ap| count_label(self.ap_client_count(ap)))
             .collect();
         let health: Vec<(String, Color)> = aps.iter().map(|ap| self.ap_health_cell(ap)).collect();
         let bands: Vec<[Vec<String>; 3]> = aps
@@ -407,7 +412,7 @@ impl WifiScreen {
                 [
                     format!("{}{}", marker(index == selected), ssid.name),
                     enabled_label(ssid).to_owned(),
-                    self.ssid_client_count(&ssid.name).to_string(),
+                    count_label(self.ssid_client_count(&ssid.name)),
                     security_label(ssid.security).to_owned(),
                     bands_label(ssid),
                     network,

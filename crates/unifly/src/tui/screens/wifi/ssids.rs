@@ -36,12 +36,14 @@ fn warn(message: impl Into<String>) -> Action {
     Action::Notify(Notification::warning(message))
 }
 
-/// "its 3 clients", for the cost line of a confirmation.
-fn clients_phrase(count: usize) -> String {
+/// Who a change cuts off, for the cost line of a confirmation. Without a
+/// count nobody can be promised to be unaffected.
+fn clients_phrase(count: Option<usize>) -> String {
     match count {
-        0 => "nobody is on it right now".to_owned(),
-        1 => "its 1 client is disconnected".to_owned(),
-        count => format!("its {count} clients are disconnected"),
+        None => "every client on it is disconnected".to_owned(),
+        Some(0) => "nobody is on it right now".to_owned(),
+        Some(1) => "its 1 client is disconnected".to_owned(),
+        Some(count) => format!("its {count} clients are disconnected"),
     }
 }
 

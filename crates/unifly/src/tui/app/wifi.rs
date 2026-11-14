@@ -221,6 +221,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ssid_key_runs_through_the_app_and_changes_the_controller() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let controller = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
+        controller.connect().await.expect("demo");
+        let mut app = App::new(Some(controller.clone()), None, false, true);
+        app.active_screen = ScreenId::Wifi;
+        app.process_action(&Action::WifiBroadcastsUpdated(
+            controller.wifi_broadcasts_snapshot(),
+        ))
+        .expect("SSIDs reach the screen");
+        app.process_action(&Action::WifiSubTab(crate::tui::action::WifiSubTab::Ssids))
+            .expect("sub-tab");
+
+        // The first SSID in name order is enabled, so `E` asks first.
+        for key in ['E', 'y'] {
+            let pressed = app
+                .handle_key_event(KeyEvent::from(KeyCode::Char(key)))
+                .expect("key")
+                .expect("the key does something");
+            app.process_action(&pressed).expect("key action");
+            while let Ok(queued) = app.action_rx.try_recv() {
+                app.process_action(&queued).expect("queued action");
+            }
+        }
+        let finished =
+            tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
+                .await
+                .expect("the command reports back")
+                .expect("the action channel stays open");
+        app.process_action(&finished).expect("result");
+
+        let disabled: Vec<_> = controller
+            .wifi_broadcasts_snapshot()
+            .iter()
+            .filter(|ssid| !ssid.enabled)
+            .map(|ssid| ssid.name.clone())
+            .collect();
+        assert_eq!(disabled.len(), 1, "{disabled:?}");
+        let toast = app.notices.latest().expect("a toast reports the result");
+        assert_eq!(toast.message, format!("Disabled {}", disabled[0]));
+        controller.disconnect().await;
+    }
+
+    #[tokio::test]
     async fn detail_lookup_uses_real_ip_while_display_keeps_stand_in() {
         let controller = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
         controller.connect().await.expect("demo");

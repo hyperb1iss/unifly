@@ -659,6 +659,36 @@ fn without_a_session_nothing_polls_and_each_sub_tab_says_why() {
 }
 
 #[test]
+fn without_a_session_a_client_count_is_unknown_not_zero() {
+    let mut screen = WifiScreen::new();
+    screen.apply_action(&cloud_access());
+    screen.apply_action(&Action::DevicesUpdated(Arc::new(vec![access_point(
+        "01", "ap-a",
+    )])));
+    screen.apply_action(&Action::ClientsUpdated(Arc::new(Vec::new())));
+    screen.apply_action(&ssid_fixture());
+
+    let ap = screen.selected_ap().expect("an AP").clone();
+    assert_eq!(screen.ap_client_count(&ap), None);
+    assert_eq!(screen.ssid_client_count("Studio"), None);
+    screen.handle_key_input(key(KeyCode::Enter));
+    let shown = rendered(&screen);
+    assert!(
+        shown.contains("needs a direct controller session"),
+        "{shown}"
+    );
+    assert!(!shown.contains("Clients (0)"), "{shown}");
+
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Ssids));
+    let confirm = screen.handle_key_input(key(KeyCode::Char('E')));
+    assert!(
+        matches!(&confirm, Some(Action::ShowConfirm(confirm))
+            if confirm.detail.as_deref().is_some_and(|detail| detail.contains("every client"))),
+        "{confirm:?}"
+    );
+}
+
+#[test]
 fn ssids_say_when_the_integration_api_is_missing() {
     let mut screen = WifiScreen::new();
     screen.apply_action(&Action::AccessUpdated(Access {
