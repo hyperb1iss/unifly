@@ -619,6 +619,19 @@ fn explain_rejected(message: &str, context: &Context) -> ProbeFailure {
     if let Some(failure) = second_factor_problem(&lower) {
         return failure;
     }
+    if lower.contains("detect controller platform") {
+        // Something answered, but neither login endpoint is there.
+        return ProbeFailure::new(
+            FailureKind::Unreachable,
+            format!(
+                "{} answered, but not as a UniFi controller.",
+                context.target
+            ),
+            "Check the address and port: UniFi OS consoles use 443, self-hosted controllers \
+             8443.",
+        )
+        .at(DraftField::Url);
+    }
     if lower.contains("cloud console") {
         return ProbeFailure::new(
             FailureKind::Credentials,
@@ -768,6 +781,14 @@ mod tests {
         assert_eq!(password.kind, FailureKind::Credentials);
         assert_eq!(password.field, Some(DraftField::Password));
         assert!(password.next_step.contains("local admin"));
+
+        // Not a credential problem at all: nothing UniFi lives there.
+        let elsewhere = rejected(
+            "could not detect controller platform: both login probes returned 404",
+            AuthMode::ApiKey,
+        );
+        assert_eq!(elsewhere.kind, FailureKind::Unreachable);
+        assert_eq!(elsewhere.field, Some(DraftField::Url));
 
         let key = rejected("Invalid API key", AuthMode::ApiKey);
         assert_eq!(key.field, Some(DraftField::ApiKey));
