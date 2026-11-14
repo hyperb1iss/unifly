@@ -1,20 +1,25 @@
-//! The WiFi screen's tables: AP health, wireless clients, neighbor APs, and
-//! roam history, each sized to what its cells hold.
+//! The WiFi screen's tables: AP health, wireless clients, SSIDs, neighbor
+//! APs, and roam history, each sized to what its cells hold. A table with
+//! no rows draws one line saying why instead of a bare header.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
-use unifly_api::Device;
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
+use ratatui::widgets::{Cell, Row, Table};
+use std::sync::Arc;
 
+use unifly_api::{Client, Device, DeviceState};
+
+use super::panels::{bands_label, enabled_label, security_label};
 use super::{
-    band_label, health_color, health_label, kbps_to_mbps, panel_block, signal_color, signal_text,
+    band_label, health_color, health_label, kbps_to_mbps, panel_block, render_notice, signal_color,
+    signal_text, state_color, state_label,
 };
-use crate::tui::action::WifiBand;
+use crate::tui::action::{WifiBand, WifiSortField};
 use crate::tui::screens::wifi::WifiScreen;
 use crate::tui::screens::wifi::state::{
-    band_from_frequency, band_from_neighbor, display_client_name, display_device_name,
-    display_neighbor_name,
+    band_from_frequency, display_client_name, display_device_name, neighbor_name,
 };
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
@@ -27,83 +32,187 @@ const AP_BANDS_TABLE: u16 = 70;
 /// signal, and health.
 const CLIENT_DETAIL_TABLE: u16 = 72;
 
-/// Panel width from which the wireless client table adds each client's band
-/// and channel.
+/// Panel width from which the wireless client table adds each client's
+/// SSID, band, and channel.
 const CLIENT_RADIO_TABLE: u16 = 100;
 
+/// Panel width from which the SSID table adds each SSID's network and
+/// whether it is hidden.
+const SSID_DETAIL_TABLE: u16 = 72;
+
+/// The wireless client table's text, a column at a time.
+struct ClientCells {
+    names: Vec<String>,
+    aps: Vec<String>,
+    ssids: Vec<String>,
+    radios: Vec<String>,
+    rates: Vec<String>,
+}
+
+/// A header with an arrow on the column the table is sorted by: down for
+/// largest first, up for smallest first.
+fn sorted_header(label: &str, sort: WifiSortField, field: WifiSortField) -> String {
+    if sort != field {
+        return label.to_owned();
+    }
+    let descending = matches!(
+        field,
+        WifiSortField::Health | WifiSortField::Clients | WifiSortField::Signal
+    );
+    format!(
+        "{label} {}",
+        if descending { '\u{25BE}' } else { '\u{25B4}' }
+    )
+}
+
+/// `text` as it fits column `index` of a planned table: cut text ends in
+/// an ellipsis instead of stopping mid-word.
+fn fit(widths: &[Constraint], index: usize, text: String) -> String {
+    let Some(Constraint::Length(width)) = widths.get(index) else {
+        return text;
+    };
+    let width = usize::from(*width);
+    if Span::raw(text.as_str()).width() <= width {
+        return text;
+    }
+    let mut cut = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let cells = Span::raw(ch.encode_utf8(&mut [0; 4]).to_owned()).width();
+        if used + cells + 1 > width {
+            break;
+        }
+        cut.push(ch);
+        used += cells;
+    }
+    cut.push('\u{2026}');
+    cut
+}
+
+/// How long ago a neighbor was last heard, from its age in seconds.
+fn age_label(age: Option<i64>) -> String {
+    match age {
+        None => "─".to_owned(),
+        Some(secs) if secs < 60 => format!("{}s", secs.max(0)),
+        Some(secs) if secs < 3600 => format!("{}m", secs / 60),
+        Some(secs) => format!("{}h", secs / 3600),
+    }
+}
+
 impl WifiScreen {
+    /// The Health cell of `ap`. An AP that is not online shows what it is
+    /// doing instead of a score it cannot have.
+    fn ap_health_cell(&self, ap: &Device) -> (String, Color) {
+        if ap.state == DeviceState::Online {
+            let health = self.ap_health(ap);
+            (health_label(health), health_color(health))
+        } else {
+            (state_label(ap.state).to_owned(), state_color(ap.state))
+        }
+    }
+
     pub(super) fn render_ap_table(&self, frame: &mut Frame, area: Rect) {
         let block = panel_block(" AP Health ", self.focused);
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
         let aps = self.ap_devices();
+        if aps.is_empty() {
+            render_notice(frame, inner, &self.ap_empty_reason());
+            return;
+        }
+
         let selected = self.ap_table_state.selected().unwrap_or(0);
         let compact = inner.width < AP_BANDS_TABLE;
+        let sort = self.ap_sort;
+        let focus = self.focused_ap.as_ref().map(|focused| &focused.id);
 
         let names: Vec<String> = aps.iter().map(|ap| display_device_name(ap)).collect();
         let clients: Vec<String> = aps
             .iter()
             .map(|ap| self.ap_clients(ap).len().to_string())
             .collect();
-        let health: Vec<Option<u8>> = aps.iter().map(|ap| self.ap_health(ap)).collect();
+        let health: Vec<(String, Color)> = aps.iter().map(|ap| self.ap_health_cell(ap)).collect();
         let bands: Vec<[Vec<String>; 3]> = aps
             .iter()
             .map(|ap| radio_channels(ap, self.ap_channel_profile(ap)))
             .collect();
 
-        let mut headers = vec!["AP", "Clients", "Health"];
+        let mut headers = vec![
+            sorted_header("AP", sort, WifiSortField::Name),
+            sorted_header("Clients", sort, WifiSortField::Clients),
+            sorted_header("Health", sort, WifiSortField::Health),
+        ];
         let mut columns = vec![
-            Column::fit("AP", &names, 32).pad(1).shrink_to(10),
-            Column::fit("Clients", &clients, 7),
-            Column::fit("Health", health.iter().map(|h| health_label(*h)), 6),
+            Column::fit(&headers[0], &names, 32).pad(1).shrink_to(10),
+            Column::fit(&headers[1], &clients, 9),
+            Column::fit(&headers[2], health.iter().map(|(label, _)| label), 11),
         ];
         let band_cells: Vec<Vec<String>> = if compact {
-            headers.push("Channels");
+            let header = sorted_header("Channels", sort, WifiSortField::Channel);
             let joined: Vec<String> = bands.iter().map(compact_channels).collect();
-            columns.push(Column::fit("Channels", &joined, 24).shrink_to(8));
+            columns.push(Column::fit(&header, &joined, 24).shrink_to(8));
+            headers.push(header);
             joined.into_iter().map(|label| vec![label]).collect()
         } else {
-            headers.extend(WifiBand::ALL.map(WifiBand::label));
             let labelled: Vec<Vec<String>> = bands
                 .iter()
                 .map(|bands| bands.iter().map(|labels| band_cell(labels)).collect())
                 .collect();
             for (slot, band) in WifiBand::ALL.into_iter().enumerate() {
+                // The channel sort orders by each AP's lowest channel,
+                // which is its 2.4 GHz radio.
+                let header = if slot == 0 {
+                    sorted_header(band.label(), sort, WifiSortField::Channel)
+                } else {
+                    band.label().to_owned()
+                };
                 let values = labelled.iter().map(|row| row[slot].as_str());
-                columns.push(Column::fit(band.label(), values, 32).shrink_to(7));
+                columns.push(Column::fit(&header, values, 32).shrink_to(7));
+                headers.push(header);
             }
             labelled
         };
 
-        let rows: Vec<Row> = names
-            .into_iter()
+        let widths = plan_columns(&columns, inner.width);
+        let rows: Vec<Row> = aps
+            .iter()
+            .zip(names)
             .zip(clients)
             .zip(health)
             .zip(band_cells)
             .enumerate()
-            .map(|(index, (((name, clients), health), bands))| {
-                let is_selected = index == selected;
-                let mut cells = vec![
-                    Cell::from(format!("{}{name}", marker(is_selected))),
-                    Cell::from(clients),
-                    Cell::from(health_label(health))
-                        .style(Style::default().fg(health_color(health))),
-                ];
-                cells.extend(bands.into_iter().map(|label| {
-                    let style = if label == "─" {
-                        Style::default().fg(theme::text_muted())
+            .map(
+                |(index, ((((ap, name), clients), (health, color)), bands))| {
+                    let is_selected = index == selected;
+                    let name_style = if focus == Some(&ap.id) {
+                        Style::default()
+                            .fg(theme::accent_secondary())
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     };
-                    Cell::from(label).style(style)
-                }));
-                Row::new(cells).style(row_style(is_selected))
-            })
+                    let mut cells = vec![
+                        Cell::from(fit(&widths, 0, format!("{}{name}", marker(is_selected))))
+                            .style(name_style),
+                        Cell::from(clients),
+                        Cell::from(health).style(Style::default().fg(color)),
+                    ];
+                    cells.extend(bands.into_iter().map(|label| {
+                        let style = if label == "─" {
+                            Style::default().fg(theme::text_muted())
+                        } else {
+                            Style::default()
+                        };
+                        Cell::from(label).style(style)
+                    }));
+                    Row::new(cells).style(row_style(is_selected))
+                },
+            )
             .collect();
 
         let len = rows.len();
-        let table = Table::new(rows, plan_columns(&columns, inner.width))
+        let table = Table::new(rows, widths)
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
@@ -113,23 +222,32 @@ impl WifiScreen {
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
-    pub(super) fn render_client_table(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" Wireless Clients ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let clients = self.wireless_clients();
-        let selected = self.client_table_state.selected().unwrap_or(0);
-        let detailed = inner.width >= CLIENT_DETAIL_TABLE;
-        let with_radio = inner.width >= CLIENT_RADIO_TABLE;
-
+    /// The text of each client row, a column at a time.
+    fn client_cells(&self, clients: &[&Arc<Client>]) -> ClientCells {
         let names: Vec<String> = clients
             .iter()
-            .map(|client| display_client_name(client))
+            .map(|client| {
+                let name = display_client_name(client);
+                if client.blocked {
+                    format!("{name} (blocked)")
+                } else {
+                    name
+                }
+            })
             .collect();
         let aps: Vec<String> = clients
             .iter()
             .map(|client| self.client_ap_name(client))
+            .collect();
+        let ssids: Vec<String> = clients
+            .iter()
+            .map(|client| {
+                client
+                    .wireless
+                    .as_ref()
+                    .and_then(|wireless| wireless.ssid.clone())
+                    .unwrap_or_else(|| "─".into())
+            })
             .collect();
         let radios: Vec<String> = clients
             .iter()
@@ -157,39 +275,84 @@ impl WifiScreen {
             })
             .collect();
 
-        let mut headers = vec!["Client"];
-        let mut columns = vec![Column::fit("Client", &names, 32).pad(1).shrink_to(10)];
+        ClientCells {
+            names,
+            aps,
+            ssids,
+            radios,
+            rates,
+        }
+    }
+
+    pub(super) fn render_client_table(&self, frame: &mut Frame, area: Rect) {
+        let block = panel_block(" Wireless Clients ", self.focused);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let clients = self.wireless_clients();
+        if clients.is_empty() {
+            render_notice(frame, inner, &self.client_empty_reason());
+            return;
+        }
+
+        let selected = self.client_table_state.selected().unwrap_or(0);
+        let detailed = inner.width >= CLIENT_DETAIL_TABLE;
+        let with_radio = inner.width >= CLIENT_RADIO_TABLE;
+        let sort = self.client_sort;
+
+        let ClientCells {
+            names,
+            aps,
+            ssids,
+            radios,
+            rates,
+        } = self.client_cells(&clients);
+
+        let mut headers = vec![sorted_header("Client", sort, WifiSortField::Name)];
+        let mut columns = vec![Column::fit(&headers[0], &names, 32).pad(1).shrink_to(10)];
         if detailed {
-            headers.push("AP");
+            headers.push("AP".to_owned());
             columns.push(Column::fit("AP", &aps, 24).shrink_to(8));
         }
         if with_radio {
-            headers.push("Radio");
-            columns.push(Column::fit("Radio", &radios, 14));
+            headers.extend(["SSID".to_owned(), "Radio".to_owned()]);
+            columns.push(Column::fit("SSID", &ssids, 20).shrink_to(6));
+            columns.push(Column::fit("Radio", &radios, 16));
         }
-        headers.extend(["Signal", "Health"]);
-        columns.extend([Column::fixed(6), Column::fixed(6)]);
+        headers.extend([
+            sorted_header("Signal", sort, WifiSortField::Signal),
+            sorted_header("Health", sort, WifiSortField::Health),
+        ]);
+        columns.extend([Column::fixed(8), Column::fixed(8)]);
         if detailed {
-            headers.push("TX/RX");
+            headers.push("TX/RX".to_owned());
             columns.push(Column::fit("TX/RX", &rates, 16).at_least(14));
         }
 
+        let widths = plan_columns(&columns, inner.width);
         let rows: Vec<Row> = clients
             .iter()
             .zip(names)
-            .zip(aps.into_iter().zip(radios).zip(rates))
+            .zip(aps.into_iter().zip(ssids).zip(radios).zip(rates))
             .enumerate()
-            .map(|(index, ((client, name), ((ap, radio), rate)))| {
+            .map(|(index, ((client, name), (((ap, ssid), radio), rate)))| {
                 let is_selected = index == selected;
                 let wireless = client.wireless.as_ref();
                 let signal = wireless.and_then(|wireless| wireless.signal_dbm);
                 let health = wireless.and_then(|wireless| wireless.satisfaction);
+                let name_style = if client.blocked {
+                    Style::default().fg(theme::error())
+                } else {
+                    Style::default()
+                };
 
-                let mut cells = vec![Cell::from(format!("{}{name}", marker(is_selected)))];
+                let name = fit(&widths, 0, format!("{}{name}", marker(is_selected)));
+                let mut cells = vec![Cell::from(name).style(name_style)];
                 if detailed {
-                    cells.push(Cell::from(ap));
+                    cells.push(Cell::from(fit(&widths, 1, ap)));
                 }
                 if with_radio {
+                    cells.push(Cell::from(fit(&widths, 2, ssid)));
                     cells.push(Cell::from(radio));
                 }
                 cells.extend([
@@ -206,7 +369,7 @@ impl WifiScreen {
             .collect();
 
         let len = rows.len();
-        let table = Table::new(rows, plan_columns(&columns, inner.width))
+        let table = Table::new(rows, widths)
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
@@ -216,58 +379,195 @@ impl WifiScreen {
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
-    pub(super) fn render_neighbors(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(
-            format!(" Neighbor APs [{}] ", self.selected_band.short_label()),
-            self.focused,
-        );
+    pub(super) fn render_ssid_table(&self, frame: &mut Frame, area: Rect) {
+        let block = panel_block(" SSIDs ", self.focused);
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let neighbors = self.visible_neighbors();
-        let selected = self.neighbor_table_state.selected().unwrap_or(0);
-        let cells: Vec<[String; 6]> = neighbors
+        let ssids = self.visible_ssids();
+        if ssids.is_empty() {
+            render_notice(frame, inner, &self.ssid_empty_reason());
+            return;
+        }
+
+        let selected = self.ssid_table_state.selected().unwrap_or(0);
+        let cells: Vec<[String; 7]> = ssids
             .iter()
             .enumerate()
-            .map(|(index, neighbor)| {
-                let signal = neighbor.signal.or(neighbor.rssi);
+            .map(|(index, ssid)| {
+                let network = ssid.network_id.as_ref().map_or_else(
+                    || "─".to_owned(),
+                    |id| {
+                        self.network_names
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| "─".to_owned())
+                    },
+                );
                 [
-                    format!(
-                        "{}{}",
-                        marker(index == selected),
-                        display_neighbor_name(neighbor)
-                    ),
-                    neighbor.bssid.clone(),
-                    neighbor
-                        .channel
-                        .map_or_else(|| "─".to_string(), |channel| channel.to_string()),
-                    signal.map_or_else(|| "─".to_string(), |dbm| format!("{dbm} dBm")),
-                    band_label(band_from_neighbor(neighbor).unwrap_or(WifiBand::TwoGhz)).to_owned(),
-                    neighbor.security.clone().unwrap_or_else(|| "─".to_string()),
+                    format!("{}{}", marker(index == selected), ssid.name),
+                    enabled_label(ssid).to_owned(),
+                    self.ssid_client_count(&ssid.name).to_string(),
+                    security_label(ssid.security).to_owned(),
+                    bands_label(ssid),
+                    network,
+                    if ssid.hidden { "hidden" } else { "─" }.to_owned(),
                 ]
             })
             .collect();
 
-        let headers = ["SSID", "BSSID", "Ch", "Signal", "Band", "Security"];
-        let columns = [
-            Column::fit("SSID", cells.iter().map(|c| &c[0]), 32).shrink_to(10),
-            Column::fixed(17),
-            Column::fit("Ch", cells.iter().map(|c| &c[2]), 4),
-            Column::fit("Signal", cells.iter().map(|c| &c[3]), 8),
-            Column::fit("Band", cells.iter().map(|c| &c[4]), 5),
-            Column::fit("Security", cells.iter().map(|c| &c[5]), 24).shrink_to(8),
-        ];
-
-        let rows: Vec<Row> = cells
+        // Beside its detail panel the table keeps what tells SSIDs apart;
+        // the panel carries the rest.
+        let shown = if inner.width >= SSID_DETAIL_TABLE {
+            7
+        } else {
+            5
+        };
+        let headers = [
+            "SSID", "State", "Clients", "Security", "Bands", "Network", "Hidden",
+        ]
+        .map(str::to_owned);
+        let limits = [(32, 10), (5, 5), (7, 7), (20, 8), (16, 16), (24, 7), (6, 6)];
+        let columns: Vec<Column> = limits
             .into_iter()
             .enumerate()
-            .map(|(index, cells)| {
-                Row::new(cells.map(Cell::from)).style(row_style(index == selected))
+            .take(shown)
+            .map(|(index, (max, floor))| {
+                Column::fit(&headers[index], cells.iter().map(|c| &c[index]), max).shrink_to(floor)
+            })
+            .collect();
+        let headers = &headers[..shown];
+
+        let widths = plan_columns(&columns, inner.width);
+        let rows: Vec<Row> = cells
+            .into_iter()
+            .zip(&ssids)
+            .enumerate()
+            .map(|(index, (cells, ssid))| {
+                let state_style = Style::default().fg(if ssid.enabled {
+                    theme::success()
+                } else {
+                    theme::text_muted()
+                });
+                let row = cells
+                    .into_iter()
+                    .take(shown)
+                    .enumerate()
+                    .map(|(column, text)| {
+                        let muted = text == "─" || (!ssid.enabled && column != 1);
+                        let style = if column == 1 {
+                            state_style
+                        } else if muted {
+                            Style::default().fg(theme::text_muted())
+                        } else {
+                            Style::default()
+                        };
+                        Cell::from(fit(&widths, column, text)).style(style)
+                    });
+                Row::new(row).style(row_style(index == selected))
             })
             .collect();
 
         let len = rows.len();
-        let table = Table::new(rows, plan_columns(&columns, inner.width))
+        let table = Table::new(rows, widths)
+            .header(header_row(headers))
+            .row_highlight_style(theme::table_selected());
+
+        let state = self
+            .ssid_scroll
+            .render(frame, table, inner, &self.ssid_table_state, len);
+        self.hits.borrow_mut().push_table_rows(inner, &state, len);
+    }
+
+    pub(super) fn render_neighbors(&self, frame: &mut Frame, area: Rect) {
+        let band = self.selected_band.label();
+        let failed = self.neighbors_error.is_some() && self.neighbors_loaded_at.is_some();
+        let title = if failed {
+            format!(" Neighbor APs · {band} · refresh failed ")
+        } else {
+            format!(" Neighbor APs · {band} ")
+        };
+        let block = panel_block(title, self.focused);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let neighbors = self.visible_neighbors();
+        if neighbors.is_empty() {
+            render_notice(frame, inner, &self.neighbor_empty_reason());
+            return;
+        }
+
+        let selected = self.neighbor_table_state.selected().unwrap_or(0);
+        let sort = self.neighbor_sort;
+        let cells: Vec<[String; 7]> = neighbors
+            .iter()
+            .enumerate()
+            .map(|(index, neighbor)| {
+                let signal = neighbor.signal.or(neighbor.rssi);
+                let name = neighbor_name(neighbor).unwrap_or("(hidden)");
+                // Ahead of the name, where a narrow column cannot cut it.
+                let rogue = if neighbor.is_rogue { "[rogue] " } else { "" };
+                [
+                    format!("{}{rogue}{name}", marker(index == selected)),
+                    neighbor
+                        .channel
+                        .map_or_else(|| "─".to_string(), |channel| channel.to_string()),
+                    signal.map_or_else(|| "─".to_string(), |dbm| format!("{dbm} dBm")),
+                    neighbor.security.clone().unwrap_or_else(|| "─".to_string()),
+                    self.neighbor_observer(neighbor),
+                    age_label(neighbor.age),
+                    neighbor.bssid.clone(),
+                ]
+            })
+            .collect();
+
+        // The BSSID is the widest and least read, so it is the first to go
+        // when the panel is narrow.
+        let headers = [
+            sorted_header("SSID", sort, WifiSortField::Name),
+            sorted_header("Ch", sort, WifiSortField::Channel),
+            sorted_header("Signal", sort, WifiSortField::Signal),
+            sorted_header("Security", sort, WifiSortField::Security),
+            "Heard by".to_owned(),
+            "Age".to_owned(),
+            "BSSID".to_owned(),
+        ];
+        let column = |index: usize, max: u16| {
+            Column::fit(&headers[index], cells.iter().map(|c| &c[index]), max)
+        };
+        let columns = [
+            column(0, 32).shrink_to(10),
+            column(1, 5),
+            column(2, 9),
+            column(3, 24).shrink_to(8),
+            column(4, 20).shrink_to(8),
+            column(5, 4),
+            Column::fixed(17),
+        ];
+
+        let widths = plan_columns(&columns, inner.width);
+        let rows: Vec<Row> = cells
+            .into_iter()
+            .zip(&neighbors)
+            .enumerate()
+            .map(|(index, (cells, neighbor))| {
+                let hidden = neighbor_name(neighbor).is_none();
+                let row = cells.into_iter().enumerate().map(|(column, text)| {
+                    let style = if column == 0 && neighbor.is_rogue {
+                        Style::default().fg(theme::warning())
+                    } else if column == 0 && hidden {
+                        Style::default().fg(theme::text_muted())
+                    } else {
+                        Style::default()
+                    };
+                    Cell::from(fit(&widths, column, text)).style(style)
+                });
+                Row::new(row).style(row_style(index == selected))
+            })
+            .collect();
+
+        let len = rows.len();
+        let table = Table::new(rows, widths)
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
@@ -278,60 +578,50 @@ impl WifiScreen {
     }
 
     pub(super) fn render_roaming(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" Roaming History ", self.focused);
+        let title = self.roam_target.as_ref().map_or_else(
+            || " Roaming History ".to_owned(),
+            |target| format!(" Roaming History · {} ", target.label),
+        );
+        let block = panel_block(title, self.focused);
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if self.focused_client_mac().is_none() {
-            frame.render_widget(
-                Paragraph::new(
-                    " Select a wireless client on the Clients tab to inspect roam history. ",
-                )
-                .wrap(Wrap { trim: true })
-                .style(Style::default().fg(theme::text_muted())),
-                inner,
-            );
+        if let Some(reason) = self.roam_empty_reason() {
+            render_notice(frame, inner, &reason);
             return;
         }
+        let rows = &self.roam_rows;
 
-        let rows = self.parsed_roam_rows();
-        if rows.is_empty() && self.failed_roam_history() == self.focused_client_mac().as_ref() {
-            frame.render_widget(
-                Paragraph::new(" Roam history unavailable, retrying ")
-                    .style(Style::default().fg(theme::text_muted())),
-                inner,
-            );
-            return;
-        }
-        let headers = ["Time", "Event", "From", "To", "Signal", "Band"];
+        let headers = ["Time", "Event", "From", "To", "Signal", "Radio"].map(str::to_owned);
         let columns = [
-            Column::fit("Time", rows.iter().map(|r| &r.timestamp), 10),
+            Column::fit("Time", rows.iter().map(|r| &r.time), 14),
             Column::fit("Event", rows.iter().map(|r| &r.event), 24).shrink_to(8),
             Column::fit("From", rows.iter().map(|r| &r.from_ap), 24).shrink_to(8),
             Column::fit("To", rows.iter().map(|r| &r.to_ap), 24).shrink_to(8),
             Column::fit("Signal", rows.iter().map(|r| &r.signal), 8),
-            Column::fit("Band", rows.iter().map(|r| &r.band), 8),
+            Column::fit("Radio", rows.iter().map(|r| &r.radio), 16),
         ];
 
+        let widths = plan_columns(&columns, inner.width);
         let selected = self.roam_table_state.selected().unwrap_or(0);
         let table_rows: Vec<Row> = rows
             .iter()
             .enumerate()
             .map(|(index, row)| {
                 Row::new(vec![
-                    Cell::from(row.timestamp.clone()),
-                    Cell::from(row.event.clone()),
-                    Cell::from(row.from_ap.clone()),
-                    Cell::from(row.to_ap.clone()),
+                    Cell::from(row.time.clone()),
+                    Cell::from(fit(&widths, 1, row.event.clone())),
+                    Cell::from(fit(&widths, 2, row.from_ap.clone())),
+                    Cell::from(fit(&widths, 3, row.to_ap.clone())),
                     Cell::from(row.signal.clone()),
-                    Cell::from(row.band.clone()),
+                    Cell::from(row.radio.clone()),
                 ])
                 .style(row_style(index == selected))
             })
             .collect();
 
         let len = table_rows.len();
-        let table = Table::new(table_rows, plan_columns(&columns, inner.width))
+        let table = Table::new(table_rows, widths)
             .header(header_row(&headers))
             .row_highlight_style(theme::table_selected());
 
@@ -410,11 +700,11 @@ fn row_style(is_selected: bool) -> Style {
     }
 }
 
-fn header_row(labels: &[&'static str]) -> Row<'static> {
+fn header_row(labels: &[String]) -> Row<'static> {
     Row::new(
         labels
             .iter()
-            .map(|label| Cell::from(*label).style(theme::table_header())),
+            .map(|label| Cell::from(label.clone()).style(theme::table_header())),
     )
 }
 
@@ -468,7 +758,7 @@ mod tests {
                 .map(|index| named(&format!("ap-{index}"), &format!("ap-{index}")))
                 .collect(),
         )));
-        screen.detail_open = true;
+        screen.overview_panel = crate::tui::screens::wifi::OverviewPanel::Detail;
         let selected = screen.ap_table_state.selected();
 
         // Under 110 columns the AP detail draws as an overlay over the table.
@@ -477,7 +767,10 @@ mod tests {
 
         assert!(action.is_none(), "{action:?}");
         assert_eq!(screen.ap_table_state.selected(), selected);
-        assert!(screen.detail_open);
+        assert_eq!(
+            screen.overview_panel,
+            crate::tui::screens::wifi::OverviewPanel::Detail
+        );
     }
     #[test]
     fn every_radio_lands_in_its_band() {

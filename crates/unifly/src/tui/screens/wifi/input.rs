@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
-use super::WifiScreen;
-use crate::tui::action::{Action, WifiSortField, WifiSubTab};
+use super::keys::next_sort_field;
+use super::{OverviewPanel, WifiScreen};
+use crate::tui::action::{Action, Notification, WifiSubTab};
 use crate::tui::widgets::click::{self, Click};
 
 impl WifiScreen {
@@ -31,62 +34,115 @@ impl WifiScreen {
                 self.move_selection(-10);
                 Some(Action::PageUp)
             }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.sub_tab = self.sub_tab.next();
-                Some(Action::WifiSubTab(self.sub_tab))
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.sub_tab = self.sub_tab.prev();
-                Some(Action::WifiSubTab(self.sub_tab))
-            }
+            KeyCode::Char('l') | KeyCode::Right => Some(self.switch_sub_tab(self.sub_tab.next())),
+            KeyCode::Char('h') | KeyCode::Left => Some(self.switch_sub_tab(self.sub_tab.prev())),
             KeyCode::Enter => self.handle_enter(),
             KeyCode::Esc => self.handle_escape(),
+            _ => match self.sub_tab {
+                WifiSubTab::Overview => self.handle_overview_key(key),
+                WifiSubTab::Clients => self.handle_clients_key(key),
+                WifiSubTab::Ssids => self.handle_ssid_key(key),
+                WifiSubTab::Neighbors => self.handle_neighbors_key(key),
+                WifiSubTab::Roaming => match key.code {
+                    KeyCode::Char('r') => self.refresh_roam_history(),
+                    _ => None,
+                },
+            },
+        }
+    }
+
+    fn handle_overview_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
             // The sort field changes in the action handler, after it has
             // captured which rows are selected under the current order.
             KeyCode::Char('s') => Some(Action::WifiSortColumn(next_sort_field(
                 self.sub_tab,
-                self.sort_field,
+                self.ap_sort,
             ))),
-            KeyCode::Char('c') if self.sub_tab == crate::tui::action::WifiSubTab::Overview => {
-                Some(Action::WifiToggleChannelMap)
+            KeyCode::Char('c') => Some(Action::WifiToggleChannelMap),
+            KeyCode::Char('[') if self.channel_map_open() => {
+                Some(Action::WifiBandSelect(self.selected_band.prev()))
             }
-            KeyCode::Char('f') if self.sub_tab == WifiSubTab::Neighbors => {
-                self.selected_band = self.selected_band.next();
-                Some(Action::WifiBandSelect(self.selected_band))
+            KeyCode::Char(']') if self.channel_map_open() => {
+                Some(Action::WifiBandSelect(self.selected_band.next()))
             }
-            KeyCode::Char('[') => {
-                self.selected_band = self.selected_band.prev();
-                Some(Action::WifiBandSelect(self.selected_band))
+            KeyCode::Char(' ') => {
+                let selected = self.selected_ap()?.id.clone();
+                let focused = self.focused_ap.as_ref().map(|focused| &focused.id);
+                Some(Action::WifiFocusAp(
+                    (focused != Some(&selected)).then_some(selected),
+                ))
             }
-            KeyCode::Char(']') => {
-                self.selected_band = self.selected_band.next();
-                Some(Action::WifiBandSelect(self.selected_band))
-            }
-            KeyCode::Char('R') if self.sub_tab == crate::tui::action::WifiSubTab::Overview => self
+            KeyCode::Char('o') => self
+                .selected_ap()
+                .map(|ap| Action::ShowDevice(ap.id.clone())),
+            KeyCode::Char('R') => self
                 .selected_ap()
                 .map(|ap| Action::RequestRestart(ap.id.clone())),
-            KeyCode::Char('L') if self.sub_tab == crate::tui::action::WifiSubTab::Overview => self
+            KeyCode::Char('L') => self
                 .selected_ap()
                 .map(|ap| Action::RequestLocate(ap.id.clone())),
-            KeyCode::Char('b') if self.sub_tab == crate::tui::action::WifiSubTab::Clients => self
-                .selected_client()
-                .map(|client| Action::RequestBlockClient(client.id.clone())),
-            KeyCode::Char('B' | 'u') if self.sub_tab == crate::tui::action::WifiSubTab::Clients => {
-                self.selected_client()
-                    .map(|client| Action::RequestUnblockClient(client.id.clone()))
-            }
-            KeyCode::Char('x') if self.sub_tab == crate::tui::action::WifiSubTab::Clients => self
-                .selected_client()
-                .map(|client| Action::RequestKickClient(client.id.clone())),
-            KeyCode::Char('r') if self.sub_tab == crate::tui::action::WifiSubTab::Roaming => {
-                let mac = self.focused_client_mac()?;
-                Some(self.request_roam_history(mac))
-            }
+            KeyCode::Char('U') => self.selected_ap().map(|ap| {
+                if ap.firmware_updatable {
+                    Action::RequestUpgrade(ap.id.clone())
+                } else {
+                    Action::Notify(Notification::info(format!(
+                        "{} has no firmware update waiting",
+                        super::state::display_device_name(ap)
+                    )))
+                }
+            }),
             _ => None,
         }
     }
 
-    /// Mouse and touch input: sub-tabs and rows by click, the list by wheel.
+    fn handle_clients_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Char('s') => Some(Action::WifiSortColumn(next_sort_field(
+                self.sub_tab,
+                self.client_sort,
+            ))),
+            KeyCode::Char('o') => self
+                .selected_client()
+                .map(|client| Action::ShowClient(client.id.clone())),
+            KeyCode::Char('r') => {
+                self.selected_client()?;
+                Some(self.switch_sub_tab(WifiSubTab::Roaming))
+            }
+            KeyCode::Char('b') => self.selected_client().map(|client| {
+                if client.blocked {
+                    Action::RequestUnblockClient(client.id.clone())
+                } else {
+                    Action::RequestBlockClient(client.id.clone())
+                }
+            }),
+            KeyCode::Char('x') => self
+                .selected_client()
+                .map(|client| Action::RequestKickClient(client.id.clone())),
+            KeyCode::Char('F') => self
+                .selected_client()
+                .map(|client| Action::RequestForgetClient(client.id.clone())),
+            _ => None,
+        }
+    }
+
+    fn handle_neighbors_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.session_missing() {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('s') => Some(Action::WifiSortColumn(next_sort_field(
+                self.sub_tab,
+                self.neighbor_sort,
+            ))),
+            KeyCode::Char('f' | ']') => Some(Action::WifiBandSelect(self.selected_band.next())),
+            KeyCode::Char('[') => Some(Action::WifiBandSelect(self.selected_band.prev())),
+            _ => None,
+        }
+    }
+
+    /// Mouse and touch input: sub-tabs, rows, chips, and hints by click,
+    /// the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         if let Some(delta) = click::wheel_delta(mouse) {
             self.move_selection(delta);
@@ -94,31 +150,30 @@ impl WifiScreen {
         }
         let target = self.hits.borrow().clicked(mouse)?;
         match target {
-            Click::Tab(index) => self.click_sub_tab(index),
+            Click::Tab(index) => {
+                let tab = *WifiSubTab::ALL.get(index)?;
+                (tab != self.sub_tab).then(|| self.switch_sub_tab(tab))
+            }
             Click::Row(index) => self.click_row(index),
             Click::Key(key) => Some(Action::PressKey(key)),
-            _ => None,
+            Click::Action(action) => Some(action),
+            Click::Absorb => None,
         }
     }
 
-    /// A sub-tab switches to it, like `Tab`.
-    fn click_sub_tab(&mut self, index: usize) -> Option<Action> {
-        let tab = *WifiSubTab::ALL.get(index)?;
-        if tab == self.sub_tab {
-            return None;
-        }
-        self.sub_tab = tab;
-        Some(Action::WifiSubTab(tab))
+    /// Switch to `tab` now, and say so: the action is applied again when
+    /// it comes round, which changes nothing.
+    fn switch_sub_tab(&mut self, tab: WifiSubTab) -> Action {
+        self.enter_sub_tab(tab);
+        Action::WifiSubTab(tab)
     }
 
-    /// A row selects it, and a second tap acts like `Enter`. An open client
-    /// detail follows the selection on the next tick, as it does for keys.
+    /// A row selects it, and a second tap acts like `Enter`.
     fn click_row(&mut self, index: usize) -> Option<Action> {
         if self.active_table_state().selected() == Some(index) {
             return self.handle_enter();
         }
-        self.active_table_state().select(Some(index));
-        self.update_focus_from_selection();
+        self.select_row(index);
         None
     }
 
@@ -134,164 +189,86 @@ impl WifiScreen {
         } else {
             current.saturating_add(delta.unsigned_abs()).min(len - 1)
         };
-        self.active_table_state().select(Some(next));
-        self.update_focus_from_selection();
-    }
-
-    fn select_first(&mut self) {
-        if self.active_len() > 0 {
-            self.active_table_state().select(Some(0));
-            self.update_focus_from_selection();
-        }
+        self.select_row(next);
     }
 
     fn select_last(&mut self) {
         let len = self.active_len();
         if len > 0 {
-            self.active_table_state().select(Some(len - 1));
-            self.update_focus_from_selection();
+            self.select_row(len - 1);
         }
     }
 
     fn handle_enter(&mut self) -> Option<Action> {
         match self.sub_tab {
-            crate::tui::action::WifiSubTab::Overview => {
-                self.detail_open = !self.detail_open;
-                None
-            }
-            crate::tui::action::WifiSubTab::Clients => {
-                self.detail_open = !self.detail_open;
-                if self.detail_open {
-                    self.focus_client_from_selection();
-                    let ip = self.selected_client_ip()?;
-                    Some(self.request_client_detail(ip))
+            WifiSubTab::Overview => {
+                self.selected_ap()?;
+                self.overview_panel = if self.overview_panel == OverviewPanel::Detail {
+                    OverviewPanel::None
                 } else {
-                    Some(Action::CloseDetail)
+                    OverviewPanel::Detail
+                };
+                Some(Action::Invalidate)
+            }
+            WifiSubTab::Clients => {
+                if self.client_detail_open {
+                    self.client_detail_open = false;
+                    return Some(Action::Invalidate);
                 }
+                let ip = self.selected_client().map(|client| client.ip)?;
+                self.client_detail_open = true;
+                // Opening the panel asks at once; the settle delay is for
+                // scrolling with it open.
+                self.client_cursor_moved_at = None;
+                ip.and_then(|ip| self.request_client_detail(ip.to_string(), Instant::now()))
+                    .or(Some(Action::Invalidate))
             }
-            crate::tui::action::WifiSubTab::Roaming => {
-                let mac = self.focused_client_mac()?;
-                Some(self.request_roam_history(mac))
+            WifiSubTab::Ssids => {
+                if !self.ssid_detail_open {
+                    self.selected_ssid()?;
+                }
+                self.ssid_detail_open = !self.ssid_detail_open;
+                Some(Action::Invalidate)
             }
-            crate::tui::action::WifiSubTab::Neighbors => None,
+            WifiSubTab::Neighbors => None,
+            WifiSubTab::Roaming => self.refresh_roam_history(),
         }
     }
 
+    /// Fetch the Roaming tab's history again, unless a fetch is running.
+    fn refresh_roam_history(&mut self) -> Option<Action> {
+        if self.session_missing() {
+            return None;
+        }
+        self.roam_target.as_ref()?;
+        Some(self.request_roam_history().unwrap_or(Action::Invalidate))
+    }
+
+    /// Close the innermost thing this sub-tab is showing: its panel, then
+    /// the AP focus where the focus narrows the list. With nothing to
+    /// close the key goes back to the app.
     fn handle_escape(&mut self) -> Option<Action> {
-        if self.detail_open {
-            self.detail_open = false;
-            return Some(Action::CloseDetail);
-        }
-
-        // A consumed Esc still returns an action, or the App would go on to
-        // its global Esc and jump back to the previous screen.
-        if self.channel_map_open {
-            self.channel_map_open = false;
-            return Some(Action::Invalidate);
-        }
-
-        if self.focused_client_id.is_some() {
-            self.focused_client_id = None;
-            self.roam_history = std::sync::Arc::new(Vec::new());
-            self.roam_history_mac = None;
-            self.roam_history_pending_mac = None;
-            return Some(Action::Invalidate);
-        }
-
-        if self.focused_ap_id.is_some() {
-            self.focused_ap_id = None;
-            self.sync_client_selection();
-            self.sync_neighbor_selection();
-            return Some(Action::WifiFocusAp(None));
-        }
-
-        None
-    }
-
-    fn active_len(&self) -> usize {
+        // A consumed Esc returns an action, or the App would go on to its
+        // own Esc and leave the screen.
         match self.sub_tab {
-            crate::tui::action::WifiSubTab::Overview => self.ap_devices().len(),
-            crate::tui::action::WifiSubTab::Clients => self.wireless_clients().len(),
-            crate::tui::action::WifiSubTab::Neighbors => self.visible_neighbors().len(),
-            crate::tui::action::WifiSubTab::Roaming => self.parsed_roam_rows().len(),
-        }
-    }
-
-    fn active_table_state(&mut self) -> &mut ratatui::widgets::TableState {
-        match self.sub_tab {
-            crate::tui::action::WifiSubTab::Overview => &mut self.ap_table_state,
-            crate::tui::action::WifiSubTab::Clients => &mut self.client_table_state,
-            crate::tui::action::WifiSubTab::Neighbors => &mut self.neighbor_table_state,
-            crate::tui::action::WifiSubTab::Roaming => &mut self.roam_table_state,
-        }
-    }
-
-    fn update_focus_from_selection(&mut self) {
-        match self.sub_tab {
-            crate::tui::action::WifiSubTab::Overview => {
-                self.focused_ap_id = self.selected_ap().map(|device| device.id.clone());
-                self.sync_client_selection();
-                self.sync_neighbor_selection();
+            WifiSubTab::Overview if self.overview_panel != OverviewPanel::None => {
+                self.overview_panel = OverviewPanel::None;
+                Some(Action::Invalidate)
             }
-            crate::tui::action::WifiSubTab::Clients => {
-                self.focus_client_from_selection();
+            WifiSubTab::Clients if self.client_detail_open => {
+                self.client_detail_open = false;
+                Some(Action::Invalidate)
             }
-            crate::tui::action::WifiSubTab::Neighbors | crate::tui::action::WifiSubTab::Roaming => {
+            WifiSubTab::Ssids if self.ssid_detail_open => {
+                self.ssid_detail_open = false;
+                Some(Action::Invalidate)
             }
-        }
-    }
-}
-
-fn next_sort_field(
-    sub_tab: crate::tui::action::WifiSubTab,
-    current: WifiSortField,
-) -> WifiSortField {
-    match sub_tab {
-        crate::tui::action::WifiSubTab::Overview => match current {
-            WifiSortField::Health => WifiSortField::Clients,
-            WifiSortField::Clients => WifiSortField::Channel,
-            WifiSortField::Channel => WifiSortField::Name,
-            _ => WifiSortField::Health,
-        },
-        crate::tui::action::WifiSubTab::Clients => match current {
-            WifiSortField::Health => WifiSortField::Signal,
-            WifiSortField::Signal => WifiSortField::Name,
-            _ => WifiSortField::Health,
-        },
-        crate::tui::action::WifiSubTab::Neighbors => match current {
-            WifiSortField::Signal => WifiSortField::Channel,
-            WifiSortField::Channel => WifiSortField::Security,
-            WifiSortField::Security => WifiSortField::Name,
-            _ => WifiSortField::Signal,
-        },
-        crate::tui::action::WifiSubTab::Roaming => WifiSortField::Time,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::tui::action::{Action, WifiSubTab};
-    use crate::tui::component::Component;
-    use crate::tui::screens::wifi::WifiScreen;
-    use crate::tui::table::render_lines;
-    use crate::tui::widgets::click::click_label;
-
-    #[test]
-    fn clicking_a_sub_tab_switches_to_it() {
-        let mut screen = WifiScreen::new();
-        for tab in [
-            WifiSubTab::Clients,
-            WifiSubTab::Neighbors,
-            WifiSubTab::Roaming,
-            WifiSubTab::Overview,
-        ] {
-            let rows = render_lines(120, 30, |frame, area| screen.render(frame, area));
-            let action = screen.handle_mouse_input(click_label(&rows, "Roaming", tab.label()));
-            assert!(
-                matches!(action, Some(Action::WifiSubTab(clicked)) if clicked == tab),
-                "{tab:?}: {action:?}"
-            );
-            assert_eq!(screen.sub_tab, tab);
+            WifiSubTab::Overview | WifiSubTab::Clients | WifiSubTab::Neighbors
+                if self.focused_ap.is_some() =>
+            {
+                Some(Action::WifiFocusAp(None))
+            }
+            _ => None,
         }
     }
 }

@@ -18,6 +18,10 @@ impl App {
             }
             return Ok(());
         }
+        if self.handle_wifi_action(action)? {
+            self.needs_redraw |= invalidates;
+            return Ok(());
+        }
 
         match action {
             Action::Quit => {
@@ -147,18 +151,6 @@ impl App {
             Action::AccessUpdated(access) => {
                 self.access = *access;
                 self.forward_to_all_screens(action)?;
-            }
-            Action::RequestWifiNeighbors(within_secs) => {
-                self.fetch_wifi_neighbors(*within_secs);
-            }
-            Action::RequestWifiChannels => {
-                self.fetch_wifi_channels();
-            }
-            Action::RequestWifiClientDetail(ip) => {
-                self.fetch_wifi_client_detail(ip);
-            }
-            Action::RequestWifiRoamHistory { mac, limit } => {
-                self.fetch_wifi_roam_history(mac, *limit);
             }
             Action::RequestStats(period) => {
                 self.stats_period = *period;

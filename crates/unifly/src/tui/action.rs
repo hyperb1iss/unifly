@@ -90,14 +90,16 @@ pub enum WifiSubTab {
     #[default]
     Overview,
     Clients,
+    Ssids,
     Neighbors,
     Roaming,
 }
 
 impl WifiSubTab {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Overview,
         Self::Clients,
+        Self::Ssids,
         Self::Neighbors,
         Self::Roaming,
     ];
@@ -106,6 +108,7 @@ impl WifiSubTab {
         match self {
             Self::Overview => "Overview",
             Self::Clients => "Clients",
+            Self::Ssids => "SSIDs",
             Self::Neighbors => "Neighbors",
             Self::Roaming => "Roaming",
         }
@@ -605,4 +608,9 @@ pub enum Action {
     PolicyMoveSettled {
         moved: bool,
     },
+    // ── WiFi ──────────────────────────────────────────────────────
+    /// The neighbor scan could not be read; the WiFi screen shows why.
+    WifiNeighborsFailed(String),
+    /// The regulatory channel list could not be read.
+    WifiChannelsFailed(String),
 }

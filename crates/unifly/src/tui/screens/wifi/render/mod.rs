@@ -1,20 +1,23 @@
+mod empty;
+mod panels;
 mod tables;
 
-use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use unifly_api::DeviceState;
 
-use crate::tui::action::{WifiBand, WifiSubTab};
+use crate::tui::action::{Action, WifiBand, WifiSubTab};
 use crate::tui::theme;
-use crate::tui::widgets::click::{self, Click, ClickLine, Hint};
-use crate::tui::widgets::hyperchart::{HeatmapCell, HyperHeatmap};
-use crate::tui::widgets::signal_bars;
+use crate::tui::widgets::click::{self, Click, ClickLine};
+use crate::tui::widgets::wrap::wrap;
 
-use super::WifiScreen;
-use super::state::{display_client_name, display_device_name, json_i32, json_string, json_u64};
+use super::{OverviewPanel, WifiScreen};
+
+/// Panel size from which a detail sits beside its table instead of over it.
+const SIDE_PANEL_MIN: (u16, u16) = (110, 18);
 
 impl WifiScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
@@ -50,472 +53,257 @@ impl WifiScreen {
         match self.sub_tab {
             WifiSubTab::Overview => self.render_overview(frame, layout[2]),
             WifiSubTab::Clients => self.render_clients(frame, layout[2]),
+            WifiSubTab::Ssids => self.render_ssids(frame, layout[2]),
             WifiSubTab::Neighbors => self.render_neighbors(frame, layout[2]),
             WifiSubTab::Roaming => self.render_roaming(frame, layout[2]),
         }
 
-        let line = self
-            .hint_line()
-            .draw(layout[3], &mut self.hits.borrow_mut());
+        // A hint that would be cut mid-word is left off, with the rest.
+        let hints = self.hints();
+        let bar =
+            |count: usize| click::key_hints_styled(&hints[..count], key_style(), hint_style());
+        let fitting = (1..=hints.len())
+            .rev()
+            .find(|count| bar(*count).width() <= usize::from(layout[3].width))
+            .unwrap_or(1);
+        let line = bar(fitting).draw(layout[3], &mut self.hits.borrow_mut());
         frame.render_widget(Paragraph::new(line), layout[3]);
     }
 
     fn render_overview(&self, frame: &mut Frame, area: Rect) {
-        let can_split = area.width >= 110 && area.height >= 18;
-        let show_side_panel = self.detail_open || self.channel_map_open;
-        let chunks = if can_split && show_side_panel {
-            Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).split(area)
-        } else {
-            Layout::horizontal([Constraint::Percentage(100)]).split(area)
-        };
+        let panel = self.overview_panel;
+        self.render_beside(
+            frame,
+            area,
+            panel != OverviewPanel::None,
+            |frame, area| self.render_ap_table(frame, area),
+            |frame, area| match panel {
+                OverviewPanel::Detail => self.render_ap_detail(frame, area),
+                OverviewPanel::Channels => self.render_channel_map(frame, area),
+                OverviewPanel::None => {}
+            },
+        );
+    }
 
-        self.render_ap_table(frame, chunks[0]);
-        if can_split && let Some(side_area) = chunks.get(1).copied() {
-            if self.detail_open {
-                self.render_ap_detail(frame, side_area);
-            } else if self.channel_map_open {
-                self.render_channel_map(frame, side_area);
-            }
-        } else if show_side_panel {
-            let overlay = centered_rect(area, 82, 78);
-            // The overlay covers rows registered beneath it.
-            self.hits.borrow_mut().push(overlay, Click::Absorb);
-            frame.render_widget(Clear, overlay);
-            if self.detail_open {
-                self.render_ap_detail(frame, overlay);
-            } else if self.channel_map_open {
-                self.render_channel_map(frame, overlay);
-            }
+    fn render_ssids(&self, frame: &mut Frame, area: Rect) {
+        self.render_beside(
+            frame,
+            area,
+            self.ssid_detail_open,
+            |frame, area| self.render_ssid_table(frame, area),
+            |frame, area| self.render_ssid_detail(frame, area),
+        );
+    }
+
+    /// Draw a table and, when `open`, its panel: beside it where there is
+    /// room, and over it otherwise.
+    fn render_beside(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        open: bool,
+        table: impl FnOnce(&mut Frame, Rect),
+        panel: impl FnOnce(&mut Frame, Rect),
+    ) {
+        if !open {
+            table(frame, area);
+            return;
         }
+        if area.width >= SIDE_PANEL_MIN.0 && area.height >= SIDE_PANEL_MIN.1 {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)])
+                    .areas(area);
+            table(frame, left);
+            panel(frame, right);
+            return;
+        }
+        table(frame, area);
+        let overlay = centered_rect(area, 92, 100);
+        // The overlay covers rows registered beneath it.
+        self.hits.borrow_mut().push(overlay, Click::Absorb);
+        frame.render_widget(Clear, overlay);
+        panel(frame, overlay);
     }
 
     fn render_clients(&self, frame: &mut Frame, area: Rect) {
-        let can_split = self.detail_open && area.height >= 16;
-        let chunks = if can_split {
-            Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area)
-        } else {
-            Layout::vertical([Constraint::Percentage(100)]).split(area)
-        };
-
-        self.render_client_table(frame, chunks[0]);
-        if can_split && let Some(detail_area) = chunks.get(1).copied() {
-            self.render_client_detail(frame, detail_area);
-        } else if self.detail_open {
-            let overlay = centered_rect(area, 86, 74);
-            self.hits.borrow_mut().push(overlay, Click::Absorb);
-            frame.render_widget(Clear, overlay);
-            self.render_client_detail(frame, overlay);
-        }
-    }
-
-    fn render_ap_detail(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" AP Detail ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let Some(ap) = self.selected_ap() else {
-            frame.render_widget(
-                Paragraph::new(" No AP selected ").style(Style::default().fg(theme::text_muted())),
-                inner,
-            );
-            return;
-        };
-
-        let health = self.ap_health(ap).unwrap_or_default();
-        let signal = self.ap_signal(ap);
-        let summary = health_summary(health);
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(display_device_name(ap), theme::title_style()),
-                Span::styled(
-                    format!("  {} clients", self.ap_clients(ap).len()),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Health ", Style::default().fg(theme::text_muted())),
-                Span::styled(
-                    gauge_fill(health, 18),
-                    Style::default().fg(health_color(Some(health))),
-                ),
-                Span::styled(
-                    format!(" {health}/100"),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Signal ", Style::default().fg(theme::text_muted())),
-                signal_bars::signal_span(signal),
-                Span::styled(
-                    format!(
-                        "  {}",
-                        signal.map_or_else(|| "─".to_string(), |dbm| format!("{dbm} dBm"))
-                    ),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(vec![Span::styled(
-                summary.0,
-                Style::default().fg(summary.1),
-            )]),
-            Line::from(""),
-            Line::from(Span::styled(" Clients", theme::table_header())),
-        ];
-
-        for client in self.ap_clients(ap).iter().take(6) {
-            let signal = client
-                .wireless
-                .as_ref()
-                .and_then(|wireless| wireless.signal_dbm);
-            let health = client
-                .wireless
-                .as_ref()
-                .and_then(|wireless| wireless.satisfaction)
-                .unwrap_or_default();
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {}", display_client_name(client)),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-                Span::styled("  ", Style::default()),
-                signal_bars::signal_span(signal),
-                Span::styled(
-                    format!("  {health}%"),
-                    Style::default().fg(health_color(Some(health))),
-                ),
-            ]));
-        }
-
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn render_client_detail(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" WiFi Experience ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let Some(client) = self.selected_client() else {
-            frame.render_widget(
-                Paragraph::new(" No client selected ")
-                    .style(Style::default().fg(theme::text_muted())),
-                inner,
-            );
-            return;
-        };
-
-        // The detail on hand may belong to the client selected before.
-        let ip = client.ip.map(|ip| ip.to_string());
-        let detail = self
-            .client_detail
-            .as_ref()
-            .filter(|_| ip.is_some() && self.client_detail_ip == ip);
-        let Some(detail) = detail else {
-            let status = if ip.is_none() {
-                " No WiFi detail without an IP address "
-            } else if self.failed_client_detail() == ip.as_ref() {
-                " WiFi detail unavailable, retrying "
-            } else {
-                " Loading WiFi detail... "
-            };
-            frame.render_widget(
-                Paragraph::new(status).style(Style::default().fg(theme::text_muted())),
-                inner,
-            );
-            return;
-        };
-
-        let signal = json_i32(detail, &["signal"]);
-        let noise = json_i32(detail, &["noise"]);
-        let channel = json_u64(detail, &["channel"]);
-        let width = json_u64(detail, &["channel_width"]);
-        let band = json_string(detail, &["wlan_band", "band"]).unwrap_or_else(|| "─".to_string());
-        let protocol = json_string(detail, &["radio_protocol"]).unwrap_or_else(|| "─".to_string());
-        let experience = json_u64(detail, &["experience", "wifi_experience"]);
-        let tx = json_u64(detail, &["link_upload_rate_kbps"]);
-        let rx = json_u64(detail, &["link_download_rate_kbps"]);
-
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(display_client_name(client), theme::title_style()),
-                Span::styled(
-                    format!("  {}", self.client_ap_name(client)),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Health ", Style::default().fg(theme::text_muted())),
-                Span::styled(
-                    experience.map_or_else(|| "─".to_string(), |value| format!("{value}/100")),
-                    Style::default().fg(health_color(
-                        experience.and_then(|value| u8::try_from(value).ok()),
-                    )),
-                ),
-                Span::styled("  SSID ", Style::default().fg(theme::text_muted())),
-                Span::styled(
-                    client
-                        .wireless
-                        .as_ref()
-                        .and_then(|wireless| wireless.ssid.clone())
-                        .unwrap_or_else(|| "─".to_string()),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Signal ", Style::default().fg(theme::text_muted())),
-                signal_bars::signal_span(signal),
-                Span::styled(
-                    format!(
-                        "  {}  Noise {}",
-                        signal.map_or_else(|| "─".to_string(), |dbm| format!("{dbm} dBm")),
-                        noise.map_or_else(|| "─".to_string(), |dbm| format!("{dbm} dBm"))
-                    ),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Radio ", Style::default().fg(theme::text_muted())),
-                Span::styled(
-                    format!(
-                        "{band}  ch {}{}",
-                        channel.map_or_else(|| "─".to_string(), |value| value.to_string()),
-                        width.map_or_else(String::new, |value| format!(" ({value} MHz)"))
-                    ),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-                Span::styled("  Proto ", Style::default().fg(theme::text_muted())),
-                Span::styled(protocol, Style::default().fg(theme::text_secondary())),
-            ]),
-            Line::from(vec![
-                Span::styled(" TX/RX ", Style::default().fg(theme::text_muted())),
-                Span::styled(
-                    format!("{}/{} Mbps", kbps_to_mbps(tx), kbps_to_mbps(rx)),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(" Nearest neighbors", theme::table_header())),
-        ];
-
-        for neighbor in detail
-            .get("nearest_neighbors")
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-            .take(5)
-        {
-            let signal = json_i32(neighbor, &["signal"]);
-            let label = json_string(neighbor, &["ssid", "display_name", "bssid"])
-                .unwrap_or_else(|| "neighbor".to_string());
-            let channel = json_u64(neighbor, &["channel"])
-                .map_or_else(|| "─".to_string(), |value| value.to_string());
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {label}"),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-                Span::styled(
-                    format!(
-                        "  ch {channel}  {}",
-                        signal.map_or_else(|| "─".to_string(), |dbm| format!("{dbm} dBm"))
-                    ),
-                    Style::default().fg(theme::text_muted()),
-                ),
-            ]));
-        }
-
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
-    }
-
-    fn render_channel_map(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" Channels ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let occupancy = self.channel_occupancy();
-        if occupancy.is_empty() {
-            frame.render_widget(
-                Paragraph::new(" Channel data unavailable ")
-                    .style(Style::default().fg(theme::text_muted())),
-                inner,
-            );
+        if !self.client_detail_open {
+            self.render_client_table(frame, area);
             return;
         }
-
-        let cells: Vec<HeatmapCell> = occupancy
-            .iter()
-            .map(|row| HeatmapCell {
-                label: format!("ch{}", row.channel),
-                your_count: row.your_count,
-                neighbor_count: row.neighbor_count,
-                signal: row.signal,
-                conflict: row.conflict,
-            })
-            .collect();
-
-        let layout = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(inner);
-        let header = Line::from(vec![
-            Span::styled(" Band ", Style::default().fg(theme::text_muted())),
-            Span::styled(
-                band_label(self.selected_band),
-                Style::default()
-                    .fg(theme::accent_secondary())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "  ·  {} APs  {} neighbors",
-                    occupancy.iter().map(|row| row.your_count).sum::<usize>(),
-                    occupancy
-                        .iter()
-                        .map(|row| row.neighbor_count)
-                        .sum::<usize>()
-                ),
-                Style::default().fg(theme::text_secondary()),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(vec![header, Line::from("")]), layout[0]);
-        frame.render_widget(
-            HyperHeatmap::new(&cells).empty_message(" Channel data unavailable "),
-            layout[1],
-        );
+        if area.height >= 16 {
+            let [top, bottom] =
+                Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)])
+                    .areas(area);
+            self.render_client_table(frame, top);
+            self.render_client_detail(frame, bottom);
+            return;
+        }
+        self.render_client_table(frame, area);
+        let overlay = centered_rect(area, 92, 100);
+        self.hits.borrow_mut().push(overlay, Click::Absorb);
+        frame.render_widget(Clear, overlay);
+        self.render_client_detail(frame, overlay);
     }
 
     fn tab_strip(&self) -> ClickLine<'static, Click> {
         let mut strip = ClickLine::default();
         for (index, tab) in WifiSubTab::ALL.iter().enumerate() {
             if index > 0 {
-                strip.push_gap(Span::styled("  ", Style::default().fg(theme::text_muted())));
+                strip.push_gap(Span::raw("  "));
             }
             let label = tab.label();
-            let style = if *tab == self.sub_tab {
-                Style::default()
-                    .fg(theme::accent_primary())
-                    .add_modifier(Modifier::BOLD)
+            let (text, style) = if *tab == self.sub_tab {
+                (
+                    format!("[{label}]"),
+                    Style::default()
+                        .fg(theme::accent_primary())
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
-                Style::default().fg(theme::text_secondary())
+                (
+                    label.to_string(),
+                    Style::default().fg(theme::text_secondary()),
+                )
             };
+            strip.push(Click::Tab(index), Span::styled(text, style));
+        }
+
+        let chip = Style::default()
+            .fg(theme::accent_secondary())
+            .add_modifier(Modifier::BOLD);
+        let muted = Style::default().fg(theme::text_muted());
+        // A chip is drawn only where it narrows what the sub-tab lists.
+        if self.focus_shown()
+            && let Some(focused) = &self.focused_ap
+        {
+            let clear = Click::Action(Action::WifiFocusAp(None));
+            strip.push_gap(Span::styled("   AP ", muted));
+            strip.push(clear.clone(), Span::styled(focused.label.clone(), chip));
+            strip.push(clear, Span::styled(" \u{2715}", muted));
+        }
+        if self.sub_tab == WifiSubTab::Roaming
+            && let Some(target) = &self.roam_target
+        {
+            strip.push_gap(Span::styled("   Client ", muted));
+            strip.push_gap(Span::styled(target.label.clone(), chip));
+        }
+        if let Some(query) = self.active_query().filter(|query| !query.is_empty()) {
+            let clear = Click::Action(Action::CloseSearch);
+            strip.push_gap(Span::styled("   Filter ", muted));
             strip.push(
-                Click::Tab(index),
+                clear.clone(),
                 Span::styled(
-                    if *tab == self.sub_tab {
-                        format!("[{label}]")
-                    } else {
-                        label.to_string()
-                    },
-                    style,
+                    format!("\"{query}\""),
+                    Style::default().fg(theme::warning()),
                 ),
             );
-        }
-        if let Some(ap) = self.focused_ap_label() {
-            strip.push_gap(Span::styled(
-                "  Focused AP: ",
-                Style::default().fg(theme::text_muted()),
-            ));
-            strip.push_gap(Span::styled(
-                ap,
-                Style::default()
-                    .fg(theme::accent_secondary())
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        // Search filters every table here but the roaming history.
-        if !self.search_query.is_empty() && self.sub_tab != WifiSubTab::Roaming {
-            strip.push_gap(Span::styled(
-                "  Filter: ",
-                Style::default().fg(theme::text_muted()),
-            ));
-            strip.push_gap(Span::styled(
-                format!("\"{}\"", self.search_query),
-                Style::default().fg(theme::warning()),
-            ));
-        }
-        if let Some(client) = self.focused_client_label() {
-            strip.push_gap(Span::styled(
-                "  Client: ",
-                Style::default().fg(theme::text_muted()),
-            ));
-            strip.push_gap(Span::styled(
-                client,
-                Style::default()
-                    .fg(theme::accent_secondary())
-                    .add_modifier(Modifier::BOLD),
-            ));
+            strip.push(clear, Span::styled(" \u{2715}", muted));
         }
         strip
     }
 
+    /// One line on the state of the site's access points. It claims
+    /// nothing the data does not show: an AP with no clients has no score.
     fn health_banner(&self) -> Line<'static> {
-        let aps = self.ap_devices();
-        let poor = aps
-            .iter()
-            .filter_map(|ap| self.ap_health(ap))
-            .filter(|health| *health < 50)
-            .count();
-        let attention = aps
-            .iter()
-            .filter_map(|ap| self.ap_health(ap))
-            .filter(|health| (50..80).contains(health))
-            .count();
-
-        let (message, color) = if poor > 0 {
-            (
-                format!("● {poor} access point(s) have poor performance"),
-                theme::error(),
-            )
-        } else if attention > 0 {
-            (
-                format!("● {attention} access point(s) need attention"),
-                theme::warning(),
-            )
-        } else {
-            ("● All access points healthy".to_string(), theme::success())
-        };
-
-        Line::from(Span::styled(
-            format!(" {message} "),
-            Style::default()
+        let (message, color) = self.health_summary();
+        let style = match color {
+            Some(color) => Style::default()
                 .fg(theme::bg_base())
                 .bg(color)
                 .add_modifier(Modifier::BOLD),
-        ))
+            None => Style::default().fg(theme::text_muted()),
+        };
+        Line::from(Span::styled(format!(" {message} "), style))
     }
 
-    fn hint_line(&self) -> ClickLine<'static, Click> {
-        let hints = match self.sub_tab {
-            WifiSubTab::Overview => vec![
-                Hint::info("j/k", "select"),
-                Hint::button("h/l", "sub-tab", click::char_key('l')),
-                Hint::button("Enter", "detail", KeyCode::Enter),
-                Hint::button("c", "channels", click::char_key('c')),
-                Hint::button("R", "restart", click::char_key('R')),
-                Hint::button("L", "locate", click::char_key('L')),
-            ],
-            WifiSubTab::Clients => vec![
-                Hint::info("j/k", "select"),
-                Hint::button("Enter", "detail", KeyCode::Enter),
-                Hint::button("b", "block", click::char_key('b')),
-                Hint::button("u", "unblock", click::char_key('u')),
-                Hint::button("x", "kick", click::char_key('x')),
-            ],
-            WifiSubTab::Neighbors => vec![
-                Hint::info("j/k", "select"),
-                Hint::button("s", "sort", click::char_key('s')),
-                Hint::button("f", "filter band", click::char_key('f')),
-            ],
-            WifiSubTab::Roaming => {
-                let mut hints = vec![
-                    Hint::info("j/k", "scroll"),
-                    Hint::button("r", "refresh", click::char_key('r')),
-                ];
-                if self.focused_client_id.is_some() {
-                    hints.push(Hint::button("Esc", "clear focus", KeyCode::Esc));
-                }
-                hints
-            }
+    pub(super) fn health_summary(&self) -> (String, Option<Color>) {
+        if !self.loaded.devices {
+            return ("Waiting for access point data".to_owned(), None);
+        }
+        let total = self.all_aps().count();
+        if total == 0 {
+            return ("No access points on this site".to_owned(), None);
+        }
+
+        let down = self
+            .all_aps()
+            .filter(|ap| ap.state != DeviceState::Online)
+            .count();
+        let scores: Vec<u8> = self
+            .all_aps()
+            .filter(|ap| ap.state == DeviceState::Online)
+            .filter_map(|ap| self.ap_health(ap))
+            .collect();
+        let poor = scores.iter().filter(|score| **score < 50).count();
+        let fair = scores
+            .iter()
+            .filter(|score| (50..80).contains(*score))
+            .count();
+
+        let mut parts = Vec::new();
+        if down > 0 {
+            parts.push(format!("{down} not online"));
+        }
+        if poor > 0 {
+            parts.push(format!("{poor} with poor client health"));
+        }
+        match fair {
+            0 => {}
+            1 => parts.push("1 needs attention".to_owned()),
+            fair => parts.push(format!("{fair} need attention")),
+        }
+        let aps = if total == 1 {
+            "access point"
+        } else {
+            "access points"
         };
-        click::key_hints_styled(&hints, key_style(), hint_style())
+        if !parts.is_empty() {
+            let color = if down > 0 || poor > 0 {
+                theme::error()
+            } else {
+                theme::warning()
+            };
+            return (
+                format!("\u{25CF} {total} {aps}: {}", parts.join(", ")),
+                Some(color),
+            );
+        }
+        if scores.is_empty() {
+            return (
+                format!("{total} {aps} online, no client health to report yet"),
+                None,
+            );
+        }
+        (
+            format!("\u{25CF} {total} {aps} online, client health good"),
+            Some(theme::success()),
+        )
     }
+}
+
+/// One muted line, centered in `area`, for a panel with nothing to list.
+/// It wraps when the panel is narrower than the sentence.
+fn render_notice(frame: &mut Frame, area: Rect, text: &str) {
+    if area.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width.saturating_sub(2)).max(1);
+    let lines = wrap(text, width);
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let centered = Rect {
+        y: area.y + (area.height - height) / 2,
+        height,
+        ..area
+    };
+    let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme::text_muted())),
+        centered,
+    );
 }
 
 fn panel_block<'a>(title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
@@ -531,13 +319,7 @@ fn panel_block<'a>(title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
         })
 }
 
-fn gauge_fill(value: u8, width: usize) -> String {
-    let filled = (usize::from(value) * width) / 100;
-    let empty = width.saturating_sub(filled);
-    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
-}
-
-fn health_color(value: Option<u8>) -> ratatui::style::Color {
+fn health_color(value: Option<u8>) -> Color {
     match value {
         Some(score) if score >= 80 => theme::success(),
         Some(score) if score >= 50 => theme::warning(),
@@ -550,22 +332,29 @@ fn health_label(value: Option<u8>) -> String {
     value.map_or_else(|| "─".to_string(), |score| format!("{score}%"))
 }
 
-fn health_summary(value: u8) -> (&'static str, ratatui::style::Color) {
-    if value >= 80 {
-        (
-            "Signal: Good  Retries: Low  Satisfaction: High",
-            theme::success(),
-        )
-    } else if value >= 50 {
-        (
-            "Signal: Fair  Retries: Moderate  Satisfaction: Fair",
-            theme::warning(),
-        )
-    } else {
-        (
-            "Signal: Poor  Retries: High  Satisfaction: Low",
-            theme::error(),
-        )
+/// What a device that is not online is doing instead.
+fn state_label(state: DeviceState) -> &'static str {
+    match state {
+        DeviceState::Online => "online",
+        DeviceState::Offline => "offline",
+        DeviceState::PendingAdoption => "pending",
+        DeviceState::Updating => "updating",
+        DeviceState::GettingReady => "starting",
+        DeviceState::Adopting => "adopting",
+        DeviceState::Deleting => "removing",
+        DeviceState::ConnectionInterrupted => "interrupted",
+        DeviceState::Isolated => "isolated",
+        _ => "unknown",
+    }
+}
+
+fn state_color(state: DeviceState) -> Color {
+    match state {
+        DeviceState::Online => theme::success(),
+        DeviceState::Offline | DeviceState::ConnectionInterrupted | DeviceState::Isolated => {
+            theme::error()
+        }
+        _ => theme::warning(),
     }
 }
 
@@ -586,11 +375,7 @@ fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
 }
 
 fn band_label(band: WifiBand) -> &'static str {
-    match band {
-        WifiBand::TwoGhz => "2.4G",
-        WifiBand::FiveGhz => "5G",
-        WifiBand::SixGhz => "6G",
-    }
+    band.label()
 }
 
 fn signal_text(signal: Option<i32>) -> String {
@@ -604,7 +389,7 @@ fn signal_text(signal: Option<i32>) -> String {
     }
 }
 
-fn signal_color(signal: Option<i32>) -> ratatui::style::Color {
+fn signal_color(signal: Option<i32>) -> Color {
     match signal {
         Some(dbm) if dbm >= -50 => theme::success(),
         Some(dbm) if dbm >= -60 => theme::accent_secondary(),
