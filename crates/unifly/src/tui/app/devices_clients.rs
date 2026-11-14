@@ -567,6 +567,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn under_redaction_an_offline_blocked_client_is_unblocked_by_its_real_mac() {
+        let demo = demo_fleet().await;
+        let store = Arc::clone(demo.store());
+        let phone = store
+            .clients_snapshot()
+            .iter()
+            .find(|client| client.client_type == ClientType::Wireless)
+            .cloned()
+            .expect("a wireless client");
+        demo.execute(Command::BlockClient {
+            mac: phone.mac.clone(),
+        })
+        .await
+        .expect("block");
+        let config: crate::config::DemoConfig =
+            serde_json::from_value(serde_json::json!({ "enabled": true, "redact_macs": true }))
+                .expect("demo config");
+        let sanitizer = Arc::new(Sanitizer::new(&config));
+        assert_ne!(sanitizer.sanitize_mac(&phone.mac), phone.mac);
+        let mut app = App::new(Some(demo), Some(sanitizer), false, true);
+        app.access = demo_access();
+
+        app.process_action(&Action::RequestBlockedClients)
+            .expect("fetch");
+        let loaded = next_action(&mut app).await;
+        app.process_action(&loaded).expect("loaded");
+        // The screen's copy carries a stand-in MAC; the command must not.
+        app.process_action(&Action::RequestUnblockClient(phone.id.clone()))
+            .expect("unblock");
+        let Action::ShowConfirm(confirm) = app.action_rx.try_recv().expect("unblock asks") else {
+            panic!("expected a confirmation");
+        };
+        assert!(
+            matches!(
+                *confirm.action,
+                Action::Run { ref command, .. }
+                    if matches!(**command, Command::UnblockClient { ref mac } if *mac == phone.mac)
+            ),
+            "{confirm:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_port_rename_is_written_and_the_profiles_reload_with_it() {
         let demo = demo_fleet().await;
         let switch = first_switch(&demo);
