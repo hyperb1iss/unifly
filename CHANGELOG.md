@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **The TUI can change the network, not only watch it.** Every screen was
+  reworked and most gained write actions, each confirmed where it is
+  disruptive and reported through one feedback path (below).
+- **Devices**: adopt, provision, forget, and gateway speed test join
+  restart, locate, and upgrade. The detail's Ports and Clients tabs have
+  their own cursor, so every row is reachable on a short terminal, and the
+  Ports tab can power cycle a PoE port, turn its PoE off and on, and rename
+  it. The table filters by type and sorts by column (`s`, `r` to reverse).
+- **Clients**: `b` blocks or unblocks by the client's state, `x` kicks a
+  wireless client, `I` sets or removes a fixed IP, `A` authorizes a guest
+  for a number of minutes or revokes one, and `F` forgets the client.
+- **Networks**: create (`c`) and delete (`D`) alongside edit. The form has
+  cursor editing, takes a paste, validates under the field it is about,
+  and covers the gateway and prefix, the DHCP range and DNS servers, and
+  only the fields the network's kind can take. Delete asks the controller
+  what uses the network and names it in the confirmation.
+- **Firewall**: `Enter` opens a detail panel for policies, zones, ACL
+  rules, and NAT rules with the full filters the table cuts. Policies, ACL
+  rules, and NAT rules can be enabled, disabled, and deleted, and a
+  policy's logging toggled. Sub-tabs carry counts, and policies are
+  numbered by their place in their zone pair.
+- **WiFi**: a new SSIDs sub-tab lists every broadcast and can enable,
+  disable, hide, rename, change the passphrase of, and delete one. The
+  Clients sub-tab gains forget and jumps to the Clients screen, access
+  points can be upgraded and opened on the Devices screen, an explicit AP
+  focus (`Space`) narrows the other sub-tabs to one access point, and the
+  WiFi experience panel shows the client's uplink path.
+- **Events**: a cursor with a detail pane (`Enter`) that jumps to the
+  event's device or client, a category filter (`h`/`l`), search by message
+  text, older history in widening windows (`o`), firewall blocks on demand
+  (`f`), and an Alarms view (`v`) that archives one alarm or all of them.
+  The status line says whether events arrive live, by polling, or not at
+  all, and the Dashboard title counts the active alarms.
+- **Topology**: the map opens fitted to the screen, `f` fits and `r`
+  resets to 100%, `[` and `]` walk a device cursor, and `Enter` or a
+  second tap opens the selected device.
+- **Dashboard**: arrows and `hjkl` move a focus across the panels, `Enter`
+  opens the focused panel's screen or the gateway, a tapped access point
+  or client row opens it, and `S` runs a WAN speed test.
+- **Feedback for every command.** A progress toast appears when a command
+  starts and becomes its result, and the controller's data is fetched
+  again when it lands, so the screens show the change at once. Toasts
+  stack and wrap, `n` opens a history of the last 50, confirmation dialogs
+  size to their text and say what yes costs, and a one-line prompt takes
+  single values such as a fixed IP, a port name, or a passphrase.
+- `F1` opens help everywhere, including over the setup wizard and
+  Settings where `?` types into a field. The overlay lists the active
+  screen's keys for the mode it is in beside the global ones.
+- `PgUp`, `PgDn`, `Home`, and `End` work in every list, and `Ctrl+l`
+  redraws the screen.
+- Setup and Settings share one form with a one-time MFA code field, a site
+  picker fed by the controller, editable CA certificate and timeout, and
+  in Settings a profile picker that can start the wizard for a new
+  profile. Both take a paste.
+- The demo fleet simulates the new writes offline: network create, edit,
+  and delete, policy and rule toggles, deletes, and reorders, SSID edits,
+  alarm archiving, port PoE and rename, guest authorization, fixed IPs,
+  and forgetting a client.
+
+### Changed
+
+- **`Tab` always switches screens.** It no longer cycles the Clients
+  filter or the WiFi sub-tabs. `h`/`l` and the left and right arrows step
+  sub-tabs, filters, and periods on every screen, in both directions.
+- **Stats periods step with `h`/`l`** (or the arrows) instead of the `h`,
+  `d`, `w`, and `m` keys. `r` still reloads.
+- **Firewall reordering is pick up, move, apply.** `K` or `J` picks the
+  selected policy up and moves it on screen only, `Enter` writes the
+  result as one ordering, and `Esc` puts it back. Each press used to write
+  to the controller.
+- Toasts moved from the bottom-right to the top-right corner, clear of the
+  hint row, and no longer replace one another.
+- `Ctrl+r` refreshes the data while connected. It still retries the
+  connection while disconnected.
+- `Esc` closes one thing per press: the screen's detail, then a warning or
+  error toast, then a kept search filter, then the screen, going back
+  once.
+- WiFi AP focus is set with `Space` instead of following the cursor, and
+  each WiFi sub-tab keeps its own sort, search, and panel. `b` on the WiFi
+  Clients sub-tab blocks or unblocks by the client's state.
+- Locate is a toggle: `L` again turns the LED back off.
+- The setup wizard asks for the auth mode first, skips the address for
+  Cloud, and makes TLS verification an explicit choice. A connection test
+  that passes is what gets saved and applied, launch flags such as
+  `--site` and `--insecure` survive a Settings save, and `Esc` asks before
+  dropping unsaved edits.
+- Hint bars and the help overlay list only the keys that work for the
+  row, sub-tab, and mode on screen. Empty tables and panels say whether
+  they are waiting, have nothing, or need access this profile lacks.
+- `unifly-api`: a failed periodic refresh now publishes
+  `ConnectionState::Reconnecting` with the count of failures in a row, and
+  the next success publishes `Connected`. Events new to a refresh are
+  broadcast oldest first. A failed connect names its underlying cause.
+
+### Fixed
+
+- `Ctrl+c` quits from every state. It used to toggle the WiFi channel map
+  and was ignored under the confirm, help, about, and search overlays.
+  `SIGTERM`, `SIGHUP`, and a closed input stream also quit cleanly and
+  restore the terminal.
+- `?` opens help on terminals that report Shift with it, and a `Ctrl` or
+  `Alt` chord no longer acts as its plain letter (`Ctrl+b` opened the
+  block dialog).
+- Pasted text no longer runs as keystrokes. A paste goes to the search bar
+  or the focused field and is dropped anywhere else; before, a paste
+  containing `J` could reorder firewall policies.
+- A link lost after a good connect shows as reconnecting instead of
+  leaving frozen data under a connected status.
+- Events land in time order and are no longer doubled by a reconnect or a
+  settings save.
+- A network save the controller refuses keeps the form open with the
+  draft and the reason. The form used to close before the save was sent.
+- The connection test validates what was typed, not a cached session or
+  `UNIFI_PASSWORD`, fails when a hybrid connect only half worked, and can
+  be cancelled without a late result saving or reconnecting. Failures are
+  explained by kind, including an address that is not a UniFi controller
+  and a refused or missing one-time code.
+- Error text in toasts and failure messages wraps instead of being cut at
+  55 columns.
+- Stats shows loading, error, and no-access states instead of leaving the
+  previous period's charts under the new period. DPI read failures show in
+  their panel instead of as a repeating toast.
+- The WiFi channel map counts every radio of every online access point, so
+  your own APs show on 5 GHz and 6 GHz, and marks DFS channels. Roam
+  history sorts by timestamp and shows local time. Client counts that are
+  unknown without a session read as unknown instead of zero.
+- The Dashboard no longer draws a stalled WAN rate as a flat line, and
+  panels with missing data say so instead of showing guesses.
+- A device or client detail stays readable on short and narrow terminals,
+  and names cut to fit a column end in an ellipsis.
+- A demo session redacts the addresses and MACs inside firewall policy
+  filters, and Settings stays redacted through a failed test.
+
 ## [0.13.0] - 2026-11-07
 
 ### Added

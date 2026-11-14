@@ -333,10 +333,17 @@ crates/unifly/src/tui/
   component.rs / screen.rs   # traits
   data_bridge.rs             # Controller streams -> App state
   app.rs / app/              # top-level App state + run loop
+    navigation.rs            #  key, paste, and mouse routing
+    render.rs                #  chrome, overlays, GLOBAL_KEYS / FORM_KEYS
+    notify.rs                #  toasts and the notification history
+    commands.rs              #  confirm, run_command, spawn_op
+    dispatch.rs              #  App-level action handling
+    <area>.rs                #  per-area command and fetch handling
   screens/                   # 11 screens (Dashboard, Devices, Clients,
                              #  Networks, Firewall, Topology, Events, Stats,
                              #  Wifi, Onboarding, Settings)
-  widgets/                   # shared custom widgets
+  widgets/                   # shared widgets: click (hit map, key hints),
+                             #  line_input, wrap, detail_grid, sub_tabs
   forms/                     # profile draft, connection test, and field
                              #  widgets shared by Onboarding and Settings
 ```
@@ -353,6 +360,55 @@ that maps opaline tokens to unifly-specific color accessors (e.g.
 `data_bridge.rs` subscribes to `EntityStream<T>` channels from the
 Controller's DataStore and pushes updates into App state. Screens read
 from App state during render. No direct Controller access from screens.
+
+**Key routing** lives in `app/navigation.rs::handle_key_event`, in this
+order: `Ctrl+c` (quit) and `Ctrl+l` (repaint) from every state; `F1`
+help; an open confirm dialog; an open prompt; the help and notification
+overlays; Setup and Settings, which take every remaining key; the
+search bar; the About overlay; `Ctrl+r`; the active screen; and last the
+global keys (`handle_global_key_event`). A screen sees a key before the
+globals do, so a key it returns `None` for falls through to them.
+
+Each screen implements `Component` (`component.rs`):
+
+- `help()` returns `(keys, description)` for the mode on screen and
+  feeds the help overlay, beside `GLOBAL_KEYS` (or `FORM_KEYS` over
+  Setup and Settings). List screens start from `LIST_HELP`.
+- `captures_input()` is true while a field has the keyboard. Keys then
+  reach the screen raw and never go on to the global shortcuts, and
+  `handle_paste()` receives pasted text.
+- `search_query()` returns `Some` where `/` filters something; search
+  only opens there.
+
+Each screen also draws its own hint bar from `click::Hint`s. A hint
+with a key is a button that sends `Action::PressKey`, so a tap goes
+through the same key path. Keep `help()`, the hint bar, and the key
+handler in step: all three list only what works for the row, sub-tab,
+and mode on screen.
+
+**Writes** never touch the Controller from a screen. A screen returns
+an action and the App runs it:
+
+- `Action::Run { command, notice }` runs a `Command` through
+  `run_command`: a progress toast shows at once, a success calls
+  `full_refresh()` so the store has the change before the toast turns
+  into `notice.done`, and a failure becomes an error toast.
+- `Action::ShowConfirm(ConfirmRequest)` asks first. The request carries
+  the prompt, a `detail` line saying what yes costs, and the action to
+  dispatch on yes.
+- `Action::OpenPrompt(PromptRequest)` asks for one value. The answer
+  comes back to the asking screen as `Action::PromptSubmitted`; the
+  screen remembers what it asked for, and reopens the prompt with a
+  hint when the value cannot be used.
+- The `Request*` actions (restart, block, fixed IP, port update, network
+  delete) are resolved App-side, where the store supplies names and
+  MACs. That is what keeps them correct under `--demo` redaction.
+
+**Access** arrives once per connect as `Action::AccessUpdated(Access)`
+with three flags: `integration`, `session`, and `live_events`. Screens
+use them to explain an empty panel (waiting, nothing there, or not
+readable with this profile) and to skip fetches the controller would
+refuse. A demo fleet session reports full access.
 
 Key integration: the `ThemeSelector` widget from `opaline::widgets` is
 embedded as a settings overlay. It holds an `Arc<Theme>` snapshot at open
@@ -802,7 +858,44 @@ remote-access suggest-port` and `vpn remote-access download-config
   cancelling the old bridge and spawning a fresh one. Bridge lifetimes
   are serialized: each new bridge task first awaits its predecessor's
   `JoinHandle`, so teardown always completes before the next connect
-  starts.
+  starts. While connected, `Ctrl+r` runs `full_refresh()` instead. A
+  periodic refresh that fails publishes `ConnectionState::Reconnecting`
+  from `unifly-api`, so a lost link shows without a reconnect.
+- **`Tab` belongs to the App.** It always switches screens. Sub-tabs,
+  filters, and periods step with `h`/`l` and the left and right arrows
+  on every screen; never bind `Tab` in a list screen. A form may use it
+  for the next field, since it captures input.
+- **A screen that uses `Esc` must return an action** (`Action::Invalidate`
+  will do). `None` means the key was not used, and the App goes on to
+  its own `Esc`: dismiss a warning or error toast, then clear a kept
+  filter, then go back a screen.
+- **Paging keys reach list screens as vim keys.** `list_alias` turns
+  `PgDn`/`PgUp` into `Ctrl+d`/`Ctrl+u` and `Home`/`End` into `g`/`G`
+  unless the screen captures input, so bind the vim keys and the rest
+  follows.
+- **Chords are not letters, and pastes are not keys.** A `Ctrl` or `Alt`
+  chord is never forwarded to a list screen as its plain letter (only
+  `Ctrl+d` and `Ctrl+u` are). Global keys match the key code alone,
+  because terminals differ on reporting Shift with `?`. Bracketed paste
+  is on: text arrives as one event for the search bar, a prompt, or a
+  screen that captures input, and is dropped anywhere else.
+- **Help descriptions have about 24 columns** in the overlay, and key
+  labels have 12. Longer text is cut mid-word, so word it to fit; several
+  screens have a test that holds their descriptions to the column.
+- **Do not close a form before its save lands.** The Networks save is
+  App-side: the form locks, closes once the refreshed data has arrived,
+  and stays open with the draft and the reason on a failure.
+- **Never write a prefilled value back unchanged.** Under redaction a
+  prompt's starting value is a stand-in, so an answer equal to it is a
+  no-op (the port rename does this).
+- **Firewall reordering is a draft.** `K`/`J` move the policy on screen
+  only; `Enter` sends one `Action::MovePolicy` with the net steps and
+  `Esc` drops the draft. Nothing is written per keypress.
+- **Background fetch failures belong in their panel**, not in a toast on
+  a timer. Stats, WiFi, and Alarms carry the error in the screen state.
+- **`Action::ControllerChanged` clears everything a screen holds**: open
+  details, forms, drafts, and fetched data. Applying a connection from
+  Settings sends it.
 - **Onboarding and Settings save only what a test connected with.**
   Both run `forms/probe.rs`: the test resolves the profile through
   `resolve_session_connection` (a typed password ahead of

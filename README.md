@@ -52,7 +52,7 @@ https://github.com/user-attachments/assets/13042353-04f5-4934-a8dd-a516ab6a14d2
 
 ## 💜 What is unifly?
 
-A complete command-line toolkit for managing Ubiquiti UniFi network controllers. One binary with 29 top-level commands for scripting and a built-in TUI dashboard for real-time monitoring, powered by a shared async engine that speaks every UniFi API dialect, including Site Manager cloud fleet APIs and the cloud connector.
+A complete command-line toolkit for managing Ubiquiti UniFi network controllers. One binary with 29 top-level commands for scripting and a built-in TUI for real-time monitoring and hands-on management, powered by a shared async engine that speaks every UniFi API dialect, including Site Manager cloud fleet APIs and the cloud connector.
 
 > _Manage devices, monitor clients, inspect VLANs, stream events, and watch bandwidth charts, all without leaving your terminal._
 
@@ -89,14 +89,14 @@ UniFi controllers expose multiple APIs with different capabilities. unifly unifi
 | Capability                    | What You Get                                                                                                                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 🔮 **Triple-Path API Engine** | Integration API + Session API via a single API key on UniFi OS, plus Site Manager cloud fleet and connector support. Hybrid mode adds WebSocket for live event streaming                                            |
-| ⚡ **Real-Time TUI**          | 11-screen dashboard with SilkCircuit octant traffic charts, CPU/MEM gauges, live client counts, zoomable topology, and auto-detected graphics-protocol charts (Kitty/Sixel/iTerm2)                                  |
+| ⚡ **Real-Time TUI**          | 11-screen dashboard and network client: SilkCircuit octant traffic charts, zoomable topology, graphics-protocol charts (Kitty/Sixel/iTerm2), plus device, client, network, firewall, and SSID management            |
 | 🦋 **29 Top-Level Commands**  | Devices and switch port config-as-code, clients, networks, WiFi, firewall policies/zones/groups, ACLs, NAT, DNS, full VPN surface, DPI, RADIUS, site settings, topology, cloud fleet, raw API passthrough, `tui`... |
 | 📡 **Wi-Fi Observability**    | Neighboring APs, regulatory channels, per-client Wi-Fi experience scores, roam timelines                                                                                                                            |
 | 💎 **Flexible Output**        | Table, JSON, compact JSON, YAML, and plain text. Pipe-friendly for scripting                                                                                                                                        |
 | 🔒 **Secure Credentials**     | OS keyring storage for API keys and passwords by default. Explicit `api_key` / `password` in TOML config wins when set, useful for headless or shared machines.                                                     |
 | 🌐 **Multi-Profile**          | Named profiles for multiple controllers. Switch with a single flag                                                                                                                                                  |
 | 🧠 **Smart Config**           | Interactive wizard, environment variables, TOML config, CLI overrides                                                                                                                                               |
-| 📡 **WebSocket Events**       | Live event streaming with 10K rolling buffer, severity filtering, pause/scroll-back                                                                                                                                 |
+| 📡 **WebSocket Events**       | Live event streaming with 10K rolling buffer, category filtering and search, pause/scroll-back, older history, and alarms                                                                                           |
 | 📊 **Historical Stats**       | WAN bandwidth area fills, client counts, DPI app/category breakdown (1h to 30d)                                                                                                                                     |
 | 🎨 **SilkCircuit Theme**      | Neon-on-dark color palette powered by [opaline](https://crates.io/crates/opaline). Token-based theming across CLI and TUI with ANSI fallback                                                                        |
 
@@ -339,7 +339,7 @@ unifly completions powershell | Out-String | Invoke-Expression
 
 ## 🖥️ TUI
 
-`unifly tui` launches an 11-screen real-time dashboard for monitoring and managing your network.
+`unifly tui` launches an 11-screen terminal client for monitoring and managing your network. Every screen has a hint bar with the keys that work right now, and `?` lists the rest.
 
 ```bash
 unifly tui                   # Launch with default profile
@@ -351,28 +351,31 @@ unifly tui --demo-fleet      # Explore a synthetic studio network, no controller
 `--demo-fleet` (or `UNIFI_DEMO_FLEET=1`) runs the CLI and TUI against Neon Harbor Studios, an offline simulated network with 13 devices, about 140 clients, six VLANs, and live traffic, events, and a few problems to find. It never reads your config or keyring, which makes it a safe sandbox for trying the TUI or pointing an agent at unifly.
 
 Cloud profiles can launch the TUI for a single connector-backed console. Fleet
-aggregation, Site Manager host switching, and Session-only live features are
-still outside the TUI surface today.
+aggregation, Site Manager host switching, and the screens that need a
+controller session (Events, Stats, WiFi observability, NAT) are still outside
+the TUI surface there, and each of those screens says so.
 
 <p align="center">
   <img src="docs/images/tui-dashboard.png" alt="unifly TUI Dashboard with a mirrored WAN traffic chart, gateway info, CPU and memory gauges, networks, Wi-Fi APs, top clients, and recent events" width="900">
 </p>
 
-| Screen         | Highlights                                                                                       |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| **Dashboard**  | btop-style overview: mirrored RX/TX WAN chart, gateway info, CPU/MEM gauges, top clients, events |
-| **Devices**    | Model, firmware with update markers, clients, CPU/MEM. Detail panel with a switch port map       |
-| **Clients**    | Network, uplink AP or switch port, signal, traffic. Filter by type. Block/unblock/kick           |
-| **Networks**   | VLAN topology with inline edit overlay for live config changes                                   |
-| **Firewall**   | Policies grouped by zone pair in evaluation order, plus zones, ACL, and NAT                      |
-| **Topology**   | Zoomable network tree with pan, zoom, fit-to-view                                                |
-| **Events**     | Live stream with an events-by-hour heatmap, 10K buffer, pause, and search                        |
-| **Stats**      | WAN bandwidth, client counts, DPI breakdown (1h/24h/7d/30d)                                      |
-| **WiFi**       | AP health across 2.4/5/6 GHz, per-client experience, neighboring APs, and roaming history        |
-| **Settings**   | Profile switching, theme selector, display preferences                                           |
-| **Onboarding** | First-run setup wizard                                                                           |
+| Screen         | Highlights                                                                                                                                                                                   |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Dashboard**  | btop-style overview: mirrored RX/TX WAN chart, gateway info, CPU/MEM gauges, top clients, events, alarm count. Keyboard focus across panels and a WAN speed test                             |
+| **Devices**    | Model, firmware with update markers, clients, CPU/MEM. Filter and sort. Restart, locate, upgrade, adopt, provision, forget. Detail tabs with a switch port map, PoE control, and port rename |
+| **Clients**    | Network, uplink AP or switch port, signal, traffic. Filter and sort. Block, kick, fixed IP, guest authorization, forget                                                                      |
+| **Networks**   | VLAN list with a detail panel. Create, edit, and delete, with a dependency check before a delete                                                                                             |
+| **Firewall**   | Policies grouped by zone pair in evaluation order, plus zones, ACL, and NAT. Detail panels, enable/disable, logging, delete, and pick-up-and-move reordering                                 |
+| **Topology**   | Zoomable network tree with pan, zoom, fit-to-view, and a device cursor that opens the device                                                                                                 |
+| **Events**     | Live stream with an events-by-hour heatmap, 10K buffer, pause, category filter, search, event detail, older history, and an alarms view with archive                                         |
+| **Stats**      | WAN bandwidth, client counts, DPI breakdown (1h/24h/7d/30d)                                                                                                                                  |
+| **WiFi**       | AP health across 2.4/5/6 GHz, per-client experience, SSID management, channel map, neighboring APs, and roaming history                                                                      |
+| **Settings**   | Profile editing and switching with a tested connection, theme selector                                                                                                                       |
+| **Onboarding** | Setup wizard that tests the connection before it saves anything                                                                                                                              |
 
 Tabs, list rows, key hints, dialogs, and dashboard panels also take a click or a tap, so the TUI runs on a touchscreen kiosk without a keyboard: tap a switch twice to open it, tap Ports, then tap the next switch to see its ports. The wheel scrolls lists and zooms the topology, and a drag pans the map.
+
+Anything disruptive asks first and says what it costs. Every command shows a progress toast that becomes its result, and `n` opens the history of what happened.
 
 ### ✦ Gallery
 
@@ -439,7 +442,7 @@ Two crates, clean dependency chain:
 | Crate          | Purpose                                                                                                                                                                          |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **unifly-api** | Async HTTP/WebSocket client, Controller lifecycle, reactive DataStore (`DashMap` + `tokio::watch`), entity models. Published on [crates.io](https://crates.io/crates/unifly-api) |
-| **unifly**     | Single binary: CLI commands + `unifly tui` dashboard via feature flags, profile/keyring config, 11-screen ratatui dashboard with SilkCircuit theme                               |
+| **unifly**     | Single binary: CLI commands + `unifly tui` via feature flags, profile/keyring config, 11-screen ratatui dashboard and network client with SilkCircuit theme                      |
 
 Deep dive: [Architecture documentation](https://hyperb1iss.github.io/unifly/architecture/)
 
