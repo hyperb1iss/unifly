@@ -47,8 +47,9 @@ pub struct DevicesScreen {
     hits: RefCell<HitMap<Click>>,
     /// The detail pane and its list rows as last drawn.
     detail_hits: RefCell<detail::DetailHits>,
-    /// The device and port a rename prompt is open for.
-    renaming: Option<(EntityId, u32)>,
+    /// The device and port a rename prompt is open for, and the name the
+    /// prompt started on.
+    renaming: Option<(EntityId, u32, String)>,
 }
 
 impl Default for DevicesScreen {

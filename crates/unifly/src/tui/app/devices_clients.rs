@@ -165,8 +165,8 @@ impl App {
                         poe_mode: Some(*mode),
                         ..PortProfileUpdate::default()
                     },
-                    format!("Turning PoE {state} on port {port} of {name}\u{2026}"),
-                    format!("PoE is {state} on port {port} of {name}"),
+                    format!("Turning PoE {state} for port {port} of {name}\u{2026}"),
+                    format!("PoE turned {state} for port {port} of {name}"),
                 )
             }
         };

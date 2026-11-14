@@ -193,6 +193,20 @@ impl DevicesScreen {
             .copied()
     }
 
+    /// Put the Clients tab's cursor back on the client it was on, after
+    /// the list changed around it. A client that left leaves the cursor
+    /// on its row.
+    pub(super) fn follow_cursor_client(&mut self, id: Option<&EntityId>) {
+        let row = self.detail_device().zip(id).and_then(|(device, id)| {
+            self.device_clients(device)
+                .iter()
+                .position(|client| client.id == *id)
+        });
+        if let (Some(row), Some(detail)) = (row, &mut self.detail) {
+            detail.cursor.select(Some(row));
+        }
+    }
+
     /// Open the detail of the selected device on its Overview.
     pub(super) fn open_selected_detail(&mut self) {
         if let Some(id) = self.selected_device().map(|device| device.id.clone()) {

@@ -1,7 +1,7 @@
 //! Device and port commands: which ones a device's state allows, and the
 //! actions they turn into.
 
-use unifly_api::model::{PoeMode, Port};
+use unifly_api::model::{PoeMode, Port, PortProfile};
 use unifly_api::{Command, Device, DeviceState, DeviceType};
 
 use super::DevicesScreen;
@@ -30,10 +30,24 @@ pub(super) fn is_gateway(device: &Device) -> bool {
     device.device_type == DeviceType::Gateway
 }
 
-/// Whether the port is supplying PoE, which is what a power cycle needs.
-pub(super) fn port_powers(port: &Port) -> bool {
-    port.poe.as_ref().is_some_and(|poe| poe.enabled)
+/// Whether the port's PoE is switched on, which is what a power cycle
+/// needs and what `O` turns off. The controller's profile says so where
+/// it is loaded; a port can be on and idle, so the live state only
+/// answers without one.
+pub(super) fn port_powers(port: &Port, profile: Option<&PortProfile>) -> bool {
+    let Some(poe) = &port.poe else {
+        return false;
+    };
+    match profile.and_then(|profile| profile.poe_mode) {
+        Some(PoeMode::Off) => false,
+        Some(PoeMode::Auto | PoeMode::Passive24V | PoeMode::Passthrough) => true,
+        Some(PoeMode::Other) | None => poe.enabled,
+    }
 }
+
+/// Why the port settings cannot be written from here.
+const NO_PORT_WRITES: &str =
+    "Port settings need a direct controller session, which a cloud profile does not have";
 
 /// What a command key on `device` does, or a toast saying why not.
 impl DevicesScreen {
@@ -123,9 +137,26 @@ impl DevicesScreen {
         Some(Action::RequestUnadopt(device.id.clone()))
     }
 
+    /// Whether the port under the cursor has its PoE switched on.
+    pub(super) fn cursor_port_powers(&self) -> bool {
+        self.cursor_port().is_some_and(|(_, port)| {
+            let profile = self
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.profile(port.index));
+            port_powers(port, profile)
+        })
+    }
+
+    /// Whether port settings can be written: not once the controller has
+    /// said it has no Session API, which is where they live.
+    pub(super) fn ports_writable(&self) -> bool {
+        !matches!(self.access, Some(access) if !access.session)
+    }
+
     pub(super) fn request_power_cycle(&self) -> Option<Action> {
         let (device, port) = self.cursor_port()?;
-        if !port_powers(port) {
+        if !self.cursor_port_powers() {
             return Some(info(format!("Port {} is not supplying PoE", port.index)));
         }
         Some(Action::RequestPortPowerCycle(device.id.clone(), port.index))
@@ -135,16 +166,19 @@ impl DevicesScreen {
     /// first, since whatever the port powers goes dark.
     pub(super) fn request_poe_toggle(&self) -> Option<Action> {
         let (device, port) = self.cursor_port()?;
-        let Some(poe) = &port.poe else {
+        if port.poe.is_none() {
             return Some(info(format!("Port {} has no PoE", port.index)));
-        };
+        }
+        if !self.ports_writable() {
+            return Some(info(NO_PORT_WRITES.into()));
+        }
         let name = device_name(device);
         let update = |mode| Action::RequestPortUpdate {
             device: device.id.clone(),
             port: port.index,
             change: PortChange::Poe(mode),
         };
-        if !poe.enabled {
+        if !self.cursor_port_powers() {
             return Some(update(PoeMode::Auto));
         }
         Some(Action::ShowConfirm(
@@ -159,6 +193,9 @@ impl DevicesScreen {
     /// Ask for a new name for the port under the cursor.
     pub(super) fn request_port_rename(&mut self) -> Option<Action> {
         let (device, port) = self.cursor_port()?;
+        if !self.ports_writable() {
+            return Some(info(NO_PORT_WRITES.into()));
+        }
         let (device_id, index) = (device.id.clone(), port.index);
         let current = self
             .detail
@@ -168,19 +205,21 @@ impl DevicesScreen {
             .or_else(|| port.name.clone())
             .unwrap_or_default();
         let title = format!("Rename port {index} on {}", device_name(device));
-        self.renaming = Some((device_id, index));
+        self.renaming = Some((device_id, index, current.clone()));
         Some(rename_prompt(title, current))
     }
 
     /// The answer to the rename prompt.
     pub(super) fn submit_prompt(&mut self, text: &str) -> Option<Action> {
-        let (device, port) = self.renaming.take()?;
+        let (device, port, current) = self.renaming.take()?;
         let name = text.trim();
-        if name.is_empty() {
-            return Some(info("The port keeps its name: nothing was typed".into()));
+        // The prompt starts on the name the port has, which under redaction
+        // is a stand-in: writing that back would rename the real port.
+        if name.is_empty() || name == current {
+            return Some(info(format!("Port {port} keeps its name")));
         }
         if name.chars().count() > MAX_PORT_NAME {
-            self.renaming = Some((device, port));
+            self.renaming = Some((device, port, current));
             return Some(Action::OpenPrompt(PromptRequest {
                 hint: Some(format!(
                     "That is too long: a port name holds {MAX_PORT_NAME} characters."

@@ -194,7 +194,11 @@ impl DevicesScreen {
         match action {
             Action::DevicesUpdated(devices) => self.apply_devices_update(devices),
             Action::ClientsUpdated(clients) => {
-                self.clients = Arc::clone(clients);
+                // By name, like the Clients table, so the tab's rows hold
+                // still between refreshes and the cursor can follow.
+                let followed = self.cursor_client().map(|client| client.id.clone());
+                self.clients = Arc::new(order::clients(clients));
+                self.follow_cursor_client(followed.as_ref());
                 self.reconcile_detail();
             }
             Action::AccessUpdated(access) => self.access = Some(*access),
@@ -739,6 +743,12 @@ mod tests {
             "an answer nobody asked for did something"
         );
 
+        // Enter on the name the prompt started with writes nothing: under
+        // redaction that text is a stand-in for the real label.
+        press(&mut screen, 'N');
+        let (_, message) = toast(screen.apply_action(&Action::PromptSubmitted("Port 3".into())));
+        assert_eq!(message, "Port 3 keeps its name");
+
         // A name the controller would cut is handed back to fix.
         press(&mut screen, 'N');
         let long = "x".repeat(65);
@@ -748,6 +758,112 @@ mod tests {
         };
         assert_eq!(prompt.initial, long);
         assert!(prompt.hint.is_some_and(|hint| hint.contains("too long")));
+    }
+
+    #[test]
+    fn a_loaded_profile_decides_which_way_poe_goes() {
+        use unifly_api::model::PortProfile;
+
+        // Port 6 reports no power, as an idle port does, but its profile
+        // has PoE on auto.
+        let mut screen = on_port(6);
+        let profile: PortProfile = serde_json::from_value(json!({
+            "index": 6, "name": "Port 6", "link_state": "Down", "mode": "access",
+            "native_network_id": null, "native_vlan_id": null,
+            "native_network_name": null, "tagged_network_ids": [],
+            "tagged_vlan_ids": [], "tagged_network_names": [], "tagged_all": true,
+            "poe_mode": "auto", "speed_setting": "auto", "link_speed_mbps": null,
+            "stp_state": "disabled", "port_profile_id": null
+        }))
+        .expect("profile fixture");
+        screen.apply_action(&Action::PortProfilesLoaded {
+            device: EntityId::from("device-3"),
+            ports: Arc::new(vec![profile]),
+        });
+
+        assert!(screen.cursor_port_powers());
+        let Some(Action::ShowConfirm(confirm)) = press(&mut screen, 'O') else {
+            panic!("a port on auto is turned off, after asking");
+        };
+        assert!(matches!(
+            *confirm.action,
+            Action::RequestPortUpdate {
+                port: 6,
+                change: PortChange::Poe(PoeMode::Off),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn port_settings_are_refused_up_front_without_a_session() {
+        use crate::tui::action::Access;
+
+        let mut screen = on_port(1);
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: false,
+            live_events: false,
+        }));
+
+        for key in ['O', 'N'] {
+            let (level, message) = toast(press(&mut screen, key));
+            assert_eq!(level, NotificationLevel::Info, "{key}");
+            assert!(
+                message.contains("direct controller session"),
+                "{key}: {message}"
+            );
+        }
+        assert!(screen.renaming.is_none(), "a prompt was opened for nothing");
+        // The power cycle goes through the Integration API and still works.
+        assert!(matches!(
+            press(&mut screen, 'C'),
+            Some(Action::RequestPortPowerCycle(_, 1))
+        ));
+    }
+
+    #[test]
+    fn the_clients_tab_cursor_follows_its_client_when_others_come_and_go() {
+        let on_core = |index: u8, name: &str| {
+            client(
+                index,
+                name,
+                &json!({ "uplink_device_mac": "aa:bb:cc:dd:ee:03" }),
+            )
+        };
+        let mut screen = fleet();
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            on_core(3, "nas"),
+            on_core(1, "laptop"),
+        ])));
+        screen.select(2);
+        enter(&mut screen);
+        screen.set_detail_tab(DeviceDetailTab::Clients);
+        press(&mut screen, 'j');
+        let under_cursor = |screen: &DevicesScreen| {
+            screen
+                .cursor_client()
+                .and_then(|client| client.name.clone())
+        };
+        assert_eq!(
+            under_cursor(&screen).as_deref(),
+            Some("nas"),
+            "listed by name"
+        );
+
+        // A client that sorts ahead of it joins.
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
+            on_core(1, "laptop"),
+            on_core(3, "nas"),
+            on_core(2, "camera"),
+        ])));
+        assert_eq!(under_cursor(&screen).as_deref(), Some("nas"));
+
+        // It leaves: the cursor stays inside the list.
+        screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![on_core(
+            2, "camera",
+        )])));
+        assert_eq!(under_cursor(&screen).as_deref(), Some("camera"));
     }
 
     #[test]

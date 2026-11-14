@@ -147,7 +147,13 @@ fn render_filter_bar(screen: &ClientsScreen, frame: &mut Frame, area: Rect, show
     };
     if room(&bar, &sort) {
         for span in sort {
-            bar.push(Click::Key(click::char_key('s')), span);
+            // `s` belongs to the table, so the label is only a button
+            // while no detail has the keys.
+            if screen.detail_open {
+                bar.push_gap(span);
+            } else {
+                bar.push(Click::Key(click::char_key('s')), span);
+            }
         }
     }
     let count = Span::styled(

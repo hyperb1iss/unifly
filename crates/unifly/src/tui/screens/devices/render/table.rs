@@ -135,7 +135,13 @@ fn render_filter_bar(screen: &DevicesScreen, frame: &mut Frame, area: Rect, show
     };
     if room(&bar, &sort) {
         for span in sort {
-            bar.push(Click::Key(click::char_key('s')), span);
+            // `s` belongs to the table, so the label is only a button
+            // while no detail has the keys.
+            if screen.detail.is_none() {
+                bar.push(Click::Key(click::char_key('s')), span);
+            } else {
+                bar.push_gap(span);
+            }
         }
     }
     let count = [Span::styled(
@@ -454,7 +460,11 @@ mod tests {
 
     fn screen_of(devices: Vec<Arc<Device>>) -> DevicesScreen {
         let mut screen = DevicesScreen::new();
-        screen.apply_action(&Action::AccessUpdated(Access::default()));
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: true,
+            live_events: true,
+        }));
         screen.apply_action(&Action::DevicesUpdated(Arc::new(devices)));
         screen
     }
@@ -683,6 +693,17 @@ mod tests {
         let tap = screen.handle_mouse_input(click_label(&rows, "sort name", "sort name"));
         assert!(matches!(tap, Some(Action::PressKey(key)) if key.code == KeyCode::Char('s')));
 
+        // With a detail open `s` is not the table's, so the label is text.
+        press(&mut screen, KeyCode::Enter);
+        let rows = draw(&screen, 120, 24);
+        assert!(
+            screen
+                .handle_mouse_input(click_label(&rows, "sort name", "sort name"))
+                .is_none(),
+            "a button that presses a dead key"
+        );
+        press(&mut screen, KeyCode::Esc);
+
         screen.set_search_query("roof");
         let top = draw(&screen, 120, 12).join("\n");
         assert!(top.contains("Devices (1/3) [\"roof\"]"), "{top}");
@@ -786,6 +807,32 @@ mod tests {
         assert!(bar.contains("Esc close"), "{bar}");
         assert!(bar.contains("C power cycle"), "{bar}");
         assert!(!bar.contains("provision"), "{bar}");
+    }
+
+    #[test]
+    fn port_hints_leave_out_the_settings_keys_without_a_session() {
+        let mut screen = screen();
+        screen.select(2);
+        press(&mut screen, KeyCode::Enter);
+        screen.set_detail_tab(DeviceDetailTab::Ports);
+        let with_session = hints(&draw(&screen, 120, 30)).to_owned();
+        assert!(
+            with_session.contains("O PoE off") && with_session.contains("N rename"),
+            "{with_session}"
+        );
+
+        screen.apply_action(&Action::AccessUpdated(Access {
+            integration: true,
+            session: false,
+            live_events: false,
+        }));
+        let rows = draw(&screen, 120, 30);
+        let cloud = hints(&rows);
+        assert!(cloud.contains("C power cycle"), "{cloud}");
+        assert!(
+            !cloud.contains("PoE off") && !cloud.contains("rename"),
+            "{cloud}"
+        );
     }
 
     #[test]

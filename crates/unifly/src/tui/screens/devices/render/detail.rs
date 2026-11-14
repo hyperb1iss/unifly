@@ -12,7 +12,7 @@ use super::grid::{self, Field};
 use super::table::command_hints;
 use crate::tui::action::DeviceDetailTab;
 use crate::tui::screens::devices::DevicesScreen;
-use crate::tui::screens::devices::commands::{device_name, port_powers};
+use crate::tui::screens::devices::commands::device_name;
 use crate::tui::screens::devices::detail::{Detail, tab_label, tabs_for};
 use crate::tui::screens::devices::view::{state_label, type_label};
 use crate::tui::theme;
@@ -146,14 +146,19 @@ fn port_hints(screen: &DevicesScreen) -> Vec<(u8, Hint)> {
     let Some((_, port)) = screen.cursor_port() else {
         return Vec::new();
     };
+    let powers = screen.cursor_port_powers();
     let mut hints = Vec::new();
-    if port_powers(port) {
+    if powers {
         hints.push((1, Hint::button("C", "power cycle", click::char_key('C'))));
-        hints.push((2, Hint::button("O", "PoE off", click::char_key('O'))));
-    } else if port.poe.is_some() {
-        hints.push((2, Hint::button("O", "PoE on", click::char_key('O'))));
     }
-    hints.push((3, Hint::button("N", "rename", click::char_key('N'))));
+    // The settings keys need the Session API the profiles come from.
+    if screen.ports_writable() {
+        if port.poe.is_some() {
+            let label = if powers { "PoE off" } else { "PoE on" };
+            hints.push((2, Hint::button("O", label, click::char_key('O'))));
+        }
+        hints.push((3, Hint::button("N", "rename", click::char_key('N'))));
+    }
     hints
 }
 
