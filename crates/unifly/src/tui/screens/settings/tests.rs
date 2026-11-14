@@ -1086,6 +1086,32 @@ fn an_untouched_form_is_clean_and_saves_the_profile_as_it_was() {
     assert_eq!(saved.host_id_env.as_deref(), Some("UNIFLY_TEST_UNSET_HOST"));
 }
 
+/// A one-time code is good for the test it was typed for. Once that test
+/// reports, the field is empty, so a retest cannot send the spent code.
+#[test]
+fn a_one_time_code_is_cleared_once_its_test_has_run() {
+    let (mut screen, _dir) = screen_for(TWO_PROFILES, "work");
+    screen.focus(SettingsField::Totp);
+    type_text(&mut screen, "123456");
+    assert!(!screen.is_dirty(), "a code is never saved");
+
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.state, SettingsState::Testing);
+    assert_eq!(screen.draft.totp.text(), "123456", "still under test");
+    finish(
+        &mut screen,
+        Err(failure(FailureKind::Credentials, DraftField::Password)),
+    );
+    assert!(screen.draft.totp.is_empty());
+
+    // A cancelled test reported nothing, so its code is left to retry.
+    screen.focus(SettingsField::Totp);
+    type_text(&mut screen, "654321");
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Esc);
+    assert_eq!(screen.draft.totp.text(), "654321");
+}
+
 /// The command that makes MFA codes may carry the seed in its arguments,
 /// so the form names the program and nothing after it.
 #[test]

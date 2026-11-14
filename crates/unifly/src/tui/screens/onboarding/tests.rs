@@ -744,6 +744,21 @@ fn a_one_time_code_reaches_the_sign_in() {
     ctrl(&mut screen, 'u');
     type_text(&mut screen, "65x43 21");
     assert_eq!(screen.draft.totp.text(), "654321");
+
+    // The test is the one sign-in the code is good for: whatever comes
+    // back, the field is empty for a fresh one.
+    press(&mut screen, KeyCode::Up);
+    type_text(&mut screen, "pw");
+    press(&mut screen, KeyCode::Up);
+    type_text(&mut screen, "admin");
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.phase, TestPhase::Testing);
+    finish(
+        &mut screen,
+        Err(failure(FailureKind::Mfa, DraftField::Totp)),
+    );
+    assert!(screen.draft.totp.is_empty());
+    assert!(screen.draft.totp_code().is_none());
 }
 
 /// Every field of the tallest step stays on screen and usable when the

@@ -482,27 +482,8 @@ async fn run(
             )));
         }
     };
-    // A sign-in test parks its session for the dashboard, unless the
-    // launch asked for no session cache. A typed one-time code overrules
-    // that: it can sign in once, so without the hand-over the dashboard
-    // could not sign in at all.
-    let mut probe = probe_config(&live);
-    probe.no_session_cache = true;
     let target_url = live.url.as_str().to_owned();
-    let mut parked = None;
-    if let Some(sign_in) = SignIn::of(&live)
-        && (totp.is_some() || !live.no_session_cache)
-        && let Some(cache_name) = Handover::cache_name(&handover, &profile_name, sign_in)
-    {
-        probe.profile_name = Some(cache_name.clone());
-        probe.no_session_cache = false;
-        live.no_session_cache = false;
-        parked = Some(cache_name);
-    }
-    if totp.is_some() {
-        probe.totp_token.clone_from(&totp);
-        live.totp_token = totp;
-    }
+    let (probe, parked) = split_for_test(&mut live, totp, &profile_name, &handover);
     // What the connection signs in with once launch flags are applied,
     // which can differ from the mode the profile names.
     let mode = match &live.auth {
@@ -550,6 +531,44 @@ async fn run(
         return None;
     }
     Some(result)
+}
+
+/// Split `live`, the connection as resolved, into the one the test makes
+/// (returned, with the cache name its session is parked under, if it is)
+/// and the one handed to the session afterwards (left in `live`).
+///
+/// A sign-in test parks its session for the dashboard, unless the launch
+/// asked for no session cache. A one-time code overrules that: it signs in
+/// once, and the test is that once, so without the hand-over the dashboard
+/// could not sign in at all. For the same reason the code stays with the
+/// test. Left in `live` it would be sent again by every reconnect, refused
+/// each time, and would stand in front of a `totp_command` that could
+/// have supplied a current one.
+fn split_for_test(
+    live: &mut ControllerConfig,
+    typed: Option<SecretString>,
+    profile_name: &str,
+    handover: &HandoverSlot,
+) -> (ControllerConfig, Option<String>) {
+    let mut probe = probe_config(live);
+    probe.no_session_cache = true;
+    if typed.is_some() {
+        probe.totp_token = typed;
+    }
+    let one_time = probe.totp_token.is_some();
+    live.totp_token = None;
+
+    let mut parked = None;
+    if let Some(sign_in) = SignIn::of(live)
+        && (one_time || !live.no_session_cache)
+        && let Some(cache_name) = Handover::cache_name(handover, profile_name, sign_in)
+    {
+        probe.profile_name = Some(cache_name.clone());
+        probe.no_session_cache = false;
+        live.no_session_cache = false;
+        parked = Some(cache_name);
+    }
+    (probe, parked)
 }
 
 /// The sites the connected `controller` read.
@@ -1080,6 +1099,57 @@ mod tests {
         assert_ne!(retyped, first, "a new password signs in afresh");
         let another = name(sign_in("root", "other")).expect("name");
         assert_ne!(another, retyped, "so does a new user");
+    }
+
+    /// A one-time code signs in once, and the test is that once. The
+    /// connection handed to the session must not carry it: a reconnect
+    /// would replay it. The session the test opened is handed over
+    /// instead, even when the launch asked for no session cache.
+    #[test]
+    fn a_one_time_code_stays_with_the_test_that_spends_it() {
+        use secrecy::ExposeSecret;
+
+        let signing_in = || unifly_api::ControllerConfig {
+            auth: unifly_api::AuthCredentials::Credentials {
+                username: "admin".into(),
+                password: secrecy::SecretString::from("pw".to_owned()),
+            },
+            no_session_cache: true,
+            ..unifly_api::ControllerConfig::default()
+        };
+        let code = |text: &str| Some(secrecy::SecretString::from(text.to_owned()));
+        let sent = |config: &unifly_api::ControllerConfig| {
+            config
+                .totp_token
+                .as_ref()
+                .map(|code| code.expose_secret().to_owned())
+        };
+
+        // Typed into the form.
+        let mut live = signing_in();
+        let slot = super::HandoverSlot::default();
+        let (probe, parked) = super::split_for_test(&mut live, code("123456"), "home", &slot);
+        assert_eq!(sent(&probe).as_deref(), Some("123456"));
+        assert_eq!(sent(&live), None, "spent: never handed on");
+        assert!(parked.is_some(), "the session is handed over instead");
+        assert_eq!(probe.profile_name, parked);
+        assert!(!live.no_session_cache, "so the dashboard can restore it");
+
+        // Resolved from the profile's `totp_env`: just as single-use.
+        let mut live = signing_in();
+        live.totp_token = code("654321");
+        let slot = super::HandoverSlot::default();
+        let (probe, parked) = super::split_for_test(&mut live, None, "home", &slot);
+        assert_eq!(sent(&probe).as_deref(), Some("654321"));
+        assert_eq!(sent(&live), None);
+        assert!(parked.is_some());
+
+        // Without a code, `--no-cache` stands and nothing is parked.
+        let mut live = signing_in();
+        let slot = super::HandoverSlot::default();
+        let (probe, parked) = super::split_for_test(&mut live, None, "home", &slot);
+        assert_eq!(parked, None);
+        assert!(probe.no_session_cache && live.no_session_cache);
     }
 
     fn request(name: &str) -> (super::ProbeRequest, super::SavePlan) {

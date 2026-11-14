@@ -452,6 +452,8 @@ impl OnboardingScreen {
         let Some(tested) = self.probe.claim(generation) else {
             return;
         };
+        // The test was the one sign-in a one-time code is good for.
+        self.draft.totp.clear();
         match result {
             Ok(pass) => {
                 self.known_sites.clone_from(&pass.sites);
