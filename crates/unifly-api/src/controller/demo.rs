@@ -180,6 +180,15 @@ fn apply_delta(store: &DataStore, events: &broadcast::Sender<Arc<Event>>, delta:
         }
     }
 
+    if !delta.wifi.is_empty() {
+        let _batch = store.wifi_broadcasts.begin_batch();
+        for wifi in delta.wifi {
+            let key = format!("wifi:{}", wifi.id);
+            let id = wifi.id.clone();
+            store.wifi_broadcasts.upsert(key, id, wifi);
+        }
+    }
+
     if let Some(health) = delta.health {
         store.site_health.send_replace(Arc::new(health));
     }

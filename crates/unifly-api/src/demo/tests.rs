@@ -621,3 +621,94 @@ fn history_series_do_not_depend_on_launch_time() {
     assert_eq!(early_rows, late_rows, "same seed, same chart shapes");
     assert_ne!(early_times, late_times, "timestamps still track the clock");
 }
+
+fn ssid_clients(sim: &Simulation, ssid: &str) -> usize {
+    sim.fleet
+        .clients
+        .iter()
+        .filter_map(|demo| demo.client.wireless.as_ref())
+        .filter(|wireless| wireless.ssid.as_deref() == Some(ssid))
+        .count()
+}
+
+#[test]
+fn ssid_edits_change_the_broadcast_and_a_rename_carries_its_clients() {
+    use crate::command::UpdateWifiBroadcastRequest;
+
+    let mut sim = Simulation::new(fleet());
+    let now = anchor();
+    let ssid = sim.fleet.wifi[0].clone();
+    let joined = ssid_clients(&sim, &ssid.name);
+    assert_ne!(joined, 0, "the fleet has clients on its first SSID");
+    let edit = |sim: &mut Simulation, update: UpdateWifiBroadcastRequest| {
+        let (_, delta) = sim
+            .apply_command(
+                Command::UpdateWifiBroadcast {
+                    id: ssid.id.clone(),
+                    update,
+                },
+                now,
+            )
+            .expect("SSID edits work in demo mode");
+        delta
+    };
+
+    let delta = edit(
+        &mut sim,
+        UpdateWifiBroadcastRequest {
+            enabled: Some(false),
+            hide_ssid: Some(true),
+            ..Default::default()
+        },
+    );
+    assert!(!delta.wifi[0].enabled);
+    assert!(delta.wifi[0].hidden);
+    assert_eq!(delta.events.len(), 1);
+
+    for name in ["Harbor Crew", "Harbor Staff"] {
+        let delta = edit(
+            &mut sim,
+            UpdateWifiBroadcastRequest {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(delta.wifi[0].name, name);
+        assert_eq!(ssid_clients(&sim, name), joined, "clients follow {name}");
+    }
+    assert_eq!(ssid_clients(&sim, &ssid.name), 0);
+
+    // Clients that associate later still land on the current name.
+    for second in 1..=120 {
+        sim.step(now + Duration::seconds(second));
+    }
+    assert_eq!(ssid_clients(&sim, &ssid.name), 0);
+    assert_ne!(ssid_clients(&sim, "Harbor Staff"), 0);
+}
+
+#[tokio::test]
+async fn an_ssid_edit_reaches_the_store() {
+    let controller = Controller::demo(DemoFleetOptions::default());
+    controller.connect().await.expect("demo connect");
+    let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
+    assert!(ssid.enabled);
+
+    controller
+        .execute(Command::UpdateWifiBroadcast {
+            id: ssid.id.clone(),
+            update: crate::command::UpdateWifiBroadcastRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("SSID edit");
+
+    let stored = controller.wifi_broadcasts_snapshot();
+    let after = stored
+        .iter()
+        .find(|stored| stored.id == ssid.id)
+        .expect("the SSID is still listed");
+    assert!(!after.enabled);
+    controller.disconnect().await;
+}

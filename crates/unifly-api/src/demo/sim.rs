@@ -13,7 +13,9 @@ use chrono::{DateTime, Utc};
 
 use super::fleet::{AP_BASE, Fleet};
 use super::rng::DemoRng;
-use crate::model::{Client, Device, Event, FirewallPolicy, HealthSummary, MacAddress};
+use crate::model::{
+    Client, Device, Event, FirewallPolicy, HealthSummary, MacAddress, WifiBroadcast,
+};
 use crate::store::RefreshSnapshot;
 
 /// Ticks until the AP that is mid-upgrade at launch comes back.
@@ -27,6 +29,7 @@ pub(crate) struct Delta {
     pub clients: Vec<Client>,
     pub removed: Vec<MacAddress>,
     pub policies: Vec<FirewallPolicy>,
+    pub wifi: Vec<WifiBroadcast>,
     pub events: Vec<Event>,
     pub health: Option<Vec<HealthSummary>>,
     /// A command changed the configuration (networks, policies, rules):
@@ -87,6 +90,10 @@ pub(crate) struct Simulation {
     pub(crate) live_roams: Vec<(MacAddress, serde_json::Value)>,
     /// Gateway WAN rates from the latest tick: `(tx, rx)` bytes/s.
     pub(crate) wan: (u64, u64),
+    /// SSIDs renamed during the session, as `(generated name, current
+    /// name)`. Clients join under the generated name, so each tick maps
+    /// them to the current one.
+    pub(crate) ssid_renames: Vec<(String, String)>,
     initial_clients: usize,
 }
 
@@ -119,6 +126,7 @@ impl Simulation {
             returns: Vec::new(),
             live_roams: Vec::new(),
             wan,
+            ssid_renames: Vec::new(),
             initial_clients,
         }
     }
@@ -131,6 +139,7 @@ impl Simulation {
         self.finish_pending(now, &mut delta);
         self.schedule_happenings(now, &mut delta);
         self.update_clients();
+        self.apply_ssid_renames();
         self.update_wan();
         self.update_devices(now);
 
@@ -191,6 +200,28 @@ impl Simulation {
             .get(index)
             .and_then(|device| device.name.clone())
             .unwrap_or_default()
+    }
+
+    /// Put every client that joined under a renamed SSID's generated name
+    /// on its current name.
+    pub(crate) fn apply_ssid_renames(&mut self) {
+        if self.ssid_renames.is_empty() {
+            return;
+        }
+        let fleet = &mut self.fleet;
+        for demo in fleet.clients.iter_mut().chain(fleet.away.iter_mut()) {
+            let Some(ssid) = demo
+                .client
+                .wireless
+                .as_mut()
+                .and_then(|wireless| wireless.ssid.as_mut())
+            else {
+                continue;
+            };
+            if let Some((_, current)) = self.ssid_renames.iter().find(|(old, _)| old == ssid) {
+                ssid.clone_from(current);
+            }
+        }
     }
 
     /// Schedule a transition `ticks` from now.

@@ -2,15 +2,16 @@
 //
 // Device and client actions succeed against the simulation and emit the
 // event a real controller would, and so do the network and firewall edits
-// in `config.rs`. Anything else that would need a real controller to mean
-// something (adoption, WiFi and VPN CRUD, site admin) is refused with a
-// clear error instead of pretending.
+// in `config.rs` and edits to an SSID's name, enabled state, and
+// visibility. Anything else that would need a real controller to mean
+// something (adoption, other WiFi and VPN CRUD, site admin) is refused
+// with a clear error instead of pretending.
 
 use chrono::{DateTime, Utc};
 
 use super::catalog::{self, AP_FIRMWARE};
 use super::sim::{Delta, Pending, Simulation, client_label};
-use crate::command::{Command, CommandResult};
+use crate::command::{Command, CommandResult, UpdateWifiBroadcastRequest};
 use crate::core_error::CoreError;
 use crate::model::{ClientType, DeviceState, EntityId, EventCategory, EventSeverity, MacAddress};
 
@@ -135,6 +136,9 @@ impl Simulation {
                 self.update_nat(&id, update, now, &mut delta)?;
             }
             Command::DeleteNatPolicy { id } => self.delete_nat(&id, now, &mut delta)?,
+            Command::UpdateWifiBroadcast { id, update } => {
+                self.update_wifi(&id, &update, now, &mut delta)?;
+            }
             other => return Err(unavailable(&command_name(&other))),
         }
         Ok((CommandResult::Ok, delta))
@@ -287,6 +291,84 @@ impl Simulation {
         event.client_mac = Some(updated.mac.clone());
         delta.events.push(event);
         delta.clients.push(updated);
+        Ok(())
+    }
+
+    /// Apply an SSID edit. The name, enabled state, and visibility change;
+    /// a passphrase or security mode is accepted and has nothing to show.
+    /// Clients stay associated to a disabled SSID: the simulation does not
+    /// model the radios dropping them.
+    fn update_wifi(
+        &mut self,
+        id: &EntityId,
+        update: &UpdateWifiBroadcastRequest,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let wifi = self
+            .fleet
+            .wifi
+            .iter_mut()
+            .find(|wifi| &wifi.id == id)
+            .ok_or_else(|| CoreError::NotFound {
+                entity_type: "WiFi broadcast".into(),
+                identifier: id.to_string(),
+            })?;
+        let before = wifi.name.clone();
+        let mut changes = Vec::new();
+        if let Some(name) = update.name.as_ref().or(update.ssid.as_ref())
+            && name != &before
+        {
+            wifi.name.clone_from(name);
+            changes.push(format!("renamed to \"{name}\""));
+        }
+        if let Some(enabled) = update.enabled.filter(|enabled| *enabled != wifi.enabled) {
+            wifi.enabled = enabled;
+            changes.push(if enabled { "enabled" } else { "disabled" }.to_owned());
+        }
+        if let Some(hidden) = update.hide_ssid.filter(|hidden| *hidden != wifi.hidden) {
+            wifi.hidden = hidden;
+            changes.push(if hidden { "hidden" } else { "unhidden" }.to_owned());
+        }
+        if update.passphrase.is_some() {
+            changes.push("passphrase changed".to_owned());
+        }
+        let updated = wifi.clone();
+
+        if updated.name != before {
+            // Later renames chain from the generated name clients join by.
+            match self
+                .ssid_renames
+                .iter_mut()
+                .find(|(_, current)| current == &before)
+            {
+                Some((_, current)) => current.clone_from(&updated.name),
+                None => self
+                    .ssid_renames
+                    .push((before.clone(), updated.name.clone())),
+            }
+            let fleet = &mut self.fleet;
+            for demo in fleet.clients.iter_mut().chain(fleet.away.iter_mut()) {
+                if let Some(wireless) = demo.client.wireless.as_mut()
+                    && wireless.ssid.as_deref() == Some(before.as_str())
+                {
+                    wireless.ssid = Some(updated.name.clone());
+                }
+            }
+            delta.clients = self
+                .fleet
+                .clients
+                .iter()
+                .map(|client| client.client.clone())
+                .collect();
+        }
+        if !changes.is_empty() {
+            let message = format!("WiFi \"{before}\" {}", changes.join(", "));
+            delta
+                .events
+                .push(self.event(now, ADMIN_INFO, "EVT_AD_WlanChanged", message));
+        }
+        delta.wifi.push(updated);
         Ok(())
     }
 
