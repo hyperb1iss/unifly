@@ -90,9 +90,13 @@ impl DashboardScreen {
     fn move_focus(&mut self, rows: isize, columns: isize) {
         let (row, column) = self.focus.position();
         if columns != 0 {
+            // A one-panel row has no columns to move through, and must
+            // not overwrite the one remembered for the rows around it.
             let last = GRID[row].len() - 1;
-            self.column = column.saturating_add_signed(columns).min(last);
-            self.focus = GRID[row][self.column];
+            if last > 0 {
+                self.column = column.saturating_add_signed(columns).min(last);
+                self.focus = GRID[row][self.column];
+            }
             return;
         }
         let row = row.saturating_add_signed(rows).min(GRID.len() - 1);
@@ -292,6 +296,14 @@ pub(super) mod tests {
         press(&mut screen, KeyCode::Down);
         assert_eq!(screen.focus, Panel::Events);
         press(&mut screen, KeyCode::Char('k'));
+        assert_eq!(screen.focus, Panel::Wifi);
+        // A sideways key on a one-panel row does not forget the column.
+        press(&mut screen, KeyCode::Down);
+        for key in [KeyCode::Char('l'), KeyCode::Left] {
+            press(&mut screen, key);
+            assert_eq!(screen.focus, Panel::Events);
+        }
+        press(&mut screen, KeyCode::Up);
         assert_eq!(screen.focus, Panel::Wifi);
         press(&mut screen, KeyCode::Char('g'));
         assert_eq!(screen.focus, Panel::Traffic);
