@@ -126,6 +126,23 @@ pub enum CoreError {
     Internal(String),
 }
 
+/// `error` followed by the causes under it. A failed connect only says
+/// "error sending request" on its own; whether the cause was a refused
+/// connection, a name that does not resolve, or a certificate that could
+/// not be verified is further down the chain.
+fn with_causes(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut cause = error.source();
+    while let Some(inner) = cause {
+        let text = inner.to_string();
+        if !text.is_empty() && !out.contains(&text) {
+            let _ = write!(&mut out, ": {text}");
+        }
+        cause = inner.source();
+    }
+    out
+}
+
 // ── Conversion from transport-layer errors ───────────────────────────
 
 impl From<crate::error::Error> for CoreError {
@@ -156,7 +173,7 @@ impl From<crate::error::Error> for CoreError {
                         url: e
                             .url()
                             .map_or_else(|| "<unknown>".into(), ToString::to_string),
-                        reason: e.to_string(),
+                        reason: with_causes(e),
                     }
                 } else if e.status().map(|s| s.as_u16()) == Some(404) {
                     CoreError::NotFound {
@@ -231,6 +248,51 @@ impl From<crate::error::Error> for CoreError {
 #[cfg(test)]
 mod tests {
     use super::{CoreError, SiteHint};
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            let cause: Option<&(dyn std::error::Error + 'static)> = match &self.1 {
+                Some(inner) => Some(inner.as_ref()),
+                None => None,
+            };
+            cause
+        }
+    }
+
+    #[test]
+    fn a_failed_connect_names_the_cause_under_it() {
+        let error = Layer(
+            "error sending request",
+            Some(Box::new(Layer(
+                "client error (Connect)",
+                Some(Box::new(Layer(
+                    "invalid peer certificate: UnknownIssuer",
+                    None,
+                ))),
+            ))),
+        );
+        assert_eq!(
+            super::with_causes(&error),
+            "error sending request: client error (Connect): invalid peer certificate: \
+             UnknownIssuer"
+        );
+
+        // A cause the outer message already quotes is not repeated.
+        let repeated = Layer(
+            "connect failed: refused",
+            Some(Box::new(Layer("refused", None))),
+        );
+        assert_eq!(super::with_causes(&repeated), "connect failed: refused");
+    }
 
     #[test]
     fn site_not_found_renders_with_no_candidates() {
