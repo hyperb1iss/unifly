@@ -31,6 +31,8 @@ impl EventsScreen {
             firewall_extra: HashSet::new(),
             devices: Arc::default(),
             clients: Arc::default(),
+            view: super::View::default(),
+            alarms: super::alarms::AlarmList::default(),
             hits: RefCell::default(),
         }
     }
@@ -222,6 +224,8 @@ impl EventsScreen {
                 self.history.note = Some(format!("history: {message}"));
             }
             Action::ToggleEventPause => self.toggle_pause(),
+            Action::AlarmsLoaded(alarms) => self.alarms.loaded(alarms),
+            Action::AlarmsFailed(message) => self.alarms.failed(message),
             Action::SearchInput(query) => {
                 self.search.clone_from(query);
                 self.refilter();

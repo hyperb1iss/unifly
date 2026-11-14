@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use unifly_api::EntityId;
 
-use super::{CATEGORIES, EventsScreen};
+use super::{CATEGORIES, EventsScreen, View};
 use crate::tui::action::{Action, Notification};
 use crate::tui::component::LIST_HELP;
 use crate::tui::widgets::click::{self, Click};
@@ -12,6 +12,9 @@ const NEEDS_SESSION: &str = "Older events need a direct controller session";
 
 impl EventsScreen {
     pub(super) fn handle_key_input(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.view == View::Alarms {
+            return self.handle_alarm_key(key);
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = isize::try_from(self.page.get().max(1)).unwrap_or(10);
         match key.code {
@@ -26,6 +29,7 @@ impl EventsScreen {
             KeyCode::Enter => self.open_detail(),
             KeyCode::Char('l') | KeyCode::Right => self.step_category(1),
             KeyCode::Char('h') | KeyCode::Left => self.step_category(-1),
+            KeyCode::Char('v') => return Some(self.toggle_alarms()),
             KeyCode::Char('o') => return Some(self.load_older()),
             KeyCode::Char('f') => return Some(self.toggle_firewall()),
             KeyCode::Char('p') => self.heatmap = Some(!self.heatmap_shown.get()),
@@ -129,11 +133,16 @@ impl EventsScreen {
     /// wheel moves through the feed.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         if let Some(delta) = click::wheel_delta(mouse) {
-            self.move_cursor(delta);
-            return Some(Action::Invalidate);
+            let key = if delta < 0 {
+                KeyCode::Up
+            } else {
+                KeyCode::Down
+            };
+            return self.handle_key_input(key.into());
         }
         let target = self.hits.borrow().clicked(mouse)?;
         match target {
+            Click::Row(row) if self.view == View::Alarms => self.click_alarm_row(row),
             Click::Key(key) => Some(Action::PressKey(key)),
             Click::Action(action) => Some(action),
             Click::Tab(index) => {
@@ -158,6 +167,9 @@ impl EventsScreen {
     }
 
     pub(super) fn help_keys(&self) -> Vec<(&'static str, &'static str)> {
+        if self.view == View::Alarms {
+            return Self::alarm_help();
+        }
         let mut keys = Vec::new();
         if self.detail_open {
             keys.push(("Esc", "Close the event detail"));
@@ -178,6 +190,7 @@ impl EventsScreen {
         keys.extend_from_slice(&[
             ("h/l \u{2190}/\u{2192}", "Filter by category"),
             ("/", "Filter by message text"),
+            ("v", "Show the alarms"),
             ("o", "Load older events"),
             ("f", "Firewall blocks on / off"),
             ("p", "Hourly heatmap on / off"),

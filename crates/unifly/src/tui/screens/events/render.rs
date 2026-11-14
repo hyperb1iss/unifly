@@ -10,7 +10,7 @@ use unifly_api::model::{EventCategory, EventSeverity};
 
 use super::punchcard::{PUNCHCARD_HEIGHT, render_punchcard};
 use super::state::window_label;
-use super::{CATEGORIES, EventsScreen};
+use super::{CATEGORIES, EventsScreen, View};
 use crate::tui::screens::link::Link;
 use crate::tui::theme;
 use crate::tui::widgets::click::{self, Click, Hint};
@@ -86,7 +86,9 @@ impl EventsScreen {
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
         self.hits.borrow_mut().clear();
         let view = self.view();
-        let title = if self.filtered() {
+        let title = if self.view == View::Alarms {
+            self.alarm_title()
+        } else if self.filtered() {
             format!(" Events ({} of {}) ", view.len(), self.feed.len())
         } else {
             format!(" Events ({}) ", self.feed.len())
@@ -104,6 +106,21 @@ impl EventsScreen {
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
+
+        if self.view == View::Alarms {
+            let layout = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+            frame.render_widget(Paragraph::new(self.alarm_status_line()), layout[0]);
+            self.render_alarm_list(frame, layout[1]);
+            let line =
+                click::key_hints(&Self::alarm_hints()).draw(layout[2], &mut self.hits.borrow_mut());
+            frame.render_widget(Paragraph::new(line), layout[2]);
+            return;
+        }
 
         let detail = self
             .detail_open
@@ -170,6 +187,17 @@ impl EventsScreen {
                 format!("  \u{25BC} {} new", self.unseen),
                 Style::default().fg(theme::accent_secondary()),
             ));
+        }
+        match self.active_alarms() {
+            0 => {}
+            1 => spans.push(Span::styled(
+                "  \u{00B7}  \u{26A0} 1 alarm",
+                Style::default().fg(theme::warning()),
+            )),
+            count => spans.push(Span::styled(
+                format!("  \u{00B7}  \u{26A0} {count} alarms"),
+                Style::default().fg(theme::warning()),
+            )),
         }
         if self.history.loaded.is_some() || self.history.include_firewall {
             let (hours, _) = self.history_window();
@@ -389,7 +417,7 @@ impl EventsScreen {
                 Hint::button("Enter", "details", crossterm::event::KeyCode::Enter),
                 Hint::info("h/l", "category"),
                 Hint::button("o", "older", click::char_key('o')),
-                Hint::button("f", "firewall", click::char_key('f')),
+                Hint::button("v", "alarms", click::char_key('v')),
             ]
         };
         let line = click::key_hints(&hints).draw(area, &mut self.hits.borrow_mut());

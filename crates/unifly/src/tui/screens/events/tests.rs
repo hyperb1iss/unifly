@@ -767,3 +767,181 @@ fn list_header_lines_up_with_the_rows() {
     assert_eq!(header.find("Category"), row.find("Client"));
     assert_eq!(header.find("Message"), row.find("client-05"));
 }
+
+fn alarm(id: &str, minute: u32, message: &str, archived: bool) -> unifly_api::model::Alarm {
+    serde_json::from_value(json!({
+        "id": id,
+        "timestamp": format!("2026-10-12T08:{minute:02}:00Z"),
+        "category": "Device",
+        "severity": "Error",
+        "message": message,
+        "archived": archived,
+        "device_mac": "aa:bb:cc:dd:ee:01",
+        "site_id": null
+    }))
+    .expect("alarm fixture should deserialize")
+}
+
+fn with_alarms() -> EventsScreen {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..3);
+    screen
+        .update(&Action::AlarmsLoaded(Arc::new(vec![
+            alarm("alarm-old", 5, "ap-dock lost contact", false),
+            alarm("alarm-new", 40, "sw-core port 12 lost PoE", false),
+            alarm("alarm-done", 50, "WAN2 came back", true),
+        ])))
+        .expect("alarms");
+    screen
+}
+
+#[test]
+fn v_opens_the_alarms_view_and_reads_them_again() {
+    let mut screen = with_alarms();
+    let feed = draw(&screen).join("\n");
+    assert!(
+        feed.contains("\u{26A0} 2 alarms"),
+        "the feed counts them: {feed}"
+    );
+
+    let opened = press(&mut screen, KeyCode::Char('v'));
+    assert!(matches!(opened, Some(Action::RequestAlarms)), "{opened:?}");
+    let rows = draw(&screen);
+    assert!(rows[0].contains("Alarms (2)"), "{}", rows[0]);
+    let text = rows.join("\n");
+    assert!(
+        text.contains("2 active") && text.contains("1 archived"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("WAN2 came back"),
+        "archived alarms are out: {text}"
+    );
+    let newest = text.find("sw-core port 12").expect("newest alarm");
+    let oldest = text.find("ap-dock lost contact").expect("oldest alarm");
+    assert!(newest < oldest, "newest first:\n{text}");
+    assert!(
+        screen.search_query().is_none(),
+        "search has nothing to filter"
+    );
+
+    // Esc and `v` both return to the feed.
+    let back = press(&mut screen, KeyCode::Esc);
+    assert!(back.is_some() && screen.view == super::View::Feed);
+    press(&mut screen, KeyCode::Char('v'));
+    press(&mut screen, KeyCode::Char('v'));
+    assert!(draw(&screen)[0].contains("Events (3)"));
+}
+
+#[test]
+fn x_asks_to_archive_the_alarm_under_the_cursor() {
+    use unifly_api::Command;
+
+    let mut screen = with_alarms();
+    press(&mut screen, KeyCode::Char('v'));
+    press(&mut screen, KeyCode::Char('j'));
+
+    let asked = press(&mut screen, KeyCode::Char('x'));
+    let Some(Action::ShowConfirm(confirm)) = asked else {
+        panic!("expected a confirmation, got {asked:?}");
+    };
+    assert_eq!(confirm.detail.as_deref(), Some("ap-dock lost contact"));
+    let Action::Run { command, .. } = *confirm.action else {
+        panic!("expected a command");
+    };
+    assert!(
+        matches!(&*command, Command::ArchiveAlarm { id } if id.to_string() == "alarm-old"),
+        "{command:?}"
+    );
+
+    let all = press(&mut screen, KeyCode::Char('X'));
+    let Some(Action::ShowConfirm(confirm)) = all else {
+        panic!("expected a confirmation, got {all:?}");
+    };
+    assert!(
+        confirm.prompt.contains("all 2 active alarms"),
+        "{}",
+        confirm.prompt
+    );
+    assert!(matches!(
+        *confirm.action,
+        Action::Run { ref command, .. } if matches!(**command, Command::ArchiveAllAlarms)
+    ));
+}
+
+#[test]
+fn the_alarm_cursor_stays_on_its_alarm_when_the_list_changes() {
+    let mut screen = with_alarms();
+    press(&mut screen, KeyCode::Char('v'));
+    press(&mut screen, KeyCode::Char('j'));
+
+    // The newer alarm is archived out from above the cursor.
+    screen
+        .update(&Action::AlarmsLoaded(Arc::new(vec![
+            alarm("alarm-old", 5, "ap-dock lost contact", false),
+            alarm("alarm-new", 40, "sw-core port 12 lost PoE", true),
+        ])))
+        .expect("alarms");
+
+    let rows = draw(&screen);
+    let cursor = rows
+        .iter()
+        .find(|row| row.contains('\u{25B8}'))
+        .expect("a cursor row");
+    assert!(cursor.contains("ap-dock lost contact"), "{cursor}");
+
+    // With nothing left there is nothing to archive.
+    screen
+        .update(&Action::AlarmsLoaded(Arc::new(Vec::new())))
+        .expect("alarms");
+    assert!(draw(&screen).join("\n").contains("No active alarms"));
+    assert!(press(&mut screen, KeyCode::Char('x')).is_none());
+    assert!(press(&mut screen, KeyCode::Char('X')).is_none());
+}
+
+#[test]
+fn enter_opens_the_device_an_alarm_names() {
+    let mut screen = with_alarms();
+    let core = device("dev-core", "aa:bb:cc:dd:ee:01", "sw-core");
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![Arc::clone(&core)])))
+        .expect("devices");
+    press(&mut screen, KeyCode::Char('v'));
+
+    let opened = press(&mut screen, KeyCode::Enter);
+    assert!(
+        matches!(&opened, Some(Action::ShowDevice(id)) if *id == core.id),
+        "{opened:?}"
+    );
+}
+
+#[test]
+fn the_alarms_view_says_why_it_is_empty() {
+    let mut cloud = connected(Access {
+        session: false,
+        live_events: false,
+        ..FULL
+    });
+    let opened = press(&mut cloud, KeyCode::Char('v'));
+    assert!(
+        matches!(opened, Some(Action::Invalidate)),
+        "nothing is read without session access: {opened:?}"
+    );
+    assert!(
+        draw(&cloud)
+            .join("\n")
+            .contains("need a direct controller session")
+    );
+
+    let mut loading = connected(FULL);
+    press(&mut loading, KeyCode::Char('v'));
+    assert!(draw(&loading).join("\n").contains("Loading alarms"));
+    loading
+        .update(&Action::AlarmsFailed("forbidden".into()))
+        .expect("failed");
+    let text = draw(&loading).join("\n");
+    assert!(text.contains("could not read alarms: forbidden"), "{text}");
+    assert!(text.contains("Press r to try again"), "{text}");
+    let retry = press(&mut loading, KeyCode::Char('r'));
+    assert!(matches!(retry, Some(Action::RequestAlarms)), "{retry:?}");
+}

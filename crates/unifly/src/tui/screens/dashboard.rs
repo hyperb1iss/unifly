@@ -90,6 +90,8 @@ pub struct DashboardScreen {
     link: Link,
     /// What the controller can reach, once it has said.
     access: Option<Access>,
+    /// Alarms the controller holds unarchived, once they have been read.
+    active_alarms: Option<usize>,
     /// The panel keyboard focus is on.
     focus: Panel,
     /// The column focus last sat in on a three-panel row.
@@ -133,6 +135,7 @@ impl DashboardScreen {
             chart_stalled: false,
             link: Link::default(),
             access: None,
+            active_alarms: None,
             focus: Panel::default(),
             column: 0,
             age_drawn: RefCell::default(),

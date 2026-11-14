@@ -389,3 +389,31 @@ fn a_key_storm_on_a_tiny_terminal_draws_without_panicking() {
         }
     }
 }
+
+#[test]
+fn the_title_counts_unarchived_alarms() {
+    let alarm = |id: &str, archived: bool| -> unifly_api::model::Alarm {
+        serde_json::from_value(json!({
+            "id": id, "timestamp": "2026-10-12T08:00:00Z", "category": "Device",
+            "severity": "Error", "message": "ap-dock lost contact",
+            "archived": archived, "device_mac": null, "site_id": null
+        }))
+        .expect("alarm fixture")
+    };
+    let mut screen = connected();
+    assert!(!draw(&screen, 120, 40).contains("alarm"));
+
+    screen
+        .update(&Action::AlarmsLoaded(Arc::new(vec![
+            alarm("a", false),
+            alarm("b", false),
+            alarm("c", true),
+        ])))
+        .expect("alarms");
+    assert!(draw(&screen, 120, 40).contains("\u{26A0} 2 alarms"));
+
+    screen
+        .update(&Action::AlarmsLoaded(Arc::new(vec![alarm("c", true)])))
+        .expect("alarms");
+    assert!(!draw(&screen, 120, 40).contains("\u{26A0}"));
+}

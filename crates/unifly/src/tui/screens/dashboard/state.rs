@@ -254,6 +254,10 @@ impl DashboardScreen {
                 self.events.insert(Arc::clone(event));
             }
             Action::AccessUpdated(access) => self.access = Some(*access),
+            Action::AlarmsLoaded(alarms) => {
+                self.active_alarms = Some(alarms.iter().filter(|alarm| !alarm.archived).count());
+            }
+            Action::AlarmsFailed(_) => self.active_alarms = None,
             Action::Connecting
             | Action::Connected
             | Action::Reconnecting { .. }

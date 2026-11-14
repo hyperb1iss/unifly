@@ -1,6 +1,7 @@
 //! Events screen: the controller's event feed, live or scrolled back, with
 //! category and text filters, a detail pane, and older history on demand.
 
+mod alarms;
 mod detail;
 pub(in crate::tui::screens) mod feed;
 mod input;
@@ -48,6 +49,16 @@ const CATEGORIES: [EventCategory; 8] = [
 /// it asks for.
 const HISTORY_STEPS: [(u32, u32); 4] = [(24, 500), (72, 1_000), (168, 2_500), (720, 5_000)];
 
+/// The screen's two lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum View {
+    /// The event feed.
+    #[default]
+    Feed,
+    /// The controller's unarchived alarms.
+    Alarms,
+}
+
 /// The history window the feed has been filled from.
 #[derive(Debug, Default)]
 struct History {
@@ -89,6 +100,9 @@ pub struct EventsScreen {
     firewall_extra: HashSet<EventKey>,
     devices: Arc<Vec<Arc<Device>>>,
     clients: Arc<Vec<Arc<Client>>>,
+    /// Which of the screen's two lists is showing.
+    view: View,
+    alarms: alarms::AlarmList,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
 }
@@ -117,7 +131,8 @@ impl Component for EventsScreen {
     }
 
     fn search_query(&self) -> Option<&str> {
-        Some(&self.search)
+        // Search filters the feed; the Alarms view has nothing to filter.
+        (self.view == View::Feed).then_some(self.search.as_str())
     }
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {

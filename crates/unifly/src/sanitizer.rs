@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use regex::Regex;
 
 use unifly_api::model::{
-    AclRule, FirewallPolicy, FirewallZone, IpSpec, NatPolicy, TrafficFilter, WifiBroadcast,
+    AclRule, Alarm, FirewallPolicy, FirewallZone, IpSpec, NatPolicy, TrafficFilter, WifiBroadcast,
 };
 use unifly_api::session::models::RogueAp;
 use unifly_api::{Client, Device, Event, HealthSummary, MacAddress, Network};
@@ -470,6 +470,15 @@ impl Sanitizer {
             e.client_mac = self.sanitize_mac_opt(&e.client_mac);
         }
         e
+    }
+
+    pub fn sanitize_alarm(&self, alarm: &Alarm) -> Alarm {
+        let mut a = alarm.clone();
+        a.message = self.sanitize_text(&a.message);
+        if self.redact_macs {
+            a.device_mac = self.sanitize_mac_opt(&a.device_mac);
+        }
+        a
     }
 
     pub fn sanitize_wifi(&self, wifi: &WifiBroadcast) -> WifiBroadcast {

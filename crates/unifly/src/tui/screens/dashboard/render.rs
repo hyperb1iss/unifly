@@ -29,13 +29,25 @@ const COMPACT_BELOW: u16 = 26;
 impl DashboardScreen {
     pub(super) fn render_dashboard(&self, frame: &mut ratatui::Frame, area: Rect) {
         let refresh_str = self.refresh_age_str();
-        let title_line = Line::from(vec![
+        let mut title = vec![
             Span::styled(" UniFi Dashboard ", theme::title_style()),
             Span::styled(
                 format!(" [{refresh_str}] "),
                 Style::default().fg(theme::border_unfocused()),
             ),
-        ]);
+        ];
+        match self.active_alarms {
+            None | Some(0) => {}
+            Some(1) => title.push(Span::styled(
+                " \u{26A0} 1 alarm ",
+                Style::default().fg(theme::warning()),
+            )),
+            Some(count) => title.push(Span::styled(
+                format!(" \u{26A0} {count} alarms "),
+                Style::default().fg(theme::warning()),
+            )),
+        }
+        let title_line = Line::from(title);
         self.age_drawn.replace(refresh_str);
 
         let block = Block::default()

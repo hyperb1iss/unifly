@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
 use serde_json::Value;
-use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast};
+use unifly_api::model::{AclRule, Alarm, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast};
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
     Client, CreateNetworkRequest, Device, EntityId, Event, Network, Site, UpdateNetworkRequest,
@@ -622,6 +622,10 @@ pub enum Action {
         events: Arc<Vec<Arc<Event>>>,
     },
     EventHistoryFailed(String),
+    /// Fetch the controller's alarms.
+    RequestAlarms,
+    AlarmsLoaded(Arc<Vec<Alarm>>),
+    AlarmsFailed(String),
     /// A stats fetch for this period is under way.
     StatsLoading(StatsPeriod),
     /// A stats fetch for this period failed.
