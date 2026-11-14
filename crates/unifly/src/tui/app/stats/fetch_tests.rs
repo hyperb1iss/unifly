@@ -150,12 +150,43 @@ async fn statistics_are_not_requested_without_session_access() {
 #[tokio::test]
 async fn statistics_are_not_requested_while_disconnected() {
     let mut app = demo_app(true).await;
-    app.connection_status = ConnectionStatus::Reconnecting { attempt: 2 };
+    // A retry after a failed connect: nothing was ever reached.
+    for action in [
+        Action::Disconnected("refused".into()),
+        Action::Reconnecting { attempt: 2 },
+    ] {
+        app.process_action(&action).expect("link");
+        app.process_action(&Action::RequestStats(StatsPeriod::OneHour))
+            .expect("request");
+        assert!(app.monitor.stats_task.is_none(), "{action:?}");
+    }
+}
+
+#[tokio::test]
+async fn statistics_are_still_requested_after_one_failed_refresh() {
+    let mut app = demo_app(true).await;
+    app.process_action(&Action::Connected).expect("connected");
+    app.process_action(&Action::Reconnecting { attempt: 1 })
+        .expect("a refresh failed");
+    assert_eq!(
+        app.connection_status,
+        ConnectionStatus::Reconnecting { attempt: 1 }
+    );
 
     app.process_action(&Action::RequestStats(StatsPeriod::OneHour))
         .expect("request");
+    assert!(app.monitor.stats_task.is_some(), "the clients are still up");
 
-    assert!(app.monitor.stats_task.is_none());
+    // The timed reload goes on too.
+    app.active_screen = crate::tui::screen::ScreenId::Stats;
+    app.last_stats_fetch = std::time::Instant::now().checked_sub(Duration::from_mins(2));
+    while app.action_rx.try_recv().is_ok() {}
+    app.process_action(&Action::Tick).expect("tick");
+    let mut reloads = 0;
+    while let Ok(action) = app.action_rx.try_recv() {
+        reloads += usize::from(matches!(action, Action::RequestStats(_)));
+    }
+    assert_eq!(reloads, 1);
 }
 
 #[tokio::test]

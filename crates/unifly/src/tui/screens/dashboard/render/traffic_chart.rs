@@ -49,10 +49,7 @@ impl DashboardScreen {
             }
             // A rate that stopped updating is not shown as the rate now.
             (None, Some(age)) => title.push(Span::styled(
-                format!(
-                    "no rate for {}",
-                    bytes_fmt::fmt_uptime(age.as_secs().max(60))
-                ),
+                self.stale_rate_text(age),
                 Style::default().fg(theme::warning()),
             )),
             (None, None) => title.push(Span::styled("TX ─  RX ─", dim)),

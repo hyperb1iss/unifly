@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::tui::action::Action;
-use crate::tui::screens::link::Link;
 use crate::tui::widgets::hyperchart::axis;
 use unifly_api::DeviceType;
 
@@ -134,12 +133,29 @@ impl DashboardScreen {
     /// How long ago the WAN rate last arrived, once that is long enough
     /// that it no longer describes the link: three refreshes at the pace
     /// they have been arriving, or at once when the controller is gone.
+    /// One failed refresh is neither: the rate it would have brought is
+    /// simply late, and the age limit catches it if more follow.
     pub(super) fn bandwidth_stale_for(&self, now: Instant) -> Option<Duration> {
         let age = now.duration_since(self.bandwidth_seen_at?);
         let limit = self.bandwidth_gap.map_or(STALE_DEFAULT, |gap| {
             (gap * 3).clamp(STALE_FLOOR, STALE_CEILING)
         });
-        (self.link != Link::Up || age > limit).then_some(age)
+        (!self.link.reachable() || age > limit).then_some(age)
+    }
+
+    /// What the chart's title says in place of a stale rate: that the
+    /// controller is gone, or how long the rate has been missing.
+    pub(super) fn stale_rate_text(&self, age: Duration) -> String {
+        if let Some(waiting) = self.link.waiting() {
+            return waiting.to_lowercase();
+        }
+        match age.as_secs() {
+            secs if secs < 60 => format!("no rate for {secs}s"),
+            secs => format!(
+                "no rate for {}",
+                crate::tui::widgets::bytes_fmt::fmt_uptime(secs)
+            ),
+        }
     }
 
     /// The WAN rate right now, or `None` when the last one is stale.

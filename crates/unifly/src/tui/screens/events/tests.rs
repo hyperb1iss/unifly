@@ -547,6 +547,25 @@ fn the_status_line_says_how_events_arrive() {
 }
 
 #[test]
+fn one_failed_refresh_leaves_the_feed_live() {
+    let mut screen = connected(FULL);
+    receive(&mut screen, 0..3);
+    screen
+        .update(&Action::Reconnecting { attempt: 1 })
+        .expect("a refresh failed");
+
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("live"), "{text}");
+    assert!(!text.contains("connecting"), "{text}");
+    assert_eq!(shown_events(&screen).len(), 3);
+    // History can still be asked for.
+    assert!(matches!(
+        press(&mut screen, KeyCode::Char('o')),
+        Some(Action::RequestEventHistory { .. })
+    ));
+}
+
+#[test]
 fn older_history_loads_in_widening_windows_without_duplicates() {
     let mut screen = connected(FULL);
     receive(&mut screen, 3..6);

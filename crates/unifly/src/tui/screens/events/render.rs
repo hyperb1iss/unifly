@@ -226,7 +226,7 @@ impl EventsScreen {
     }
 
     pub(super) fn feed_state(&self) -> (&'static str, Color) {
-        let Some(access) = self.access.filter(|_| self.link == Link::Up) else {
+        let Some(access) = self.access.filter(|_| self.link.reachable()) else {
             return if self.link == Link::Down {
                 ("\u{25CB} not connected", theme::error())
             } else {

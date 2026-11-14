@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use color_eyre::eyre::Result;
 use tokio::task::AbortHandle;
 
-use super::{App, ConnectionStatus};
+use super::App;
 use crate::tui::action::{Action, StatsData, StatsPeriod};
 use crate::tui::screen::ScreenId;
 
@@ -26,8 +26,8 @@ pub(super) struct DpiSnapshot {
 
 impl App {
     /// Whether a statistics fetch could only fail right now.
-    fn stats_blocked(&self) -> bool {
-        self.connection_status != ConnectionStatus::Connected || !self.access.session
+    pub(super) fn stats_blocked(&self) -> bool {
+        !self.controller_reachable() || !self.access.session
     }
 
     /// Load `period` for the Stats screen. Nothing is fetched while the

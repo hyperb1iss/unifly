@@ -125,7 +125,7 @@ impl App {
                 }
 
                 if self.active_screen == ScreenId::Stats
-                    && self.connection_status == ConnectionStatus::Connected
+                    && !self.stats_blocked()
                     && let Some(last) = self.last_stats_fetch
                     && last.elapsed() > Duration::from_mins(1)
                 {

@@ -68,7 +68,7 @@ impl StatsScreen {
             | Action::Disconnected(_) => {
                 self.link.follow(action);
                 // Whatever was in flight died with the link.
-                self.loading &= self.link == Link::Up;
+                self.loading &= self.link.reachable();
             }
             Action::ControllerChanged => {
                 *self = Self {
@@ -188,6 +188,26 @@ mod tests {
     fn draw(screen: &StatsScreen) -> String {
         crate::tui::table::render_lines(100, 30, |frame, area| screen.render_screen(frame, area))
             .join("\n")
+    }
+
+    #[test]
+    fn one_failed_refresh_keeps_the_loaded_charts_on_screen() {
+        let mut screen = connected();
+        screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 12.0)));
+        screen.apply_action(&Action::StatsLoading(StatsPeriod::default()));
+
+        screen.apply_action(&Action::Reconnecting { attempt: 1 });
+
+        let text = draw(&screen);
+        assert!(text.contains("WAN Bandwidth"), "{text}");
+        assert!(!text.contains("Connecting"), "{text}");
+        assert!(screen.loading, "the fetch in flight is still expected");
+        assert_eq!(screen.blocked(), None);
+
+        // A lost controller is different: the charts give way to why.
+        screen.apply_action(&Action::Disconnected("gone".into()));
+        assert_eq!(screen.blocked(), Some("Not connected"));
+        assert!(!screen.loading);
     }
 
     #[test]

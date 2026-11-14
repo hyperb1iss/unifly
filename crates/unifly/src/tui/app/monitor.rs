@@ -35,6 +35,9 @@ pub(super) struct MonitorState {
     alarms_fetched_at: Option<Instant>,
     /// An archive is running: alarms are read again when it finishes.
     alarms_stale: bool,
+    /// The controller connected and has not been lost since. A failed
+    /// refresh leaves this set: the clients are still up.
+    connected: bool,
 }
 
 impl App {
@@ -50,7 +53,15 @@ impl App {
                     self.forward_to_screen(screen, action)?;
                 }
                 // A link that came back reloads the statistics on screen.
-                if matches!(action, Action::Connected) && self.access.session {
+                // The status still holds what it was before this action.
+                let came_back = matches!(action, Action::Connected)
+                    && self.connection_status != ConnectionStatus::Connected;
+                match action {
+                    Action::Connected => self.monitor.connected = true,
+                    Action::Connecting | Action::Disconnected(_) => self.monitor.connected = false,
+                    _ => {}
+                }
+                if came_back && self.access.session {
                     self.reload_visible_stats()?;
                 }
                 return Ok(false);
@@ -136,9 +147,21 @@ impl App {
         Ok(())
     }
 
+    /// Whether the controller can be asked for data. `Reconnecting` after
+    /// a connect reports a refresh that failed while the clients are still
+    /// up, so requests go on; after a failed connect it is the next
+    /// attempt, and there is nothing to ask.
+    pub(super) fn controller_reachable(&self) -> bool {
+        match self.connection_status {
+            ConnectionStatus::Connected => true,
+            ConnectionStatus::Reconnecting { .. } => self.monitor.connected,
+            _ => false,
+        }
+    }
+
     /// Whether an alarm read can succeed: alarms come over session access.
     fn can_read_alarms(&self) -> bool {
-        self.connection_status == ConnectionStatus::Connected && self.access.session
+        self.controller_reachable() && self.access.session
     }
 
     /// Fetch the controller's alarms for the Events screen and the
@@ -292,6 +315,31 @@ mod tests {
 
         let after = pump(&mut app, |action| active(action).is_some()).await;
         assert_eq!(active(&after), Some(before - 1));
+    }
+
+    #[tokio::test]
+    async fn alarms_are_still_read_after_one_failed_refresh() {
+        let mut app = demo_app().await;
+        app.process_action(&Action::Connected).expect("connected");
+        app.access = FULL_ACCESS;
+        app.process_action(&Action::Reconnecting { attempt: 1 })
+            .expect("a refresh failed");
+
+        app.process_action(&Action::Tick).expect("tick");
+        assert!(app.monitor.alarms_fetched_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn alarms_are_not_read_while_a_failed_connect_is_retried() {
+        let mut app = demo_app().await;
+        app.access = FULL_ACCESS;
+        app.process_action(&Action::Disconnected("refused".into()))
+            .expect("disconnected");
+        app.process_action(&Action::Reconnecting { attempt: 2 })
+            .expect("retrying");
+
+        app.process_action(&Action::Tick).expect("tick");
+        assert!(app.monitor.alarms_fetched_at.is_none());
     }
 
     #[tokio::test]

@@ -194,12 +194,61 @@ fn a_lost_link_marks_the_wan_rate_stale_at_once() {
     assert!(draw(&screen, 120, 40).contains("TX 1.0 Mbps"));
 
     screen
-        .update(&Action::Reconnecting { attempt: 1 })
-        .expect("reconnecting");
+        .update(&Action::Disconnected("lost the connection".into()))
+        .expect("disconnected");
 
     let text = draw(&screen, 120, 40);
-    assert!(text.contains("no rate for"), "{text}");
+    assert!(text.contains("not connected"), "{text}");
+    assert!(!text.contains("no rate for"), "{text}");
     assert!(!text.contains("TX 1.0 Mbps"), "{text}");
+}
+
+#[test]
+fn one_failed_refresh_keeps_the_wan_rate_and_the_chart() {
+    let mut screen = connected();
+    screen
+        .update(&Action::HealthUpdated(Arc::new(vec![health(
+            "wan",
+            &json!({"tx_bytes_r": 125_000, "rx_bytes_r": 250_000}),
+        )])))
+        .expect("health");
+    screen.update(&Action::Tick).expect("tick");
+    let samples = screen.bandwidth_tx.len();
+    assert!(samples > 0, "the chart has a sample");
+
+    screen
+        .update(&Action::Reconnecting { attempt: 1 })
+        .expect("a refresh failed");
+    screen.update(&Action::Tick).expect("tick");
+
+    let text = draw(&screen, 120, 40);
+    assert!(text.contains("TX 1.0 Mbps"), "{text}");
+    assert!(!screen.chart_stalled, "the chart is not marked for a wipe");
+    assert!(screen.bandwidth_tx.len() >= samples);
+
+    screen.update(&Action::Connected).expect("recovered");
+    screen.update(&Action::Tick).expect("tick");
+    assert!(screen.bandwidth_tx.len() >= samples, "nothing was cleared");
+}
+
+#[test]
+fn a_rate_that_stopped_arriving_reads_its_real_age() {
+    let mut screen = connected();
+    assert_eq!(
+        screen.stale_rate_text(std::time::Duration::from_secs(47)),
+        "no rate for 47s"
+    );
+    assert_eq!(
+        screen.stale_rate_text(std::time::Duration::from_secs(150)),
+        "no rate for 2m"
+    );
+    screen
+        .update(&Action::Disconnected("gone".into()))
+        .expect("disconnected");
+    assert_eq!(
+        screen.stale_rate_text(std::time::Duration::from_secs(1)),
+        "not connected"
+    );
 }
 
 #[test]
