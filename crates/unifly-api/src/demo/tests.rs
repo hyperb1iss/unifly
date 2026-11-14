@@ -391,6 +391,39 @@ fn the_list_is_summary_shaped_and_the_detail_fills_it_in() {
 }
 
 #[test]
+fn a_passphrase_is_refused_for_the_ssid_with_per_network_keys() {
+    let mut sim = Simulation::new(fleet());
+    let keyed = sim
+        .fleet
+        .wifi
+        .iter()
+        .find(|wifi| wifi.preshared_key_count > 0)
+        .cloned()
+        .expect("one SSID uses per-network keys");
+    assert_eq!(
+        keyed.summary().preshared_key_count,
+        keyed.preshared_key_count,
+        "the list names the keyed networks too"
+    );
+
+    let refused = sim.apply_command(
+        Command::UpdateWifiBroadcast {
+            id: keyed.id.clone(),
+            update: crate::command::UpdateWifiBroadcastRequest {
+                passphrase: Some("one for everyone".into()),
+                ..Default::default()
+            },
+        },
+        anchor(),
+    );
+    assert!(
+        matches!(&refused, Err(CoreError::ValidationFailed { message })
+            if message.contains(&keyed.name)),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn power_cycling_the_dark_camera_port_brings_it_back() {
     let mut sim = Simulation::new(fleet());
     let core = sim.fleet.devices[super::fleet::SWITCH_BASE].id.clone();

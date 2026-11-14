@@ -9,6 +9,6 @@ pub(super) use self::dns::{
 };
 pub(super) use self::network::{
     apply_ipv4_update, build_create_network_payload, build_create_wifi_broadcast_payload,
-    build_update_wifi_broadcast_payload,
+    build_update_wifi_broadcast_payload, wifi_uses_preshared_keys,
 };
 pub(super) use self::traffic::{build_endpoint_json, traffic_matching_list_items};

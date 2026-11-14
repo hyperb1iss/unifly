@@ -18,7 +18,7 @@ pub(super) use super::payloads::{
     apply_ipv4_update, build_acl_filter_value, build_create_dns_policy_fields,
     build_create_network_payload, build_create_wifi_broadcast_payload, build_endpoint_json,
     build_update_dns_policy_fields, build_update_wifi_broadcast_payload, dns_policy_type_name,
-    merge_acl_filter_value, traffic_matching_list_items,
+    merge_acl_filter_value, traffic_matching_list_items, wifi_uses_preshared_keys,
 };
 pub(super) use super::{
     client_mac, device_mac, require_integration, require_session, require_uuid,

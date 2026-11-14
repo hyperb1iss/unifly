@@ -4,7 +4,7 @@ use crate::core_error::CoreError;
 use super::{
     CommandContext, apply_ipv4_update, build_create_network_payload,
     build_create_wifi_broadcast_payload, build_update_wifi_broadcast_payload, require_integration,
-    require_uuid,
+    require_uuid, wifi_uses_preshared_keys,
 };
 
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
@@ -90,6 +90,17 @@ pub(super) async fn route(
             let (ic, sid) = require_integration(integration, site_id, "UpdateWifiBroadcast")?;
             let uuid = require_uuid(&id)?;
             let existing = ic.get_wifi_broadcast(&sid, &uuid).await?;
+            // One passphrase written beside per-network keys is ambiguous:
+            // the controller could reject it, ignore it, or drop the keys.
+            if update.passphrase.is_some() && wifi_uses_preshared_keys(&existing) {
+                return Err(CoreError::ValidationFailed {
+                    message: format!(
+                        "{} gives each network its own preshared key, so it has no single \
+                         passphrase to change; edit its keys in the UniFi console",
+                        existing.name
+                    ),
+                });
+            }
             let payload = build_update_wifi_broadcast_payload(&existing, &update);
             ic.update_wifi_broadcast(&sid, &uuid, &payload).await?;
             Ok(crate::command::CommandResult::Ok)

@@ -89,6 +89,8 @@ fn wifi_broadcasts(fleet: &Fleet, rng: &mut DemoRng) -> Vec<WifiBroadcast> {
     // An IoT-optimized broadcast has no band list and none of the
     // standard type's roaming switches.
     iot.broadcast_type = WifiBroadcastType::IotOptimized;
+    // The sensors and the cameras join with a key each.
+    iot.preshared_key_count = 2;
     iot.band_steering = None;
     iot.mlo_enabled = None;
     iot.fast_roaming = None;

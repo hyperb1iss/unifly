@@ -230,3 +230,102 @@ async fn one_field_updates_send_the_whole_record_back_with_that_field_changed() 
         server.verify().await;
     }
 }
+
+#[tokio::test]
+async fn a_passphrase_is_refused_for_an_ssid_with_per_network_keys_and_nothing_is_written() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let mut keyed = detail(false);
+    keyed["securityConfiguration"] = json!({
+        "type": "WPA2_PERSONAL",
+        "presharedKeys": [
+            {"network": {"type": "NATIVE"}, "passphrase": "native-network-key"},
+            {"network": {"type": "SPECIFIC", "networkId": NETWORK_ID},
+             "passphrase": "second-network-key"}
+        ]
+    });
+    mount_detail(&server, keyed.clone()).await;
+    Mock::given(method("PUT"))
+        .and(path(integration_route(&format!(
+            "wifi/broadcasts/{SSID_ID}"
+        ))))
+        .respond_with(ResponseTemplate::new(200).set_body_json(keyed.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let controller = controller(&server);
+    controller.connect_lightweight().await.unwrap();
+
+    let read = controller
+        .get_wifi_broadcast_detail(&ssid_id())
+        .await
+        .unwrap();
+    assert_eq!(read.preshared_key_count, 2);
+
+    let refused = controller
+        .execute(Command::UpdateWifiBroadcast {
+            id: ssid_id(),
+            update: UpdateWifiBroadcastRequest {
+                passphrase: Some("one for everyone".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect_err("one passphrase beside per-network keys is refused");
+    assert!(
+        matches!(&refused, CoreError::ValidationFailed { message }
+            if message.contains("Studio") && message.contains("preshared key")),
+        "{refused:?}"
+    );
+    assert!(
+        !refused.to_string().contains("native-network-key"),
+        "the refusal names no key"
+    );
+    let writes = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method.as_str() == "PUT")
+        .count();
+    assert_eq!(writes, 0, "nothing was written");
+
+    // A change that leaves the keys alone still goes through, keys intact.
+    controller
+        .execute(Command::UpdateWifiBroadcast {
+            id: ssid_id(),
+            update: UpdateWifiBroadcastRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    let mut expected = writable(keyed);
+    expected["enabled"] = json!(false);
+    assert_eq!(put_body(&server).await, expected);
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn the_summary_names_the_networks_that_have_a_key_of_their_own() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    Mock::given(method("GET"))
+        .and(path(integration_route("wifi/broadcasts")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(integration_page(&overview(&json!({
+                "type": "WPA2_PERSONAL", "presharedKeyNetworkIds": [NETWORK_ID]
+            })))),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let controller = controller(&server);
+    controller.connect().await.unwrap();
+
+    let listed = controller.wifi_broadcasts_snapshot();
+    assert_eq!(listed[0].preshared_key_count, 1);
+    controller.disconnect().await;
+}

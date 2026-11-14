@@ -162,7 +162,10 @@ impl WifiScreen {
             click::char_key('E'),
         ));
         hints.push(Hint::button("N", "rename", click::char_key('N')));
-        hints.push(Hint::button("P", "passphrase", click::char_key('P')));
+        // The key still answers on an SSID without one, with the reason.
+        if self.ssid_passphrase_refusal(ssid).is_none() {
+            hints.push(Hint::button("P", "passphrase", click::char_key('P')));
+        }
         hints.push(Hint::button(
             "H",
             match self.ssid_setting(ssid, |ssid| ssid.hidden) {

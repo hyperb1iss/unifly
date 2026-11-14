@@ -556,6 +556,15 @@ impl Simulation {
             .iter_mut()
             .find(|wifi| &wifi.id == id)
             .ok_or_else(|| wifi_not_found(id))?;
+        if update.passphrase.is_some() && wifi.preshared_key_count > 0 {
+            return Err(CoreError::ValidationFailed {
+                message: format!(
+                    "{} gives each network its own preshared key, so it has no single \
+                     passphrase to change; edit its keys in the UniFi console",
+                    wifi.name
+                ),
+            });
+        }
         let before = wifi.name.clone();
         let mut changes = Vec::new();
         if let Some(name) = update.name.as_ref().or(update.ssid.as_ref())

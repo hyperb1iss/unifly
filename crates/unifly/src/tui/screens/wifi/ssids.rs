@@ -118,7 +118,9 @@ impl WifiScreen {
         })
     }
 
-    fn prompt_ssid_passphrase(&mut self, ssid: &WifiBroadcast, typed: Option<&str>) -> Action {
+    /// Why `ssid` has no passphrase to change, when it has none.
+    pub(super) fn ssid_passphrase_refusal(&self, ssid: &WifiBroadcast) -> Option<Notification> {
+        let name = &ssid.name;
         let reason = match ssid.security {
             WifiSecurityMode::Open => Some("it is an open network"),
             WifiSecurityMode::Wpa2Enterprise
@@ -127,10 +129,29 @@ impl WifiScreen {
             _ => None,
         };
         if let Some(reason) = reason {
-            return Action::Notify(Notification::info(format!(
-                "{} has no passphrase: {reason}",
-                ssid.name
+            return Some(Notification::info(format!(
+                "{name} has no passphrase: {reason}"
             )));
+        }
+        // One passphrase written beside per-network keys could replace
+        // them, be ignored, or be rejected, so it is not sent.
+        let keys = self.ssid_preshared_keys(ssid);
+        (keys > 0).then(|| {
+            Notification::warning(format!(
+                "{name} gives {} its own key, so it has no single passphrase to change. Edit \
+                 its keys in the UniFi console.",
+                if keys == 1 {
+                    "1 network".to_owned()
+                } else {
+                    format!("each of {keys} networks")
+                }
+            ))
+        })
+    }
+
+    fn prompt_ssid_passphrase(&mut self, ssid: &WifiBroadcast, typed: Option<&str>) -> Action {
+        if let Some(refusal) = self.ssid_passphrase_refusal(ssid) {
+            return Action::Notify(refusal);
         }
         self.ssid_prompt = Some(SsidPrompt::Passphrase(ssid.id.clone()));
         Action::OpenPrompt(PromptRequest {
@@ -616,6 +637,54 @@ mod tests {
             "{answer:?}"
         );
         assert!(screen.ssid_prompt.is_none());
+    }
+
+    #[test]
+    fn an_ssid_with_per_network_keys_has_no_single_passphrase_to_change() {
+        let mut keyed = (*ssid(2, "Studio", "Wpa2Personal")).clone();
+        keyed.preshared_key_count = 3;
+        let mut screen = ssid_screen();
+        screen.apply_action(&Action::WifiBroadcastsUpdated(Arc::new(vec![Arc::new(
+            keyed,
+        )])));
+
+        let answer = press(&mut screen, 'P');
+        assert!(
+            matches!(&answer, Some(Action::Notify(note))
+                if note.message.contains("each of 3 networks")
+                    && note.message.contains("UniFi console")),
+            "{answer:?}"
+        );
+        assert!(screen.ssid_prompt.is_none(), "no prompt opens");
+        assert!(
+            !draw(&screen).contains("P passphrase"),
+            "the hint bar does not offer what cannot be done"
+        );
+        screen.handle_key_input(KeyEvent::from(KeyCode::Enter));
+        let shown = draw(&screen);
+        assert!(shown.contains("3 per-network keys"), "{shown}");
+    }
+
+    #[test]
+    fn keys_the_list_did_not_name_are_found_in_the_full_record() {
+        let plain = ssid(2, "Studio", "Wpa2Personal");
+        let mut screen = ssid_screen();
+        screen.apply_action(&Action::WifiBroadcastsUpdated(Arc::new(vec![Arc::clone(
+            &plain,
+        )])));
+        let mut full = (*plain).clone();
+        full.hidden = Some(false);
+        full.preshared_key_count = 1;
+        screen.apply_action(&Action::WifiBroadcastDetailLoaded {
+            id: full.id.clone(),
+            detail: Arc::new(full),
+        });
+
+        let answer = press(&mut screen, 'P');
+        assert!(
+            matches!(&answer, Some(Action::Notify(note)) if note.message.contains("1 network")),
+            "{answer:?}"
+        );
     }
 
     #[test]

@@ -143,4 +143,14 @@ impl WifiScreen {
             None => Setting::Reading,
         }
     }
+
+    /// How many networks have a key of their own on `ssid`, from whichever
+    /// of the list entry and the full record says more.
+    pub(super) fn ssid_preshared_keys(&self, ssid: &WifiBroadcast) -> usize {
+        self.ssid_details
+            .known
+            .get(&ssid.id)
+            .map_or(0, |detail| detail.record.preshared_key_count)
+            .max(ssid.preshared_key_count)
+    }
 }

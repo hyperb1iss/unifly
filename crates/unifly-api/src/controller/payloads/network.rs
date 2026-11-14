@@ -409,6 +409,18 @@ pub(in super::super) fn build_create_wifi_broadcast_payload(
     })
 }
 
+/// Whether an SSID authenticates with a preshared key per network instead
+/// of one passphrase.
+pub(in super::super) fn wifi_uses_preshared_keys(
+    existing: &crate::integration_types::WifiBroadcastDetailsResponse,
+) -> bool {
+    existing
+        .security_configuration
+        .get("presharedKeys")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|keys| !keys.is_empty())
+}
+
 pub(in super::super) fn build_update_wifi_broadcast_payload(
     existing: &crate::integration_types::WifiBroadcastDetailsResponse,
     update: &crate::command::UpdateWifiBroadcastRequest,

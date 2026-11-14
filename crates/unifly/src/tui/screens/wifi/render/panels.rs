@@ -249,6 +249,21 @@ impl WifiScreen {
         frame.render_widget(HyperHeatmap::new(&cells), map);
     }
 
+    /// What the SSID authenticates with. A passphrase itself is never
+    /// drawn.
+    fn passphrase_label(&self, ssid: &WifiBroadcast) -> String {
+        let keys = self.ssid_preshared_keys(ssid);
+        match ssid.security {
+            WifiSecurityMode::Open => "none".to_owned(),
+            WifiSecurityMode::Wpa2Enterprise
+            | WifiSecurityMode::Wpa3Enterprise
+            | WifiSecurityMode::Wpa2Wpa3Enterprise => "RADIUS sign-in".to_owned(),
+            _ if keys == 1 => "1 per-network key".to_owned(),
+            _ if keys > 1 => format!("{keys} per-network keys"),
+            _ => "write-only (P to set)".to_owned(),
+        }
+    }
+
     /// The SSID detail's rows: what the list says, then the settings only
     /// the full record carries.
     fn ssid_detail_rows(&self, ssid: &WifiBroadcast) -> Vec<(&'static str, String)> {
@@ -278,7 +293,7 @@ impl WifiScreen {
             ("State", enabled_label(ssid).to_owned()),
             ("Clients", count_label(self.ssid_client_count(&ssid.name))),
             ("Security", security_label(ssid.security).to_owned()),
-            ("Passphrase", "write-only (P to set)".to_owned()),
+            ("Passphrase", self.passphrase_label(ssid)),
             ("Bands", bands_label(ssid)),
             ("Network", network),
             (
