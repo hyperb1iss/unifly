@@ -89,7 +89,7 @@ impl Component for TopologyScreen {
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {
         vec![
-            ("h/j/k/l \u{2190}\u{2193}\u{2191}\u{2192}", "Pan the map"),
+            ("hjkl \u{2190}\u{2193}\u{2191}\u{2192}", "Pan the map"),
             ("PgUp/PgDn", "Pan a screen up / down"),
             ("g/G", "Top / bottom of the tree"),
             ("+/-", "Zoom in / out"),

@@ -164,7 +164,7 @@ impl EventsScreen {
             keys.push(("d", "Open the event's device"));
             keys.push(("c", "Open the event's client"));
         } else {
-            keys.push(("Enter", "Open the event under the cursor"));
+            keys.push(("Enter", "Open the selected event"));
         }
         keys.push((
             "Space",
@@ -179,8 +179,8 @@ impl EventsScreen {
             ("h/l \u{2190}/\u{2192}", "Filter by category"),
             ("/", "Filter by message text"),
             ("o", "Load older events"),
-            ("f", "Include or hide firewall blocks"),
-            ("p", "Show or hide the hourly heatmap"),
+            ("f", "Firewall blocks on / off"),
+            ("p", "Hourly heatmap on / off"),
         ]);
         keys
     }
