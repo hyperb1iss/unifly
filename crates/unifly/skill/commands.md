@@ -161,12 +161,22 @@ commands require Integration. WiFi neighbors/channels are Session exceptions.
 Network VLAN values are 1 through 4009. Network DNS flags are repeatable.
 Use network refs before deleting to inspect dependencies. Network and WiFi
 delete expose `--force`; inspect its help before bypassing reference checks.
+A network delete sends `--force` to the controller, which refuses to delete
+a network still in use without it.
 Gateway- and switch-managed network creation require an IPv4 host/prefix
 via `--ipv4-host` (or `subnet` in a file), even with DHCP disabled.
 Switch-managed creation also requires the owning Integration switch UUID
 via `--device-id` (or `device_id` in a file).
 Gateway and switch DHCP creation require both valid IPv4 range bounds;
 unmanaged VLANs reject DHCP and IPv4 settings.
+Settings a network's kind has no field for are refused before anything is
+sent: isolation on an unmanaged network, and internet access, mDNS
+forwarding, and IPv6 on anything but a gateway-managed one.
+`ipv6_enabled: false` removes the network's whole IPv6 configuration;
+`true` is refused unless the network already has one, because unifly cannot
+supply the prefix source and address assignment it needs.
+`dhcp.dns_servers` takes one to four IPv4 addresses; an empty list removes
+the override so the gateway's own servers are used.
 DHCP updates accept `dhcp.range_start` and `dhcp.range_stop` in file payloads.
 An omitted bound preserves the active server's value. Turning DHCP off clears
 the server configuration, so enabling it again requires both bounds together
