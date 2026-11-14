@@ -311,6 +311,171 @@ fn only_user_policies_can_be_deleted() {
     assert!(sim.fleet.policies.iter().all(|policy| policy.id != user));
 }
 
+fn update(sim: &mut Simulation, id: &EntityId, update: UpdateNetworkRequest) -> Option<CoreError> {
+    sim.apply_command(
+        Command::UpdateNetwork {
+            id: id.clone(),
+            update,
+        },
+        now(),
+    )
+    .err()
+}
+
+/// The fleet follows the controller: off is no DHCP configuration, so
+/// the range and DNS servers go with the server.
+#[test]
+fn turning_dhcp_off_drops_the_server_configuration() {
+    let mut sim = sim();
+    let studio = sim.fleet.networks[1].id.clone();
+    assert!(sim.fleet.networks[1].dhcp.is_some());
+
+    let off = UpdateNetworkRequest {
+        dhcp_enabled: Some(false),
+        ..UpdateNetworkRequest::default()
+    };
+    assert!(update(&mut sim, &studio, off).is_none());
+    assert!(sim.fleet.networks[1].dhcp.is_none());
+
+    let on_without_a_range = UpdateNetworkRequest {
+        dhcp_enabled: Some(true),
+        ..UpdateNetworkRequest::default()
+    };
+    let refused = update(&mut sim, &studio, on_without_a_range).expect("the range is gone");
+    assert!(refused.to_string().contains("range start and stop"));
+}
+
+#[test]
+fn ipv6_turns_off_whole_and_cannot_be_made_from_nothing() {
+    let mut sim = sim();
+    let with_ipv6 = sim
+        .fleet
+        .networks
+        .iter()
+        .position(|network| network.ipv6_enabled)
+        .expect("a network with IPv6");
+    let id = sim.fleet.networks[with_ipv6].id.clone();
+    let ipv6 = |enabled| UpdateNetworkRequest {
+        ipv6_enabled: Some(enabled),
+        ..UpdateNetworkRequest::default()
+    };
+
+    assert!(update(&mut sim, &id, ipv6(false)).is_none());
+    let network = &sim.fleet.networks[with_ipv6];
+    assert!(!network.ipv6_enabled && !network.slaac_enabled);
+    assert!(network.ipv6_mode.is_none() && network.ipv6_prefix.is_none());
+
+    let refused = update(&mut sim, &id, ipv6(true)).expect("nothing to turn back on");
+    assert!(refused.to_string().contains("IPv6 cannot be turned on"));
+}
+
+#[test]
+fn dns_servers_are_up_to_four_ipv4_addresses_and_an_empty_list_clears_them() {
+    let mut sim = sim();
+    let studio = sim.fleet.networks[1].id.clone();
+    let dns = |servers: &[&str]| UpdateNetworkRequest {
+        dhcp: Some(DhcpUpdate {
+            dns_servers: Some(servers.iter().map(ToString::to_string).collect()),
+            ..DhcpUpdate::default()
+        }),
+        ..UpdateNetworkRequest::default()
+    };
+
+    let refused = update(&mut sim, &studio, dns(&["2001:db8::53"])).expect("IPv4 only");
+    assert!(refused.to_string().contains("not an IPv4 address"));
+    let five = ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9"];
+    let refused = update(&mut sim, &studio, dns(&five)).expect("four at most");
+    assert!(refused.to_string().contains("at most 4"));
+
+    assert!(update(&mut sim, &studio, dns(&[])).is_none());
+    let dhcp = sim.fleet.networks[1].dhcp.as_ref().expect("still serving");
+    assert!(dhcp.enabled && dhcp.dns_servers.is_empty());
+}
+
+#[test]
+fn a_network_in_use_deletes_only_when_forced() {
+    let mut sim = sim();
+    let network = create(&mut sim, stage_network(60)).expect("create");
+    let mut client = sim.fleet.clients[0].clone();
+    client.client.network_id = Some(network.id.clone());
+    sim.fleet.clients.push(client);
+    let delete = |sim: &mut Simulation, force| {
+        sim.apply_command(
+            Command::DeleteNetwork {
+                id: network.id.clone(),
+                force,
+            },
+            now(),
+        )
+    };
+
+    let refused = delete(&mut sim, false).expect_err("a client is on it");
+    assert!(refused.to_string().contains("still in use"), "{refused}");
+    delete(&mut sim, true).expect("a forced delete goes through");
+    assert!(
+        sim.fleet
+            .networks
+            .iter()
+            .all(|other| other.id != network.id)
+    );
+}
+
+/// Whether a policy is enabled changes through a full update, which the
+/// controller keeps for the policies an admin made. Logging is a patch,
+/// which reaches the built-in ones too.
+#[test]
+fn a_policy_update_toggles_user_policies_only_and_a_patch_sets_logging_anywhere() {
+    let mut sim = sim();
+    let by_origin = |sim: &Simulation, origin| {
+        sim.fleet
+            .policies
+            .iter()
+            .find(|policy| policy.origin == Some(origin))
+            .cloned()
+            .expect("a policy of that origin")
+    };
+    let enabled = |sim: &Simulation, id: &EntityId| {
+        sim.fleet
+            .policies
+            .iter()
+            .find(|policy| &policy.id == id)
+            .map(|policy| (policy.enabled, policy.logging_enabled))
+            .expect("the policy")
+    };
+    let toggle = |sim: &mut Simulation, id: &EntityId, enabled| {
+        sim.apply_command(
+            Command::UpdateFirewallPolicy {
+                id: id.clone(),
+                update: crate::command::UpdateFirewallPolicyRequest {
+                    enabled: Some(enabled),
+                    ..Default::default()
+                },
+            },
+            now(),
+        )
+    };
+
+    let user = by_origin(&sim, EntityOrigin::UserDefined);
+    toggle(&mut sim, &user.id, !user.enabled).expect("a user policy toggles");
+    assert_eq!(enabled(&sim, &user.id).0, !user.enabled);
+
+    let system = by_origin(&sim, EntityOrigin::SystemDefined);
+    toggle(&mut sim, &system.id, !system.enabled).expect_err("a built-in policy stays");
+    assert_eq!(enabled(&sim, &system.id).0, system.enabled);
+
+    sim.apply_command(
+        Command::PatchFirewallPolicy {
+            id: system.id.clone(),
+            enabled: None,
+            logging: Some(!system.logging_enabled),
+            report_flow_enabled: None,
+        },
+        now(),
+    )
+    .expect("logging is patched on a built-in policy");
+    assert_eq!(enabled(&sim, &system.id).1, !system.logging_enabled);
+}
+
 #[tokio::test]
 async fn the_store_drops_what_a_command_deleted() {
     let controller = Controller::demo(DemoFleetOptions::default());

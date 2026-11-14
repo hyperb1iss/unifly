@@ -22,8 +22,7 @@ use crate::core_error::CoreError;
 use crate::integration_types::FirewallPolicyOrdering;
 use crate::model::common::DataSource;
 use crate::model::{
-    DhcpConfig, EntityId, EntityOrigin, FirewallPolicy, Ipv6Mode, Network, NetworkManagement,
-    NetworkPurpose,
+    DhcpConfig, EntityId, EntityOrigin, FirewallPolicy, Network, NetworkManagement, NetworkPurpose,
 };
 use crate::store::RefreshSnapshot;
 
@@ -71,13 +70,21 @@ fn parse_address(label: &str, value: &str) -> Result<Ipv4Addr, CoreError> {
         .map_err(|_| invalid(format!("DHCP range {label} must be an IPv4 address")))
 }
 
+/// DNS servers as a DHCP server takes them: up to four IPv4 addresses.
 fn parse_dns(servers: &[String]) -> Result<Vec<IpAddr>, CoreError> {
+    if servers.len() > 4 {
+        return Err(invalid(format!(
+            "a DHCP server takes at most 4 DNS servers, got {}",
+            servers.len()
+        )));
+    }
     servers
         .iter()
         .map(|server| {
             server
-                .parse()
-                .map_err(|_| invalid(format!("'{server}' is not a DNS server address")))
+                .parse::<Ipv4Addr>()
+                .map(IpAddr::V4)
+                .map_err(|_| invalid(format!("DNS server '{server}' is not an IPv4 address")))
         })
         .collect()
 }
@@ -100,8 +107,10 @@ fn apply_dhcp(
                 "editing DHCP server settings requires an enabled server; set dhcp_enabled to true",
             ));
         }
-        if let Some(dhcp) = network.dhcp.as_mut() {
-            dhcp.enabled = false;
+        // Off is no DHCP configuration at all, as on a controller: the
+        // range, lease time, and options go with the server.
+        if serving {
+            network.dhcp = None;
         }
         return Ok(());
     }
@@ -120,6 +129,8 @@ fn apply_dhcp(
         gateway: network.gateway_ip,
         relay_servers: Vec::new(),
     });
+    // A server replaces a relay.
+    dhcp.relay_servers.clear();
     if let Some(update) = update {
         if let Some(start) = update.range_start.as_deref() {
             dhcp.range_start = Some(parse_address("start", start)?);
@@ -260,6 +271,24 @@ impl Simulation {
             })?;
         // Work on a copy, so a rejected update leaves nothing half applied.
         let mut network = stored.clone();
+        let named = |setting: &str| invalid(format!("this network has no {setting} setting"));
+        match network.management {
+            Some(NetworkManagement::Unmanaged) if update.isolation_enabled.is_some() => {
+                return Err(named("isolation"));
+            }
+            Some(NetworkManagement::Unmanaged | NetworkManagement::Switch) => {
+                if update.internet_access_enabled.is_some() {
+                    return Err(named("internet access"));
+                }
+                if update.mdns_forwarding_enabled.is_some() {
+                    return Err(named("mDNS forwarding"));
+                }
+                if update.ipv6_enabled.is_some() {
+                    return Err(named("IPv6"));
+                }
+            }
+            _ => {}
+        }
         if let Some(name) = update.name {
             network.name = name;
         }
@@ -278,12 +307,25 @@ impl Simulation {
         if let Some(mdns) = update.mdns_forwarding_enabled {
             network.mdns_forwarding_enabled = mdns;
         }
-        if let Some(ipv6) = update.ipv6_enabled {
-            network.ipv6_enabled = ipv6;
-            network.ipv6_mode = ipv6.then_some(Ipv6Mode::PrefixDelegation);
-            if !ipv6 {
-                network.ipv6_prefix = None;
+        match update.ipv6_enabled {
+            // An IPv6 configuration cannot be made from a yes: it needs a
+            // prefix source and an address assignment.
+            Some(true) if !network.ipv6_enabled => {
+                return Err(invalid(
+                    "IPv6 cannot be turned on from here: it needs settings (address \
+                     assignment and a prefix source) that only the controller's own \
+                     interface collects",
+                ));
             }
+            // Off removes the whole configuration.
+            Some(false) => {
+                network.ipv6_enabled = false;
+                network.ipv6_mode = None;
+                network.ipv6_prefix = None;
+                network.slaac_enabled = false;
+                network.dhcpv6_enabled = false;
+            }
+            Some(true) | None => {}
         }
         if let Some(cidr) = update.subnet.as_deref() {
             if network.management == Some(NetworkManagement::Unmanaged) {
@@ -306,6 +348,7 @@ impl Simulation {
     pub(super) fn delete_network(
         &mut self,
         id: &EntityId,
+        force: bool,
         now: DateTime<Utc>,
         delta: &mut Delta,
     ) -> Result<(), CoreError> {
@@ -323,6 +366,17 @@ impl Simulation {
             return Err(rejected(format!(
                 "{} carries the demo fleet's devices and clients; only a network created in \
                  this session can be deleted",
+                self.fleet.networks[index].name
+            )));
+        }
+        let in_use = self
+            .network_references(id)
+            .get("referenceResources")
+            .and_then(Value::as_array)
+            .is_some_and(|resources| !resources.is_empty());
+        if in_use && !force {
+            return Err(rejected(format!(
+                "{} is still in use; delete it with force to remove it anyway",
                 self.fleet.networks[index].name
             )));
         }

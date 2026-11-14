@@ -13,12 +13,14 @@ use chrono::{DateTime, Utc};
 use super::catalog::{self, AP_FIRMWARE};
 use super::ports::session_network_id;
 use super::sim::{Delta, Pending, Simulation, client_label};
-use crate::command::{Command, CommandResult, UpdateWifiBroadcastRequest};
+use crate::command::{
+    Command, CommandResult, UpdateFirewallPolicyRequest, UpdateWifiBroadcastRequest,
+};
 use crate::controller::{PortProfileUpdate, fixed_ip};
 use crate::core_error::CoreError;
 use crate::model::{
-    ClientType, DeviceState, EntityId, EventCategory, EventSeverity, GuestAuth, MacAddress,
-    PoeMode, PortState,
+    ClientType, DeviceState, EntityId, EntityOrigin, EventCategory, EventSeverity, GuestAuth,
+    MacAddress, PoeMode, PortState,
 };
 use crate::session::models::SessionUserEntry;
 
@@ -134,7 +136,12 @@ impl Simulation {
             Command::UpdateNetwork { id, update } => {
                 self.update_network(&id, update, now, &mut delta)?;
             }
-            Command::DeleteNetwork { id, .. } => self.delete_network(&id, now, &mut delta)?,
+            Command::DeleteNetwork { id, force } => {
+                self.delete_network(&id, force, now, &mut delta)?;
+            }
+            Command::UpdateFirewallPolicy { id, update } => {
+                self.update_policy(&id, update, now, &mut delta)?;
+            }
             Command::DeleteFirewallPolicy { id } => self.delete_policy(&id, now, &mut delta)?,
             Command::ReorderFirewallPolicies {
                 zone_pair,
@@ -838,6 +845,17 @@ impl Simulation {
                 entity_type: "firewall policy".into(),
                 identifier: id.to_string(),
             })?;
+        // Enabling goes through a full update on a controller, which
+        // only takes the policies an admin made.
+        if enabled.is_some()
+            && policy
+                .origin
+                .is_some_and(|o| o != EntityOrigin::UserDefined)
+        {
+            return Err(CoreError::Rejected {
+                message: "only user-defined policies can be enabled or disabled".into(),
+            });
+        }
         if let Some(enabled) = enabled {
             policy.enabled = enabled;
         }
@@ -859,5 +877,37 @@ impl Simulation {
             .push(self.event(now, ADMIN_INFO, "EVT_AD_FirewallPolicyChanged", message));
         delta.policies.push(updated);
         Ok(())
+    }
+
+    /// The parts of a full policy update the fleet models: its name and
+    /// its switches.
+    fn update_policy(
+        &mut self,
+        id: &EntityId,
+        update: UpdateFirewallPolicyRequest,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        if let Some(name) = update.name
+            && let Some(policy) = self.fleet.policies.iter_mut().find(|p| &p.id == id)
+        {
+            policy.name = name;
+        }
+        // An update names the whole policy, enabled included.
+        let enabled = update.enabled.or_else(|| {
+            self.fleet
+                .policies
+                .iter()
+                .find(|policy| &policy.id == id)
+                .map(|policy| policy.enabled)
+        });
+        self.patch_policy(
+            id,
+            enabled,
+            update.logging_enabled,
+            update.report_flow_enabled,
+            now,
+            delta,
+        )
     }
 }
