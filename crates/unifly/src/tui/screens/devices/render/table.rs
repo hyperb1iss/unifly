@@ -302,6 +302,7 @@ fn render_device_table(
             // The marker takes two of the name's cells where it rides there.
             let marker = usize::from(cells.update_available && !wide) * 2;
             cells.name = grid::clipped(&widths, 1, cells.name, marker);
+            cells.model = grid::clipped(&widths, 2, cells.model, 0);
             render_table_row(Some(index) == selected_index, device, cells, wide)
         })
         .collect();
