@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use dashmap::DashMap;
 use regex::Regex;
 
-use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast};
+use unifly_api::model::{
+    AclRule, FirewallPolicy, FirewallZone, IpSpec, NatPolicy, TrafficFilter, WifiBroadcast,
+};
 use unifly_api::session::models::RogueAp;
 use unifly_api::{Client, Device, Event, HealthSummary, MacAddress, Network};
 
@@ -503,7 +505,51 @@ impl Sanitizer {
             .destination_summary
             .as_ref()
             .map(|s| self.sanitize_text(s));
+        p.source.filter = p.source.filter.as_ref().map(|f| self.sanitize_filter(f));
+        p.destination.filter = p
+            .destination
+            .filter
+            .as_ref()
+            .map(|f| self.sanitize_filter(f));
         p
+    }
+
+    /// A traffic filter with the addresses, MACs, and domains it names
+    /// sanitized like any other drawn text: the Firewall screen's detail
+    /// panel spells a filter out in full.
+    fn sanitize_filter(&self, filter: &TrafficFilter) -> TrafficFilter {
+        let clean = |items: &mut Vec<String>| {
+            for item in items {
+                *item = self.sanitize_text(item);
+            }
+        };
+        let mut filter = filter.clone();
+        match &mut filter {
+            TrafficFilter::Network { mac_addresses, .. }
+            | TrafficFilter::MacAddress { mac_addresses, .. } => clean(mac_addresses),
+            TrafficFilter::IpAddress {
+                addresses,
+                mac_addresses,
+                ..
+            } => {
+                clean(mac_addresses);
+                for address in addresses {
+                    match address {
+                        IpSpec::Address { value } | IpSpec::Subnet { value } => {
+                            *value = self.sanitize_text(value);
+                        }
+                        IpSpec::Range { start, stop } => {
+                            *start = self.sanitize_text(start);
+                            *stop = self.sanitize_text(stop);
+                        }
+                        IpSpec::MatchingList { .. } => {}
+                    }
+                }
+            }
+            TrafficFilter::Domain { domains, .. } => clean(domains),
+            _ => {}
+        }
+        filter
     }
 
     pub fn sanitize_firewall_zone(&self, zone: &FirewallZone) -> FirewallZone {
@@ -827,6 +873,38 @@ mod tests {
             redact_macs: false,
             redact_isp: false,
             seed: None,
+        }
+    }
+
+    #[test]
+    fn a_policy_filter_shows_no_real_wan_address_or_mac() {
+        let policy: FirewallPolicy = serde_json::from_value(serde_json::json!({
+            "id": "p1", "name": "Vendor session", "description": null, "enabled": true,
+            "index": 1, "action": "Allow", "ip_version": "Both",
+            "source": { "zone_id": null, "filter": {
+                "kind": "ip_address", "match_opposite": false,
+                "addresses": [
+                    { "kind": "address", "value": "8.8.4.4" },
+                    { "kind": "range", "start": "8.8.8.1", "stop": "8.8.8.9" }
+                ],
+                "mac_addresses": ["aa:bb:cc:dd:ee:ff"]
+            }},
+            "destination": { "zone_id": null, "filter": null },
+            "source_summary": null, "destination_summary": null,
+            "protocol_summary": null, "schedule": null, "ipsec_mode": null,
+            "connection_states": [], "logging_enabled": false, "origin": null
+        }))
+        .expect("policy fixture");
+        let sanitizer = Sanitizer::new(&DemoConfig {
+            redact_macs: true,
+            ..test_config()
+        });
+
+        let shown = sanitizer.sanitize_firewall_policy(&policy);
+
+        let filter = serde_json::to_string(&shown.source.filter).expect("filter JSON");
+        for real in ["8.8.4.4", "8.8.8.1", "8.8.8.9", "aa:bb:cc:dd:ee:ff"] {
+            assert!(!filter.contains(real), "{real} survived: {filter}");
         }
     }
 
