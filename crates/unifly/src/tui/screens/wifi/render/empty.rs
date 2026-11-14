@@ -6,6 +6,8 @@ use crate::tui::screens::wifi::WifiScreen;
 
 pub(super) const NO_SESSION_CHANNELS: &str =
     "The channel map needs a direct controller session. Cloud profiles cannot read it.";
+pub(super) const NO_SESSION_EXPERIENCE: &str =
+    "WiFi experience needs a direct controller session. Cloud profiles cannot read it.";
 const NO_SESSION_CLIENTS: &str =
     "Wireless client data needs a direct controller session. Cloud profiles cannot read it.";
 const NO_SESSION_NEIGHBORS: &str =

@@ -220,7 +220,8 @@ impl WifiScreen {
                 // Opening the panel asks at once; the settle delay is for
                 // scrolling with it open.
                 self.client_cursor_moved_at = None;
-                ip.and_then(|ip| self.request_client_detail(ip.to_string(), Instant::now()))
+                ip.filter(|_| !self.session_missing())
+                    .and_then(|ip| self.request_client_detail(ip.to_string(), Instant::now()))
                     .or(Some(Action::Invalidate))
             }
             WifiSubTab::Ssids => {

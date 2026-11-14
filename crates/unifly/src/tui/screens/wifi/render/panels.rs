@@ -9,7 +9,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use unifly_api::model::{EntityOrigin, WifiBroadcast, WifiBroadcastType, WifiSecurityMode};
 use unifly_api::{Device, DeviceState};
 
-use super::empty::NO_SESSION_CHANNELS;
+use super::empty::{NO_SESSION_CHANNELS, NO_SESSION_EXPERIENCE};
 use super::tables::count_label;
 use super::{health_color, kbps_to_mbps, panel_block, render_notice, state_color, state_label};
 use crate::tui::action::WifiBand;
@@ -127,6 +127,10 @@ impl WifiScreen {
             render_notice(frame, inner, "No client selected");
             return;
         };
+        if self.session_missing() {
+            render_notice(frame, inner, NO_SESSION_EXPERIENCE);
+            return;
+        }
 
         // The detail on hand may belong to the client selected before.
         let ip = client.ip.map(|ip| ip.to_string());

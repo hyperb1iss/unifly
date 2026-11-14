@@ -689,6 +689,22 @@ fn without_a_session_a_client_count_is_unknown_not_zero() {
 }
 
 #[test]
+fn without_a_session_the_experience_panel_explains_itself_and_asks_for_nothing() {
+    let mut screen = client_detail_screen();
+    screen.handle_key_input(key(KeyCode::Esc));
+    screen.apply_action(&detail_loaded(FIRST_IP, -42));
+    screen.apply_action(&cloud_access());
+
+    let opened = screen.handle_key_input(key(KeyCode::Enter));
+    assert!(matches!(opened, Some(Action::Invalidate)), "{opened:?}");
+    let shown = rendered(&screen);
+    assert!(shown.contains("WiFi experience needs a direct"), "{shown}");
+    screen.handle_key_input(key(KeyCode::Char('j')));
+    settle(&mut screen);
+    assert!(screen.apply_action(&Action::Tick).is_none());
+}
+
+#[test]
 fn ssids_say_when_the_integration_api_is_missing() {
     let mut screen = WifiScreen::new();
     screen.apply_action(&Action::AccessUpdated(Access {
