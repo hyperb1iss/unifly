@@ -97,6 +97,15 @@ impl App {
                 self.remember_dpi(data);
                 return Ok(false);
             }
+            Action::ReloadStats(period) => {
+                self.monitor.dpi = None;
+                self.request_stats(*period)?;
+            }
+            // A refresh the user asked for reads everything again.
+            Action::Refresh => {
+                self.monitor.dpi = None;
+                return Ok(false);
+            }
             Action::StatsLoading(_) | Action::StatsFailed { .. } => {
                 self.forward_to_screen(ScreenId::Stats, action)?;
             }

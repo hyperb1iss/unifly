@@ -265,6 +265,9 @@ pub struct StatsData {
     pub dpi_categories: Vec<(String, u64)>,
     /// Why application or category traffic could not be read.
     pub dpi_error: Option<String>,
+    /// Whether the DPI totals were read for this snapshot, rather than
+    /// reused from an earlier one.
+    pub dpi_fetched: bool,
 }
 
 /// Sort field for table columns.
@@ -636,6 +639,9 @@ pub enum Action {
         generation: u64,
         result: Box<Action>,
     },
+    /// Load a stats period again because the user asked: nothing cached
+    /// stands in for a fresh read.
+    ReloadStats(StatsPeriod),
     // ── devices-clients ───────────────────────────────────────────
     /// Adopt the pending device with this ID, after a confirmation.
     RequestAdoptDevice(EntityId),

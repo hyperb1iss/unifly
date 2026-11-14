@@ -236,3 +236,119 @@ async fn regaining_access_reloads_the_statistics_on_screen() {
         "{queued:?}"
     );
 }
+
+/// A controller whose history and DPI catalog both answer, so no fetch
+/// falls back to the session counters.
+async fn stats_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/network/v2/api/stats/source"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!("LEGACY")))
+        .mount(&server)
+        .await;
+    for (report, row) in [
+        ("gw", json!({"time": 1000, "wan-tx_bytes": 300_000})),
+        ("site", json!({"time": 1000, "num_sta": 4})),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/proxy/network/api/s/default/stat/report/5minutes.{report}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "meta": {"rc": "ok"}, "data": [row]
+            })))
+            .mount(&server)
+            .await;
+    }
+    for group in ["applications", "categories"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/proxy/network/integration/v1/dpi/{group}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
+                "data": [{"id": 3, "name": "Streaming", "txBytes": 300, "rxBytes": 200}]
+            })))
+            .mount(&server)
+            .await;
+    }
+    server
+}
+
+/// How many times the controller was asked for its DPI applications.
+async fn dpi_reads(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path().ends_with("/dpi/applications"))
+        .count()
+}
+
+/// Run one stats load to its result and let the app take it in.
+async fn load(app: &mut App, request: &Action) -> crate::tui::action::StatsData {
+    app.process_action(request).expect("request");
+    loop {
+        let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
+            .await
+            .expect("the load reports")
+            .expect("action channel remains open");
+        app.process_action(&action).expect("process");
+        if let Action::MonitorFetched { result, .. } = action
+            && let Action::StatsUpdated(data) = *result
+        {
+            return data;
+        }
+    }
+}
+
+#[tokio::test]
+async fn dpi_totals_are_reused_briefly_then_read_again() {
+    let server = stats_server().await;
+    let controller = controller(&server).await;
+    let mut app = App::new(Some(controller.clone()), None, false, false);
+    app.connection_status = ConnectionStatus::Connected;
+    app.access = Access {
+        integration: true,
+        session: true,
+        live_events: false,
+    };
+    let timed = Action::RequestStats(StatsPeriod::OneHour);
+
+    let first = load(&mut app, &timed).await;
+    assert!(first.dpi_fetched);
+    assert_eq!(first.dpi_apps, vec![("Streaming".to_owned(), 500)]);
+    assert_eq!(dpi_reads(&server).await, 1);
+    let stamped = app.monitor.dpi.as_ref().expect("the totals are kept").0;
+
+    // A reload inside the reuse window shows the same totals without a
+    // read, and does not make them look newer than they are.
+    let reused = load(&mut app, &timed).await;
+    assert!(!reused.dpi_fetched);
+    assert_eq!(reused.dpi_apps, first.dpi_apps);
+    assert_eq!(dpi_reads(&server).await, 1);
+    assert_eq!(
+        app.monitor.dpi.as_ref().map(|(at, _)| *at),
+        Some(stamped),
+        "reused totals keep the time they were read"
+    );
+
+    // Once they are older than the window, the timed reload reads again.
+    let old = stamped
+        .checked_sub(Duration::from_mins(3))
+        .expect("the clock is past three minutes");
+    if let Some((at, _)) = app.monitor.dpi.as_mut() {
+        *at = old;
+    }
+    assert!(load(&mut app, &timed).await.dpi_fetched);
+    assert_eq!(dpi_reads(&server).await, 2);
+
+    // Asking for a reload reads again at once, however fresh they are.
+    let asked = load(&mut app, &Action::ReloadStats(StatsPeriod::OneHour)).await;
+    assert!(asked.dpi_fetched);
+    assert_eq!(dpi_reads(&server).await, 3);
+
+    // So does a full refresh.
+    app.process_action(&Action::Refresh).expect("refresh");
+    assert!(app.monitor.dpi.is_none());
+    controller.disconnect().await;
+}

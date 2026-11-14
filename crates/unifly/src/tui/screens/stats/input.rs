@@ -9,7 +9,7 @@ impl StatsScreen {
         match key.code {
             KeyCode::Char('l') | KeyCode::Right => Some(self.step_period(1)),
             KeyCode::Char('h') | KeyCode::Left => Some(self.step_period(-1)),
-            KeyCode::Char('r') => Some(Action::RequestStats(self.period)),
+            KeyCode::Char('r') => Some(Action::ReloadStats(self.period)),
             _ => None,
         }
     }
@@ -37,12 +37,14 @@ impl StatsScreen {
 
     /// Show `period` and ask for its data. The charts stay blank until
     /// that data arrives, and an error for the old period goes with it.
+    /// Picking the period already on screen is a reload, like `r`.
     fn set_period(&mut self, period: StatsPeriod) -> Action {
-        if period != self.period {
-            self.period = period;
-            self.loading = false;
-            self.error = None;
+        if period == self.period {
+            return Action::ReloadStats(period);
         }
+        self.period = period;
+        self.loading = false;
+        self.error = None;
         Action::RequestStats(period)
     }
 }
@@ -76,8 +78,13 @@ mod tests {
         let rows = render_lines(100, 30, |frame, area| screen.render(frame, area));
         let action = screen.handle_mouse_input(click_label(&rows, "30d", "1h"));
         assert!(
-            matches!(action, Some(Action::RequestStats(StatsPeriod::OneHour))),
+            matches!(action, Some(Action::ReloadStats(StatsPeriod::OneHour))),
             "the active period reloads: {action:?}"
+        );
+        let action = screen.handle_key_input(crossterm::event::KeyCode::Char('r').into());
+        assert!(
+            matches!(action, Some(Action::ReloadStats(StatsPeriod::OneHour))),
+            "{action:?}"
         );
     }
 }

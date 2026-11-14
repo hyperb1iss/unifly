@@ -48,8 +48,13 @@ impl App {
         Ok(())
     }
 
-    /// Keep the DPI totals a stats fetch returned, for the next one.
+    /// Keep the DPI totals a stats fetch read, for the next one. Totals
+    /// that were themselves reused are not stamped again, or a screen
+    /// that reloads inside the reuse window would never read new ones.
     pub(super) fn remember_dpi(&mut self, data: &StatsData) {
+        if !data.dpi_fetched {
+            return;
+        }
         self.monitor.dpi = Some((
             Instant::now(),
             DpiSnapshot {
@@ -119,6 +124,7 @@ impl App {
             };
             data.period = period;
 
+            data.dpi_fetched = cached_dpi.is_none();
             let dpi = match cached_dpi {
                 Some(dpi) => dpi,
                 None => fetch_dpi(&controller).await,
