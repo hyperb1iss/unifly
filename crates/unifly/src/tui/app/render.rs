@@ -19,6 +19,9 @@ use crate::tui::widgets::wrap::wrap;
 /// Columns the sponsor button takes: ` ♥ Sponsor `.
 const DONATE_WIDTH: u16 = 11;
 
+/// Columns kept clear between the status bar's left and right groups.
+const STATUS_GAP: u16 = 2;
+
 impl App {
     /// Render the full application frame.
     ///
@@ -208,40 +211,41 @@ impl App {
         strip
     }
 
-    /// Render the bottom status bar with connection status and key hints.
-    fn render_status_bar(&mut self, frame: &mut Frame, area: Rect) {
-        if self.search_active {
-            let mut line = ClickLine::default();
-            line.push_gap(Span::styled(
-                " / ",
-                Style::default().fg(theme::accent_primary()),
-            ));
-            // The query takes what the hints leave, scrolling under the
-            // cursor when it is longer.
-            let room = usize::from(area.width).saturating_sub(3 + 2 + 24).max(8);
-            for span in self.search_input.spans(
-                room,
-                true,
-                None,
-                Style::default().fg(theme::accent_secondary()),
-            ) {
-                line.push_gap(span);
-            }
-            line.push_gap(Span::raw("  "));
-            line.push_hints(
-                &[
-                    Hint::button("Esc", "clear", KeyCode::Esc),
-                    Hint::button("Enter", "done", KeyCode::Enter),
-                ],
-                theme::key_hint_key(),
-                theme::key_hint(),
-            );
-            let line = line.draw(area, &mut self.hits);
-            frame.render_widget(Paragraph::new(line), area);
-            return;
+    /// The status bar while search has the keyboard: the query and the
+    /// two keys that end it.
+    fn render_search_bar(&mut self, frame: &mut Frame, area: Rect) {
+        let mut line = ClickLine::default();
+        line.push_gap(Span::styled(
+            " / ",
+            Style::default().fg(theme::accent_primary()),
+        ));
+        // The query takes what the hints leave, scrolling under the
+        // cursor when it is longer.
+        let room = usize::from(area.width).saturating_sub(3 + 2 + 24).max(8);
+        for span in self.search_input.spans(
+            room,
+            true,
+            None,
+            Style::default().fg(theme::accent_secondary()),
+        ) {
+            line.push_gap(span);
         }
+        line.push_gap(Span::raw("  "));
+        line.push_hints(
+            &[
+                Hint::button("Esc", "clear", KeyCode::Esc),
+                Hint::button("Enter", "done", KeyCode::Enter),
+            ],
+            theme::key_hint_key(),
+            theme::key_hint(),
+        );
+        let line = line.draw(area, &mut self.hits);
+        frame.render_widget(Paragraph::new(line), area);
+    }
 
-        let connection_indicator = match self.connection_status {
+    /// The connection state as the status bar words it.
+    fn connection_indicator(&self) -> Span<'static> {
+        match self.connection_status {
             ConnectionStatus::Connected => {
                 Span::styled("● connected", Style::default().fg(theme::success()))
             }
@@ -259,60 +263,99 @@ impl App {
             ConnectionStatus::Connecting => {
                 Span::styled("◐ connecting", Style::default().fg(theme::warning()))
             }
-        };
+        }
+    }
 
-        let mut hints = ClickLine::default();
-        hints.push_gap(Span::styled(" │ ", theme::key_hint()));
-        let shown = self.status_hints();
-        hints.push_hints(&shown, theme::key_hint_key(), theme::key_hint());
-        let mut spans = vec![Span::raw(" "), connection_indicator];
+    /// Render the bottom status bar with connection status and key hints.
+    fn render_status_bar(&mut self, frame: &mut Frame, area: Rect) {
+        if self.search_active {
+            self.render_search_bar(frame, area);
+            return;
+        }
+
+        let connection_indicator = self.connection_indicator();
+
+        // App-wide keys sit against the right edge, ahead of the sponsor
+        // button, so they stay put while the screen's actions change.
+        let mut global = ClickLine::default();
+        global.push_hints(
+            &self.status_hints(),
+            theme::key_hint_key(),
+            theme::key_hint(),
+        );
+        let global_width = u16::try_from(global.width()).unwrap_or(u16::MAX);
+        let indicator_width = u16::try_from(connection_indicator.width()).unwrap_or(u16::MAX);
+        // The sponsor button takes the corner only when the connection
+        // state keeps its room.
+        let donate = self.show_donate && 1 + indicator_width + 1 + DONATE_WIDTH <= area.width;
+        let donate_width = if donate { DONATE_WIDTH } else { 0 };
+        let right_edge = area.width.saturating_sub(donate_width);
+        let global_area =
+            (1 + indicator_width + STATUS_GAP + global_width < right_edge).then(|| Rect {
+                x: area.x + right_edge - 1 - global_width,
+                width: global_width,
+                ..area
+            });
+        let left_room = global_area.map_or(right_edge, |global| global.x - area.x);
+
+        // What the screen can do with its selection takes the middle, as
+        // many actions as fit.
+        let divider = Span::styled(" \u{2502} ", theme::key_hint());
+        let divider_width = u16::try_from(divider.width()).unwrap_or(u16::MAX);
+        let context = self
+            .screens
+            .get(&self.active_screen)
+            .map(|screen| screen.hints())
+            .unwrap_or_default();
+        let context = click::fit_hints(
+            context,
+            left_room.saturating_sub(1 + indicator_width + divider_width + STATUS_GAP),
+        );
+        let mut actions = ClickLine::default();
+        if !context.is_empty() {
+            actions.push_gap(divider);
+            actions.push_hints(&context, theme::key_hint_key(), theme::key_hint());
+        }
+
+        let mut line = ClickLine::default();
+        line.push_gap(Span::raw(" "));
+        line.push_gap(connection_indicator);
         if matches!(self.connection_status, ConnectionStatus::Disconnected)
             && let Some(reason) = &self.connection_error
         {
-            // The reason is best-effort context: it must never displace the
-            // key hints or run under the sponsor button. Budget from the
-            // actual fixed-span widths and drop it when it cannot fit.
-            let donate_width = if self.show_donate {
-                usize::from(DONATE_WIDTH)
-            } else {
-                0
-            };
-            let fixed: usize =
-                spans.iter().map(Span::width).sum::<usize>() + hints.width() + 3 + donate_width;
-            let budget = usize::from(area.width).saturating_sub(fixed);
+            // The reason is best-effort context: it takes only the room
+            // the actions leave, and is dropped when that is too little.
+            let fixed = line.width() + actions.width() + 3 + usize::from(STATUS_GAP);
+            let budget = usize::from(left_room).saturating_sub(fixed);
             if budget >= 12 {
                 let short: String = reason.chars().take(budget).collect();
-                spans.push(Span::styled(
+                line.push_gap(Span::styled(
                     format!(" ({short})"),
                     Style::default().fg(theme::error()),
                 ));
             }
         }
-        let mut line = ClickLine::default();
-        for span in spans {
-            line.push_gap(span);
-        }
-        line.append(hints);
-        // The sponsor button only takes room the hints leave it, so it
-        // can never sit on top of one.
-        let hints_end = line.width();
+        line.append(actions);
         let line = line.draw(area, &mut self.hits);
         frame.render_widget(Paragraph::new(line), area);
 
-        if self.show_donate && hints_end + usize::from(DONATE_WIDTH) < usize::from(area.width) {
+        if let Some(global_area) = global_area {
+            let line = global.draw(global_area, &mut self.hits);
+            frame.render_widget(Paragraph::new(line), global_area);
+        }
+
+        if donate {
             Self::render_donate_button(frame, area, &mut self.hits);
         }
     }
 
-    /// The status bar's buttons. App-wide ones dispatch their action
-    /// directly: as keys they would reach the screen first, which may use
-    /// the same letter.
+    /// The app-wide buttons at the right of the status bar: only the ones
+    /// a newcomer needs to find the rest, since the help overlay lists
+    /// every key. They dispatch their action directly: as keys they would
+    /// reach the screen first, which may use the same letter.
     fn status_hints(&self) -> Vec<Hint> {
-        let refresh = if self.connection_status == ConnectionStatus::Disconnected {
-            Hint::action("^r", "retry", Action::RetryConnect)
-        } else {
-            Hint::action("^r", "refresh", Action::Refresh)
-        };
+        let retry = (self.connection_status == ConnectionStatus::Disconnected)
+            .then(|| Hint::action("^r", "retry", Action::RetryConnect));
         let search = self
             .active_screen_searches()
             .then(|| Hint::action("/", "search", Action::OpenSearch));
@@ -322,11 +365,9 @@ impl App {
             vec![Hint::info("F1", "help"), Hint::info("^c", "quit")]
         } else {
             [
-                Some(Hint::action("?", "help", Action::ToggleHelp)),
                 search,
-                Some(refresh),
-                Some(Hint::action(",", "settings", Action::OpenSettings)),
-                Some(Hint::action("q", "quit", Action::Quit)),
+                retry,
+                Some(Hint::action("?", "help", Action::ToggleHelp)),
             ]
             .into_iter()
             .flatten()

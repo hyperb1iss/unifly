@@ -6,6 +6,7 @@ use ratatui::{Frame, layout::Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tui::action::Action;
+use crate::tui::widgets::click::Hint;
 
 /// The keys every list in the app takes, for a screen's [`Component::help`].
 pub const LIST_HELP: &[(&str, &str)] = &[
@@ -64,6 +65,14 @@ pub trait Component: Send {
     /// overlay: `(keys, what they do)`. A list screen starts from
     /// [`LIST_HELP`].
     fn help(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
+
+    /// What the selection or the screen can do right now, for the status
+    /// bar: the actions, not the navigation every list shares, which lives
+    /// in [`Component::help`]. Each hint carries a rank, and the highest
+    /// ranks are dropped first on a narrow terminal.
+    fn hints(&self) -> Vec<(u8, Hint)> {
         Vec::new()
     }
 

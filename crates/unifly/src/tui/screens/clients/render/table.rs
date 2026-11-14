@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use super::super::ClientsScreen;
 use super::super::labels::LinkIndex;
-use super::detail::render_detail;
+use super::detail::{detail_height, render_detail};
 
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
 
 use unifly_api::{Client, ClientType};
 
@@ -18,11 +18,10 @@ use crate::tui::screens::clients::commands::is_authorized;
 use crate::tui::screens::clients::state::Fetch;
 use crate::tui::screens::clients::view::{FILTER_LABELS, client_name, empty_note};
 use crate::tui::screens::devices::grid;
-use crate::tui::screens::devices::view::counted;
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
-use crate::tui::widgets::click::{self, Click, Hint};
-use crate::tui::widgets::{bytes_fmt, sub_tabs};
+use crate::tui::widgets::click::{self, Hint};
+use crate::tui::widgets::{bytes_fmt, sub_tabs, toolbar};
 
 pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rect) {
     screen.hits.borrow_mut().clear();
@@ -41,27 +40,21 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // With a detail open the table keeps a few rows around the cursor and
-    // the pane takes the rest; its hint bar then speaks for the screen.
-    // On a very short screen the pane takes all of it.
+    // An open detail takes the rows its fields need and the table keeps
+    // the rest. On a very short screen the pane takes all of it.
     let detail_client = screen.detail_client(&filtered);
-    let (table_area, detail_area) = if detail_client.is_some() {
-        let list = grid::list_rows_beside_detail(inner.height);
+    let (table_area, detail_area) = if let Some(client) = detail_client {
+        let detail = detail_height(screen, client, inner.width);
+        let list = grid::list_rows_above_detail(inner.height, detail);
         let chunks = Layout::vertical([Constraint::Length(list), Constraint::Min(0)]).split(inner);
         (chunks[0], Some(chunks[1]))
     } else {
         (inner, None)
     };
 
-    let hint_rows = u16::from(detail_area.is_none());
-    let layout = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(hint_rows),
-    ])
-    .split(table_area);
+    let layout = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(table_area);
 
-    render_filter_bar(screen, frame, layout[0], filtered.len());
+    render_filter_bar(screen, frame, layout[0]);
 
     let selected_idx = screen
         .detail_client_index(&filtered)
@@ -73,24 +66,26 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
         render_client_table(screen, frame, layout[1], &filtered, selected_idx);
     }
 
-    if detail_area.is_none() {
-        let mut hints = vec![
-            (0, Hint::info("j/k", "navigate")),
-            (0, Hint::button("Enter", "detail", KeyCode::Enter)),
-            (2, Hint::button("h/l", "filter", click::char_key('l'))),
-            (3, Hint::button("s", "sort", click::char_key('s'))),
-        ];
-        if let Some(client) = filtered.get(selected_idx) {
-            hints.extend(command_hints(screen, client));
-        }
-        let hints = grid::fit_hints(hints, layout[2].width);
-        let line = click::key_hints(&hints).draw(layout[2], &mut screen.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[2]);
-    }
-
     if let (Some(detail_area), Some(client)) = (detail_area, detail_client) {
         render_detail(screen, frame, detail_area, client);
     }
+}
+
+/// What the status bar offers: the commands the selected client can take,
+/// behind the way into its detail or out of it.
+pub(in crate::tui::screens::clients) fn status_hints(screen: &ClientsScreen) -> Vec<(u8, Hint)> {
+    let filtered = screen.filtered_clients();
+    if let Some(client) = screen.detail_client(&filtered) {
+        let mut hints = command_hints(screen, client);
+        hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
+        return hints;
+    }
+    let Some(client) = filtered.get(screen.selected_index()) else {
+        return Vec::new();
+    };
+    let mut hints = vec![(0, Hint::button("Enter", "detail", KeyCode::Enter))];
+    hints.extend(command_hints(screen, client));
+    hints
 }
 
 /// The screen title: how many clients show, of how many, and the search
@@ -136,46 +131,14 @@ fn empty_state(screen: &ClientsScreen) -> String {
     empty_note(screen.filter).into()
 }
 
-/// The type filter strip, then the sort and the row count, as far as the
-/// width allows.
-fn render_filter_bar(screen: &ClientsScreen, frame: &mut Frame, area: Rect, shown: usize) {
-    let mut bar = click::ClickLine::default();
-    bar.push_gap(Span::raw(" "));
-    bar.append(sub_tabs::sub_tab_strip(
-        &FILTER_LABELS,
-        screen.filter_index(),
-    ));
-    let secondary = Style::default().fg(theme::text_secondary());
-    let sort = [
-        Span::styled("   sort ", secondary),
-        Span::styled(
-            screen.sort.label(),
-            Style::default().fg(theme::accent_secondary()),
-        ),
-    ];
-    let room = |bar: &click::ClickLine<'_, Click>, spans: &[Span<'_>]| {
-        bar.width() + spans.iter().map(Span::width).sum::<usize>() < usize::from(area.width)
-    };
-    if room(&bar, &sort) {
-        for span in sort {
-            // `s` belongs to the table, so the label is only a button
-            // while no detail has the keys.
-            if screen.detail_open {
-                bar.push_gap(span);
-            } else {
-                bar.push(Click::Key(click::char_key('s')), span);
-            }
-        }
-    }
-    let count = Span::styled(
-        format!("   {}", counted(shown, "client", "clients")),
-        secondary,
-    );
-    if room(&bar, std::slice::from_ref(&count)) {
-        bar.push_gap(count);
-    }
-    let line = bar.draw(area, &mut screen.hits.borrow_mut());
-    frame.render_widget(Paragraph::new(line), area);
+/// The type filter strip, with the sort against the right edge.
+fn render_filter_bar(screen: &ClientsScreen, frame: &mut Frame, area: Rect) {
+    let filters = sub_tabs::sub_tab_strip(&FILTER_LABELS, screen.filter_index());
+    // `s` belongs to the table, so the chip is only a button while no
+    // detail has the keys.
+    let key = (!screen.detail_open).then(|| ("s", click::char_key('s')));
+    let sort = toolbar::chip(key, "sort", screen.sort.label());
+    toolbar::render(frame, area, filters, sort, &mut screen.hits.borrow_mut());
 }
 
 /// Hints for the commands `client` can take in its state and under the
@@ -437,12 +400,12 @@ mod tests {
     use serde_json::json;
     use unifly_api::Client;
 
-    use super::{ClientCells, ClientColumns};
+    use super::{ClientCells, ClientColumns, status_hints};
     use crate::tui::action::{Access, Action};
     use crate::tui::screens::clients::ClientsScreen;
     use crate::tui::screens::devices::fixtures::{client, network, switch, wireless};
     use crate::tui::table::render_lines;
-    use crate::tui::widgets::click::click_label;
+    use crate::tui::widgets::click::{self, click_label};
 
     const NETWORK: &str = "11111111-1111-4111-8111-111111111111";
 
@@ -497,12 +460,9 @@ mod tests {
         screen.handle_key_input(KeyEvent::from(code));
     }
 
-    /// The hint bar: the last drawn row that carries key hints.
-    fn hints(rows: &[String]) -> &str {
-        rows.iter()
-            .rev()
-            .find(|row| row.contains("j/k"))
-            .map_or("", String::as_str)
+    /// What the status bar offers for the screen as it stands.
+    fn hints(screen: &ClientsScreen) -> String {
+        click::hint_text(&status_hints(screen))
     }
 
     #[test]
@@ -609,12 +569,11 @@ mod tests {
             row("alpha").is_some_and(|row| !row.contains('⊘')),
             "{rows:?}"
         );
-        assert!(hints(&rows).contains("b block"), "{}", hints(&rows));
+        assert!(hints(&screen).contains("b block"), "{}", hints(&screen));
 
         let mut screen = screen;
         screen.select(1);
-        let rows = draw(&screen, 100, 12);
-        assert!(hints(&rows).contains("b unblock"), "{}", hints(&rows));
+        assert!(hints(&screen).contains("b unblock"), "{}", hints(&screen));
     }
 
     #[test]
@@ -624,7 +583,7 @@ mod tests {
             client(2, "bravo", &wireless(-55, "aa:bb:cc:dd:ee:02")),
             client(3, "guest-phone", &json!({ "is_guest": true })),
         ]);
-        let wired = hints(&draw(&screen, 120, 12)).to_owned();
+        let wired = hints(&screen);
         assert!(
             wired.contains("Enter detail") && wired.contains("F forget"),
             "{wired}"
@@ -635,16 +594,16 @@ mod tests {
         );
 
         screen.select(1);
-        assert!(hints(&draw(&screen, 120, 12)).contains("x kick"));
+        assert!(hints(&screen).contains("x kick"));
         screen.select(2);
-        assert!(hints(&draw(&screen, 120, 12)).contains("A authorize"));
+        assert!(hints(&screen).contains("A authorize"));
 
         // Without a session the commands only it serves are not offered.
         screen.apply_action(&Action::AccessUpdated(Access {
             integration: true,
             ..Access::default()
         }));
-        let cloud = hints(&draw(&screen, 120, 12)).to_owned();
+        let cloud = hints(&screen);
         assert!(cloud.contains("b block"), "{cloud}");
         for dead in ["authorize", "fixed IP", "forget"] {
             assert!(!cloud.contains(dead), "{dead} is offered: {cloud}");
@@ -655,13 +614,15 @@ mod tests {
             live_events: true,
         }));
 
-        // With a detail open there is one bar, and it is the detail's.
+        // With a detail open the bar is the detail's, and the screen
+        // draws no hint row of its own in either mode.
         press(&mut screen, KeyCode::Enter);
-        let rows = draw(&screen, 120, 24);
-        let text = rows.join("\n");
-        assert!(!text.contains("Enter detail"), "a dead Enter hint:\n{text}");
-        assert!(hints(&rows).contains("j/k client"), "{}", hints(&rows));
-        assert!(hints(&rows).contains("Esc close"), "{}", hints(&rows));
+        let bar = hints(&screen);
+        assert!(!bar.contains("Enter detail"), "a dead Enter hint: {bar}");
+        assert!(bar.contains("x kick") || bar.contains("b block"), "{bar}");
+        assert!(bar.ends_with("Esc close"), "{bar}");
+        let text = draw(&screen, 120, 24).join("\n");
+        assert!(!text.contains("Esc close"), "a second hint bar:\n{text}");
     }
 
     #[test]
@@ -692,7 +653,7 @@ mod tests {
                 .any(|row| row.contains("banned-phone") && row.contains('\u{2298}')),
             "{rows:?}"
         );
-        let bar = hints(&rows);
+        let bar = hints(&screen);
         assert!(
             bar.contains("b unblock") && bar.contains("F forget"),
             "{bar}"
@@ -708,15 +669,14 @@ mod tests {
         ]);
         let top = draw(&screen, 100, 10).join("\n");
         assert!(top.contains("Clients (2)"), "{top}");
-        assert!(
-            top.contains("sort name ↑") && top.contains("2 clients"),
-            "{top}"
-        );
+        // The sort sits against the right edge, where it stays whatever
+        // the filter strip says.
+        let bar = top.lines().nth(1).unwrap_or_default();
+        assert!(bar.trim_end().ends_with("s sort name ↑ │"), "{bar}");
 
         screen.set_search_query("bra");
         let top = draw(&screen, 100, 10).join("\n");
         assert!(top.contains("Clients (1/2) [\"bra\"]"), "{top}");
-        assert!(top.contains("1 client "), "{top}");
     }
 
     #[test]

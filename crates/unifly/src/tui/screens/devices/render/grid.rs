@@ -142,6 +142,20 @@ pub fn lines(fields: &[Field], width: u16, height: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Rows [`lines`] takes for `count` fields in a pane `width` columns wide
+/// with all the height it wants.
+pub fn rows_for(count: usize, width: u16) -> u16 {
+    let width = usize::from(width);
+    let most_columns = (width / MIN_COLUMN).max(1);
+    let balanced = if count >= SPLIT_FROM && width >= 2 * WIDE_COLUMN {
+        2
+    } else {
+        1
+    };
+    let columns = balanced.clamp(1, most_columns);
+    u16::try_from(count.div_ceil(columns)).unwrap_or(u16::MAX)
+}
+
 /// One field padded to `column_width`: two cells of margin, the label, two
 /// cells of gap, then the value.
 fn cell(field: &Field, label_width: usize, column_width: usize) -> Vec<Span<'static>> {
@@ -178,6 +192,19 @@ pub fn list_rows_beside_detail(height: u16) -> u16 {
     }
 }
 
+/// Rows the table keeps above a detail that wants `detail` rows, borders
+/// included, in a screen `height` rows tall. The detail takes what it
+/// needs and no more, so the list stays in view; the table still keeps
+/// its share when the detail would take everything.
+pub fn list_rows_above_detail(height: u16, detail: u16) -> u16 {
+    let floor = list_rows_beside_detail(height);
+    if floor == 0 {
+        0
+    } else {
+        height.saturating_sub(detail).max(floor)
+    }
+}
+
 /// Draw one muted line in the middle of `area`: the empty, loading, and
 /// no-match states of a list.
 pub fn note(frame: &mut Frame, area: Rect, text: &str) {
@@ -197,23 +224,10 @@ pub fn note(frame: &mut Frame, area: Rect, text: &str) {
     );
 }
 
-/// The hints that fit `width`, in the order given. Each carries a rank,
-/// and the highest ranks are left out first when the bar is too narrow, so
-/// a hint bar never runs off the edge mid-word.
-pub fn fit_hints(mut hints: Vec<(u8, Hint)>, width: u16) -> Vec<Hint> {
-    let bar = |hints: &[(u8, Hint)]| {
-        let shown: Vec<Hint> = hints.iter().map(|(_, hint)| hint.clone()).collect();
-        click::key_hints(&shown).width()
-    };
-    while hints.len() > 1 && bar(&hints) > usize::from(width) {
-        let drop = hints
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, (rank, _))| *rank)
-            .map_or(0, |(index, _)| index);
-        hints.remove(drop);
-    }
-    hints.into_iter().map(|(_, hint)| hint).collect()
+/// The hints that fit a bar `width` columns wide that starts two columns
+/// in, as [`click::key_hints`] draws one.
+pub fn fit_hints(hints: Vec<(u8, Hint)>, width: u16) -> Vec<Hint> {
+    click::fit_hints(hints, width.saturating_sub(2))
 }
 
 /// A timestamp in the terminal's own time zone.

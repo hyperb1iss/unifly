@@ -274,6 +274,38 @@ impl ClickLine<'static, Click> {
     }
 }
 
+/// The hints that fit `width` columns, in the order given. Each carries a
+/// rank, and the highest ranks are left out first when the bar is too
+/// narrow, so a hint bar never runs off the edge mid-word. Nothing is
+/// returned when not even the lowest rank fits.
+pub fn fit_hints(mut hints: Vec<(u8, Hint)>, width: u16) -> Vec<Hint> {
+    let bar = |hints: &[(u8, Hint)]| {
+        let shown: Vec<Hint> = hints.iter().map(|(_, hint)| hint.clone()).collect();
+        let mut line = ClickLine::default();
+        line.push_hints(&shown, Style::default(), Style::default());
+        line.width()
+    };
+    while !hints.is_empty() && bar(&hints) > usize::from(width) {
+        let drop = hints
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, (rank, _))| *rank)
+            .map_or(0, |(index, _)| index);
+        hints.remove(drop);
+    }
+    hints.into_iter().map(|(_, hint)| hint).collect()
+}
+
+/// Ranked hints as the status bar would word them, widest first.
+#[cfg(test)]
+pub(crate) fn hint_text(hints: &[(u8, Hint)]) -> String {
+    hints
+        .iter()
+        .map(|(_, hint)| format!("{} {}", hint.key, hint.label))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
 /// The row that line `index` of a paragraph drawn in `area` lands on,
 /// clipped to `area` (empty once the paragraph runs out of room).
 pub fn paragraph_row(area: Rect, index: usize) -> Rect {

@@ -612,11 +612,11 @@ mod tests {
         let mut app = dashboard_app();
         let rows = render(&mut app, 120);
         let action = app
-            .handle_mouse_event(click_label(&rows, "settings", "help"))
+            .handle_mouse_event(click_label(&rows, "? help", "help"))
             .expect("click");
         assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
         let action = app
-            .handle_mouse_event(click_label(&rows, "settings", "Sponsor"))
+            .handle_mouse_event(click_label(&rows, "? help", "Sponsor"))
             .expect("click");
         assert!(matches!(action, Some(Action::OpenDonate)), "{action:?}");
 

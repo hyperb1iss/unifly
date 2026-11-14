@@ -1,18 +1,15 @@
-use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use unifly_api::Client;
 use unifly_api::model::WirelessInfo;
 
-use super::table::command_hints;
 use crate::tui::screens::clients::ClientsScreen;
 use crate::tui::screens::clients::view::{client_name, type_label};
 use crate::tui::screens::devices::grid::{self, Field};
 use crate::tui::theme;
 use crate::tui::widgets::bytes_fmt;
-use crate::tui::widgets::click::{self, Hint};
 
 pub(super) fn render_detail(
     screen: &ClientsScreen,
@@ -35,19 +32,18 @@ pub(super) fn render_detail(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let layout = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
     let fields = fields(screen, client);
     frame.render_widget(
-        Paragraph::new(grid::lines(&fields, layout[0].width, layout[0].height)),
-        layout[0],
+        Paragraph::new(grid::lines(&fields, inner.width, inner.height)),
+        inner,
     );
+}
 
-    let mut hints = vec![(3, Hint::info("j/k", "client"))];
-    hints.extend(command_hints(screen, client));
-    hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
-    let hints = grid::fit_hints(hints, layout[1].width);
-    let line = click::key_hints(&hints).draw(layout[1], &mut screen.hits.borrow_mut());
-    frame.render_widget(Paragraph::new(line), layout[1]);
+/// Rows the detail wants in a screen `width` columns wide: one per line
+/// of its grid, and its border.
+pub(super) fn detail_height(screen: &ClientsScreen, client: &Client, width: u16) -> u16 {
+    let fields = fields(screen, client).len();
+    grid::rows_for(fields, width.saturating_sub(2)).saturating_add(2)
 }
 
 /// Everything the detail says about `client`, most useful first.

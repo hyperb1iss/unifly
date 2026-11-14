@@ -22,7 +22,7 @@ use unifly_api::{Client, EntityId};
 use crate::tui::action::{Access, Action, ClientTypeFilter};
 use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::TableScroll;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 pub struct ClientsScreen {
     focused: bool,
@@ -84,6 +84,10 @@ impl Component for ClientsScreen {
 
     fn search_query(&self) -> Option<&str> {
         Some(&self.search_query)
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {
