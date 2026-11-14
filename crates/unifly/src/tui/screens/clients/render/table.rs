@@ -44,7 +44,10 @@ pub(super) fn render_screen(screen: &ClientsScreen, frame: &mut Frame, area: Rec
     // the rest. On a very short screen the pane takes all of it.
     let detail_client = screen.detail_client(&filtered);
     let (table_area, detail_area) = if let Some(client) = detail_client {
-        let detail = detail_height(screen, client, inner.width);
+        let room = inner
+            .height
+            .saturating_sub(grid::list_rows_beside_detail(inner.height));
+        let detail = detail_height(screen, client, inner.width, room);
         let list = grid::list_rows_above_detail(inner.height, detail);
         let chunks = Layout::vertical([Constraint::Length(list), Constraint::Min(0)]).split(inner);
         (chunks[0], Some(chunks[1]))

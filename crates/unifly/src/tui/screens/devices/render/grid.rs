@@ -145,12 +145,6 @@ fn columns_for(count: usize, width: usize, rows_available: usize) -> usize {
         .clamp(1, most_columns)
 }
 
-/// Rows [`lines`] takes for `count` fields in a pane `width` columns wide
-/// with all the height it wants.
-pub fn rows_for(count: usize, width: u16) -> u16 {
-    rows_within(count, width, u16::MAX)
-}
-
 /// Rows [`lines`] takes for `count` fields in an area `width` by `height`.
 /// A pane with fewer rows than fields flows them into more columns, so it
 /// asks for the rows those columns fill.
@@ -296,11 +290,11 @@ mod tests {
     fn a_pane_is_told_the_rows_its_fields_fill_in_the_room_it_has() {
         let fields: Vec<_> = (0..15).map(|_| Field::new("Label", "value")).collect();
         // Wide enough for two balanced columns whatever the height.
-        assert_eq!(rows_for(15, 100), 8);
+        assert_eq!(rows_within(15, 100, u16::MAX), 8);
         assert_eq!(rows_within(15, 100, 40), 8);
         // Narrower, one column while it has the rows and two once it has
         // not, exactly as the lines are then drawn.
-        assert_eq!(rows_for(15, 76), 15);
+        assert_eq!(rows_within(15, 76, u16::MAX), 15);
         for height in [40, 15, 11, 8] {
             let drawn = lines(&fields, 76, height).len();
             assert_eq!(usize::from(rows_within(15, 76, height)), drawn, "{height}");

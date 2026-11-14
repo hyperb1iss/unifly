@@ -39,11 +39,12 @@ pub(super) fn render_detail(
     );
 }
 
-/// Rows the detail wants in a screen `width` columns wide: one per line
-/// of its grid, and its border.
-pub(super) fn detail_height(screen: &ClientsScreen, client: &Client, width: u16) -> u16 {
+/// Rows the detail wants in a screen `width` columns wide with `room`
+/// rows to give it: one per line of the grid it draws in that room, and
+/// its border.
+pub(super) fn detail_height(screen: &ClientsScreen, client: &Client, width: u16, room: u16) -> u16 {
     let fields = fields(screen, client).len();
-    grid::rows_for(fields, width.saturating_sub(2)).saturating_add(2)
+    grid::rows_within(fields, width.saturating_sub(2), room.saturating_sub(2)).saturating_add(2)
 }
 
 /// Everything the detail says about `client`, most useful first.
