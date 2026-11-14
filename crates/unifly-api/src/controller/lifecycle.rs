@@ -562,6 +562,27 @@ fn publish_live_event(
     }
 }
 
+impl Controller {
+    /// Log the cookie session out now, even when its cookie is cached for
+    /// a later run. For a session nothing will use again: the controller
+    /// would otherwise keep it open until it expires. Does nothing for a
+    /// connection that holds no cookie session.
+    pub async fn logout_session(&self) {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        let cookie_auth = matches!(
+            self.inner.config.auth,
+            AuthCredentials::Credentials { .. } | AuthCredentials::Hybrid { .. }
+        );
+        let session = self.inner.session_client.lock().await.clone();
+        if cookie_auth
+            && let Some(client) = session
+            && let Err(error) = client.logout().await
+        {
+            warn!(error = %error, "logout failed (non-fatal)");
+        }
+    }
+}
+
 /// Whether closing a connection should log its cookie session out. Not
 /// with session caching active: the cookie has to survive for the next
 /// CLI invocation.

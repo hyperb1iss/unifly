@@ -933,6 +933,54 @@ async fn a_reconnect_after_a_fixed_code_asks_the_provider() {
     server.verify().await;
 }
 
+/// A cookie session that nothing will use again can be ended on request,
+/// ahead of the disconnect that would otherwise leave it to expire.
+#[tokio::test]
+async fn logout_session_ends_the_cookie_session_on_request() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+    assert_eq!(logout_requests(&server).await, 0);
+
+    controller.logout_session().await;
+
+    let logouts: Vec<Request> = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|request| request.url.path() == "/api/logout")
+        .collect();
+    assert_eq!(logouts.len(), 1);
+    assert_eq!(logouts[0].method, "POST");
+    assert!(
+        logouts[0]
+            .headers
+            .get("cookie")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|cookie| cookie.contains("unifly_session=session-cookie")),
+        "the logout names the session it ends"
+    );
+
+    // An API key connection holds no cookie session to end.
+    let server = MockServer::start().await;
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.logout_session().await;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+    );
+}
+
 /// With a provider and no fixed code, the connect login asks it for a code
 /// at the MFA challenge, and the re-login after an expiry asks it again
 /// for a fresh one instead of reusing the first.
