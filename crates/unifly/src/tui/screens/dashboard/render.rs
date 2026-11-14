@@ -215,7 +215,10 @@ mod tests {
         };
 
         let text = draw(&DemoConfig::default());
-        assert!(text.contains(" GW "), "the gateway line is drawn:\n{text}");
+        assert!(
+            text.contains("\u{2502} Gateway "),
+            "the gateway line is drawn:\n{text}"
+        );
         for real in ["73.45.67", "2601:646", "75.75.7"] {
             assert!(!text.contains(real), "the panel shows {real}:\n{text}");
         }

@@ -11,12 +11,19 @@ use crate::tui::widgets::bytes_fmt;
 use super::super::DashboardScreen;
 use super::super::focus::Panel;
 
+/// Columns a row's label takes: a margin, the longest label, and a gap.
+const LABEL_COLUMN: usize = 1 + "Devices".len() + 1;
+
+fn field_label(label: &str) -> Span<'static> {
+    Span::styled(
+        format!(" {label:<width$}", width = LABEL_COLUMN - 1),
+        Style::default().fg(theme::text_secondary()),
+    )
+}
+
 /// A utilization bar and its percentage, or a dash when it is unknown.
 fn usage_line(label: &str, pct: Option<f64>, bar_width: u16) -> Line<'static> {
-    let name = Span::styled(
-        format!(" {label:<4}"),
-        Style::default().fg(theme::text_secondary()),
-    );
+    let name = field_label(label);
     let Some(pct) = pct else {
         return Line::from(vec![
             name,
@@ -51,8 +58,8 @@ impl DashboardScreen {
 
         let gateway = self.gateway();
         let w = usize::from(inner.width);
-        let content_w = w.saturating_sub(7);
-        let bar_width = u16::try_from(content_w.saturating_sub(9).clamp(6, 18)).unwrap_or(6);
+        let content_w = w.saturating_sub(LABEL_COLUMN);
+        let bar_width = u16::try_from(content_w.saturating_sub(8).clamp(6, 18)).unwrap_or(6);
 
         let mut lines = vec![
             usage_line(
@@ -61,7 +68,7 @@ impl DashboardScreen {
                 bar_width,
             ),
             usage_line(
-                "MEM",
+                "Memory",
                 gateway.and_then(|g| g.stats.memory_utilization_pct),
                 bar_width,
             ),
@@ -91,12 +98,12 @@ impl DashboardScreen {
                 .or(wordings.last())
                 .map_or_else(String::new, |text| clip(text, content_w));
             Line::from(vec![
-                Span::styled(label, Style::default().fg(theme::text_secondary())),
+                field_label(label),
                 Span::styled(text, Style::default().fg(theme::accent_secondary())),
             ])
         };
         lines.push(summary(
-            " Dev  ",
+            "Devices",
             &[
                 format!("{total_devices} total · {online} online"),
                 format!("{online} of {total_devices} online"),
@@ -104,7 +111,7 @@ impl DashboardScreen {
             ],
         ));
         lines.push(summary(
-            " Cli  ",
+            "Clients",
             &[
                 format!("{total_clients} total · {wireless} wifi · {wired} wired"),
                 format!("{wireless} wifi · {wired} wired"),
@@ -120,7 +127,7 @@ impl DashboardScreen {
             )
         {
             lines.push(summary(
-                " Load ",
+                "Load",
                 &[
                     format!("{l1:.2} / {l5:.2} / {l15:.2}"),
                     format!("{l1:.2} {l5:.2} {l15:.2}"),

@@ -30,18 +30,9 @@ impl DashboardScreen {
             .or_else(|| {
                 wan_health.and_then(|h| h.extra.get("isp_organization").and_then(|v| v.as_str()))
             });
-        let dns = wan_health
+        let dns: Option<Vec<&str>> = wan_health
             .and_then(|h| h.extra.get("nameservers").and_then(|v| v.as_array()))
-            .map(|ns| {
-                let servers: Vec<_> = ns.iter().filter_map(|v| v.as_str()).collect();
-                let shown = servers.iter().take(2).copied().collect::<Vec<_>>();
-                let hidden = servers.len().saturating_sub(shown.len());
-                if hidden > 0 {
-                    format!("{}, +{hidden}", shown.join(", "))
-                } else {
-                    shown.join(", ")
-                }
-            });
+            .map(|ns| ns.iter().filter_map(|v| v.as_str()).collect());
         let gw_ip = wan_health
             .and_then(|h| h.extra.get("gateways").and_then(|v| v.as_array()))
             .and_then(|a| a.first().and_then(|v| v.as_str()));
@@ -107,15 +98,9 @@ impl DashboardScreen {
             lines.push(muted_line(self.empty_text("No UniFi gateway on this site")));
         }
 
+        let room = w.saturating_sub(LABEL_COLUMN);
         let kv = |label: &str, value: &str, color: ratatui::style::Color| -> Line<'static> {
-            let shown = clip(value, w.saturating_sub(7));
-            Line::from(vec![
-                Span::styled(
-                    format!(" {label:<5}"),
-                    Style::default().fg(theme::text_secondary()),
-                ),
-                Span::styled(shown, Style::default().fg(color)),
-            ])
+            Line::from(vec![field_label(label), styled(clip(value, room), color)])
         };
 
         lines.push(kv(
@@ -129,28 +114,28 @@ impl DashboardScreen {
         let lat_str = latency.map_or_else(|| "─".into(), |l| format!("{l:.0}ms"));
         let up_str = uptime.map_or_else(|| "─".into(), bytes_fmt::fmt_uptime);
         lines.push(Line::from(vec![
-            Span::styled(" Lat  ", Style::default().fg(theme::text_secondary())),
-            Span::styled(lat_str, Style::default().fg(theme::accent_secondary())),
-            Span::styled("   Up ", Style::default().fg(theme::text_secondary())),
-            Span::styled(up_str, Style::default().fg(theme::accent_secondary())),
+            field_label("Latency"),
+            styled(lat_str, theme::accent_secondary()),
+            styled("   Up ".to_owned(), theme::text_secondary()),
+            styled(up_str, theme::accent_secondary()),
         ]));
         let speed = [www_health, wan_health]
             .into_iter()
             .flatten()
             .find_map(|health| SpeedTest::read(&health.extra));
         if let Some(speed) = speed {
-            // The label takes six columns; the rest is the result's.
-            let text = speed.fitted(chrono::Utc::now().timestamp(), w.saturating_sub(6));
+            let text = speed.fitted(chrono::Utc::now().timestamp(), room);
             lines.push(Line::from(vec![
-                Span::styled(" Spd  ", Style::default().fg(theme::text_secondary())),
-                Span::styled(text, Style::default().fg(theme::accent_secondary())),
+                field_label("Speed"),
+                styled(text, theme::accent_secondary()),
             ]));
         }
-        if let Some(ref d) = dns {
-            lines.push(kv("DNS", d, theme::text_secondary()));
+        if let Some(servers) = dns.as_deref().filter(|servers| !servers.is_empty()) {
+            let shown = fitted_servers(servers, room);
+            lines.push(kv("DNS", &shown, theme::text_secondary()));
         }
         if let Some(gw) = gw_ip {
-            lines.push(kv("GW", gw, theme::text_secondary()));
+            lines.push(kv("Gateway", gw, theme::text_secondary()));
         }
         lines.push(kv(
             "IPv6",
@@ -160,6 +145,43 @@ impl DashboardScreen {
 
         frame.render_widget(Paragraph::new(lines), inner);
     }
+}
+
+/// Columns a field's label takes: a margin, the longest label, and a gap.
+const LABEL_COLUMN: usize = 1 + "Latency".len() + 1;
+
+fn field_label(label: &str) -> Span<'static> {
+    Span::styled(
+        format!(" {label:<width$}", width = LABEL_COLUMN - 1),
+        Style::default().fg(theme::text_secondary()),
+    )
+}
+
+fn styled(text: String, color: ratatui::style::Color) -> Span<'static> {
+    Span::styled(text, Style::default().fg(color))
+}
+
+/// The first two of `servers` when both fit `width` whole, else the
+/// first, then how many are left out. An address is never cut partway
+/// while a whole one fits.
+fn fitted_servers(servers: &[&str], width: usize) -> String {
+    (1..=servers.len().min(2))
+        .rev()
+        .map(|shown| {
+            let hidden = servers.len() - shown;
+            let listed = servers[..shown].join(", ");
+            if hidden > 0 {
+                format!("{listed} +{hidden}")
+            } else {
+                listed
+            }
+        })
+        .find(|text| Span::raw(text.as_str()).width() <= width)
+        .unwrap_or_else(|| {
+            servers
+                .first()
+                .map_or_else(String::new, |s| (*s).to_owned())
+        })
 }
 
 /// The gateway's last WAN speed test, as site health reports it. A test
@@ -264,7 +286,7 @@ fn age_text(secs: i64) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::SpeedTest;
+    use super::{SpeedTest, fitted_servers};
 
     const NOW: i64 = 1_800_000_000;
 
@@ -288,6 +310,19 @@ mod tests {
         assert_eq!(test.fitted(NOW, 18), "\u{2193}2.3G \u{2191}942M 5h ago");
         assert_eq!(test.fitted(NOW, 14), "\u{2193}2.3G \u{2191}942M 5h");
         assert_eq!(test.fitted(NOW, 4), "\u{2193}2.3G \u{2191}942M");
+    }
+
+    #[test]
+    fn name_servers_are_listed_whole_or_counted() {
+        let servers = ["192.0.2.53", "198.51.100.53", "203.0.113.53"];
+        assert_eq!(
+            fitted_servers(&servers[..2], 25),
+            "192.0.2.53, 198.51.100.53"
+        );
+        assert_eq!(fitted_servers(&servers[..2], 24), "192.0.2.53 +1");
+        assert_eq!(fitted_servers(&servers, 40), "192.0.2.53, 198.51.100.53 +1");
+        assert_eq!(fitted_servers(&servers, 20), "192.0.2.53 +2");
+        assert_eq!(fitted_servers(&servers[..1], 4), "192.0.2.53");
     }
 
     #[test]

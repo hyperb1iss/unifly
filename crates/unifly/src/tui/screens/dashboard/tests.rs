@@ -261,7 +261,7 @@ fn the_gateway_panel_shows_the_last_speed_test_from_site_health() {
             "Gateway",
         )])))
         .expect("devices");
-    assert!(!draw(&screen, 120, 40).contains(" Spd "));
+    assert!(!draw(&screen, 120, 40).contains(" Speed "));
 
     let ran = chrono::Utc::now().timestamp() - 2 * 3600;
     screen
@@ -279,7 +279,7 @@ fn the_gateway_panel_shows_the_last_speed_test_from_site_health() {
 
     let wide = draw(&screen, 160, 40);
     assert!(
-        wide.contains("Spd  \u{2193} 913 Mbps  \u{2191} 41 Mbps"),
+        wide.contains("Speed   \u{2193} 913 Mbps  \u{2191} 41 Mbps"),
         "{wide}"
     );
     assert!(wide.contains("2h ago"), "{wide}");
@@ -411,9 +411,9 @@ fn a_short_terminal_still_shows_the_isp_latency_and_link_rates() {
     // 80x24 leaves the screen 80x22 between the tab and status bars.
     let text = draw(&screen, 80, 22);
     for expected in [
-        "ISP  Tidewater Fiber",
-        "Lat  11ms",
-        "DNS  192.0.2.53",
+        "ISP     Tidewater Fiber",
+        "Latency 11ms",
+        "DNS     192.0.2.53",
         "WLAN",
         "10.0M",
         "client-02 connected",
