@@ -94,9 +94,20 @@ impl TopologyScreen {
             Camera::Fit => {
                 let (tree, zoom, wrap) = fitted(&self.devices, columns, rows);
                 let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
+                let (x_span, y_span) = spans(canvas, zoom);
+                // Along an axis the tree fits it is centered. Along one it
+                // overflows, the view starts at the tree's near edge, so
+                // the root is on screen and the rest lies one way.
+                let place = |lo: f64, hi: f64, span: f64| {
+                    if hi - lo + 2.0 * MARGIN > span {
+                        lo - MARGIN + span / 2.0
+                    } else {
+                        f64::midpoint(lo, hi)
+                    }
+                };
                 Scene {
-                    cx: f64::midpoint(x_lo, x_hi),
-                    cy: f64::midpoint(y_lo, y_hi),
+                    cx: place(x_lo, x_hi, x_span),
+                    cy: place(y_lo, y_hi, y_span),
                     tree,
                     wrap,
                     canvas,

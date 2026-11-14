@@ -9,7 +9,9 @@
 //! Coordinates are terminal cells: `x` grows right and `y` grows down, one
 //! unit per column or row. Boxes are sized to their labels, and a parent
 //! whose children would not fit the available width wraps them into rows,
-//! so at the fitted zoom every label is drawn whole and none overlap.
+//! so at the fitted zoom every label is drawn whole and none overlap. The
+//! fitted zoom never goes below what a box needs to hold its name: a tree
+//! too tall for the canvas at that zoom runs off the bottom instead.
 
 mod place;
 #[cfg(test)]
@@ -152,23 +154,26 @@ impl Wrap {
     }
 }
 
-/// The zooms a fitted view tries, largest first.
-const FIT_ZOOMS: [f64; 9] = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
-
-/// The smallest zoom boxes widen for, to keep their labels whole. Below
-/// it the boxes would take back the room that zooming out made, and the
-/// rows are too short for a label anyway.
-const WIDEN_ABOVE: f64 = 0.8;
+/// The zooms a fitted view tries, largest first. The last is the smallest
+/// at which a box still has a row for its name and, widened to match, the
+/// columns to draw it whole. A smaller zoom would fit more of a large tree
+/// on screen, as boxes too short to hold a name and names cut to stubs.
+const FIT_ZOOMS: [f64; 3] = [1.0, 0.9, 0.8];
 
 /// Lay `devices` out for a canvas of `columns` by `rows` cells, with the
 /// largest zoom at which the whole tree fits. A smaller zoom has more
-/// layout units across, so the tree wraps less and gets shorter.
+/// layout units across, so the tree wraps less and gets shorter. When the
+/// tree fits at none of them, the smallest is used: siblings still wrap
+/// to the canvas width, so the tree runs off the bottom only, and the
+/// view says there is more that way.
 pub(super) fn fitted(devices: &[Arc<Device>], columns: f64, rows: f64) -> (TopoLayout, f64, Wrap) {
     let mut smallest = None;
     for zoom in FIT_ZOOMS {
+        // A canvas of `n` cells shows `n - 1` units, and rows wrap to
+        // exactly that, so a wrapped tree is never wider than the view.
         let wrap = Wrap {
-            columns: columns / zoom,
-            label_scale: if zoom >= WIDEN_ABOVE { 1.0 / zoom } else { 1.0 },
+            columns: (columns - 1.0) / zoom,
+            label_scale: 1.0 / zoom,
         };
         let tree = layout_within(devices, wrap);
         let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;

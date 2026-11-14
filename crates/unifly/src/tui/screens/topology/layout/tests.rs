@@ -558,16 +558,27 @@ fn a_fitted_layout_shows_every_device_and_keeps_labels_whole_near_full_size() {
         ));
     }
 
-    let (tree, zoom, _) = super::fitted(&devices, 100.0, 30.0);
-
-    assert!(zoom < 1.0, "sixty access points cannot fit at 100%");
-    let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
-    assert!(x_hi - x_lo + 2.0 * super::MARGIN <= 99.0 / zoom);
-    assert!(y_hi - y_lo + 2.0 * super::MARGIN <= 29.0 / zoom);
     let plain = {
         let natural = super::layout(&devices, 100.0);
         natural.nodes[index(&natural, "ap-00")].width
     };
+
+    // Sixty access points fit no zoom that keeps a name whole. The fit
+    // stops at the smallest one that does: the tree still wraps to the
+    // canvas width and runs off the bottom, with every box wide enough.
+    let (tree, zoom, _) = super::fitted(&devices, 100.0, 30.0);
+    assert!((zoom - 0.8).abs() < f64::EPSILON, "{zoom}");
+    let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
+    assert!(x_hi - x_lo + 2.0 * super::MARGIN <= 99.0 / zoom);
+    assert!(y_hi - y_lo + 2.0 * super::MARGIN > 29.0 / zoom);
+    for node in &tree.nodes {
+        assert!(
+            node.width * zoom >= plain.min(super::place::box_width(&node.label, &node.ip)),
+            "{} is {} wide at {zoom}",
+            node.label,
+            node.width
+        );
+    }
 
     // A slightly zoomed-out fit widens its boxes to keep labels whole.
     let (tree, zoom, _) = super::fitted(&devices[..25], 100.0, 30.0);

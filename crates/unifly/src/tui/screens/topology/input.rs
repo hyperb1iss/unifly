@@ -234,7 +234,11 @@ mod tests {
         let (left, top) = scene.origin();
         let (x_span, y_span) = scene.spans();
         assert!(x_lo >= left && x_hi <= left + x_span, "fits across");
-        assert!(y_lo >= top && y_hi <= top + y_span, "fits down");
+        // Too tall for any zoom that keeps names whole: the view starts
+        // at the top of the tree and the rest lies below.
+        assert!(y_lo >= top, "the root is on screen");
+        assert!(y_hi > top + y_span, "the tree runs off the bottom");
+        assert!(scene.shows(0), "the gateway is drawn whole");
 
         press(&mut screen, KeyCode::Char('r'));
         assert!((view(&screen).2 - 1.0).abs() < f64::EPSILON);

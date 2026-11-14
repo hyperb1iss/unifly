@@ -877,12 +877,20 @@ mod tests {
 
         use crate::tui::screens::topology::state::tests::screen_with;
 
+        let small = &draw(&screen_with(3), 100, 30)[0];
+        assert!(!small.contains("more"), "nothing is hidden: {small}");
+
+        // A tree too tall for a fit that keeps names whole says where the
+        // rest is, and only there.
         let mut screen = screen_with(40);
         let fitted = &draw(&screen, 100, 30)[0];
         assert!(
-            !fitted.contains("more"),
-            "a fitted tree hides nothing: {fitted}"
+            fitted.contains("fit") && fitted.contains("more \u{2193}"),
+            "{fitted}"
         );
+        for arrow in ['\u{2190}', '\u{2191}', '\u{2192}'] {
+            assert!(!fitted.contains(arrow), "{fitted}");
+        }
 
         screen.handle_key_input(KeyEvent::from(KeyCode::Char('r')));
         let title = &draw(&screen, 100, 30)[0];
@@ -894,6 +902,50 @@ mod tests {
             !title.contains('\u{2191}'),
             "nothing is above the top: {title}"
         );
+    }
+
+    /// The demo fleet's devices, as the Topology screen receives them.
+    async fn demo_devices() -> std::sync::Arc<Vec<std::sync::Arc<unifly_api::Device>>> {
+        let demo = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
+        demo.connect().await.expect("demo fleet connects");
+        let devices = demo.devices_snapshot();
+        demo.disconnect().await;
+        devices
+    }
+
+    #[tokio::test]
+    async fn the_fitted_demo_fleet_draws_every_name_whole_at_common_sizes() {
+        use crate::tui::action::Action;
+        use crate::tui::screens::topology::TopologyScreen;
+
+        let devices = demo_devices().await;
+        let mut screen = TopologyScreen::new();
+        screen.apply_action(&Action::Connected);
+        screen.apply_action(&Action::DevicesUpdated(devices));
+
+        // The screen's area on 80x24, 100x30, and 120x34 terminals.
+        for (width, height) in [(80, 22), (100, 28), (120, 32)] {
+            let rows = draw(&screen, width, height);
+            let text = rows.join("\n");
+            let scene = screen.last_scene();
+            assert!(scene.zoom >= 0.8, "{width}x{height}: {}", scene.zoom);
+            let mut whole = 0;
+            for (index, node) in scene.tree.nodes.iter().enumerate() {
+                if !scene.shows(index) {
+                    continue;
+                }
+                whole += 1;
+                assert!(
+                    text.contains(&node.label),
+                    "{} is cut at {width}x{height}:\n{text}",
+                    node.label
+                );
+            }
+            assert!(whole >= 3, "{width}x{height} shows {whole} boxes:\n{text}");
+            // What is not on screen is pointed at, never drawn as a stub.
+            let hidden = whole < scene.tree.nodes.len();
+            assert_eq!(rows[0].contains("more"), hidden, "{}", rows[0]);
+        }
     }
 
     #[test]
