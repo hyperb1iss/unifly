@@ -773,6 +773,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_removed_access_point_waits_for_adoption_and_is_adopted_again() {
+        use unifly_api::DeviceState;
+
+        let demo = demo_fleet().await;
+        let store = Arc::clone(demo.store());
+        let ap = store
+            .devices_snapshot()
+            .iter()
+            .find(|device| {
+                device.device_type == DeviceType::AccessPoint && device.state == DeviceState::Online
+            })
+            .cloned()
+            .expect("an online access point");
+        let state = || store.device_by_id(&ap.id).map(|device| device.state);
+        let mut app = App::new(Some(demo), None, false, true);
+
+        app.process_action(&Action::Run {
+            command: Box::new(Command::RemoveDevice { id: ap.id.clone() }),
+            notice: Notice::new("Removing\u{2026}", "Removed"),
+        })
+        .expect("remove");
+        let removed = run_until(&mut app, |action| {
+            matches!(action, Action::OpFinished { .. })
+        })
+        .await;
+        assert!(
+            matches!(&removed, Action::OpFinished { notification, .. }
+                if notification.level == NotificationLevel::Success),
+            "{removed:?}"
+        );
+        assert_eq!(state(), Some(DeviceState::PendingAdoption));
+
+        app.process_action(&Action::RequestAdoptDevice(ap.id.clone()))
+            .expect("adopt");
+        let Action::ShowConfirm(confirm) = app.action_rx.try_recv().expect("adopt asks") else {
+            panic!("expected a confirmation");
+        };
+        app.process_action(&confirm.action).expect("run");
+        let adopted = run_until(&mut app, |action| {
+            matches!(action, Action::OpFinished { .. })
+        })
+        .await;
+        assert!(
+            matches!(&adopted, Action::OpFinished { notification, .. }
+                if notification.level == NotificationLevel::Success
+                    && notification.message.starts_with("Adoption started for ")),
+            "{adopted:?}"
+        );
+        assert_eq!(state(), Some(DeviceState::Adopting));
+    }
+
+    #[tokio::test]
     async fn the_demo_fleet_takes_the_client_commands_the_screen_offers() {
         let demo = demo_fleet().await;
         let store = Arc::clone(demo.store());

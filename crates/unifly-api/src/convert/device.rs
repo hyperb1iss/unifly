@@ -223,6 +223,81 @@ impl From<integration_types::DeviceResponse> for Device {
     }
 }
 
+/// A device waiting for adoption, from `GET /v1/pending-devices`.
+///
+/// The endpoint lists every device any site could adopt, so a row that
+/// names its target sites and leaves out `site_id` is skipped. A pending
+/// device has no Integration ID yet: it is keyed `pending:<mac>`, and it
+/// goes by its model until it has a name.
+pub(crate) fn pending_device_from_integration(
+    row: &integration_types::PendingDeviceResponse,
+    site_id: &uuid::Uuid,
+) -> Option<Device> {
+    let text = |key: &str| row.fields.get(key).and_then(serde_json::Value::as_str);
+    let flag = |key: &str| row.fields.get(key).and_then(serde_json::Value::as_bool);
+    let list = |key: &str| -> Vec<String> {
+        row.fields
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let mac = MacAddress::new(text("macAddress").filter(|mac| !mac.is_empty())?);
+    let targets = list("adoptionTargetSiteIds");
+    let site = site_id.to_string();
+    if !targets.is_empty()
+        && !targets
+            .iter()
+            .any(|target| target.eq_ignore_ascii_case(&site))
+    {
+        return None;
+    }
+    let features = list("features");
+    let model = text("model").unwrap_or_default().to_owned();
+    let state = match text("state").map(map_integration_device_state) {
+        Some(DeviceState::Unknown) | None => DeviceState::PendingAdoption,
+        Some(state) => state,
+    };
+
+    Some(Device {
+        id: EntityId::Legacy(format!("pending:{mac}")),
+        ip: text("ipAddress").and_then(|ip| ip.parse().ok()),
+        wan_ipv6: None,
+        name: (!model.is_empty()).then(|| model.clone()),
+        device_type: infer_device_type_integration(&features, &model),
+        model: (!model.is_empty()).then_some(model),
+        state,
+        firmware_version: text("firmwareVersion").map(str::to_owned),
+        firmware_updatable: flag("firmwareUpdatable").unwrap_or(false),
+        adopted_at: None,
+        provisioned_at: None,
+        last_seen: None,
+        serial: None,
+        supported: flag("supported").unwrap_or(true),
+        ports: Vec::new(),
+        radios: Vec::new(),
+        uplink_device_id: None,
+        uplink_device_mac: None,
+        uplink_port_idx: None,
+        uplink_medium: None,
+        has_switching: features.iter().any(|feature| feature == "switching"),
+        has_access_point: features.iter().any(|feature| feature == "accessPoint"),
+        stats: DeviceStats::default(),
+        client_count: None,
+        origin: None,
+        source: DataSource::IntegrationApi,
+        updated_at: Utc::now(),
+        mac,
+    })
+}
+
 pub(crate) fn device_stats_from_integration(
     resp: &integration_types::DeviceStatisticsResponse,
 ) -> DeviceStats {

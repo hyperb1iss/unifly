@@ -44,6 +44,8 @@ pub(crate) enum Pending {
     Upgrade { device: usize },
     /// A restart finishes.
     Restart { device: usize },
+    /// An adoption finishes and the device comes online.
+    Adopt { device: usize },
     /// The dark camera port comes back after a PoE power cycle.
     CameraRevive,
 }

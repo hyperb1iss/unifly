@@ -589,6 +589,76 @@ fn client_records_follow_admin_commands() {
 }
 
 #[test]
+fn an_access_point_can_be_removed_and_adopted_again() {
+    use crate::demo::fleet::{AP_BASE, GATEWAY};
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let ap = sim
+        .fleet
+        .devices
+        .iter()
+        .skip(AP_BASE)
+        .find(|device| device.state == DeviceState::Online)
+        .cloned()
+        .expect("an online access point");
+    let state = |sim: &Simulation| {
+        let index = sim.device_index_by_mac(&ap.mac).expect("the AP");
+        sim.fleet.devices[index].state
+    };
+    let served = |sim: &Simulation| {
+        sim.fleet
+            .clients
+            .iter()
+            .filter(|demo| demo.client.uplink_device_mac.as_ref() == Some(&ap.mac))
+            .count()
+    };
+    assert!(served(&sim) > 0, "the AP serves clients");
+
+    // Adopting an adopted device is refused, as a controller refuses it.
+    let already = sim.apply_command(
+        Command::AdoptDevice {
+            mac: ap.mac.clone(),
+            ignore_device_limit: false,
+        },
+        now,
+    );
+    assert!(
+        matches!(already, Err(CoreError::Rejected { .. })),
+        "{already:?}"
+    );
+
+    let (_, delta) = sim
+        .apply_command(Command::RemoveDevice { id: ap.id.clone() }, now)
+        .expect("remove the AP");
+    assert_eq!(state(&sim), DeviceState::PendingAdoption);
+    assert_eq!(served(&sim), 0, "its clients are gone");
+    assert_ne!(delta.removed.len(), 0, "the store drops them too");
+
+    sim.apply_command(
+        Command::AdoptDevice {
+            mac: ap.mac.clone(),
+            ignore_device_limit: false,
+        },
+        now,
+    )
+    .expect("adopt it again");
+    assert_eq!(state(&sim), DeviceState::Adopting);
+    for _ in 0..20 {
+        sim.step(now);
+    }
+    assert_eq!(state(&sim), DeviceState::Online);
+
+    // The simulation does not model a site without its gateway.
+    let gateway = sim.fleet.devices[GATEWAY].id.clone();
+    let refused = sim.apply_command(Command::RemoveDevice { id: gateway }, now);
+    assert!(
+        matches!(refused, Err(CoreError::Unsupported { .. })),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn a_blocked_wireless_client_leaves_the_list_and_is_reached_by_mac() {
     use crate::model::ClientType;
 

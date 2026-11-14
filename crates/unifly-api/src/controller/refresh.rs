@@ -14,6 +14,7 @@ mod events;
 mod integration;
 mod merge;
 mod optional;
+mod pending;
 mod periodic;
 mod poll;
 mod session;

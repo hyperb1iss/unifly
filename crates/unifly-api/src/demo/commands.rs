@@ -3,9 +3,10 @@
 // Device, port, and client actions succeed against the simulation and
 // emit the event a real controller would, and so do the network and
 // firewall edits in `config.rs` and edits to an SSID's name, enabled
-// state, and visibility. Anything else that would need a real controller
-// to mean something (adoption, other WiFi and VPN CRUD, site admin) is
-// refused with a clear error instead of pretending.
+// state, and visibility. An access point can be removed from the site and
+// adopted again. Anything else that would need a real controller to mean
+// something (removing a gateway or switch, other WiFi and VPN CRUD, site
+// admin) is refused with a clear error instead of pretending.
 
 use chrono::{DateTime, Utc};
 
@@ -30,6 +31,8 @@ pub(super) const ADMIN_INFO: (EventCategory, EventSeverity) =
 const RESTART_TICKS: u64 = 20;
 /// Ticks a firmware upgrade takes.
 const UPGRADE_TICKS: u64 = 45;
+/// Ticks an adoption takes before the device is online.
+const ADOPT_TICKS: u64 = 12;
 /// Ticks before a kicked client rejoins.
 const KICK_RETURN_TICKS: u64 = 6;
 /// Ticks before the power-cycled camera comes back.
@@ -76,6 +79,8 @@ impl Simulation {
             Command::UpgradeDevice { mac, .. } => self.upgrade(&mac, now, &mut delta)?,
             Command::LocateDevice { mac, enable } => self.locate(&mac, enable, now, &mut delta)?,
             Command::ProvisionDevice { mac } => self.provision(&mac, now, &mut delta)?,
+            Command::AdoptDevice { mac, .. } => self.adopt(&mac, now, &mut delta)?,
+            Command::RemoveDevice { id } => self.remove_device(&id, now, &mut delta)?,
             Command::SpeedtestDevice => self.speedtest(now),
             Command::PowerCyclePort {
                 device_id,
@@ -183,6 +188,74 @@ impl Simulation {
         let index = self.require_device(mac)?;
         let message = format!("{} was provisioned", self.device_name(index));
         self.push_device_event(index, now, "EVT_AP_Provisioned", message, delta);
+        Ok(())
+    }
+
+    /// Remove an access point from the site. It is reset and waits to be
+    /// adopted again, and its clients go looking for another AP.
+    fn remove_device(
+        &mut self,
+        id: &EntityId,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_device_id(id)?;
+        let name = self.device_name(index);
+        if index < super::fleet::AP_BASE {
+            return Err(unavailable("removing a gateway or switch"));
+        }
+        if self.fleet.devices[index].state == DeviceState::PendingAdoption {
+            return Err(CoreError::Rejected {
+                message: format!("{name} is not adopted"),
+            });
+        }
+        let mac = self.fleet.devices[index].mac.clone();
+        let served: Vec<usize> = self
+            .fleet
+            .clients
+            .iter()
+            .enumerate()
+            .filter(|(_, demo)| demo.client.uplink_device_mac.as_ref() == Some(&mac))
+            .map(|(client, _)| client)
+            .collect();
+        // Highest index first, so each removal leaves the rest in place.
+        for client in served.into_iter().rev() {
+            self.disconnect(client, now, delta, "EVT_WU_Disconnected");
+        }
+        self.pending.retain(|(_, pending)| {
+            !matches!(pending,
+                Pending::Upgrade { device } | Pending::Restart { device } | Pending::Adopt { device }
+                    if *device == index)
+        });
+        let device = &mut self.fleet.devices[index];
+        device.state = DeviceState::PendingAdoption;
+        device.adopted_at = None;
+        device.client_count = Some(0);
+        device.stats.uptime_secs = Some(0);
+        let message = format!("{name} was removed by crew-lead@neonharbor.example");
+        self.push_device_event(index, now, "EVT_AD_DeviceRemoved", message, delta);
+        Ok(())
+    }
+
+    /// Adopt a device that is waiting for it. It is online a few ticks on.
+    fn adopt(
+        &mut self,
+        mac: &MacAddress,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_device(mac)?;
+        let name = self.device_name(index);
+        let device = &mut self.fleet.devices[index];
+        if device.state != DeviceState::PendingAdoption {
+            return Err(CoreError::Rejected {
+                message: format!("{name} is already adopted"),
+            });
+        }
+        device.state = DeviceState::Adopting;
+        self.schedule(ADOPT_TICKS, Pending::Adopt { device: index });
+        let message = format!("{name} is being adopted by crew-lead@neonharbor.example");
+        self.push_device_event(index, now, "EVT_AD_DeviceAdopt", message, delta);
         Ok(())
     }
 

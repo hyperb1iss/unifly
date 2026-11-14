@@ -60,6 +60,19 @@ impl Simulation {
                         .events
                         .push(self.event(now, INFO_DEVICE, "EVT_SW_Restarted", message));
                 }
+                Pending::Adopt { device } => {
+                    let name = self.device_name(device);
+                    if let Some(device) = self.fleet.devices.get_mut(device) {
+                        device.state = DeviceState::Online;
+                        device.adopted_at = Some(now);
+                        device.stats.uptime_secs = Some(0);
+                        device.last_seen = Some(now);
+                    }
+                    let message = format!("{name} was adopted and is online");
+                    delta
+                        .events
+                        .push(self.event(now, INFO_DEVICE, "EVT_AP_Adopted", message));
+                }
                 Pending::CameraRevive => self.revive_camera(now, delta),
             }
         }

@@ -418,3 +418,111 @@ async fn a_poe_mode_is_written_into_its_port_and_every_other_override_survives()
 
     controller.disconnect().await;
 }
+
+const PENDING_ROUTE: &str = "/proxy/network/integration/v1/pending-devices";
+const PENDING_MAC: &str = "94:2a:6f:26:c6:ca";
+
+fn pending_row(mac: &str, sites: &[&str]) -> serde_json::Value {
+    json!({"macAddress": mac, "ipAddress": "10.0.0.77", "model": "U7 Pro",
+        "state": "PENDING_ADOPTION", "supported": true, "firmwareVersion": "8.0.26",
+        "firmwareUpdatable": false, "features": ["accessPoint"],
+        "adoptionTargetSiteIds": sites})
+}
+
+fn page(rows: &[serde_json::Value]) -> serde_json::Value {
+    json!({"offset": 0, "limit": 200, "count": rows.len(), "totalCount": rows.len(),
+        "data": rows})
+}
+
+#[tokio::test]
+async fn pending_devices_join_the_snapshot_and_adopt_sends_the_spec_body() {
+    use unifly_api::model::{DeviceState, DeviceType};
+
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let adopted = json!({
+        "id": "9b2f6c1e-7a3d-4c5b-8e9f-0a1b2c3d4e5f", "macAddress": SWITCH_MAC,
+        "ipAddress": "10.0.0.2", "name": "Core Switch", "model": "USW-24",
+        "state": "ONLINE", "supported": true, "firmwareUpdatable": false,
+        "features": [], "interfaces": {},
+    });
+    mount_get(
+        &server,
+        &integration_route("devices"),
+        page(std::slice::from_ref(&adopted)),
+    )
+    .await;
+    let phase = mount_switchable_routes(
+        &server,
+        vec![(
+            PENDING_ROUTE.to_owned(),
+            page(&[
+                pending_row(PENDING_MAC, &[API_KEY_SITE_ID]),
+                // Waiting for another site: not this site's to adopt.
+                pending_row(
+                    "94:2a:6f:00:00:02",
+                    &["11111111-2222-3333-4444-555555555555"],
+                ),
+                // Mid-adoption a device is in both lists; it shows once.
+                pending_row(SWITCH_MAC, &[API_KEY_SITE_ID]),
+            ]),
+            page(&[]),
+        )],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path(integration_route("devices")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(adopted))
+        .mount(&server)
+        .await;
+    let controller = api_key_controller(&server).await;
+
+    let waiting = |when: &str| {
+        let devices = controller.devices_snapshot();
+        assert_eq!(devices.len(), 2, "{when}: {devices:?}");
+        let pending = controller
+            .store()
+            .device_by_mac(&MacAddress::new(PENDING_MAC))
+            .unwrap_or_else(|| panic!("{when}: the pending device is listed"));
+        assert_eq!(pending.state, DeviceState::PendingAdoption, "{when}");
+        assert_eq!(pending.id, EntityId::from(format!("pending:{PENDING_MAC}")));
+        assert_eq!(pending.name.as_deref(), Some("U7 Pro"));
+        assert_eq!(pending.device_type, DeviceType::AccessPoint);
+        assert_eq!(pending.ip, "10.0.0.77".parse().ok());
+        let switch = controller
+            .store()
+            .device_by_mac(&MacAddress::new(SWITCH_MAC))
+            .expect("the adopted switch");
+        assert_eq!(switch.state, DeviceState::Online, "{when}");
+    };
+    waiting("after connect");
+
+    // One failed fetch does not make the waiting device vanish.
+    set_phase(&phase, RoutePhase::Failing(500));
+    controller.full_refresh().await.unwrap();
+    waiting("after the pending fetch failed");
+
+    controller
+        .execute(Command::AdoptDevice {
+            mac: MacAddress::new(PENDING_MAC),
+            ignore_device_limit: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        bodies(&server, "POST", &integration_route("devices")).await,
+        [json!({"macAddress": PENDING_MAC, "ignoreDeviceLimit": false})]
+    );
+
+    // Once the controller stops listing it as pending, it is gone.
+    set_phase(&phase, RoutePhase::Empty);
+    controller.full_refresh().await.unwrap();
+    assert!(
+        controller
+            .store()
+            .device_by_mac(&MacAddress::new(PENDING_MAC))
+            .is_none()
+    );
+
+    controller.disconnect().await;
+}
