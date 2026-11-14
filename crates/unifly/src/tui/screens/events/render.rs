@@ -57,7 +57,7 @@ pub(super) fn severity_color(severity: EventSeverity) -> Color {
 }
 
 /// `text` cut to `width` columns, with an ellipsis when it was cut.
-pub(super) fn clip(text: &str, width: usize) -> String {
+pub(in crate::tui::screens) fn clip(text: &str, width: usize) -> String {
     if Span::raw(text).width() <= width {
         return text.to_owned();
     }

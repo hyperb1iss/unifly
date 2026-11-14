@@ -1,33 +1,27 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use unifly_api::DeviceType;
-
+use crate::tui::screens::events::render::clip;
 use crate::tui::theme;
 use crate::tui::widgets::bytes_fmt;
 
 use super::super::DashboardScreen;
-use super::super::helpers::{parse_ipv6_from_text, parse_ipv6_from_value, truncate_text};
+use super::super::focus::Panel;
+use super::super::helpers::{parse_ipv6_from_text, parse_ipv6_from_value};
+use super::muted_line;
 
 impl DashboardScreen {
     /// Gateway panel - WAN connection details with IPv6.
     #[allow(clippy::too_many_lines)]
     pub(super) fn render_gateway(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-        let block = Block::default()
-            .title(Span::styled(" Gateway ", theme::title_style()))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme::border_default());
+        let block = self.panel_block(Panel::Gateway, "Gateway");
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let w = usize::from(inner.width);
 
-        let gateway = self
-            .devices
-            .iter()
-            .find(|d| d.device_type == DeviceType::Gateway);
+        let gateway = self.gateway();
         let wan_health = self.health.iter().find(|h| h.subsystem == "wan");
         let www_health = self.health.iter().find(|h| h.subsystem == "www");
 
@@ -93,12 +87,13 @@ impl DashboardScreen {
             .map(|ip| ip.to_string())
             .or_else(|| wan_health.and_then(|h| h.wan_ip.clone()));
 
+        // Most telling first: a short panel shows as many as fit.
         let mut lines = Vec::new();
 
         if let Some(gw) = gateway {
             let model = gw.model.as_deref().unwrap_or("Gateway");
             let fw = gw_version.or(gw.firmware_version.as_deref()).unwrap_or("─");
-            let header = truncate_text(&format!("{model} ({fw})"), w.saturating_sub(4));
+            let header = clip(&format!("{model} ({fw})"), w.saturating_sub(4));
             lines.push(Line::from(vec![
                 Span::styled(" ◈ ", Style::default().fg(theme::accent_primary())),
                 Span::styled(
@@ -109,15 +104,11 @@ impl DashboardScreen {
                 ),
             ]));
         } else {
-            lines.push(Line::from(Span::styled(
-                " No gateway",
-                Style::default().fg(theme::border_unfocused()),
-            )));
+            lines.push(muted_line(self.empty_text("No UniFi gateway on this site")));
         }
-        lines.push(Line::from(""));
 
         let kv = |label: &str, value: &str, color: ratatui::style::Color| -> Line<'static> {
-            let shown = truncate_text(value, w.saturating_sub(7));
+            let shown = clip(value, w.saturating_sub(7));
             Line::from(vec![
                 Span::styled(
                     format!(" {label:<5}"),
@@ -132,22 +123,9 @@ impl DashboardScreen {
             &wan_ip.unwrap_or_else(|| "─".into()),
             theme::accent_tertiary(),
         ));
-        lines.push(kv(
-            "IPv6",
-            wan_ipv6.as_deref().unwrap_or("─"),
-            theme::info(),
-        ));
-
-        if let Some(gw) = gw_ip {
-            lines.push(kv("GW", gw, theme::text_secondary()));
-        }
-        if let Some(ref d) = dns {
-            lines.push(kv("DNS", d, theme::text_secondary()));
-        }
         if let Some(isp) = isp_name {
             lines.push(kv("ISP", isp, theme::text_secondary()));
         }
-
         let lat_str = latency.map_or_else(|| "─".into(), |l| format!("{l:.0}ms"));
         let up_str = uptime.map_or_else(|| "─".into(), bytes_fmt::fmt_uptime);
         lines.push(Line::from(vec![
@@ -156,6 +134,17 @@ impl DashboardScreen {
             Span::styled("   Up ", Style::default().fg(theme::text_secondary())),
             Span::styled(up_str, Style::default().fg(theme::accent_secondary())),
         ]));
+        if let Some(ref d) = dns {
+            lines.push(kv("DNS", d, theme::text_secondary()));
+        }
+        if let Some(gw) = gw_ip {
+            lines.push(kv("GW", gw, theme::text_secondary()));
+        }
+        lines.push(kv(
+            "IPv6",
+            wan_ipv6.as_deref().unwrap_or("─"),
+            theme::info(),
+        ));
 
         frame.render_widget(Paragraph::new(lines), inner);
     }

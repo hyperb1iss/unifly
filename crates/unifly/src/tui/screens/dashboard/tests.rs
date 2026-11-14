@@ -1,0 +1,391 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+use unifly_api::{Device, HealthSummary};
+
+use super::focus::tests::{client, device};
+use super::{BandwidthSample, DashboardScreen};
+use crate::tui::action::{Access, Action};
+use crate::tui::component::Component;
+use crate::tui::table::render_lines;
+
+fn draw(screen: &DashboardScreen, width: u16, height: u16) -> String {
+    render_lines(width, height, |frame, area| screen.render(frame, area)).join("\n")
+}
+
+fn connected() -> DashboardScreen {
+    let mut screen = DashboardScreen::new();
+    screen.update(&Action::Connected).expect("connected");
+    screen
+        .update(&Action::AccessUpdated(Access {
+            integration: true,
+            session: true,
+            live_events: true,
+        }))
+        .expect("access");
+    screen
+}
+
+fn health(subsystem: &str, fields: &serde_json::Value) -> HealthSummary {
+    let mut summary = json!({
+        "subsystem": subsystem, "status": "ok", "num_adopted": null, "num_sta": null,
+        "tx_bytes_r": null, "rx_bytes_r": null, "latency": null, "wan_ip": null,
+        "gateways": null, "extra": {}
+    });
+    if let (Some(summary), Some(fields)) = (summary.as_object_mut(), fields.as_object()) {
+        summary.extend(fields.clone());
+    }
+    serde_json::from_value(summary).expect("health fixture")
+}
+
+/// An access point with one radio per `(GHz, channel)`.
+fn access_point(name: &str, mac: &str, radios: &[(f32, u32)]) -> Arc<Device> {
+    let mut ap = Arc::unwrap_or_clone(device(name, mac, "AccessPoint"));
+    ap.radios = radios
+        .iter()
+        .map(|(frequency_ghz, channel)| unifly_api::model::Radio {
+            frequency_ghz: *frequency_ghz,
+            channel: Some(*channel),
+            channel_width_mhz: None,
+            wlan_standard: None,
+            tx_retries_pct: None,
+            channel_utilization_pct: None,
+        })
+        .collect();
+    Arc::new(ap)
+}
+
+#[test]
+fn panels_say_connecting_before_they_say_empty() {
+    let mut screen = DashboardScreen::new();
+    let text = draw(&screen, 120, 40);
+    assert!(text.matches("Connecting").count() >= 5, "{text}");
+    for claim in [
+        "No gateway",
+        "No networks",
+        "No access points",
+        "No clients",
+    ] {
+        assert!(!text.contains(claim), "{claim} before any data:\n{text}");
+    }
+
+    screen.update(&Action::Connected).expect("connected");
+    let text = draw(&screen, 120, 40);
+    for claim in [
+        "No networks",
+        "No access points",
+        "No clients",
+        "No events yet",
+    ] {
+        assert!(text.contains(claim), "missing {claim}:\n{text}");
+    }
+
+    screen
+        .update(&Action::Disconnected("timed out".into()))
+        .expect("disconnected");
+    assert!(draw(&screen, 120, 40).contains("Not connected"));
+}
+
+#[test]
+fn panels_name_the_access_they_are_missing() {
+    let mut screen = connected();
+    screen
+        .update(&Action::AccessUpdated(Access {
+            integration: false,
+            session: false,
+            live_events: false,
+        }))
+        .expect("access");
+
+    let text = draw(&screen, 150, 40);
+    assert!(text.contains("Networks need the Integration API"), "{text}");
+    assert!(text.contains("Events need a controller session"), "{text}");
+    assert!(
+        text.contains("Site health needs a controller session"),
+        "{text}"
+    );
+}
+
+#[test]
+fn missing_health_is_not_drawn_as_measured_zeros() {
+    let mut screen = connected();
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![
+            device("gw", "00:00:00:00:00:01", "Gateway"),
+            device("sw-a", "00:00:00:00:00:02", "Switch"),
+            device("ap-a", "00:00:00:00:00:03", "AccessPoint"),
+            device("ap-b", "00:00:00:00:00:04", "AccessPoint"),
+        ])))
+        .expect("devices");
+
+    let text = draw(&screen, 120, 40);
+    // No health at all: the device list still counts the infrastructure,
+    // and no rate is printed as if it had been measured at zero.
+    assert!(text.contains("AP 2 · SW 1"), "{text}");
+    assert!(!text.contains("↑0b"), "{text}");
+    assert!(!text.contains("Total"), "{text}");
+
+    // Health that reports a rate for one link draws that link alone.
+    screen
+        .update(&Action::HealthUpdated(Arc::new(vec![
+            health(
+                "wan",
+                &json!({"tx_bytes_r": 125_000, "rx_bytes_r": 250_000}),
+            ),
+            health("wlan", &json!({"num_adopted": 7})),
+        ])))
+        .expect("health");
+    let text = draw(&screen, 120, 40);
+    assert!(text.contains("Total ↑1.0M  ↓2.0M"), "{text}");
+    assert!(text.contains("AP 7 · SW 1"), "health counts win: {text}");
+    assert!(
+        !text.contains(" LAN  "),
+        "no bar for an unreported link: {text}"
+    );
+}
+
+#[test]
+fn a_wan_rate_that_stopped_updating_is_not_sampled_or_shown_as_live() {
+    let mut screen = connected();
+    let start = Instant::now();
+    screen.device_bandwidth = Some(BandwidthSample {
+        tx_bps: 10_000,
+        rx_bps: 40_000,
+        captured_at: start,
+    });
+    screen.bandwidth_seen_at = Some(start);
+    screen.bandwidth_gap = Some(Duration::from_secs(10));
+
+    // Within three refreshes the rate is live and sampled.
+    assert!(
+        screen
+            .sample_bandwidth_if_due(start + Duration::from_secs(20))
+            .is_some()
+    );
+    assert_eq!(screen.bandwidth_tx.len(), 1);
+
+    // Past that it is neither sampled nor reported as the rate now.
+    let late = start + Duration::from_secs(40);
+    assert!(screen.sample_bandwidth_if_due(late).is_none());
+    assert_eq!(screen.bandwidth_tx.len(), 1, "no flat line is invented");
+    assert_eq!(screen.live_bandwidth(late), None);
+    assert!(screen.bandwidth_stale_for(late).is_some());
+
+    // When rates resume the chart starts over instead of bridging the gap.
+    screen.bandwidth_seen_at = Some(late);
+    assert!(
+        screen
+            .sample_bandwidth_if_due(late + Duration::from_secs(1))
+            .is_some()
+    );
+    assert_eq!(screen.bandwidth_tx.len(), 1);
+}
+
+#[test]
+fn a_lost_link_marks_the_wan_rate_stale_at_once() {
+    let mut screen = connected();
+    screen
+        .update(&Action::HealthUpdated(Arc::new(vec![health(
+            "wan",
+            &json!({"tx_bytes_r": 125_000, "rx_bytes_r": 250_000}),
+        )])))
+        .expect("health");
+    assert!(draw(&screen, 120, 40).contains("TX 1.0 Mbps"));
+
+    screen
+        .update(&Action::Reconnecting { attempt: 1 })
+        .expect("reconnecting");
+
+    let text = draw(&screen, 120, 40);
+    assert!(text.contains("no rate for"), "{text}");
+    assert!(!text.contains("TX 1.0 Mbps"), "{text}");
+}
+
+#[test]
+fn health_without_a_wan_rate_reports_none_instead_of_zero() {
+    let mut screen = connected();
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![device(
+            "ap-a",
+            "00:00:00:00:00:03",
+            "AccessPoint",
+        )])))
+        .expect("devices");
+    screen
+        .update(&Action::HealthUpdated(Arc::new(vec![health(
+            "wan",
+            &json!({}),
+        )])))
+        .expect("health");
+
+    assert_eq!(screen.current_bandwidth(), None);
+    let text = draw(&screen, 120, 40);
+    assert!(
+        text.contains("This controller reports no WAN rate"),
+        "{text}"
+    );
+    assert!(text.contains("TX ─  RX ─"), "{text}");
+}
+
+#[test]
+fn the_ap_table_writes_every_channel_whole_and_one_way() {
+    let mut screen = connected();
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![
+            access_point(
+                "ap-lounge",
+                "00:00:00:00:00:03",
+                &[(2.4, 11), (5.0, 132), (6.0, 197)],
+            ),
+            access_point(
+                "ap-beacon",
+                "00:00:00:00:00:04",
+                &[(2.4, 1), (5.0, 36), (6.0, 37)],
+            ),
+        ])))
+        .expect("devices");
+
+    // Wide enough for band labels on every row.
+    let wide = draw(&screen, 200, 40);
+    assert!(wide.contains("2G:11 5G:132 6G:197"), "{wide}");
+    assert!(wide.contains("2G:1 5G:36 6G:37"), "{wide}");
+
+    // Narrower, every row drops to bare channels together.
+    let medium = draw(&screen, 120, 40);
+    assert!(medium.contains("11/132/197"), "{medium}");
+    assert!(medium.contains("1/36/37"), "{medium}");
+    assert!(!medium.contains("2G:"), "one form per column: {medium}");
+
+    // Too narrow for the widest row, the column goes rather than clipping.
+    let narrow = draw(&screen, 80, 40);
+    assert!(!narrow.contains("Chan"), "{narrow}");
+    assert!(!narrow.contains("11/1"), "{narrow}");
+}
+
+#[test]
+fn top_clients_keep_a_gap_before_their_bars_and_rank_only_measured_ones() {
+    let mut screen = connected();
+    screen
+        .update(&Action::ClientsUpdated(Arc::new(vec![
+            client("dailies-review", "00:00:00:00:10:01", 9_000_000_000),
+            client("nas", "00:00:00:00:10:02", 5_000_000_000),
+            client("idle-printer", "00:00:00:00:10:03", 0),
+        ])))
+        .expect("clients");
+
+    let text = draw(&screen, 120, 40);
+    assert!(text.contains("dailies-review █"), "{text}");
+    assert!(!text.contains("idle-printer"), "{text}");
+
+    screen
+        .update(&Action::ClientsUpdated(Arc::new(vec![client(
+            "idle-printer",
+            "00:00:00:00:10:03",
+            0,
+        )])))
+        .expect("clients");
+    assert!(draw(&screen, 120, 40).contains("No client traffic reported"));
+}
+
+#[test]
+fn a_short_terminal_still_shows_the_isp_latency_and_link_rates() {
+    let mut screen = connected();
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![
+            device("gw", "00:00:00:00:00:01", "Gateway"),
+            device("ap-a", "00:00:00:00:00:03", "AccessPoint"),
+        ])))
+        .expect("devices");
+    screen
+        .update(&Action::HealthUpdated(Arc::new(vec![
+            health(
+                "wan",
+                &json!({
+                    "tx_bytes_r": 125_000, "rx_bytes_r": 250_000, "wan_ip": "203.0.113.42",
+                    "extra": {"isp_name": "Tidewater Fiber", "nameservers": ["192.0.2.53"]}
+                }),
+            ),
+            health("www", &json!({"latency": 11.0})),
+            health("wlan", &json!({"tx_bytes_r": 1_250_000, "rx_bytes_r": 0})),
+            health(
+                "lan",
+                &json!({"tx_bytes_r": 250_000, "rx_bytes_r": 0, "status": "warn"}),
+            ),
+        ])))
+        .expect("health");
+    for minute in 0..3 {
+        screen
+            .update(&Action::EventReceived(
+                crate::tui::screens::events::feed::tests::event(minute),
+            ))
+            .expect("event");
+    }
+
+    // 80x24 leaves the screen 80x22 between the tab and status bars.
+    let text = draw(&screen, 80, 22);
+    for expected in [
+        "ISP  Tidewater Fiber",
+        "Lat  11ms",
+        "DNS  192.0.2.53",
+        "WLAN",
+        "10.0M",
+        "client-02 connected",
+        "hjkl focus",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+    }
+    // Every subsystem's state is on screen, none cut at the panel edge.
+    for subsystem in ["WAN ●", "WWW ●", "WLAN ●", "LAN ●", "VPN ●"] {
+        assert!(text.contains(subsystem), "missing {subsystem:?}:\n{text}");
+    }
+}
+
+#[test]
+fn the_age_label_keeps_counting_on_a_dashboard_with_no_traffic_chart() {
+    let mut screen = connected();
+    screen.focused = true;
+    screen
+        .update(&Action::DevicesUpdated(Arc::new(vec![device(
+            "ap-a",
+            "00:00:00:00:00:03",
+            "AccessPoint",
+        )])))
+        .expect("devices");
+    draw(&screen, 120, 40);
+    assert!(
+        screen.update(&Action::Tick).expect("tick").is_none(),
+        "nothing changed since the frame"
+    );
+
+    screen.last_data_update = Instant::now().checked_sub(Duration::from_secs(30));
+
+    let redraw = screen.update(&Action::Tick).expect("tick");
+    assert!(matches!(redraw, Some(Action::Invalidate)), "{redraw:?}");
+    assert!(draw(&screen, 120, 40).contains("30s ago"));
+}
+
+#[test]
+fn a_key_storm_on_a_tiny_terminal_draws_without_panicking() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let mut screen = connected();
+    screen.focused = true;
+    for code in [
+        KeyCode::Down,
+        KeyCode::Right,
+        KeyCode::Char('j'),
+        KeyCode::Char('l'),
+        KeyCode::Char('G'),
+        KeyCode::Char('k'),
+        KeyCode::Char('h'),
+        KeyCode::Char('g'),
+        KeyCode::Enter,
+        KeyCode::Char('S'),
+    ] {
+        screen.handle_key_event(KeyEvent::from(code)).expect("key");
+        for (width, height) in [(40, 10), (42, 12), (20, 6), (1, 1)] {
+            draw(&screen, width, height);
+        }
+    }
+}

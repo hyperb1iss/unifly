@@ -5,7 +5,7 @@ mod detail;
 pub(in crate::tui::screens) mod feed;
 mod input;
 mod punchcard;
-mod render;
+pub(in crate::tui::screens) mod render;
 mod state;
 #[cfg(test)]
 mod tests;
