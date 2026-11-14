@@ -930,11 +930,14 @@ fn a_redacting_session_sees_no_values() {
     assert!(rows.contains("profile 2"), "{rows}");
 }
 
+/// The command that makes MFA codes may carry the seed in its arguments,
+/// so the form names the program and nothing after it.
 #[test]
-fn the_profile_shows_where_its_mfa_codes_come_from() {
+fn the_profile_says_a_command_supplies_its_mfa_codes_without_showing_it() {
     let (screen, _dir) = screen_for(
         "[profiles.home]\ncontroller = \"https://10.0.0.1\"\nauth_mode = \"session\"\n\
-         username = \"admin\"\ntotp_command = [\"op\", \"item\", \"get\", \"UniFi\", \"--otp\"]\n",
+         username = \"admin\"\n\
+         totp_command = [\"/usr/local/bin/oathtool\", \"--totp\", \"-b\", \"JBSWY3DPEHPK3PXP\"]\n",
         "home",
     );
 
@@ -942,10 +945,11 @@ fn the_profile_shows_where_its_mfa_codes_come_from() {
     let code = field_row(&rows, "One-time code").expect("code row");
     assert!(code.contains("only for two-factor sign-in"), "{code}");
     let source = field_row(&rows, "MFA codes").expect("mfa row");
-    assert!(
-        source.contains("command: op item get UniFi --otp"),
-        "{source}"
-    );
+    assert!(source.contains("from a command (oathtool)"), "{source}");
+    let all = rows.join("\n");
+    for hidden in ["JBSWY3DPEHPK3PXP", "--totp", "/usr/local/bin"] {
+        assert!(!all.contains(hidden), "{hidden} is on screen:\n{all}");
+    }
 }
 
 #[test]

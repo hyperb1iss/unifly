@@ -647,11 +647,20 @@ impl ControllerProfileDraft {
     }
 
     /// Where MFA codes come from besides the one-time code field, when
-    /// the profile names a source.
+    /// the profile names a source. A command is named by its program
+    /// only: its arguments may hold the seed the codes are made from.
     pub(crate) fn mfa_source(&self) -> Option<String> {
         let loaded = self.loaded.as_ref()?;
         if let Some(argv) = &loaded.totp_command {
-            return Some(format!("command: {}", argv.join(" ")));
+            let program = argv
+                .first()
+                .and_then(|program| Path::new(program).file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.trim().is_empty());
+            return Some(match program {
+                Some(program) => format!("from a command ({program})"),
+                None => "from a command".to_owned(),
+            });
         }
         loaded
             .totp_env
@@ -1320,6 +1329,29 @@ mod tests {
         let draft =
             ControllerProfileDraft::from_profile(&profile).with_inherited_insecure(&defaults);
         assert!(!draft.insecure);
+    }
+
+    /// A TOTP command may carry the seed in its arguments, so only the
+    /// program is ever named.
+    #[test]
+    fn a_totp_command_is_named_by_its_program_only() {
+        let mut profile = hybrid_profile(Some("k"), Some("p"));
+        profile.totp_command = Some(vec![
+            "/opt/bin/oathtool".into(),
+            "--totp".into(),
+            "-b".into(),
+            "JBSWY3DPEHPK3PXP".into(),
+        ]);
+        let source = ControllerProfileDraft::from_profile(&profile)
+            .mfa_source()
+            .expect("a source");
+        assert_eq!(source, "from a command (oathtool)");
+
+        profile.totp_command = Some(Vec::new());
+        let source = ControllerProfileDraft::from_profile(&profile)
+            .mfa_source()
+            .expect("a source");
+        assert_eq!(source, "from a command");
     }
 
     /// In-memory stand-in for the OS keyring. `failure`, when set, is what
