@@ -1220,3 +1220,23 @@ fn the_sponsor_toggle_writes_only_its_own_setting() {
     assert!(!cfg.defaults.show_donate);
     assert_eq!(cfg.profiles["work"].username.as_deref(), Some("admin"));
 }
+
+/// The help overlay draws a key in 11 columns and its description in 24,
+/// and cuts whatever is longer, so every entry has to fit.
+#[test]
+fn every_help_entry_fits_the_help_overlay() {
+    use ratatui::text::Span;
+
+    let mut screen = SettingsScreen::blank();
+    let mut entries = screen.help();
+    screen.hide_values();
+    entries.extend(screen.help());
+    assert!(entries.len() > 10, "{entries:?}");
+    for (keys, description) in entries {
+        assert!(Span::raw(keys).width() <= 11, "{keys:?} is too wide");
+        assert!(
+            Span::raw(description).width() <= 24,
+            "{description:?} is too wide"
+        );
+    }
+}

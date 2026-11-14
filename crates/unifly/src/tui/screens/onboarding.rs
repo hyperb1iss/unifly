@@ -177,16 +177,23 @@ impl Component for OnboardingScreen {
         self.active_text_field().is_some()
     }
 
+    /// The wizard's keys. The help overlay gives a key 11 columns and
+    /// its description 24, and cuts what does not fit.
     fn help(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("Enter", "Next step, or retry a failed test"),
-            ("Esc", "Previous step, or cancel a running test"),
-            ("Tab/\u{2193}  Shift+Tab/\u{2191}", "Next / previous field"),
+        let mut keys = vec![
+            ("Enter", "Next step, or retry"),
+            ("Esc", "Back, or cancel a test"),
+            ("Tab/\u{2193}", "Next field"),
+            ("Shift+Tab/\u{2191}", "Previous field"),
             ("\u{2191}/\u{2193} j/k", "Move in a list"),
             ("Space", "Toggle a checkbox"),
-            ("Ctrl+T", "Show or hide the API key or password"),
-            ("Ctrl+C", "Quit"),
-        ]
+        ];
+        // A redacting session reveals nothing.
+        if !self.private {
+            keys.push(("Ctrl+T", "Show or hide a secret"));
+        }
+        keys.extend([("r", "Retry a failed test"), ("t", "Turn TLS checks off")]);
+        keys
     }
 
     fn set_focused(&mut self, focused: bool) {

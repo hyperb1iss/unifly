@@ -220,16 +220,25 @@ impl Component for SettingsScreen {
         self.typing()
     }
 
+    /// The form's keys. The help overlay gives a key 11 columns and its
+    /// description 24, and cuts what does not fit.
     fn help(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("Tab/\u{2193}  Shift+Tab/\u{2191}", "Next / previous field"),
-            ("\u{2190}/\u{2192}", "Change a picker, move in a text field"),
+        let mut keys = vec![
+            ("Tab/\u{2193}", "Next field"),
+            ("Shift+Tab/\u{2191}", "Previous field"),
+            ("\u{2190}/\u{2192}", "Pick, or move in a field"),
             ("Space", "Toggle a checkbox"),
-            ("Ctrl+T", "Show or hide the API key or password"),
-            ("n", "On Profile: set up a new profile"),
-            ("Enter", "Test the connection, save, and reconnect"),
-            ("Esc", "Cancel a test, or close Settings"),
-        ]
+        ];
+        // A redacting session reveals nothing.
+        if !self.private {
+            keys.push(("Ctrl+T", "Show or hide a secret"));
+        }
+        keys.extend([
+            ("n", "New profile (on Profile)"),
+            ("Enter", "Test, save, reconnect"),
+            ("Esc", "Cancel a test, or close"),
+        ]);
+        keys
     }
 
     fn set_focused(&mut self, focused: bool) {

@@ -1205,3 +1205,23 @@ fn only_a_wizard_opened_from_a_session_can_be_left() {
 
     assert!(press(&mut wizard(), KeyCode::Esc).is_none());
 }
+
+/// The help overlay draws a key in 11 columns and its description in 24,
+/// and cuts whatever is longer, so every entry has to fit.
+#[test]
+fn every_help_entry_fits_the_help_overlay() {
+    use ratatui::text::Span;
+
+    let mut screen = wizard();
+    let mut entries = screen.help();
+    screen.hide_values();
+    entries.extend(screen.help());
+    assert!(entries.len() > 10, "{entries:?}");
+    for (keys, description) in entries {
+        assert!(Span::raw(keys).width() <= 11, "{keys:?} is too wide");
+        assert!(
+            Span::raw(description).width() <= 24,
+            "{description:?} is too wide"
+        );
+    }
+}
