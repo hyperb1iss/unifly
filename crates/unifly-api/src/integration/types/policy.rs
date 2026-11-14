@@ -8,9 +8,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirewallPolicySource {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_id: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traffic_filter: Option<SourceTrafficFilter>,
 }
 
@@ -18,9 +18,9 @@ pub struct FirewallPolicySource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirewallPolicyDestination {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_id: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traffic_filter: Option<DestTrafficFilter>,
 }
 
@@ -457,6 +457,7 @@ pub struct FirewallPolicyResponse {
 #[serde(rename_all = "camelCase")]
 pub struct FirewallPolicyCreateUpdate {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub enabled: bool,
     pub action: Value,
@@ -466,8 +467,11 @@ pub struct FirewallPolicyCreateUpdate {
     pub logging_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_flow_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ipsec_filter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_state_filter: Option<Vec<String>>,
 }
 
