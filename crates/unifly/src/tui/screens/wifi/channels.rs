@@ -1,6 +1,6 @@
 //! Which channels the site's own radios and their neighbors sit on.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use unifly_api::{Device, DeviceState};
@@ -112,6 +112,9 @@ impl WifiScreen {
                 cells.entry(channel).or_default().your_count += 1;
             }
         }
+        // The scan lists a neighbor once for each AP that hears it, so it
+        // is counted once here, at the strongest signal any AP measured.
+        let mut heard: HashMap<String, (i32, Option<i32>)> = HashMap::new();
         for neighbor in self
             .neighbors
             .iter()
@@ -121,9 +124,20 @@ impl WifiScreen {
             let Some(channel) = neighbor.channel else {
                 continue;
             };
+            let signal = neighbor.signal.or(neighbor.rssi);
+            heard
+                .entry(neighbor.bssid.to_ascii_lowercase())
+                .and_modify(|strongest| {
+                    if signal > strongest.1 {
+                        *strongest = (channel, signal);
+                    }
+                })
+                .or_insert((channel, signal));
+        }
+        for (channel, signal) in heard.into_values() {
             let cell = cells.entry(channel).or_default();
             cell.neighbor_count += 1;
-            cell.signal = cell.signal.max(neighbor.signal.or(neighbor.rssi));
+            cell.signal = cell.signal.max(signal);
         }
 
         let mut listed = self.regulatory_channels(band);
@@ -281,6 +295,43 @@ mod tests {
         assert_eq!((theirs.your_count, theirs.neighbor_count), (0, 1));
         assert!(!theirs.conflict);
         assert!(!cell(&cells, 52).conflict);
+    }
+
+    fn heard_by(bssid: &str, ap: &str, channel: i32, signal: i32) -> RogueAp {
+        let mut neighbor = neighbor(bssid, "na", channel, signal);
+        neighbor.ap_mac = Some(format!("aa:bb:cc:dd:ee:{ap}"));
+        neighbor
+    }
+
+    #[test]
+    fn a_neighbor_heard_by_several_aps_counts_once_at_its_strongest_signal() {
+        let mut screen = screen(WifiBand::FiveGhz);
+        screen.apply_action(&Action::WifiNeighborsUpdated(Arc::new(vec![
+            heard_by("11:11:11:11:11:11", "01", 36, -71),
+            heard_by("11:11:11:11:11:11", "02", 36, -48),
+            heard_by("11:11:11:11:11:11", "03", 36, -80),
+            // The same radio, reported in the other case.
+            heard_by("11:11:11:11:11:AA", "01", 100, -66),
+            heard_by("11:11:11:11:11:aa", "02", 100, -77),
+            heard_by("22:22:22:22:22:22", "03", 36, -59),
+        ])));
+
+        let cells = screen.channel_occupancy();
+        let busy = cell(&cells, 36);
+        assert_eq!(busy.neighbor_count, 2, "two neighbors, not four rows");
+        assert_eq!(busy.signal, Some(-48), "the strongest any AP measured");
+        assert_eq!(cell(&cells, 100).neighbor_count, 1);
+        assert_eq!(cell(&cells, 100).signal, Some(-66));
+        let total: usize = cells.iter().map(|cell| cell.neighbor_count).sum();
+        assert_eq!(total, 3, "the header's total counts each neighbor once");
+
+        // Focused on one AP, the map shows what that AP hears.
+        let focus = screen.devices[2].id.clone();
+        screen.apply_action(&Action::WifiFocusAp(Some(focus)));
+        let cells = screen.channel_occupancy();
+        let busy = cell(&cells, 36);
+        assert_eq!(busy.neighbor_count, 2);
+        assert_eq!(busy.signal, Some(-59));
     }
 
     #[test]

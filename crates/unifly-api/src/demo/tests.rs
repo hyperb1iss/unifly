@@ -518,6 +518,42 @@ fn queries_match_the_fleet() {
     assert_ne!(sim.dpi_applications().len(), 0);
 }
 
+#[test]
+fn a_neighbor_is_listed_once_for_each_access_point_that_hears_it() {
+    let sim = Simulation::new(fleet());
+    let mut heard_by: std::collections::HashMap<&str, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for neighbor in &sim.fleet.neighbors {
+        let observer = neighbor.ap_mac.as_deref().expect("an observer");
+        assert!(
+            heard_by
+                .entry(neighbor.bssid.as_str())
+                .or_default()
+                .insert(observer),
+            "{} is listed twice for one AP",
+            neighbor.bssid
+        );
+    }
+    assert!(
+        heard_by.values().any(|observers| observers.len() > 1),
+        "some neighbor is in range of more than one AP"
+    );
+    assert!(
+        heard_by.len() < sim.fleet.neighbors.len(),
+        "rows outnumber the neighbors themselves"
+    );
+    for (bssid, _) in heard_by.iter().filter(|(_, aps)| aps.len() > 1) {
+        let channels: HashSet<_> = sim
+            .fleet
+            .neighbors
+            .iter()
+            .filter(|neighbor| neighbor.bssid == *bssid)
+            .map(|neighbor| neighbor.channel)
+            .collect();
+        assert_eq!(channels.len(), 1, "{bssid} sits on one channel");
+    }
+}
+
 #[tokio::test]
 async fn demo_controller_connects_offline_and_animates() {
     let controller = Controller::demo(DemoFleetOptions::with_seed(7));
