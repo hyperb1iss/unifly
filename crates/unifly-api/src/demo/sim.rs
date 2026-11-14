@@ -96,6 +96,9 @@ pub(crate) struct Simulation {
     pub(crate) ssid_renames: Vec<(String, String)>,
     /// IDs of the alarms an admin archived this session.
     pub(crate) archived_alarms: std::collections::HashSet<String>,
+    /// Ports an admin edited during the session, keyed by device index
+    /// and port index, with the label they were given, if any.
+    pub(crate) port_edits: std::collections::HashMap<(usize, u32), Option<String>>,
     initial_clients: usize,
 }
 
@@ -130,6 +133,7 @@ impl Simulation {
             wan,
             ssid_renames: Vec::new(),
             archived_alarms: std::collections::HashSet::new(),
+            port_edits: std::collections::HashMap::new(),
             initial_clients,
         }
     }

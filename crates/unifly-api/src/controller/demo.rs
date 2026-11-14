@@ -125,6 +125,25 @@ impl Controller {
     }
 }
 
+impl Controller {
+    /// Demo `update_device_port()`: apply the edit to the simulation.
+    pub(super) async fn demo_update_port(
+        &self,
+        runtime: &DemoRuntime,
+        device_mac: &crate::model::MacAddress,
+        port_idx: u32,
+        update: &super::PortProfileUpdate,
+    ) -> Result<(), CoreError> {
+        if self.inner.task_handles.lock().await.is_empty() {
+            return Err(CoreError::ControllerDisconnected);
+        }
+        let delta =
+            runtime.with(|sim| sim.apply_port_update(device_mac, port_idx, update, Utc::now()))?;
+        apply_delta(&self.inner.store, &self.inner.event_tx, delta);
+        Ok(())
+    }
+}
+
 async fn simulation_task(
     runtime: Arc<DemoRuntime>,
     store: Arc<DataStore>,

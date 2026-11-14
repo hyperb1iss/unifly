@@ -368,3 +368,157 @@ async fn demo_controller_answers_port_queries() {
     ));
     controller.disconnect().await;
 }
+
+#[test]
+fn an_edited_port_keeps_its_label_and_poe_mode() {
+    use crate::controller::PortProfileUpdate;
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let mac = sim.fleet.devices[SWITCH_BASE].mac.clone();
+    let powered = profiles_at(&sim, SWITCH_BASE)
+        .iter()
+        .find(|profile| profile.poe_mode == Some(PoeMode::Auto))
+        .map(|profile| profile.index)
+        .expect("a port supplying PoE");
+
+    let delta = sim
+        .apply_port_update(
+            &mac,
+            powered,
+            &PortProfileUpdate {
+                name: Some("cam-dock".into()),
+                poe_mode: Some(PoeMode::Off),
+                ..PortProfileUpdate::default()
+            },
+            now,
+        )
+        .expect("label and PoE edits are simulated");
+    assert_eq!(delta.devices.len(), 1, "the device list shows the change");
+    assert_eq!(delta.events.len(), 1);
+
+    let after = profiles_at(&sim, SWITCH_BASE);
+    let edited = port(&after, powered);
+    assert_eq!(edited.name.as_deref(), Some("cam-dock"));
+    assert_eq!(edited.poe_mode, Some(PoeMode::Off));
+    let exported = export_ports(&sim.session_device(&mac).expect("device in fleet"), false);
+    assert!(
+        exported
+            .ports
+            .iter()
+            .any(|entry| entry.index == powered && entry.name.as_deref() == Some("cam-dock")),
+        "the edit is an override like any other"
+    );
+
+    sim.apply_port_update(
+        &mac,
+        powered,
+        &PortProfileUpdate {
+            poe_mode: Some(PoeMode::Auto),
+            ..PortProfileUpdate::default()
+        },
+        now,
+    )
+    .expect("PoE back on");
+    let after = profiles_at(&sim, SWITCH_BASE);
+    assert_eq!(port(&after, powered).poe_mode, Some(PoeMode::Auto));
+    assert_eq!(port(&after, powered).name.as_deref(), Some("cam-dock"));
+
+    // What the simulation cannot mean is refused, not faked.
+    let vlan = sim.apply_port_update(
+        &mac,
+        powered,
+        &PortProfileUpdate {
+            mode: Some(PortMode::Trunk),
+            ..PortProfileUpdate::default()
+        },
+        now,
+    );
+    assert!(
+        matches!(vlan, Err(CoreError::Unsupported { .. })),
+        "{vlan:?}"
+    );
+    let missing = sim.apply_port_update(
+        &mac,
+        99,
+        &PortProfileUpdate {
+            name: Some("nowhere".into()),
+            ..PortProfileUpdate::default()
+        },
+        now,
+    );
+    assert!(
+        matches!(missing, Err(CoreError::ValidationFailed { .. })),
+        "{missing:?}"
+    );
+}
+
+#[test]
+fn client_records_follow_admin_commands() {
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let find = |sim: &Simulation, mac: &crate::model::MacAddress| {
+        sim.fleet
+            .clients
+            .iter()
+            .find(|client| &client.client.mac == mac)
+            .map(|client| client.client.clone())
+    };
+
+    let dhcp = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| !client.client.use_fixedip)
+        .map(|client| client.client.mac.clone())
+        .expect("a client on DHCP");
+    let ip = std::net::Ipv4Addr::new(10, 40, 20, 77);
+    let network_id = sim.fleet.networks[0].id.clone();
+    sim.apply_command(
+        Command::SetClientFixedIp {
+            mac: dhcp.clone(),
+            ip,
+            network_id,
+        },
+        now,
+    )
+    .expect("set a fixed IP");
+    assert_eq!(
+        find(&sim, &dhcp).and_then(|client| client.fixed_ip),
+        Some(ip)
+    );
+    sim.apply_command(
+        Command::RemoveClientFixedIp {
+            mac: dhcp.clone(),
+            network_id: None,
+        },
+        now,
+    )
+    .expect("remove it");
+    assert!(find(&sim, &dhcp).is_some_and(|client| !client.use_fixedip));
+
+    // Only a guest has portal access to grant.
+    let staff = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| !client.client.is_guest)
+        .map(|client| client.client.id.clone())
+        .expect("a client that is not a guest");
+    let refused = sim.apply_command(Command::UnauthorizeGuest { client_id: staff }, now);
+    assert!(matches!(refused, Err(CoreError::Rejected { .. })));
+
+    let before = sim.fleet.clients.len();
+    let (_, delta) = sim
+        .apply_command(Command::ForgetClient { mac: dhcp.clone() }, now)
+        .expect("forget");
+    assert_eq!(delta.removed, vec![dhcp.clone()]);
+    assert_eq!(sim.fleet.clients.len(), before - 1);
+    assert!(
+        !sim.fleet
+            .away
+            .iter()
+            .any(|client| client.client.mac == dhcp),
+        "a forgotten client does not come back"
+    );
+}

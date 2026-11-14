@@ -273,8 +273,15 @@ impl Simulation {
         let mut overrides = Vec::new();
         for port in &device.ports {
             let profile = profile(fleet, index, port);
-            let config = config(&profile, port, &network_ids);
-            if matches!(profile, Profile::Access { .. } | Profile::Trunk { .. }) {
+            let mut config = config(&profile, port, &network_ids);
+            // A port an admin edited carries an override like a configured
+            // one, under the label it was given.
+            let edit = self.port_edits.get(&(index, port.index));
+            if let Some(Some(label)) = edit {
+                config.insert("name".into(), json!(label));
+            }
+            let configured = matches!(profile, Profile::Access { .. } | Profile::Trunk { .. });
+            if configured || edit.is_some() {
                 let mut entry = config.clone();
                 entry.insert("port_idx".into(), json!(port.index));
                 overrides.push(Value::Object(entry));

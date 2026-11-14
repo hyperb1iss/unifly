@@ -1,10 +1,11 @@
 // ── Demo command handling ──
 //
-// Device and client actions succeed against the simulation and emit the
-// event a real controller would, and so do the network and firewall edits
-// in `config.rs` and edits to an SSID's name, enabled state, and
-// visibility. Anything else that would need a real controller to mean
-// something (adoption, other WiFi and VPN CRUD, site admin) is refused
+// Device, port, and client actions succeed against the simulation and
+// emit the event a real controller would, and so do the network and
+// firewall edits in `config.rs` and edits to an SSID's name, enabled
+// state, and visibility. Anything else that would need a real controller
+// to mean something (adoption, other WiFi and VPN CRUD, site admin) is
+// refused with a clear error instead of pretending.
 // with a clear error instead of pretending.
 
 use chrono::{DateTime, Utc};
@@ -12,8 +13,12 @@ use chrono::{DateTime, Utc};
 use super::catalog::{self, AP_FIRMWARE};
 use super::sim::{Delta, Pending, Simulation, client_label};
 use crate::command::{Command, CommandResult, UpdateWifiBroadcastRequest};
+use crate::controller::PortProfileUpdate;
 use crate::core_error::CoreError;
-use crate::model::{ClientType, DeviceState, EntityId, EventCategory, EventSeverity, MacAddress};
+use crate::model::{
+    ClientType, DeviceState, EntityId, EventCategory, EventSeverity, GuestAuth, MacAddress,
+    PoeMode, PortState,
+};
 
 const DEVICE_INFO: (EventCategory, EventSeverity) = (EventCategory::Device, EventSeverity::Info);
 const CLIENT_INFO: (EventCategory, EventSeverity) = (EventCategory::Client, EventSeverity::Info);
@@ -37,6 +42,15 @@ fn command_name(command: &Command) -> String {
         .next()
         .unwrap_or("command")
         .to_owned()
+}
+
+/// What an admin decided about a guest's portal access.
+#[derive(Debug, Clone, Copy)]
+enum GuestAccess {
+    /// Through the portal, for `minutes` when a limit was set.
+    Granted { minutes: Option<u32> },
+    /// Back to the portal.
+    Revoked,
 }
 
 fn unavailable(operation: &str) -> CoreError {
@@ -101,6 +115,26 @@ impl Simulation {
                 if let Some(mac) = self.disconnect(index, now, &mut delta, "EVT_WU_Kicked") {
                     self.returns.push((self.tick + KICK_RETURN_TICKS, mac));
                 }
+            }
+            Command::ForgetClient { mac } => self.forget_client(&mac, now, &mut delta)?,
+            Command::AuthorizeGuest {
+                client_id,
+                time_limit_minutes,
+                ..
+            } => {
+                let access = GuestAccess::Granted {
+                    minutes: time_limit_minutes,
+                };
+                self.set_guest_access(&client_id, access, now, &mut delta)?;
+            }
+            Command::UnauthorizeGuest { client_id } => {
+                self.set_guest_access(&client_id, GuestAccess::Revoked, now, &mut delta)?;
+            }
+            Command::SetClientFixedIp { mac, ip, .. } => {
+                self.set_fixed_ip(&mac, Some(ip), now, &mut delta)?;
+            }
+            Command::RemoveClientFixedIp { mac, .. } => {
+                self.set_fixed_ip(&mac, None, now, &mut delta)?;
             }
             Command::PatchFirewallPolicy {
                 id,
@@ -392,6 +426,153 @@ impl Simulation {
         }
         delta.wifi.push(updated);
         Ok(())
+    }
+
+    /// Drop a client and everything the controller kept about it. Unlike
+    /// a disconnect it does not come back.
+    fn forget_client(
+        &mut self,
+        mac: &MacAddress,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_client(mac)?;
+        let client = self.fleet.clients.remove(index).client;
+        let message = format!(
+            "{} was forgotten by crew-lead@neonharbor.example",
+            client_label(&client)
+        );
+        let mut event = self.event(now, CLIENT_INFO, "EVT_AD_ClientForgotten", message);
+        event.client_mac = Some(client.mac.clone());
+        delta.events.push(event);
+        delta.removed.push(client.mac);
+        Ok(())
+    }
+
+    /// Let a guest through the portal, or send it back there.
+    fn set_guest_access(
+        &mut self,
+        id: &EntityId,
+        access: GuestAccess,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let client = self
+            .fleet
+            .clients
+            .iter_mut()
+            .map(|client| &mut client.client)
+            .find(|client| &client.id == id)
+            .ok_or_else(|| CoreError::ClientNotFound {
+                identifier: id.to_string(),
+            })?;
+        let label = client_label(client);
+        if !client.is_guest {
+            return Err(CoreError::Rejected {
+                message: format!("{label} is not a guest"),
+            });
+        }
+        let (key, verb, expires_at) = match access {
+            GuestAccess::Granted { minutes } => (
+                "EVT_AD_GuestAuthorized",
+                "authorized",
+                minutes.map(|minutes| now + chrono::Duration::minutes(i64::from(minutes))),
+            ),
+            GuestAccess::Revoked => ("EVT_AD_GuestUnauthorized", "unauthorized", None),
+        };
+        let authorized = matches!(access, GuestAccess::Granted { .. });
+        client.guest_auth = Some(GuestAuth {
+            authorized,
+            method: authorized.then(|| "admin".into()),
+            expires_at,
+            tx_bytes: None,
+            rx_bytes: None,
+            elapsed_minutes: None,
+        });
+        let updated = client.clone();
+        let message = format!("Guest {label} was {verb} by crew-lead@neonharbor.example");
+        let mut event = self.event(now, CLIENT_INFO, key, message);
+        event.client_mac = Some(updated.mac.clone());
+        delta.events.push(event);
+        delta.clients.push(updated);
+        Ok(())
+    }
+
+    /// Reserve `ip` for a client, or go back to DHCP with `None`.
+    fn set_fixed_ip(
+        &mut self,
+        mac: &MacAddress,
+        ip: Option<std::net::Ipv4Addr>,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_client(mac)?;
+        let client = &mut self.fleet.clients[index].client;
+        client.use_fixedip = ip.is_some();
+        client.fixed_ip = ip;
+        let label = client_label(client);
+        let updated = client.clone();
+        let message = match ip {
+            Some(ip) => format!("{label} was given the fixed IP {ip}"),
+            None => format!("{label} went back to DHCP"),
+        };
+        let mut event = self.event(now, CLIENT_INFO, "EVT_AD_ClientFixedIp", message);
+        event.client_mac = Some(updated.mac.clone());
+        delta.events.push(event);
+        delta.clients.push(updated);
+        Ok(())
+    }
+
+    /// Apply a port edit from `update_device_port`: the label and the PoE
+    /// mode are simulated, and anything else is refused.
+    pub(crate) fn apply_port_update(
+        &mut self,
+        mac: &MacAddress,
+        port_index: u32,
+        update: &PortProfileUpdate,
+        now: DateTime<Utc>,
+    ) -> Result<Delta, CoreError> {
+        if update.mode.is_some()
+            || update.native_network_id.is_some()
+            || update.tagged_network_ids.is_some()
+            || update.speed_setting.is_some()
+        {
+            return Err(unavailable("port VLAN and speed changes"));
+        }
+        if update.name.is_none() && update.poe_mode.is_none() {
+            return Ok(Delta::default());
+        }
+        let index = self.require_device(mac)?;
+        let name = self.device_name(index);
+        let port = self.fleet.devices[index]
+            .ports
+            .iter_mut()
+            .find(|port| port.index == port_index)
+            .ok_or_else(|| CoreError::ValidationFailed {
+                message: format!("{name} has no port {port_index}"),
+            })?;
+        let mut changes = Vec::new();
+        if let Some(mode) = update.poe_mode {
+            let link = port.state;
+            let poe = port.poe.as_mut().ok_or_else(|| CoreError::Rejected {
+                message: format!("{name} port {port_index} has no PoE"),
+            })?;
+            poe.enabled = mode != PoeMode::Off;
+            poe.state = if poe.enabled { link } else { PortState::Down };
+            changes.push(format!(
+                "PoE turned {}",
+                if poe.enabled { "on" } else { "off" }
+            ));
+        }
+        let edit = self.port_edits.entry((index, port_index)).or_default();
+        if let Some(label) = &update.name {
+            *edit = Some(label.clone());
+            changes.push(format!("renamed to \"{label}\""));
+        }
+        let mut delta = Delta::default();
+        let message = format!("{name} port {port_index}: {}", changes.join(", "));
+        self.push_device_event(index, now, "EVT_SW_PortConfigChanged", message, &mut delta);
+        Ok(delta)
     }
 
     fn patch_policy(
