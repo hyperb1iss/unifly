@@ -591,9 +591,15 @@ impl WifiScreen {
     }
 
     pub(super) fn render_roaming(&self, frame: &mut Frame, area: Rect) {
+        // With rows on screen the table keeps them through a failed
+        // refresh, so the title says they are not fresh.
+        let failed = !self.roam_rows.is_empty() && self.roam_history_error().is_some();
         let title = self.roam_target.as_ref().map_or_else(
             || " Roaming History ".to_owned(),
-            |target| format!(" Roaming History · {} ", target.label),
+            |target| {
+                let failed = if failed { " · refresh failed" } else { "" };
+                format!(" Roaming History · {}{failed} ", target.label)
+            },
         );
         let block = panel_block(title, self.focused);
         let inner = block.inner(area);

@@ -1201,6 +1201,34 @@ fn a_failed_roam_history_is_explained_in_the_panel_and_retried_quietly() {
 }
 
 #[test]
+fn a_failed_refresh_of_a_history_on_screen_is_said_in_the_title() {
+    let mut screen = roaming_screen();
+    screen.apply_action(&roams_loaded(FIRST_MAC, "ap-roof"));
+    assert!(!rendered(&screen).contains("refresh failed"));
+
+    let asked = screen.handle_key_input(key(KeyCode::Char('r')));
+    assert!(
+        matches!(asked, Some(Action::RequestWifiRoamHistory { .. })),
+        "{asked:?}"
+    );
+    let follow_up = screen.apply_action(&Action::WifiRoamHistoryFailed {
+        mac: FIRST_MAC.to_owned(),
+        error: "HTTP 500".to_owned(),
+    });
+    assert!(follow_up.is_none(), "no toast: {follow_up:?}");
+    let shown = rendered(&screen);
+    assert!(shown.contains("ap-roof"), "the rows stay:\n{shown}");
+    assert!(
+        shown.contains("refresh failed"),
+        "stale rows must not read as fresh:\n{shown}"
+    );
+
+    screen.handle_key_input(key(KeyCode::Char('r')));
+    screen.apply_action(&roams_loaded(FIRST_MAC, "ap-roof"));
+    assert!(!rendered(&screen).contains("refresh failed"));
+}
+
+#[test]
 fn a_manual_refresh_waits_for_the_one_in_flight() {
     let mut screen = roaming_screen();
     // The history is already on its way: holding `r` sends nothing more.
