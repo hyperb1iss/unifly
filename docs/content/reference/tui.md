@@ -81,7 +81,7 @@ Tabs, list rows, key hints, dialogs, and dashboard panels take a click, so the T
 | **Notifications**    | A tap dismisses the toast                                                                                                                                                                                   |
 | **Dashboard panels** | Opens the screen behind the panel: WAN Traffic opens Stats, Gateway and Capacity open Devices, and Networks, WiFi, Top Clients, and Recent Events open their screens                                        |
 
-The wheel moves the selection in lists, and an open device or client detail follows it. On Events it scrolls the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms and a drag pans the map. In Settings it walks the theme picker, previewing each theme; a tap outside the picker cancels it.
+The wheel moves the selection in lists, and an open device or client detail follows it. On Events it scrolls the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms and a drag pans the map. In Settings it scrolls the form, and walks the theme picker when that is open, previewing each theme; a tap outside the picker cancels it.
 
 Typing still needs a keyboard: search, the Networks edit form, the Settings fields, and the onboarding wizard.
 
@@ -238,6 +238,34 @@ Device actions (restart, locate, upgrade, provision, speed test), port actions (
 `--demo-fleet` and `--demo-seed` are global flags, so a curated set of read-only CLI commands answers from the same fleet for terminal screenshots; see [Demo Fleet](/reference/cli#demo-fleet) in the CLI reference.
 
 For recordings, `--no-effects` (or `NO_EFFECTS=1`) skips the launch animation.
+
+## Setup and Settings
+
+The setup wizard opens when the launch has no profile it can connect with: a first run, a profile named with `-p` that does not exist yet, or a saved profile that could not connect (the first step then says why). It asks how unifly signs in, the controller address and whether to verify its certificate (skipped for Cloud), and the credentials, then tests the connection. With several sites on the controller it asks which one. Nothing is saved until a test passes.
+
+Settings (`,`) is the same form for the profile the session runs on, plus the theme and the sponsor button. `Enter` tests the connection with what the form holds; a test that passes saves the profile and reconnects with exactly what was tested. `Esc` cancels a running test, and on a form with unsaved edits asks before dropping them.
+
+| Key                | Action                                                      |
+| ------------------ | ----------------------------------------------------------- |
+| `Tab` / `Down`     | Next field                                                  |
+| `Shift+Tab` / `Up` | Previous field                                              |
+| `Left` / `Right`   | Change a picker (profile, auth mode, site); move in a field |
+| `Space`            | Toggle a checkbox                                           |
+| `Ctrl+T`           | Show or hide the API key or password in the focused field   |
+| `n` on Profile     | Name a new profile and set it up in the wizard              |
+| `Enter`            | Test, save, and reconnect (next step in the wizard)         |
+| `Esc`              | Cancel a test, go back a step, or close Settings            |
+
+Text fields take the usual line-editing keys (`Home`, `End`, `Ctrl+A`, `Ctrl+E`, `Ctrl+W`, `Ctrl+U`, `Ctrl+K`) and a paste; a newline in a paste never submits the form.
+
+- **Profiles**: the Profile row walks the saved profiles. Picking another one and passing its test moves the session to it.
+- **Sites**: once a test or the running session has read the controller's sites, the Site field offers them as a picker. Typing a letter switches back to a name typed by hand.
+- **MFA**: the One-time code field takes a current 6-digit code for the next sign-in. The code is never saved. A profile's `totp_command` or `totp_env` is shown under it.
+- **Secrets**: a typed API key or password is stored in the OS keyring. Without a usable keyring it falls back to plaintext in `config.toml`, and the form says so before you move on. An empty field shows where the value in use comes from (the keyring, or an environment variable).
+- **Launch flags**: `--site`, `--insecure`, and the other connection flags keep overriding the profile after Settings reconnects, and the fields they override are marked. They stay with the profile the launch selected.
+- **CA certificate and timeout** are edited here too. An empty timeout inherits `[defaults]`.
+
+When a test fails, the form explains the failure and what to do next (an unverified certificate, rejected credentials, a missing second factor, an unknown site, an unreachable address), and moves focus to the field it is about.
 
 ## Theme
 
