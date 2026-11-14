@@ -9,6 +9,18 @@ use super::{Action, App, StatsPeriod};
 use crate::tui::action::Access;
 use crate::tui::app::ConnectionStatus;
 
+/// The next queued action, with a fetch's result taken out of its fence.
+async fn next_action(app: &mut App, why: &str) -> Action {
+    let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
+        .await
+        .expect(why)
+        .expect("action channel remains open");
+    match action {
+        Action::MonitorFetched { result, .. } => *result,
+        other => other,
+    }
+}
+
 async fn controller(server: &MockServer) -> Controller {
     for (route, status) in [("/api/auth/login", 401), ("/api/login", 404)] {
         Mock::given(method("GET"))
@@ -99,10 +111,7 @@ async fn dpi_failures_ride_inline_without_discarding_loaded_history_or_other_dpi
         let app = App::new(Some(controller.clone()), None, false, false);
         let mut app = app;
         let _task = app.fetch_stats(StatsPeriod::OneHour);
-        let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
-            .await
-            .expect("history must publish even when DPI fails")
-            .expect("action channel remains open");
+        let action = next_action(&mut app, "history must publish even when DPI fails").await;
         // A DPI failure rides along with the history, so a timed reload
         // cannot stack a toast for it every minute.
         let Action::StatsUpdated(data) = action else {
@@ -200,10 +209,7 @@ async fn a_newer_request_aborts_the_one_in_flight() {
         .expect("second request");
 
     let data = loop {
-        let action = tokio::time::timeout(Duration::from_secs(5), app.action_rx.recv())
-            .await
-            .expect("the newer fetch reports")
-            .expect("action channel remains open");
+        let action = next_action(&mut app, "the newer fetch reports").await;
         if let Action::StatsUpdated(data) = action {
             break data;
         }

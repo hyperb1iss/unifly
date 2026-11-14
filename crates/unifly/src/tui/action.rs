@@ -628,6 +628,14 @@ pub enum Action {
         period: StatsPeriod,
         message: String,
     },
+    /// What a monitor fetch came back with, and the controller generation
+    /// it was asked under. It is acted on only while that controller is
+    /// still the one connected, so a result that outlives a profile switch
+    /// cannot land in the next controller's screens.
+    MonitorFetched {
+        generation: u64,
+        result: Box<Action>,
+    },
     // ── devices-clients ───────────────────────────────────────────
     /// Adopt the pending device with this ID, after a confirmation.
     RequestAdoptDevice(EntityId),

@@ -71,6 +71,7 @@ impl App {
         let controller = self.controller.clone()?;
 
         let tx = self.action_tx.clone();
+        let fenced = self.fenced();
         let sanitizer = self.sanitizer.clone();
         let interval = period.api_interval();
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
@@ -108,10 +109,10 @@ impl App {
                 Ok(data) => data,
                 Err(message) => {
                     if generation_ref.load(Ordering::Relaxed) == generation {
-                        let _ = tx.send(Action::StatsFailed {
+                        let _ = tx.send(fenced(Action::StatsFailed {
                             period,
                             message: shown(message),
-                        });
+                        }));
                     }
                     return;
                 }
@@ -127,7 +128,7 @@ impl App {
             data.dpi_error = dpi.error.map(shown);
 
             if generation_ref.load(Ordering::Relaxed) == generation {
-                let _ = tx.send(Action::StatsUpdated(data));
+                let _ = tx.send(fenced(Action::StatsUpdated(data)));
             }
         });
         Some(task.abort_handle())
