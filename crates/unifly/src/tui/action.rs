@@ -478,11 +478,6 @@ pub enum Action {
     WifiBandSelect(WifiBand),
 
     // ── Firewall ──────────────────────────────────────────────────
-    SelectZonePair(EntityId, EntityId),
-    /// Move this policy one step through its zone pair's ordering on the
-    /// controller. It names the policy, not a row index, so refreshes
-    /// queued ahead of the action cannot redirect the move to another one.
-    ReorderPolicy(Arc<FirewallPolicy>, Direction),
     FirewallSubTab(FirewallSubTab),
 
     // ── Network Editing ──────────────────────────────────────────
@@ -598,4 +593,16 @@ pub enum Action {
     NetworkCreate(Box<CreateNetworkRequest>),
     /// Check what uses a network, then ask before deleting it.
     RequestDeleteNetwork(EntityId),
+    /// Move this policy `steps` places through its zone pair's ordering on
+    /// the controller, up when negative. It names the policy, not a row
+    /// index, so refreshes queued ahead of the action cannot redirect the
+    /// move to another one.
+    MovePolicy {
+        policy: Arc<FirewallPolicy>,
+        steps: i32,
+    },
+    /// A policy move ended; `moved` says whether the order changed.
+    PolicyMoveSettled {
+        moved: bool,
+    },
 }

@@ -2,27 +2,42 @@
 //! controller.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{self, AtomicBool};
 
 use tracing::warn;
 
 use unifly_api::integration_types::FirewallPolicyOrdering;
 use unifly_api::model::FirewallPolicy;
-use unifly_api::{Command, ConnectionState, Controller, CoreError, EntityId};
+use unifly_api::{Command, Controller, CoreError, EntityId};
 
 use super::App;
+use super::networks_firewall::{is_connected, refresh_after_write};
 use crate::tui::action::{Action, Direction, Notification, NotificationLevel};
+
+/// A zone pair's user policies in evaluation order: those before its
+/// system-defined policies, and those after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ordering {
+    before_system: Vec<EntityId>,
+    after_system: Vec<EntityId>,
+}
+
+impl From<&FirewallPolicyOrdering> for Ordering {
+    fn from(ordering: &FirewallPolicyOrdering) -> Self {
+        let ids = |ids: &[_]| ids.iter().map(|id| EntityId::Uuid(*id)).collect();
+        Self {
+            before_system: ids(&ordering.before_system_defined),
+            after_system: ids(&ordering.after_system_defined),
+        }
+    }
+}
 
 /// Where one step through a zone pair's ordering leaves a policy.
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
-    /// The pair's new ordering, both halves in full, and whether the
-    /// step crossed the system-defined block between them.
-    Moved {
-        before_system: Vec<EntityId>,
-        after_system: Vec<EntityId>,
-        crossed: bool,
-    },
+    /// The pair's ordering after the step, and whether the step crossed
+    /// the system-defined block between its halves.
+    Moved { ordering: Ordering, crossed: bool },
     /// The policy is already first or last in its zone pair.
     AtEdge,
     /// The controller keeps the policy in a fixed place: it is in neither
@@ -36,15 +51,11 @@ enum Step {
 /// its system-defined policies, which sit between them as one block that
 /// never moves. A step past the block crosses all of it, so `J` and `K`
 /// can still bring a policy to any place it can hold.
-fn step(ordering: &FirewallPolicyOrdering, id: &EntityId, direction: Direction) -> Step {
-    let half = |ids: &[_]| {
-        ids.iter()
-            .map(|id| Some(EntityId::Uuid(*id)))
-            .collect::<Vec<_>>()
-    };
-    let mut slots: Vec<Option<EntityId>> = half(&ordering.before_system_defined);
+fn step(ordering: &Ordering, id: &EntityId, direction: Direction) -> Step {
+    let half = |ids: &[EntityId]| ids.iter().cloned().map(Some).collect::<Vec<_>>();
+    let mut slots: Vec<Option<EntityId>> = half(&ordering.before_system);
     slots.push(None);
-    slots.extend(half(&ordering.after_system_defined));
+    slots.extend(half(&ordering.after_system));
 
     let Some(index) = slots.iter().position(|slot| slot.as_ref() == Some(id)) else {
         return Step::Fixed;
@@ -63,10 +74,23 @@ fn step(ordering: &FirewallPolicyOrdering, id: &EntityId, direction: Direction) 
         .split(Option::is_none)
         .map(|half| half.iter().flatten().cloned().collect::<Vec<_>>());
     Step::Moved {
-        before_system: halves.next().unwrap_or_default(),
-        after_system: halves.next().unwrap_or_default(),
+        ordering: Ordering {
+            before_system: halves.next().unwrap_or_default(),
+            after_system: halves.next().unwrap_or_default(),
+        },
         crossed,
     }
+}
+
+/// How far a move got.
+#[derive(Debug, PartialEq, Eq)]
+struct Moved {
+    /// Steps the policy took before it ran out of room.
+    taken: u32,
+    /// Whether any step crossed the system-defined block.
+    crossed: bool,
+    /// Why it took none, when it took none.
+    stopped: Option<Step>,
 }
 
 /// Where a move failed. Reading the order changes nothing, but a write
@@ -76,115 +100,136 @@ enum MoveFailure {
     Write(CoreError),
 }
 
-/// Read the zone pair's ordering from the controller, move the policy one
-/// step, and write the new ordering back.
+/// Read the zone pair's ordering from the controller, move the policy up
+/// to `steps` places through it, and write the result back once.
 async fn move_policy(
     controller: &Controller,
     zone_pair: (EntityId, EntityId),
     id: &EntityId,
     direction: Direction,
-) -> Result<Step, MoveFailure> {
-    let ordering = controller
+    steps: u32,
+) -> Result<Moved, MoveFailure> {
+    let fetched = controller
         .get_firewall_policy_ordering(&zone_pair.0, &zone_pair.1)
         .await
         .map_err(MoveFailure::Read)?;
-    let step = step(&ordering, id, direction);
-    if let Step::Moved {
-        before_system,
-        after_system,
-        ..
-    } = &step
-    {
+    let mut ordering = Ordering::from(&fetched);
+    let mut moved = Moved {
+        taken: 0,
+        crossed: false,
+        stopped: None,
+    };
+    for _ in 0..steps {
+        match step(&ordering, id, direction) {
+            Step::Moved {
+                ordering: next,
+                crossed,
+            } => {
+                ordering = next;
+                moved.taken += 1;
+                moved.crossed |= crossed;
+            }
+            stopped => {
+                if moved.taken == 0 {
+                    moved.stopped = Some(stopped);
+                }
+                break;
+            }
+        }
+    }
+    if moved.taken > 0 {
         controller
             .execute(Command::ReorderFirewallPolicies {
                 zone_pair,
-                before_system_ids: before_system.clone(),
-                after_system_ids: after_system.clone(),
+                before_system_ids: ordering.before_system,
+                after_system_ids: ordering.after_system,
             })
             .await
             .map_err(MoveFailure::Write)?;
     }
-    Ok(step)
+    Ok(moved)
 }
 
-/// Fetch the controller's data now rather than at the next periodic
-/// refresh, so the table shows the order the controller has.
-async fn refresh(controller: &Controller) -> bool {
-    // The demo fleet applies a write to the store as it accepts it, and
-    // has no controller to fetch from.
-    if controller.is_demo() {
-        return true;
-    }
-    match controller.full_refresh().await {
-        Ok(()) => true,
-        Err(error) => {
-            warn!(%error, "refresh after a policy move failed");
-            false
+/// What a move that changed the order says.
+fn moved_message(name: &str, direction: Direction, moved: &Moved) -> String {
+    let (label, side) = match direction {
+        Direction::Up => ("up", "above"),
+        Direction::Down => ("down", "below"),
+    };
+    match (moved.taken, moved.crossed) {
+        (1, true) => format!("Moved {name} {side} the system-defined policies"),
+        (1, false) => format!("Moved {name} {label}"),
+        (taken, true) => {
+            format!("Moved {name} {label} {taken} places, past the system-defined policies")
         }
+        (taken, false) => format!("Moved {name} {label} {taken} places"),
     }
 }
 
-/// Run one move and say how it went.
+/// Run one move and say how it went, and whether the order changed.
 async fn run_move(
     controller: Controller,
     zone_pair: (EntityId, EntityId),
     id: EntityId,
     name: String,
-    direction: Direction,
-) -> Notification {
-    let (label, edge, side) = match direction {
-        Direction::Up => ("up", "first", "above"),
-        Direction::Down => ("down", "last", "below"),
+    steps: i32,
+) -> (Notification, bool) {
+    let (direction, edge) = if steps < 0 {
+        (Direction::Up, "first")
+    } else {
+        (Direction::Down, "last")
     };
-    match move_policy(&controller, zone_pair, &id, direction).await {
-        Ok(Step::Moved { crossed, .. }) => {
-            let moved = if crossed {
-                format!("Moved {name} {side} the system-defined policies")
-            } else {
-                format!("Moved {name} {label}")
-            };
-            if refresh(&controller).await {
-                Notification::success(moved)
+    match move_policy(&controller, zone_pair, &id, direction, steps.unsigned_abs()).await {
+        Ok(moved) if moved.taken > 0 => {
+            let message = moved_message(&name, direction, &moved);
+            let notification = if refresh_after_write(&controller).await {
+                Notification::success(message)
             } else {
                 Notification {
-                    message: format!("{moved}; the list shows it after the next refresh"),
+                    message: format!("{message}; the list shows it after the next refresh"),
                     level: NotificationLevel::Warning,
                 }
-            }
+            };
+            (notification, true)
         }
-        Ok(Step::AtEdge) => {
-            Notification::info(format!("{name} is already {edge} in its zone pair"))
-        }
-        Ok(Step::Fixed) => {
-            Notification::info(format!("{name} keeps a fixed place in its zone pair"))
-        }
+        Ok(Moved {
+            stopped: Some(Step::Fixed),
+            ..
+        }) => (
+            Notification::info(format!("{name} keeps a fixed place in its zone pair")),
+            false,
+        ),
+        Ok(_) => (
+            Notification::info(format!("{name} is already {edge} in its zone pair")),
+            false,
+        ),
         // A connection lost mid-move is named as such: a refresh could
         // not run, and the next connect's refresh shows the real order.
         Err(MoveFailure::Read(error) | MoveFailure::Write(error)) if !is_connected(&controller) => {
             warn!(%error, "policy move failed with the connection down");
-            Notification::error(format!(
-                "Could not move {name}: the controller is not connected"
-            ))
+            (
+                Notification::error(format!(
+                    "Could not move {name}: the controller is not connected"
+                )),
+                false,
+            )
         }
         Err(MoveFailure::Read(error)) => {
             warn!(%error, "policy move failed");
-            Notification::error(format!("Could not move {name}: {error}"))
+            (
+                Notification::error(format!("Could not move {name}: {error}")),
+                false,
+            )
         }
         Err(MoveFailure::Write(error)) => {
             warn!(%error, "policy move failed");
-            refresh(&controller).await;
-            Notification::error(format!("Could not move {name}: {error}"))
+            refresh_after_write(&controller).await;
+            (
+                Notification::error(format!("Could not move {name}: {error}")),
+                false,
+            )
         }
     }
-}
-
-/// Whether the controller has a live connection. Commands fail at once
-/// without one, and the reads a move starts with fail as unsupported.
-fn is_connected(controller: &Controller) -> bool {
-    matches!(
-        *controller.connection_state().borrow(),
-        ConnectionState::Connected
-    )
 }
 
 /// Marks a policy move in flight until dropped, so even a move that
@@ -193,63 +238,70 @@ struct MoveInFlight(Arc<AtomicBool>);
 
 impl Drop for MoveInFlight {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.store(false, atomic::Ordering::Release);
     }
 }
 
 impl App {
-    /// Move `policy` one step through its zone pair's ordering on the
-    /// controller. The Policies table only ever shows the controller's
-    /// order: a move that lands refreshes the data, and one that fails
-    /// says why and refreshes too if its write may have landed.
+    /// Move `policy` `steps` places through its zone pair's ordering on
+    /// the controller, up when negative. The Firewall screen has already
+    /// shown the move as a draft; this makes it real, or says why not.
     ///
-    /// Each step is computed from the controller's current order, so the
-    /// next one cannot be right until this one lands. Presses while a move
-    /// is in flight are dropped with a note, not queued.
-    pub(super) fn reorder_policy(&self, policy: &Arc<FirewallPolicy>, direction: Direction) {
-        let notify = |notification| {
-            let _ = self.action_tx.send(Action::Notify(notification));
+    /// The steps are taken on the controller's current order and written
+    /// back as one ordering, under a progress toast that stays until the
+    /// move has landed and the data has been fetched again. The screen
+    /// hears the end as [`Action::PolicyMoveSettled`].
+    pub(super) fn move_firewall_policy(&mut self, policy: &Arc<FirewallPolicy>, steps: i32) {
+        let name = self.shown_name(&policy.name);
+        let refusal = match self.controller.clone() {
+            None => Err("Not connected".to_owned()),
+            Some(controller) => match (
+                policy.source.zone_id.clone(),
+                policy.destination.zone_id.clone(),
+            ) {
+                (Some(source), Some(destination)) if is_connected(&controller) => {
+                    Ok((controller, (source, destination)))
+                }
+                (Some(_), Some(_)) => Err(format!("Not connected, so {name} stays where it is")),
+                _ => Err(format!(
+                    "{name} has no zone pair, so it has no order to change"
+                )),
+            },
         };
-        let Some(controller) = self.controller.clone() else {
-            notify(Notification::error("Not connected"));
-            return;
+        let settle = |moved| Action::PolicyMoveSettled { moved };
+        let (controller, zone_pair) = match refusal {
+            Ok(ready) => ready,
+            Err(reason) => {
+                self.show_notification(Notification::error(reason));
+                let _ = self.action_tx.send(settle(false));
+                return;
+            }
         };
-        let name = policy.name.clone();
-        let (Some(source), Some(destination)) = (
-            policy.source.zone_id.clone(),
-            policy.destination.zone_id.clone(),
-        ) else {
-            notify(Notification::error(format!(
-                "{name} has no zone pair, so it has no order to change"
-            )));
-            return;
-        };
-        if !is_connected(&controller) {
-            notify(Notification::error(format!(
-                "Not connected, so {name} stays where it is"
-            )));
-            return;
-        }
-        if self.policy_move.swap(true, Ordering::AcqRel) {
-            notify(Notification::info("A policy move is still in progress"));
+        if self.policy_move.swap(true, atomic::Ordering::AcqRel) {
+            self.show_notification(Notification::info("A policy move is still in progress"));
             return;
         }
 
         let in_flight = MoveInFlight(Arc::clone(&self.policy_move));
-        let label = match direction {
-            Direction::Up => "up",
-            Direction::Down => "down",
+        let (label, places) = (if steps < 0 { "up" } else { "down" }, steps.unsigned_abs());
+        let pending = if places == 1 {
+            format!("Moving {name} {label}\u{2026}")
+        } else {
+            format!("Moving {name} {label} {places} places\u{2026}")
         };
-        notify(Notification::info(format!("Moving {name} {label}\u{2026}")));
+        let progress = Some(self.begin_progress(&pending));
         let id = policy.id.clone();
         let tx = self.action_tx.clone();
         tokio::spawn(async move {
-            let notification =
-                run_move(controller, (source, destination), id, name, direction).await;
+            let (notification, moved) = run_move(controller, zone_pair, id, name, steps).await;
             // Free the keys before the toast, so a press that answers it
             // is taken.
             drop(in_flight);
-            let _ = tx.send(Action::Notify(notification));
+            let _ = tx.send(settle(moved));
+            let _ = tx.send(Action::OpFinished {
+                progress,
+                notification,
+            });
         });
     }
 }
@@ -275,17 +327,20 @@ mod tests {
 
     /// A zone pair's ordering: user policies 1-3 before the system block,
     /// 4-5 after it.
-    fn ordering() -> FirewallPolicyOrdering {
-        FirewallPolicyOrdering {
-            before_system_defined: vec![uuid(1), uuid(2), uuid(3)],
-            after_system_defined: vec![uuid(4), uuid(5)],
+    fn ordering() -> Ordering {
+        halves(&[1, 2, 3], &[4, 5])
+    }
+
+    fn halves(before: &[u128], after: &[u128]) -> Ordering {
+        Ordering {
+            before_system: before.iter().copied().map(id).collect(),
+            after_system: after.iter().copied().map(id).collect(),
         }
     }
 
     fn moved(before: &[u128], after: &[u128], crossed: bool) -> Step {
         Step::Moved {
-            before_system: before.iter().copied().map(id).collect(),
-            after_system: after.iter().copied().map(id).collect(),
+            ordering: halves(before, after),
             crossed,
         }
     }
@@ -439,10 +494,15 @@ mod tests {
     const TWO_DOWN: (&[u128], &[u128]) = (&[1, 3, 2], &[4]);
 
     fn move_down() -> Action {
-        Action::ReorderPolicy(
-            policy(2, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Down,
-        )
+        move_by(2, 1)
+    }
+
+    /// Move policy `n` of the test zone pair `steps` places.
+    fn move_by(n: u128, steps: i32) -> Action {
+        Action::MovePolicy {
+            policy: policy(n, Some((SOURCE_ZONE, DESTINATION_ZONE))),
+            steps,
+        }
     }
 
     fn ordering_route() -> String {
@@ -458,24 +518,25 @@ mod tests {
         }})
     }
 
-    /// The toast a finished move leaves, past the one it showed on
-    /// starting.
+    /// How a move ended: the notification that takes over its progress
+    /// toast, or the refusal shown in its place. Every action on the way
+    /// is processed, as the app's loop would.
     async fn outcome(app: &mut App) -> Notification {
-        loop {
-            let notification = next_notification(app).await;
-            if !notification.message.starts_with("Moving ") {
-                return notification;
-            }
+        let in_flight = app
+            .notices
+            .messages()
+            .iter()
+            .any(|message| message.starts_with("Moving "));
+        if let Some(refusal) = app.notices.latest().filter(|_| !in_flight) {
+            return refusal.clone();
         }
-    }
-
-    async fn next_notification(app: &mut App) -> Notification {
         loop {
             let action = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
                 .await
-                .expect("the reorder reports back")
+                .expect("the move reports back")
                 .expect("the action channel stays open");
-            if let Action::Notify(notification) = action {
+            app.process_action(&action).expect("action");
+            if let Action::OpFinished { notification, .. } = action {
                 return notification;
             }
         }
@@ -526,12 +587,23 @@ mod tests {
         app.process_action(&move_down()).expect("first press");
         app.process_action(&move_down()).expect("second press");
 
-        let started = next_notification(&mut app).await;
-        assert_eq!(started.message, "Moving policy-2 down\u{2026}");
-        let held = next_notification(&mut app).await;
-        assert_eq!(held.message, "A policy move is still in progress");
-        let landed = next_notification(&mut app).await;
+        assert_eq!(
+            app.notices.messages(),
+            [
+                "Moving policy-2 down\u{2026}",
+                "A policy move is still in progress"
+            ],
+            "the progress shows at once and the second press is held"
+        );
+        let landed = outcome(&mut app).await;
         assert_eq!(landed.message, "Moved policy-2 down");
+        assert!(
+            !app.notices
+                .messages()
+                .iter()
+                .any(|m| m.starts_with("Moving ")),
+            "the result takes over the progress toast"
+        );
         server.verify().await;
         assert!(
             !app.policy_move.load(std::sync::atomic::Ordering::Acquire),
@@ -547,11 +619,8 @@ mod tests {
         mount_refresh(&server).await;
         let mut app = App::new(Some(controller), None, false, true);
 
-        app.process_action(&Action::ReorderPolicy(
-            policy(3, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Down,
-        ))
-        .expect("reorder handling");
+        app.process_action(&move_by(3, 1))
+            .expect("reorder handling");
 
         let notification = outcome(&mut app).await;
         assert_eq!(
@@ -605,13 +674,18 @@ mod tests {
 
         app.process_action(&move_down()).expect("reorder handling");
 
-        let notification = next_notification(&mut app).await;
+        let notification = outcome(&mut app).await;
         assert_eq!(notification.level, NotificationLevel::Error);
         assert_eq!(
             notification.message,
             "Not connected, so policy-2 stays where it is"
         );
-        assert!(!app.policy_move.load(Ordering::Acquire));
+        assert!(!app.policy_move.load(atomic::Ordering::Acquire));
+        let settled = app.action_rx.try_recv().expect("the screen is told");
+        assert!(
+            matches!(settled, Action::PolicyMoveSettled { moved: false }),
+            "{settled:?}"
+        );
     }
 
     #[tokio::test]
@@ -646,7 +720,7 @@ mod tests {
             notification.message,
             "Could not move policy-2: the controller is not connected"
         );
-        assert!(!app.policy_move.load(Ordering::Acquire));
+        assert!(!app.policy_move.load(atomic::Ordering::Acquire));
         server.verify().await;
     }
 
@@ -669,11 +743,8 @@ mod tests {
             .await;
 
         let mut app = App::new(Some(controller), None, false, true);
-        app.process_action(&Action::ReorderPolicy(
-            policy(2, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Up,
-        ))
-        .expect("reorder handling");
+        app.process_action(&move_by(2, -1))
+            .expect("reorder handling");
 
         let notification = outcome(&mut app).await;
         assert_eq!(notification.level, NotificationLevel::Error);
@@ -682,6 +753,60 @@ mod tests {
             "{}",
             notification.message
         );
+    }
+
+    #[tokio::test]
+    async fn several_steps_are_written_as_one_ordering() {
+        let server = MockServer::start().await;
+        let controller = controller(&server).await;
+        // Policy 1 goes down three: past 2 and 3, then across the block.
+        mount_ordering(&server, (&[2, 3], &[1, 4])).await;
+        mount_refresh(&server).await;
+        let mut app = App::new(Some(controller), None, false, true);
+
+        app.process_action(&move_by(1, 3))
+            .expect("reorder handling");
+        assert_eq!(
+            app.notices.messages(),
+            ["Moving policy-1 down 3 places\u{2026}"]
+        );
+
+        let notification = outcome(&mut app).await;
+        assert_eq!(
+            notification.message,
+            "Moved policy-1 down 3 places, past the system-defined policies"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_move_past_the_end_stops_there_and_one_with_no_room_writes_nothing() {
+        let server = MockServer::start().await;
+        let controller = controller(&server).await;
+        // Asked for nine places up, policy 3 has two to take.
+        mount_ordering(&server, (&[3, 1, 2], &[4])).await;
+        mount_refresh(&server).await;
+        let mut app = App::new(Some(controller), None, false, true);
+
+        app.process_action(&move_by(3, -9))
+            .expect("reorder handling");
+        let notification = outcome(&mut app).await;
+        assert_eq!(notification.message, "Moved policy-3 up 2 places");
+
+        app.notices.dismiss_sticky();
+        app.process_action(&move_by(1, -1))
+            .expect("reorder handling");
+        let notification = loop {
+            let notification = outcome(&mut app).await;
+            if !notification.message.starts_with("Moved policy-3") {
+                break notification;
+            }
+        };
+        assert_eq!(
+            notification.message,
+            "policy-1 is already first in its zone pair"
+        );
+        server.verify().await;
     }
 
     #[tokio::test]
@@ -714,8 +839,11 @@ mod tests {
         };
         let mut app = App::new(Some(demo.clone()), None, false, true);
 
-        app.process_action(&Action::ReorderPolicy(Arc::clone(&second), Direction::Up))
-            .expect("reorder handling");
+        app.process_action(&Action::MovePolicy {
+            policy: Arc::clone(&second),
+            steps: -1,
+        })
+        .expect("reorder handling");
 
         let notification = outcome(&mut app).await;
         assert_eq!(notification.level, NotificationLevel::Success);
@@ -732,8 +860,11 @@ mod tests {
         let controller = controller(&server).await;
         let mut app = App::new(Some(controller), None, false, true);
 
-        app.process_action(&Action::ReorderPolicy(policy(2, None), Direction::Up))
-            .expect("reorder handling");
+        app.process_action(&Action::MovePolicy {
+            policy: policy(2, None),
+            steps: -1,
+        })
+        .expect("reorder handling");
 
         let notification = outcome(&mut app).await;
         assert_eq!(notification.level, NotificationLevel::Error);
