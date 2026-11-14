@@ -423,6 +423,11 @@ impl Sanitizer {
     pub fn sanitize_device(&self, device: &Device) -> Device {
         let mut d = device.clone();
         d.name = self.sanitize_name_opt(&d.name);
+        // A port is labeled after what plugs into it, so its name gets the
+        // stand-in that device or client shows under everywhere else.
+        for port in &mut d.ports {
+            port.name = self.sanitize_name_opt(&port.name);
+        }
         d.ip = self.sanitize_ip_opt(&d.ip);
         if self.redact_wan_ips {
             d.wan_ipv6 = d.wan_ipv6.as_ref().map(|_| IPV6_STAND_IN.to_owned());
@@ -915,6 +920,35 @@ mod tests {
         for real in ["8.8.4.4", "8.8.8.1", "8.8.8.9", "aa:bb:cc:dd:ee:ff"] {
             assert!(!filter.contains(real), "{real} survived: {filter}");
         }
+    }
+
+    #[test]
+    fn a_devices_port_labels_are_redacted_like_names() {
+        use crate::cli::commands::util::fixtures::device;
+
+        let mut switch = (*device("d1", Some("sw-core"), "aa:bb:cc:00:00:01", None)).clone();
+        switch.ports = serde_json::from_value(serde_json::json!([
+            { "index": 1, "name": "Alice's desk", "state": "Up", "speed_mbps": 1000,
+              "max_speed_mbps": 1000, "connector": "Rj45", "poe": null },
+            { "index": 2, "name": "Port 2", "state": "Down", "speed_mbps": null,
+              "max_speed_mbps": 1000, "connector": "Rj45", "poe": null },
+            { "index": 3, "name": null, "state": "Down", "speed_mbps": null,
+              "max_speed_mbps": 1000, "connector": "Rj45", "poe": null }
+        ]))
+        .expect("port fixtures");
+        let sanitizer = Sanitizer::new(&test_config());
+
+        let shown = sanitizer.sanitize_device(&switch);
+
+        let label = shown.ports[0].name.as_deref().expect("a label");
+        assert!(!label.contains("Alice"), "{label}");
+        assert_eq!(
+            label,
+            sanitizer.sanitize_name("Alice's desk"),
+            "the same stand-in the port's profile shows once it loads"
+        );
+        assert_eq!(shown.ports[1].name.as_deref(), Some("Port 2"));
+        assert_eq!(shown.ports[2].name, None);
     }
 
     #[test]
