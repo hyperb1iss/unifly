@@ -186,8 +186,13 @@ mod tests {
     }
 
     fn draw(screen: &StatsScreen) -> String {
-        crate::tui::table::render_lines(100, 30, |frame, area| screen.render_screen(frame, area))
-            .join("\n")
+        frame_rows(screen, 100, 30).join("\n")
+    }
+
+    fn frame_rows(screen: &StatsScreen, width: u16, height: u16) -> Vec<String> {
+        crate::tui::table::render_lines(width, height, |frame, area| {
+            screen.render_screen(frame, area);
+        })
     }
 
     #[test]
@@ -276,6 +281,77 @@ mod tests {
         let text = draw(&screen);
         assert!(text.contains("WAN Bandwidth"), "{text}");
         assert!(text.contains("reload failed, showing older data"), "{text}");
+    }
+
+    #[test]
+    fn the_status_bar_offers_the_reload_and_the_screen_draws_no_hint_row() {
+        use crate::tui::component::Component;
+        use crate::tui::widgets::click::hint_text;
+
+        let screen = StatsScreen::new();
+        assert!(screen.hints().is_empty(), "nothing to reload from yet");
+
+        let mut screen = connected();
+        screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 12.0)));
+        assert_eq!(hint_text(&screen.hints()), "r reload");
+        let rows = frame_rows(&screen, 100, 30);
+        assert!(!rows.iter().any(|row| row.contains("reload")), "{rows:#?}");
+        // The last row inside the border belongs to the panels.
+        assert!(rows[rows.len() - 2].contains('\u{2570}'), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_reload_state_sits_against_the_right_edge_of_the_period_row() {
+        let mut screen = connected();
+        screen.apply_action(&Action::StatsUpdated(sample_stats_data(4_000_000.0, 12.0)));
+        screen.apply_action(&Action::StatsLoading(StatsPeriod::OneHour));
+
+        let rows = frame_rows(&screen, 100, 30);
+        let row = rows[1].trim_end_matches('\u{2502}');
+        assert!(row.contains(" 1h  24h  7d  30d "), "{row}");
+        assert!(row.ends_with("reloading\u{2026} "), "{row:?}");
+
+        // A long failure is cut to the room beside the periods.
+        screen.apply_action(&Action::StatsFailed {
+            period: StatsPeriod::OneHour,
+            message: "the controller closed the connection before it answered".repeat(3),
+        });
+        let rows = frame_rows(&screen, 60, 30);
+        assert!(rows[1].contains("reload failed"), "{}", rows[1]);
+        assert!(rows[1].contains('\u{2026}'), "{}", rows[1]);
+    }
+
+    #[test]
+    fn the_category_list_takes_the_rows_the_client_chart_can_spare() {
+        let mut screen = connected();
+        let mut data = sample_stats_data(4_000_000.0, 12.0);
+        data.dpi_categories = (0..10_u64)
+            .map(|index| (format!("category-{index}"), 100 - index))
+            .collect();
+        screen.apply_action(&Action::StatsUpdated(data));
+
+        let listed = |height: u16| {
+            frame_rows(&screen, 103, height)
+                .iter()
+                .filter(|row| row.contains("category-"))
+                .count()
+        };
+        assert_eq!(listed(40), 9, "the chart keeps its time axis");
+        assert_eq!(listed(22), 3, "a short screen splits the column in half");
+
+        // A short list hands its rows to the chart.
+        let mut data = sample_stats_data(4_000_000.0, 12.0);
+        data.dpi_categories.truncate(1);
+        screen.apply_action(&Action::StatsUpdated(data));
+        let rows = frame_rows(&screen, 103, 40);
+        let chart = rows.iter().position(|row| row.contains("Client Count"));
+        let list = rows.iter().position(|row| row.contains("Categories"));
+        assert_eq!(list, Some(rows.len() - 4), "{rows:#?}");
+        assert!(
+            chart
+                .zip(list)
+                .is_some_and(|(chart, list)| list - chart > 12)
+        );
     }
 
     #[test]

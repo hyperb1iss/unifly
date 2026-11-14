@@ -10,15 +10,19 @@ use super::{
 };
 use crate::tui::theme;
 use crate::tui::widgets::bytes_fmt;
-use crate::tui::widgets::click::{self, Hint};
+use crate::tui::widgets::click::{self, ClickLine, Hint};
 use crate::tui::widgets::hyperchart::{
     Baseline, ChartGradient, Denominator, Domain, FillStyle, HyperBars, HyperChart, Renderer, Row,
     Series, SeriesData, SeriesDirection, ValueFormat, XAxis,
 };
-use crate::tui::widgets::{sub_tabs, wrap};
+use crate::tui::widgets::{sub_tabs, toolbar, wrap};
 
 const STATS_BANDWIDTH_GUTTER: u16 = 7;
 const STATS_CLIENT_GUTTER: u16 = 6;
+
+/// Rows the client chart keeps when the category list wants more: its
+/// frame and the seven rows from which it draws a time axis.
+const CLIENT_CHART_ROWS: u16 = 9;
 
 impl StatsScreen {
     #[allow(
@@ -202,33 +206,36 @@ impl StatsScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let layout = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
+        let [toolbar_row, body] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
 
-        let mut strip = sub_tabs::sub_tab_strip(&PERIOD_LABELS, self.period_index());
-        if let Some(status) = self.status_span(usize::from(layout[0].width)) {
-            strip.push_gap(Span::raw("   "));
-            strip.push_gap(status);
+        let periods = sub_tabs::sub_tab_strip(&PERIOD_LABELS, self.period_index());
+        let room = usize::from(toolbar_row.width).saturating_sub(periods.width() + 3);
+        let mut status = ClickLine::default();
+        if let Some(span) = self.status_span(room) {
+            status.push_gap(span);
         }
-        let line = strip.draw(layout[0], &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[0]);
+        toolbar::render(
+            frame,
+            toolbar_row,
+            periods,
+            status,
+            &mut self.hits.borrow_mut(),
+        );
 
         match self.body_notice() {
-            Some((message, color)) => render_notice(frame, layout[1], &message, color),
-            None => self.render_charts(frame, layout[1]),
+            Some((message, color)) => render_notice(frame, body, &message, color),
+            None => self.render_charts(frame, body),
         }
+    }
 
-        let hints = click::key_hints(&[
-            Hint::button("h", "shorter", click::char_key('h')),
-            Hint::button("l", "longer", click::char_key('l')),
-            Hint::button("r", "reload", click::char_key('r')),
-        ]);
-        let line = hints.draw(layout[2], &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[2]);
+    /// What the status bar offers: a reload, where there is a session to
+    /// reload from. The periods are their own buttons.
+    pub(super) fn status_hints(&self) -> Vec<(u8, Hint)> {
+        if self.blocked().is_some() {
+            return Vec::new();
+        }
+        vec![(0, Hint::button("r", "reload", click::char_key('r')))]
     }
 
     fn render_charts(&self, frame: &mut Frame, area: Rect) {
@@ -237,8 +244,16 @@ impl StatsScreen {
 
         let bottom = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(layout[1]);
-        let left_col = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(bottom[0]);
+        // The category list takes the rows it has, down to what leaves
+        // the client chart its plot, and the chart takes the rest.
+        let column = bottom[0].height;
+        let chart_floor = CLIENT_CHART_ROWS.min(column.div_ceil(2));
+        let listed = u16::try_from(self.dpi_categories.len().max(1)).unwrap_or(u16::MAX);
+        let categories = listed
+            .saturating_add(2)
+            .min(column.saturating_sub(chart_floor));
+        let left_col =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(categories)]).split(bottom[0]);
 
         self.render_client_chart(frame, left_col[0]);
         self.render_categories(frame, left_col[1]);
@@ -264,16 +279,16 @@ impl StatsScreen {
         })
     }
 
-    /// The note beside the period chips while charts are on screen: a
-    /// reload in flight, or one that failed and left older data showing.
-    fn status_span(&self, width: usize) -> Option<Span<'static>> {
+    /// The note against the right edge of the period row while charts are
+    /// on screen: a reload in flight, or one that failed and left older
+    /// data showing, cut to the `room` beside the periods.
+    fn status_span(&self, room: usize) -> Option<Span<'static>> {
         if self.blocked().is_some() || self.shown != Some(self.period) {
             return None;
         }
         if let Some(error) = &self.error {
             let text = format!("\u{2717} reload failed, showing older data: {error}");
-            let room = width.saturating_sub(24).max(8);
-            let lines = wrap::wrap_clamped(&text, room, 1);
+            let lines = wrap::wrap_clamped(&text, room.max(8), 1);
             return Some(Span::styled(
                 lines.into_iter().next().unwrap_or_default(),
                 Style::default().fg(theme::error()),

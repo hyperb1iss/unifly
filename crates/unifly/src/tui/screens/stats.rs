@@ -14,7 +14,7 @@ use ratatui::layout::Rect;
 use crate::tui::action::{Access, Action, StatsPeriod};
 use crate::tui::component::Component;
 use crate::tui::screens::link::Link;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 pub struct StatsScreen {
     focused: bool,
@@ -78,6 +78,10 @@ impl Component for StatsScreen {
             ("h/l \u{2190}/\u{2192}", "Shorter / longer period"),
             ("r", "Reload this period"),
         ]
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn focused(&self) -> bool {
