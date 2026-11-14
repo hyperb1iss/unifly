@@ -240,10 +240,16 @@ impl App {
                 self.prompt = None;
                 None
             }
-            KeyCode::Enter => self
-                .prompt
-                .take()
-                .map(|(_, input)| Action::PromptSubmitted(input.text().trim().to_owned())),
+            // A secret is taken exactly as typed: a passphrase may begin
+            // or end with a space.
+            KeyCode::Enter => self.prompt.take().map(|(request, input)| {
+                let text = if request.secret {
+                    input.text()
+                } else {
+                    input.text().trim()
+                };
+                Action::PromptSubmitted(text.to_owned())
+            }),
             _ => {
                 if let Some((_, input)) = &mut self.prompt {
                     input.handle_key(key);
@@ -973,6 +979,23 @@ mod tests {
             "{submitted:?}"
         );
         assert!(app.prompt.is_none());
+
+        // A secret keeps the spaces around it; anything else is trimmed.
+        for (secret, expected) in [(true, " pass phrase "), (false, "pass phrase")] {
+            app.process_action(&Action::OpenPrompt(crate::tui::action::PromptRequest {
+                initial: " pass phrase ".into(),
+                secret,
+                ..Default::default()
+            }))
+            .expect("open");
+            let submitted = app
+                .handle_key_event(key(KeyCode::Enter, KeyModifiers::NONE))
+                .expect("key");
+            assert!(
+                matches!(submitted, Some(Action::PromptSubmitted(ref text)) if text == expected),
+                "secret {secret}: {submitted:?}"
+            );
+        }
 
         app.process_action(&Action::OpenPrompt(
             crate::tui::action::PromptRequest::default(),
