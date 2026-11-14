@@ -22,7 +22,7 @@ use unifly_api::model::FirewallZone;
 use crate::tui::action::{Access, Action};
 use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::TableScroll;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 use self::edit::NetworkForm;
 
@@ -82,6 +82,10 @@ impl Component for NetworksScreen {
 
     fn captures_input(&self) -> bool {
         self.form.is_some()
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {

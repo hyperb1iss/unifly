@@ -1,8 +1,8 @@
 use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
 
 use unifly_api::Network;
 
@@ -36,22 +36,21 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
 
     if screen.networks.is_empty() {
-        render_empty(frame, layout[0], empty_reason(screen));
+        render_empty(frame, inner, empty_reason(screen));
     } else {
         let detail = screen
             .selected_network()
             .filter(|_| screen.detail_open)
             .map(|network| {
                 let lines =
-                    detail_grid(network, &screen.zones).lines(layout[0].width.saturating_sub(2));
+                    detail_grid(network, &screen.zones).lines(inner.width.saturating_sub(2));
                 (network.name.clone(), lines)
             });
         let (table_area, panel) = match &detail {
-            Some((_, lines)) => split_detail(layout[0], lines.len(), MIN_TABLE_ROWS),
-            None => (layout[0], Rect::default()),
+            Some((_, lines)) => split_detail(inner, lines.len(), MIN_TABLE_ROWS),
+            None => (inner, Rect::default()),
         };
         render_table(screen, frame, table_area);
         if let Some((name, lines)) = detail {
@@ -59,12 +58,8 @@ pub(super) fn render_screen(screen: &NetworksScreen, frame: &mut Frame, area: Re
         }
     }
 
-    // The form shows its own keys; the list's do nothing while it is open.
     if let Some(form) = screen.form.as_ref() {
         render_form(frame, area, form, &mut screen.hits.borrow_mut());
-    } else {
-        let line = hint_bar(screen).draw(layout[1], &mut screen.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), layout[1]);
     }
 }
 
@@ -80,30 +75,32 @@ fn empty_reason(screen: &NetworksScreen) -> &'static str {
     }
 }
 
-/// The keys that work right now: nothing acts on a network when there is
-/// none, and creating one needs the Integration API.
-fn hint_bar(screen: &NetworksScreen) -> click::ClickLine<'static, click::Click> {
-    let create = Hint::button("c", "new", click::char_key('c'));
-    if screen.networks.is_empty() {
-        let can_create = screen.access.is_some_and(|access| access.integration);
-        return click::key_hints(if can_create {
-            std::slice::from_ref(&create)
-        } else {
-            &[]
-        });
+/// What the status bar offers: the actions that work on the selected
+/// network. Nothing acts on a network when there is none, creating one
+/// needs the Integration API, and the default network cannot be deleted.
+/// The form has the keyboard while it is open and shows its own keys.
+pub(in crate::tui::screens::networks) fn status_hints(screen: &NetworksScreen) -> Vec<(u8, Hint)> {
+    if screen.form.is_some() {
+        return Vec::new();
     }
-    let toggle = if screen.detail_open {
-        Hint::button("Esc", "close", KeyCode::Esc)
-    } else {
-        Hint::button("Enter", "detail", KeyCode::Enter)
+    let create = (2, Hint::button("c", "new", click::char_key('c')));
+    let Some(network) = screen.selected_network() else {
+        let can_create = screen.access.is_some_and(|access| access.integration);
+        return if can_create { vec![create] } else { Vec::new() };
     };
-    click::key_hints(&[
-        Hint::info("j/k", "navigate"),
-        toggle,
-        Hint::button("e", "edit", click::char_key('e')),
-        create,
-        Hint::button("D", "delete", click::char_key('D')),
-    ])
+    let mut hints = Vec::new();
+    if !screen.detail_open {
+        hints.push((0, Hint::button("Enter", "detail", KeyCode::Enter)));
+    }
+    hints.push((1, Hint::button("e", "edit", click::char_key('e'))));
+    hints.push(create);
+    if !network.is_default {
+        hints.push((3, Hint::button("D", "delete", click::char_key('D'))));
+    }
+    if screen.detail_open {
+        hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
+    }
+    hints
 }
 
 fn render_table(screen: &NetworksScreen, frame: &mut Frame, area: Rect) {

@@ -142,10 +142,12 @@ fn title(form: &NetworkForm) -> String {
     }
 }
 
+/// The form's own buttons. It holds the keyboard, so the status bar has
+/// none for it; moving between fields is in the help overlay.
 fn hint_bar(form: &NetworkForm) -> click::ClickLine<'static, Click> {
     // Space only flips a yes/no field; on a text field it types a space,
     // so the toggle button shows only where it toggles.
-    let mut buttons = vec![Hint::button("Tab", "next", KeyCode::Tab)];
+    let mut buttons = Vec::new();
     if form.focused().is_toggle() {
         buttons.push(Hint::button("Space", "toggle", click::char_key(' ')));
     }

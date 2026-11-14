@@ -11,7 +11,7 @@ use super::{NetworksScreen, format_lease_time};
 use crate::tui::action::{Access, Action};
 use crate::tui::component::Component;
 use crate::tui::table::render_lines;
-use crate::tui::widgets::click::click_label;
+use crate::tui::widgets::click::{self, click_label};
 use crate::tui::widgets::line_input::LineInput;
 
 fn test_network() -> Network {
@@ -97,6 +97,11 @@ fn draw(screen: &NetworksScreen, width: u16, height: u16) -> Vec<String> {
     render_lines(width, height, |frame, area| screen.render(frame, area))
 }
 
+/// What the status bar offers for the screen as it stands.
+fn hints(screen: &NetworksScreen) -> String {
+    click::hint_text(&screen.hints())
+}
+
 fn form(screen: &NetworksScreen) -> &NetworkForm {
     screen.form.as_ref().expect("open form")
 }
@@ -125,10 +130,10 @@ fn tapping_a_row_selects_it_and_a_second_tap_toggles_its_detail() {
         !rows.iter().any(|row| row.contains("toggle")),
         "Space would type into the Name field, so no toggle button"
     );
-    assert!(
-        !rows.iter().any(|row| row.contains("navigate")),
-        "the list's keys do nothing under the form:\n{}",
-        rows.join("\n")
+    assert_eq!(
+        hints(&screen),
+        "",
+        "the list's keys do nothing under the form"
     );
 
     let save = screen.handle_mouse_input(click_label(&rows, "save", "save"));
@@ -641,11 +646,63 @@ fn the_whole_detail_fits_a_24_row_terminal_and_shows_a_disabled_network() {
 }
 
 #[test]
+fn the_screen_draws_no_hint_row_and_the_detail_takes_only_its_rows() {
+    let mut screen = screen_with(vec![
+        network(1, "Primary LAN", 100),
+        network(2, "Studio", 10),
+    ]);
+    // The last row inside the border is the table's, not a row of keys.
+    let rows = draw(&screen, 80, 5);
+    assert!(rows[3].contains("Studio"), "{}", rows.join("\n"));
+
+    press(&mut screen, KeyCode::Enter);
+    let rows = draw(&screen, 100, 40);
+    let text = rows.join("\n");
+    for dead in ["navigate", "Esc close", "e edit", "D delete"] {
+        assert!(!text.contains(dead), "{dead} is drawn:\n{text}");
+    }
+    // The panel is its border and one row per line of fields, and its
+    // last row is the last row inside the screen's border.
+    let top = rows
+        .iter()
+        .position(|row| row.contains("\u{256d} Primary LAN "))
+        .expect("the panel is drawn");
+    assert!(rows[top + 1].contains("Status"), "{}", rows[top + 1]);
+    assert!(rows[38].starts_with("\u{2502}\u{2570}"), "{}", rows[38]);
+    assert!(rows[37].contains("Prefix"), "{}", rows[37]);
+    assert!(top >= 28, "the panel takes {} rows:\n{text}", 39 - top);
+}
+
+#[test]
+fn hints_offer_the_actions_that_work_on_the_selected_network() {
+    let mut default = test_network();
+    default.is_default = true;
+    default.name = "Default".into();
+    let mut screen = screen_with(vec![Arc::new(default), network(2, "Studio", 10)]);
+
+    // Deleting the default network is refused, so it is not offered.
+    assert_eq!(hints(&screen), "Enter detail  e edit  c new");
+    screen.select(1);
+    assert_eq!(hints(&screen), "Enter detail  e edit  c new  D delete");
+
+    // An open detail swaps the way in for the way out, last.
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(hints(&screen), "e edit  c new  D delete  Esc close");
+
+    // The form has the keyboard and shows its own keys.
+    press(&mut screen, KeyCode::Char('e'));
+    assert_eq!(hints(&screen), "");
+    let text = draw(&screen, 100, 30).join("\n");
+    assert!(text.contains("Enter save  Esc cancel"), "{text}");
+    assert!(!text.contains("Tab next"), "{text}");
+}
+
+#[test]
 fn an_empty_table_says_why_and_offers_only_what_works() {
     let mut screen = NetworksScreen::new();
     let text = |screen: &NetworksScreen| draw(screen, 80, 12).join("\n");
     assert!(text(&screen).contains("Waiting for the controller"));
-    assert!(!text(&screen).contains("edit"), "{}", text(&screen));
+    assert_eq!(hints(&screen), "");
 
     let mut access = Access {
         integration: false,
@@ -658,6 +715,7 @@ fn an_empty_table_says_why_and_offers_only_what_works() {
         "{}",
         text(&screen)
     );
+    assert_eq!(hints(&screen), "", "nothing to create a network with");
     assert!(matches!(
         press(&mut screen, KeyCode::Char('c')),
         Some(Action::Notify(_))
@@ -667,7 +725,7 @@ fn an_empty_table_says_why_and_offers_only_what_works() {
     access.integration = true;
     screen.apply_action(&Action::AccessUpdated(access));
     assert!(text(&screen).contains("No networks on this site"));
-    assert!(text(&screen).contains("c new"), "{}", text(&screen));
+    assert_eq!(hints(&screen), "c new");
 
     press(&mut screen, KeyCode::Enter);
     assert!(!screen.detail_open, "there is nothing to show a detail of");
