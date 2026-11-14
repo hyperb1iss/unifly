@@ -2787,3 +2787,6 @@ mod network11;
 mod devices_clients;
 #[path = "controller_runtime/round_trip.rs"]
 mod round_trip;
+
+#[path = "controller_runtime/network_writes.rs"]
+mod network_writes;

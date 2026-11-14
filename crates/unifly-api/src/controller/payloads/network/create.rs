@@ -49,12 +49,7 @@ pub(in crate::controller) fn build_create_network_payload(
             message: "device_id is only supported for switch-managed networks".into(),
         });
     }
-    if management == "UNMANAGED" && (request.subnet.is_some() || request.dhcp_enabled) {
-        return Err(CoreError::ValidationFailed {
-            message: "IPv4 and DHCP server settings require a gateway- or switch-managed network"
-                .into(),
-        });
-    }
+    reject_settings_the_kind_cannot_take(management, &request)?;
     if management != "UNMANAGED" {
         let cidr = request
             .subnet
@@ -107,5 +102,26 @@ pub(in crate::controller) fn build_create_network_payload(
         vlan_id: request.vlan_id.map_or(1, i32::from),
         dhcp_guarding: None,
         extra,
+    })
+}
+
+/// Refuse settings a network of this kind has no field for, which would
+/// otherwise be dropped from the request without a word.
+fn reject_settings_the_kind_cannot_take(
+    management: &str,
+    request: &CreateNetworkRequest,
+) -> Result<(), CoreError> {
+    let refusal = if management == "UNMANAGED" && (request.subnet.is_some() || request.dhcp_enabled)
+    {
+        "IPv4 and DHCP server settings require a gateway- or switch-managed network"
+    } else if management == "UNMANAGED" && request.isolation_enabled {
+        "isolation requires a gateway- or switch-managed network"
+    } else if management != "GATEWAY" && !request.internet_access_enabled {
+        "turning internet access off requires a gateway-managed network"
+    } else {
+        return Ok(());
+    };
+    Err(CoreError::ValidationFailed {
+        message: refusal.into(),
     })
 }
