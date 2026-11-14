@@ -107,8 +107,9 @@ pub struct SettingsScreen {
     state: SettingsState,
     active_field: SettingsField,
     draft: ControllerProfileDraft,
-    /// The saved form of the profile as loaded, to tell edits from none.
-    pristine: String,
+    /// The draft as the profile was loaded, to tell which fields the
+    /// form has changed.
+    original: ControllerProfileDraft,
     reveal: Reveal,
     /// The profile the form shows and saves.
     profile_name: String,

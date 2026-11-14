@@ -59,7 +59,7 @@ fn test_screen() -> SettingsScreen {
     screen.draft.host_id.set("console-123");
     screen.draft.username.set("bliss");
     screen.draft.password.set("hunter2");
-    screen.pristine = toml::to_string(&screen.draft.to_profile()).expect("serializes");
+    screen.original = screen.draft.clone();
     screen
 }
 
@@ -597,7 +597,7 @@ fn a_passed_test_saves_and_then_applies_what_was_tested() {
         profile_name,
         config,
         notices,
-        keep_flags,
+        flags,
     }) = applied
     else {
         panic!("a saved profile is applied: {applied:?}");
@@ -605,7 +605,7 @@ fn a_passed_test_saves_and_then_applies_what_was_tested() {
     assert_eq!(profile_name, "default");
     assert_eq!(config.site, "default");
     assert_eq!(notices.len(), 1);
-    assert!(keep_flags, "Settings reconnects under the launch flags");
+    assert_eq!(flags.site, None, "this launch gave no flags to keep");
 }
 
 #[test]
@@ -821,6 +821,118 @@ fn launch_flags_survive_and_are_shown_on_the_fields_they_override() {
     assert_eq!(screen.overrides().site, None);
     let site = field_row(&frame(&screen, 120, 40), "Site").expect("site row");
     assert!(!site.contains("--site"), "{site}");
+
+    // Back on the launch's profile, a save under them keeps them for
+    // the session.
+    press(&mut screen, KeyCode::Left);
+    assert_eq!(screen.profile_name, "home");
+    press(&mut screen, KeyCode::Enter);
+    finish(&mut screen, Ok(pass("lab")));
+    let applied = saved(&mut screen, Ok(Vec::new()));
+    let Some(Action::ApplyConnection { flags, .. }) = applied else {
+        panic!("applied: {applied:?}");
+    };
+    assert_eq!(flags.site.as_deref(), Some("lab"));
+    assert_eq!(flags.insecure, Some(true));
+}
+
+/// A value saved as tested must have been tested. A launch flag that
+/// would keep the test from using what the form now holds stands down:
+/// the test connects with what is typed, the form stops claiming the
+/// override, and the session goes on without that flag.
+#[test]
+fn a_launch_flag_stands_down_when_the_form_changes_what_it_covers() {
+    let (mut screen, _dir) = screen_for(TWO_PROFILES, "work");
+    screen.session = Session {
+        profile: Some("work".into()),
+        overrides: ConnectionOverrides {
+            controller: Some("https://10.7.7.7".into()),
+            site: Some("lab".into()),
+            api_key: Some("flag-key".into()),
+            timeout: Some(7),
+            no_cache: true,
+            ..ConnectionOverrides::default()
+        },
+        ..Session::default()
+    };
+    let effective = |screen: &SettingsScreen| screen.overrides().apply(&screen.draft.to_profile());
+
+    // Untouched, the launch decides: its key signs in, with no password.
+    assert_eq!(effective(&screen).auth_mode, "integration");
+    assert_eq!(effective(&screen).controller, "https://10.7.7.7");
+
+    // A retyped password is only tested by a sign-in, so the key that
+    // would skip the sign-in is set aside. The other flags still stand.
+    screen.focus(SettingsField::Password);
+    ctrl(&mut screen, 'u');
+    type_text(&mut screen, "retyped");
+    let tested = effective(&screen);
+    assert_eq!(tested.auth_mode, "session");
+    assert_eq!(tested.password.as_deref(), Some("retyped"));
+    assert_eq!(tested.api_key, None);
+    assert_eq!(tested.controller, "https://10.7.7.7");
+    assert_eq!(tested.site, "lab");
+    screen.focus(SettingsField::AuthMode);
+    let rows = frame(&screen, 120, 40);
+    let mode = field_row(&rows, "Auth mode").expect("auth row");
+    assert!(!mode.contains("--api-key"), "{mode}");
+    let all = rows.join("\n");
+    assert!(all.contains("Launched with --api-key, but"), "{all}");
+
+    // So is the address flag once the address is edited, and the site
+    // flag once another site is typed.
+    screen.focus(SettingsField::Url);
+    type_text(&mut screen, ":8443");
+    screen.focus(SettingsField::Site);
+    type_text(&mut screen, "x");
+    let tested = effective(&screen);
+    assert_eq!(tested.controller, "https://10.0.9.1:8443");
+    assert_eq!(tested.site, "defaultx");
+    let url = field_row(&frame(&screen, 120, 40), "Controller URL").expect("url row");
+    assert!(!url.contains("--controller"), "{url}");
+
+    // The session keeps only the flags the test ran under.
+    press(&mut screen, KeyCode::Enter);
+    finish(&mut screen, Ok(pass("defaultx")));
+    let applied = saved(&mut screen, Ok(Vec::new()));
+    let Some(Action::ApplyConnection { flags, .. }) = applied else {
+        panic!("applied: {applied:?}");
+    };
+    assert_eq!(flags.controller, None);
+    assert_eq!(flags.site, None);
+    assert!(flags.api_key.is_none());
+    assert_eq!(flags.timeout, Some(7), "nothing typed replaced it");
+    assert!(flags.no_cache, "a flag about the session, not the profile");
+}
+
+/// A launch key that leaves the sign-in in place still stands when the
+/// password changes: the hybrid test signs in with it either way.
+#[test]
+fn a_launch_key_stands_while_the_changed_value_is_still_tested() {
+    let (mut screen, _dir) = screen_for(TWO_PROFILES, "work");
+    screen.draft.auth_mode = AuthMode::Hybrid;
+    screen.original = screen.draft.clone();
+    screen.session = Session {
+        profile: Some("work".into()),
+        overrides: ConnectionOverrides {
+            api_key: Some("flag-key".into()),
+            ..ConnectionOverrides::default()
+        },
+        ..Session::default()
+    };
+
+    screen.focus(SettingsField::Password);
+    type_text(&mut screen, "2");
+    let tested = screen.overrides().apply(&screen.draft.to_profile());
+    assert_eq!(tested.auth_mode, "hybrid");
+    assert_eq!(tested.api_key.as_deref(), Some("flag-key"));
+    assert_eq!(tested.password.as_deref(), Some("work-password2"));
+
+    // Typing a key is another matter: the flag would test its own.
+    screen.focus(SettingsField::ApiKey);
+    type_text(&mut screen, "typed-key");
+    let tested = screen.overrides().apply(&screen.draft.to_profile());
+    assert_eq!(tested.api_key.as_deref(), Some("typed-key"));
 }
 
 #[test]
@@ -896,6 +1008,7 @@ fn a_redacting_session_sees_no_values() {
     let (mut screen, _dir) = screen_for(TWO_PROFILES, "work");
     screen.set_known_sites(sites(&["default", "hq-site"]));
     screen.draft.site.set("hq-site");
+    screen.original = screen.draft.clone();
     screen.hide_values();
     screen.focus(SettingsField::Password);
     ctrl(&mut screen, 't');

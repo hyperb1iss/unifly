@@ -58,6 +58,20 @@ pub(super) enum TestPhase {
     Saving,
 }
 
+/// How settled the site the wizard tests with is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SiteChoice {
+    /// Nobody chose it: a passing test asks when the controller has
+    /// several sites.
+    Open,
+    /// A launch flag named it: the Site step shows it before it is saved,
+    /// however many sites there are.
+    FromLaunch,
+    /// Chosen on the Site step, or kept from the profile being repaired:
+    /// a passing test saves without asking again.
+    Settled,
+}
+
 /// Why the wizard is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Purpose {
@@ -101,9 +115,10 @@ pub struct OnboardingScreen {
     /// The session the wizard opened in: launch flags, and why it opened.
     session: Session,
     purpose: Purpose,
-    /// Whether the address step shows the CA certificate, which it does
-    /// for a repaired profile that has one.
-    offers_ca: bool,
+    /// Fields a repair adds to the steps, because a broken one has to be
+    /// fixable here: the CA certificate of a profile that has one, and a
+    /// stored timeout that cannot be used.
+    repairs: Vec<DraftField>,
     probe: ProbeSlot,
     /// A test that passed and waits on the site choice before it is saved:
     /// what it tested, and the site it passed with.
@@ -113,9 +128,8 @@ pub struct OnboardingScreen {
     /// The controller's sites, once a test has seen them.
     known_sites: Vec<SiteHint>,
     site_index: usize,
-    /// Whether the site was already chosen, so a passing test saves
-    /// without asking again.
-    site_confirmed: bool,
+    /// Whether a passing test still has to ask about the site.
+    site_choice: SiteChoice,
     /// What the save reported, such as a secret kept in plaintext.
     notices: Vec<String>,
     /// What the last frame drew where: key hints, then rows and fields.

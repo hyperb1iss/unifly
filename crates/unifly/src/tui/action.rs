@@ -707,8 +707,9 @@ pub enum Action {
         profile_name: String,
         config: Box<unifly_api::ControllerConfig>,
         notices: Vec<String>,
-        /// Whether the launch flags still apply to this profile.
-        keep_flags: bool,
+        /// The launch flags the connection was tested under, which stay
+        /// in force for the session.
+        flags: crate::config::resolve::ConnectionOverrides,
     },
     /// Open the setup wizard for a new profile with this name.
     SetupNewProfile(String),

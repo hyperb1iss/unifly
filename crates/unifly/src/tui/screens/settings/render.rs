@@ -433,6 +433,14 @@ impl SettingsScreen {
                      without it."
                 ),
             ));
+        } else if let Some(flag) = self.set_aside(field) {
+            out.push((
+                Tone::Notice,
+                format!(
+                    "Launched with {flag}, but the form has changed what it covers: the test \
+                     and the session after it use what is typed here."
+                ),
+            ));
         }
         let help = match field {
             SettingsField::Profile => {

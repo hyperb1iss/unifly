@@ -1,4 +1,4 @@
-use super::{OnboardingScreen, Purpose, TestPhase, WizardField, WizardStep};
+use super::{OnboardingScreen, Purpose, SiteChoice, TestPhase, WizardField, WizardStep};
 use crate::config::resolve::ConnectionOverrides;
 use crate::tui::action::Action;
 use crate::tui::forms::controller_profile::{AuthMode, ControllerProfileDraft, DraftField, Reveal};
@@ -38,7 +38,7 @@ impl OnboardingScreen {
     /// A wizard for `profile_name` opened in `session`.
     pub(super) fn in_session(profile_name: &str, session: Session) -> Self {
         let mut draft = ControllerProfileDraft::default();
-        prefill(&mut draft, &session);
+        let site_choice = prefill(&mut draft, &session).unwrap_or(SiteChoice::Open);
         Self {
             focused: false,
             action_tx: None,
@@ -55,13 +55,13 @@ impl OnboardingScreen {
             profile_name: profile_name.to_owned(),
             session,
             purpose: Purpose::FirstRun,
-            offers_ca: false,
+            repairs: Vec::new(),
             probe: ProbeSlot::default(),
             held: None,
             tested: None,
             known_sites: Vec::new(),
             site_index: 0,
-            site_confirmed: false,
+            site_choice,
             notices: Vec::new(),
             hits: std::cell::RefCell::default(),
             targets: std::cell::RefCell::default(),
@@ -78,25 +78,63 @@ impl OnboardingScreen {
         defaults: &crate::config::Defaults,
         store: &dyn crate::config::SecretStore,
     ) -> Self {
-        let mut screen = Self::for_profile(profile_name);
+        Self::for_profile(profile_name).repairing(existing, defaults, store)
+    }
+
+    /// This wizard as a repair of `existing`, its profile as saved.
+    pub(super) fn repairing(
+        self,
+        existing: &crate::config::Profile,
+        defaults: &crate::config::Defaults,
+        store: &dyn crate::config::SecretStore,
+    ) -> Self {
+        let mut screen = self;
         screen.draft = ControllerProfileDraft::from_profile(existing)
-            .with_keyring_origins(profile_name, store)
+            .with_keyring_origins(&screen.profile_name, store)
             .with_inherited_insecure(defaults);
-        prefill(&mut screen.draft, &screen.session);
-        screen.offers_ca = !screen.draft.ca_cert.is_empty();
+        // Its site was chosen when the profile was made, unless a launch
+        // flag now names another.
+        screen.site_choice =
+            prefill(&mut screen.draft, &screen.session).unwrap_or(SiteChoice::Settled);
+        if !screen.draft.ca_cert.is_empty() {
+            screen.repairs.push(DraftField::CaCert);
+        }
+        let timeout = screen.draft.timeout.text().trim();
+        if !timeout.is_empty() && !timeout.parse::<u64>().is_ok_and(|secs| secs > 0) {
+            screen.repairs.push(DraftField::Timeout);
+        }
         screen.auth_mode_index = screen.draft.auth_mode.index();
         screen.purpose = Purpose::Repair;
-        // Its site was chosen when the profile was made.
-        screen.site_confirmed = true;
         screen
     }
 
     /// A wizard opened from a running session to add `profile_name`.
-    /// Leaving its first step goes back to that session.
+    /// Leaving its first step goes back to that session. The launch flags
+    /// were given for the session's own profile, so only the one about
+    /// the session itself comes along.
     pub(crate) fn for_new_profile(profile_name: &str) -> Self {
-        let mut screen = Self::in_session(profile_name, Session::default());
+        let session = Session {
+            overrides: ConnectionOverrides {
+                no_cache: session::current().overrides.no_cache,
+                ..ConnectionOverrides::default()
+            },
+            ..Session::default()
+        };
+        let mut screen = Self::in_session(profile_name, session);
         screen.purpose = Purpose::NewProfile;
         screen
+    }
+
+    /// The launch flags no step asks about. They stay on top of the
+    /// profile for the test and for the session after it, and are never
+    /// written into the profile.
+    pub(super) fn session_flags(&self) -> ConnectionOverrides {
+        let launch = &self.session.overrides;
+        ConnectionOverrides {
+            timeout: launch.timeout,
+            no_cache: launch.no_cache,
+            ..ConnectionOverrides::default()
+        }
     }
 
     /// Why the wizard opened for a profile that already exists, when the
@@ -108,20 +146,26 @@ impl OnboardingScreen {
     }
 }
 
-/// Start `draft` from what the launch flags gave. The wizard asks for
-/// every value, so a flag is an answer filled in ahead of time, there to
-/// be seen and changed, and what gets tested is what the steps show. An
-/// API key given by flag or environment is left out: a secret is not
-/// copied into a saved profile without being typed there.
-fn prefill(draft: &mut ControllerProfileDraft, session: &Session) {
+/// Start `draft` from what the launch flags gave, and say when its site
+/// now comes from one. A flag a step asks about is an answer filled
+/// in ahead of time, there to be seen and changed before it is saved, so
+/// only those are copied in: `--timeout` has no step and stays a flag (see
+/// [`OnboardingScreen::session_flags`]). An API key given by flag or
+/// environment is left out too: a secret is not copied into a saved
+/// profile without being typed there.
+fn prefill(draft: &mut ControllerProfileDraft, session: &Session) -> Option<SiteChoice> {
     use secrecy::ExposeSecret;
 
     let flags = &session.overrides;
     if let Some(url) = &flags.controller {
         draft.url.set(url.as_str());
     }
-    if let Some(site) = &flags.site {
+    let mut site_choice = None;
+    if let Some(site) = &flags.site
+        && site.trim() != draft.site.text().trim()
+    {
         draft.site.set(site.as_str());
+        site_choice = Some(SiteChoice::FromLaunch);
     }
     if let Some(host_id) = &flags.host_id {
         draft.host_id.set(host_id.as_str());
@@ -131,13 +175,11 @@ fn prefill(draft: &mut ControllerProfileDraft, session: &Session) {
     {
         draft.set_insecure(insecure);
     }
-    if let Some(timeout) = flags.timeout {
-        draft.timeout.set(timeout.to_string());
-    }
     // A code given at launch is for this sign-in.
     if let Some(code) = &session.launch_totp {
         draft.totp.set(code.expose_secret());
     }
+    site_choice
 }
 
 // ── Fields ──────────────────────────────────────────────────────────
@@ -149,11 +191,7 @@ impl OnboardingScreen {
         match self.step {
             WizardStep::Url => {
                 let mut fields = vec![text(DraftField::Url), WizardField::Insecure];
-                // A profile being repaired may carry a CA certificate, and
-                // a broken one has to be fixable here.
-                if self.offers_ca {
-                    fields.push(text(DraftField::CaCert));
-                }
+                fields.extend(self.repairs.iter().copied().map(text));
                 fields
             }
             WizardStep::Credentials => {
@@ -164,6 +202,10 @@ impl OnboardingScreen {
                 }
                 if mode == AuthMode::Cloud {
                     fields.push(text(DraftField::HostId));
+                    // Cloud has no address step to show a timeout on.
+                    if self.repairs.contains(&DraftField::Timeout) {
+                        fields.push(text(DraftField::Timeout));
+                    }
                 }
                 if mode.uses_login() {
                     fields.extend([
@@ -300,7 +342,7 @@ impl OnboardingScreen {
             self.error = Some("Site name cannot be empty".into());
             return;
         }
-        self.site_confirmed = true;
+        self.site_choice = SiteChoice::Settled;
 
         // A test that already passed with this very site needs no repeat.
         let chosen = self.draft.site.text().trim().to_owned();
@@ -365,21 +407,31 @@ impl OnboardingScreen {
 // ── Connection test and save ────────────────────────────────────────
 
 impl OnboardingScreen {
+    /// Test the connection the steps describe. A problem the wizard can
+    /// see without connecting goes back to the step it is on instead, so
+    /// nothing is tested, or saved, that could not be loaded again.
     pub(super) fn start_test(&mut self) {
-        self.step = WizardStep::Testing;
-        self.phase = TestPhase::Testing;
-        self.failure = None;
         self.held = None;
         self.tested = None;
+        self.failure = None;
+        if let Err(problem) = self.draft.validate_complete() {
+            self.phase = TestPhase::Idle;
+            self.show_step(self.step_for(problem.field));
+            self.focus(problem.field);
+            self.error = Some(problem.message);
+            return;
+        }
+        self.step = WizardStep::Testing;
+        self.phase = TestPhase::Testing;
         self.error = None;
         self.notice = None;
 
         let request = ProbeRequest {
             profile: self.draft.to_profile(),
             profile_name: self.profile_name.clone(),
-            // The wizard asks for every value, so what its steps show is
-            // what gets tested, with nothing from the launch on top.
-            overrides: ConnectionOverrides::default(),
+            // What the steps show is what gets tested and saved; only the
+            // flags no step asks about go on top.
+            overrides: self.session_flags(),
             totp: self.draft.totp_code(),
         };
         let plan = self.draft.plan_save(&self.profile_name);
@@ -404,14 +456,20 @@ impl OnboardingScreen {
             Ok(pass) => {
                 self.known_sites.clone_from(&pass.sites);
                 self.tested = Some(pass.config.clone());
-                if self.site_confirmed || pass.sites.len() < 2 {
-                    self.start_save(tested);
-                } else {
-                    // Several sites and none chosen yet: ask before saving
-                    // the one the test happened to use.
+                let asks = match self.site_choice {
+                    SiteChoice::Settled => false,
+                    SiteChoice::FromLaunch => true,
+                    SiteChoice::Open => pass.sites.len() >= 2,
+                };
+                if asks {
+                    // Several sites and none chosen yet, or a site that a
+                    // launch flag named: ask before saving the one the
+                    // test happened to use.
                     let site = self.draft.site.text().trim().to_owned();
                     self.held = Some((tested, site));
                     self.show_site_step(None);
+                } else {
+                    self.start_save(tested);
                 }
             }
             Err(failure) => self.show_failure(failure.clone()),
@@ -424,7 +482,7 @@ impl OnboardingScreen {
             // The controller answered; only the site is wrong, and it may
             // have said which ones it has.
             self.known_sites.clone_from(&failure.sites);
-            self.site_confirmed = false;
+            self.site_choice = SiteChoice::Open;
             self.show_site_step(Some(failure.summary));
             return;
         }
@@ -487,8 +545,8 @@ impl OnboardingScreen {
             profile_name: self.profile_name.clone(),
             config,
             notices: self.notices.clone(),
-            // The steps asked for every value the flags could override.
-            keep_flags: false,
+            // The steps asked for every other value a flag could override.
+            flags: self.session_flags(),
         })
     }
 }

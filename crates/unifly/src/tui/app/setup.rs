@@ -24,8 +24,8 @@ impl App {
                 profile_name,
                 config,
                 notices,
-                keep_flags,
-            } => self.apply_connection(profile_name, config, notices, *keep_flags)?,
+                flags,
+            } => self.apply_connection(profile_name, config, notices, flags)?,
             Action::SetupNewProfile(name) => self.open_setup_for(name)?,
             Action::SetupCancelled => self.close_setup(),
             _ => return Ok(false),
@@ -80,7 +80,7 @@ mod tests {
             profile_name: "work".into(),
             config: Box::new(config),
             notices: vec!["No usable keyring; saved the API key in plaintext".into()],
-            keep_flags: true,
+            flags: crate::config::resolve::ConnectionOverrides::default(),
         })
         .expect("apply");
 

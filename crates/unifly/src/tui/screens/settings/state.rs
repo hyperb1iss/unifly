@@ -116,7 +116,7 @@ impl SettingsScreen {
             state: SettingsState::Editing,
             active_field: SettingsField::Url,
             draft: ControllerProfileDraft::default(),
-            pristine: String::new(),
+            original: ControllerProfileDraft::default(),
             reveal: Reveal::default(),
             profile_name: "default".into(),
             profiles: vec!["default".into()],
@@ -181,7 +181,7 @@ impl SettingsScreen {
                 ControllerProfileDraft::from_profile(profile).with_inherited_insecure(&cfg.defaults)
             },
         );
-        self.pristine = self.saved_form();
+        self.original = self.draft.clone();
         self.reveal = Reveal::default();
         self.known_sites.clear();
         self.sites_for.clear();
@@ -215,14 +215,56 @@ impl SettingsScreen {
         });
     }
 
-    /// What saving the form as it stands would write, for telling edits
-    /// from none.
-    fn saved_form(&self) -> String {
-        toml::to_string(&self.draft.to_profile()).unwrap_or_default()
+    /// Whether saving the form as it stands would write a profile other
+    /// than the one it was loaded from.
+    pub(super) fn is_dirty(&self) -> bool {
+        let saved = |draft: &ControllerProfileDraft| {
+            toml::to_string(&draft.to_profile()).unwrap_or_default()
+        };
+        saved(&self.draft) != saved(&self.original)
     }
 
-    pub(super) fn is_dirty(&self) -> bool {
-        self.saved_form() != self.pristine
+    /// Whether the form holds something other than what was loaded in
+    /// `field`.
+    fn changed(&self, field: DraftField) -> bool {
+        match field {
+            DraftField::AuthMode => self.draft.auth_mode != self.original.auth_mode,
+            DraftField::Insecure => self.draft.insecure() != self.original.insecure(),
+            text => {
+                self.draft.input(text).map(LineInput::text)
+                    != self.original.input(text).map(LineInput::text)
+            }
+        }
+    }
+
+    /// Whether the launch flag on `setting` still applies to what the form
+    /// tests. It stands down once the form changes a value it would keep
+    /// the test from exercising: the test must connect with what is
+    /// typed, because that is what gets saved.
+    fn stands(&self, setting: Overridable) -> bool {
+        let changed = |fields: &[DraftField]| fields.iter().any(|field| self.changed(*field));
+        match setting {
+            Overridable::Url => !changed(&[DraftField::Url]),
+            Overridable::Site => !changed(&[DraftField::Site]),
+            Overridable::HostId => !changed(&[DraftField::HostId]),
+            Overridable::Timeout => !changed(&[DraftField::Timeout]),
+            // `--insecure` decides whether a CA is consulted at all.
+            Overridable::Insecure => !changed(&[DraftField::Insecure, DraftField::CaCert]),
+            Overridable::ApiKey | Overridable::AuthMode => {
+                // A key given at launch replaces the profile's, and can
+                // switch the connection to a mode that never signs in.
+                let profile = self.draft.to_profile();
+                let forced = self.session.overrides.apply(&profile).auth_mode != profile.auth_mode;
+                let sign_in = [
+                    DraftField::AuthMode,
+                    DraftField::Username,
+                    DraftField::Password,
+                    DraftField::HostId,
+                ];
+                let untested = changed(&[DraftField::ApiKey]) || (forced && changed(&sign_in));
+                !untested
+            }
+        }
     }
 
     /// Whether the form shows the profile the session is running on.
@@ -233,29 +275,66 @@ impl SettingsScreen {
             .is_none_or(|name| name == self.profile_name)
     }
 
-    /// The launch flags that apply to what the form tests: they were given
-    /// for the session's profile, so another profile connects without them.
+    /// The launch flags that apply to what the form tests, and to the
+    /// session once that test is saved. They were given for the session's
+    /// profile, so another profile connects without them, and one the
+    /// form has changed the value under stands down.
     pub(super) fn overrides(&self) -> ConnectionOverrides {
-        if self.shows_session_profile() {
-            self.session.overrides.clone()
-        } else {
-            ConnectionOverrides::default()
+        let launch = &self.session.overrides;
+        let mut kept = ConnectionOverrides {
+            no_cache: launch.no_cache,
+            ..ConnectionOverrides::default()
+        };
+        if !self.shows_session_profile() {
+            return kept;
         }
+        if self.stands(Overridable::Url) {
+            kept.controller.clone_from(&launch.controller);
+        }
+        if self.stands(Overridable::Site) {
+            kept.site.clone_from(&launch.site);
+        }
+        if self.stands(Overridable::ApiKey) {
+            kept.api_key.clone_from(&launch.api_key);
+        }
+        if self.stands(Overridable::HostId) {
+            kept.host_id.clone_from(&launch.host_id);
+        }
+        if self.stands(Overridable::Insecure) {
+            kept.insecure = launch.insecure;
+        }
+        if self.stands(Overridable::Timeout) {
+            kept.timeout = launch.timeout;
+        }
+        kept
     }
 
-    /// The launch flag overriding `field` for this session, if one does.
+    /// The launch flag overriding `field` in the next test, if one does.
     pub(super) fn override_on(&self, field: SettingsField) -> Option<String> {
+        let flag = session::describe(&self.overrides(), field.overridable()?)?;
+        Some(self.shown_flag(flag))
+    }
+
+    /// The launch flag on `field` that the form's edits have set aside:
+    /// the next test, and the session after it, use what is typed.
+    pub(super) fn set_aside(&self, field: SettingsField) -> Option<String> {
         if !self.shows_session_profile() {
             return None;
         }
-        let flag = field
-            .overridable()
-            .and_then(|setting| self.session.override_on(setting))?;
+        let setting = field.overridable()?;
+        let flag = self.session.override_on(setting)?;
+        session::describe(&self.overrides(), setting)
+            .is_none()
+            .then(|| self.shown_flag(flag))
+    }
+
+    /// `flag` as the form may show it: its value is as private as the
+    /// field's.
+    fn shown_flag(&self, flag: String) -> String {
         if self.private {
-            // The flag's value is as private as the field's.
-            return flag.split([' ', '=']).next().map(str::to_owned);
+            return flag.split([' ', '=']).next().unwrap_or_default().to_owned();
         }
-        Some(flag)
+        flag
     }
 }
 
@@ -595,12 +674,15 @@ impl SettingsScreen {
         match result {
             Ok(notices) => {
                 let config = self.tested.take()?;
-                self.pristine = self.saved_form();
+                // The flags the test ran under, read before the saved form
+                // becomes the one edits are told from.
+                let flags = self.overrides();
+                self.original = self.draft.clone();
                 Some(Action::ApplyConnection {
                     profile_name: self.profile_name.clone(),
                     config,
                     notices: notices.clone(),
-                    keep_flags: true,
+                    flags,
                 })
             }
             Err(message) => {

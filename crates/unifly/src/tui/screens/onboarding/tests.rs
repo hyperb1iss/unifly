@@ -820,12 +820,12 @@ fn hints_and_list_rows_take_clicks() {
     assert_eq!(screen.auth_mode_index, AuthMode::Hybrid.index());
 }
 
-/// Launch flags are answers filled in ahead of time: the steps show them
-/// and test exactly what they show. A key from a flag or the environment
-/// is not copied into the profile, and once the wizard is done the flags
-/// have been asked for again, so they stop overriding.
+/// A launch flag a step asks about is filled in ahead of time, shown
+/// there, and saved as the user leaves it. A flag no step shows is never
+/// written into the profile: it stays a flag, on top of the test and of
+/// the session after it. A key given at launch is not copied in at all.
 #[test]
-fn launch_flags_prefill_the_steps_and_then_stand_down() {
+fn launch_flags_prefill_the_steps_that_show_them_and_the_rest_stay_flags() {
     use crate::config::resolve::ConnectionOverrides;
 
     let session = Session {
@@ -835,6 +835,8 @@ fn launch_flags_prefill_the_steps_and_then_stand_down() {
             site: Some("lab".into()),
             api_key: Some("key-from-the-environment".into()),
             insecure: Some(true),
+            timeout: Some(7),
+            no_cache: true,
             ..ConnectionOverrides::default()
         },
         ..Session::default()
@@ -845,6 +847,7 @@ fn launch_flags_prefill_the_steps_and_then_stand_down() {
     assert_eq!(screen.draft.site.text(), "lab");
     assert!(screen.draft.insecure());
     assert!(screen.draft.api_key.is_empty());
+    assert!(screen.draft.timeout.is_empty(), "no step shows a timeout");
     let rows = {
         press(&mut screen, KeyCode::Enter);
         press(&mut screen, KeyCode::Enter);
@@ -856,26 +859,142 @@ fn launch_flags_prefill_the_steps_and_then_stand_down() {
     press(&mut screen, KeyCode::Enter);
     type_text(&mut screen, "typed-key");
     press(&mut screen, KeyCode::Enter);
+    let tested_under = screen.session_flags();
+    assert_eq!(tested_under.timeout, Some(7));
+    assert!(tested_under.no_cache, "--no-cache reaches the test");
+    assert_eq!(tested_under.site, None, "the steps hold the site");
+    assert!(tested_under.api_key.is_none());
+
+    // The site came from the launch, so it is shown before it is saved
+    // even on a controller with a single site.
     finish(&mut screen, Ok(pass("lab", &["lab"])));
+    assert_eq!(screen.step, WizardStep::Site);
+    let rows = frame(&screen, 80, 24).join("\n");
+    assert!(rows.contains("lab"), "{rows}");
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.phase, TestPhase::Saving);
+
     saved(&mut screen, Ok(Vec::new()));
+    assert_eq!(screen.draft.to_profile().timeout, None);
     let action = press(&mut screen, KeyCode::Enter);
-    assert!(
-        matches!(
-            action,
-            Some(Action::ApplyConnection {
-                keep_flags: false,
-                ..
-            })
-        ),
-        "{action:?}"
+    let Some(Action::ApplyConnection { flags, .. }) = action else {
+        panic!("applied: {action:?}");
+    };
+    assert_eq!(flags.timeout, Some(7));
+    assert!(flags.no_cache);
+    assert_eq!(flags.controller, None, "saved in the profile instead");
+    assert_eq!(flags.site, None);
+}
+
+/// A repair keeps the stored site unless a launch flag names another,
+/// and then the Site step shows that one before anything is written.
+#[test]
+fn a_repair_shows_a_site_from_the_launch_before_saving_it() {
+    use crate::config::resolve::ConnectionOverrides;
+
+    let profile: crate::config::Profile =
+        toml::from_str("controller = \"https://10.0.0.1\"\napi_key = \"k\"\nsite = \"home\"\n")
+            .expect("profile parses");
+    let repair = |site: Option<&str>| {
+        let mut screen = OnboardingScreen::in_session(
+            "work",
+            Session {
+                overrides: ConnectionOverrides {
+                    site: site.map(str::to_owned),
+                    ..ConnectionOverrides::default()
+                },
+                ..Session::default()
+            },
+        )
+        .repairing(
+            &profile,
+            &crate::config::Defaults::default(),
+            &MemoryStore::default(),
+        );
+        for _ in 0..4 {
+            press(&mut screen, KeyCode::Enter);
+        }
+        assert_eq!(screen.phase, TestPhase::Testing);
+        screen
+    };
+
+    // No flag, or one that agrees with the profile: saved without asking.
+    for site in [None, Some("home")] {
+        let mut screen = repair(site);
+        finish(&mut screen, Ok(pass("home", &["home", "lab"])));
+        assert_eq!(screen.phase, TestPhase::Saving, "{site:?}");
+    }
+
+    let mut screen = repair(Some("lab"));
+    assert_eq!(screen.draft.site.text(), "lab");
+    finish(&mut screen, Ok(pass("lab", &["home", "lab"])));
+    assert_eq!(screen.step, WizardStep::Site, "asked before it is saved");
+    assert_eq!(screen.site_index, 1);
+}
+
+/// The wizard tests nothing it could not save and load again. A problem
+/// it can see without connecting goes to the step with the field, and a
+/// repaired profile whose stored timeout is unusable gets that field.
+#[test]
+fn a_draft_that_would_not_load_again_is_fixed_before_it_is_tested() {
+    let profile: crate::config::Profile =
+        toml::from_str("controller = \"https://10.0.0.1\"\napi_key = \"k\"\ntimeout = 0\n")
+            .expect("profile parses");
+    let mut screen = OnboardingScreen::for_existing_profile(
+        "work",
+        &profile,
+        &crate::config::Defaults::default(),
+        &MemoryStore::default(),
     );
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(
+        screen.fields(),
+        [
+            WizardField::Text(DraftField::Url),
+            WizardField::Insecure,
+            WizardField::Text(DraftField::Timeout)
+        ]
+    );
+
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.step, WizardStep::Url, "nothing was tested");
+    assert_eq!(screen.phase, TestPhase::Idle);
+    assert!(!screen.probe.is_running());
+    assert_eq!(screen.active_text_field(), Some(DraftField::Timeout));
+    let rows = frame(&screen, 80, 24).join("\n");
+    assert!(rows.contains("at least 1"), "{rows}");
+
+    ctrl(&mut screen, 'u');
+    type_text(&mut screen, "20");
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.phase, TestPhase::Testing);
+
+    // A healthy profile's timeout is kept without being shown.
+    let healthy: crate::config::Profile =
+        toml::from_str("controller = \"https://10.0.0.1\"\napi_key = \"k\"\ntimeout = 45\n")
+            .expect("profile parses");
+    let mut screen = OnboardingScreen::for_existing_profile(
+        "work",
+        &healthy,
+        &crate::config::Defaults::default(),
+        &MemoryStore::default(),
+    );
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.fields().len(), 2);
+    assert_eq!(screen.draft.to_profile().timeout, Some(45));
 }
 
 /// A repaired profile with a CA certificate can fix or clear it in the
-/// wizard: a failure that points at the certificate must have a field to
-/// point at.
+/// wizard: a missing file is caught before the test, and a failure that
+/// points at the certificate has a field to point at.
 #[test]
 fn a_repair_can_fix_the_ca_certificate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ca = dir.path().join("ca.pem");
     let profile: crate::config::Profile = toml::from_str(
         "controller = \"https://10.0.0.1\"\napi_key = \"k\"\nca_cert = \"/gone/ca.pem\"\n",
     )
@@ -900,6 +1019,16 @@ fn a_repair_can_fix_the_ca_certificate() {
 
     press(&mut screen, KeyCode::Enter);
     press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.step, WizardStep::Url, "no file there: not tested");
+    assert_eq!(screen.active_text_field(), Some(DraftField::CaCert));
+    assert!(screen.error.is_some());
+
+    std::fs::write(&ca, "pem").expect("write ca");
+    ctrl(&mut screen, 'u');
+    type_text(&mut screen, &ca.display().to_string());
+    press(&mut screen, KeyCode::Enter);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.phase, TestPhase::Testing);
     finish(
         &mut screen,
         Err(failure(FailureKind::Tls, DraftField::CaCert)),

@@ -27,44 +27,41 @@ impl Session {
     /// The override a launch flag puts on `field`, as the flag and its
     /// value, for the form to show next to the field it overrides.
     pub(crate) fn override_on(&self, field: Overridable) -> Option<String> {
-        let overrides = &self.overrides;
-        match field {
-            Overridable::Url => overrides
-                .controller
-                .as_ref()
-                .map(|url| format!("--controller {}", crate::config::redact_url_userinfo(url))),
-            Overridable::Site => overrides.site.as_ref().map(|site| format!("--site {site}")),
-            Overridable::ApiKey => overrides.api_key.as_ref().map(|_| "--api-key".to_owned()),
-            Overridable::HostId => overrides
-                .host_id
-                .as_ref()
-                .map(|host| format!("--host-id {host}")),
-            Overridable::Insecure => overrides
-                .insecure
-                .map(|insecure| format!("--insecure={insecure}")),
-            Overridable::Timeout => overrides.timeout.map(|secs| format!("--timeout {secs}")),
-            // A key given at launch is what the session signs in with,
-            // whatever mode the profile names.
-            Overridable::AuthMode => overrides.api_key.as_ref().map(|_| "--api-key".to_owned()),
-        }
+        describe(&self.overrides, field)
     }
 
-    /// The session after it moves to `profile`. Launch flags were given
-    /// for the profile the launch selected, so they stay only with it, and
-    /// only while `keep_flags`: a wizard that asked for every value again
-    /// has taken their place.
-    fn moved_to(&self, profile: &str, keep_flags: bool) -> Self {
-        if keep_flags && self.profile.as_deref() == Some(profile) {
-            return Self {
-                setup_reason: None,
-                launch_totp: None,
-                ..self.clone()
-            };
-        }
+    /// The session once it runs on `profile` with `flags`, the launch
+    /// flags the form that connected it left in force. A code given at
+    /// launch and the reason setup opened belong to the launch alone.
+    fn moved_to(profile: &str, flags: ConnectionOverrides) -> Self {
         Self {
             profile: Some(profile.to_owned()),
+            overrides: flags,
             ..Self::default()
         }
+    }
+}
+
+/// The override `overrides` puts on `field`, as the flag and its value.
+pub(crate) fn describe(overrides: &ConnectionOverrides, field: Overridable) -> Option<String> {
+    match field {
+        Overridable::Url => overrides
+            .controller
+            .as_ref()
+            .map(|url| format!("--controller {}", crate::config::redact_url_userinfo(url))),
+        Overridable::Site => overrides.site.as_ref().map(|site| format!("--site {site}")),
+        Overridable::ApiKey => overrides.api_key.as_ref().map(|_| "--api-key".to_owned()),
+        Overridable::HostId => overrides
+            .host_id
+            .as_ref()
+            .map(|host| format!("--host-id {host}")),
+        Overridable::Insecure => overrides
+            .insecure
+            .map(|insecure| format!("--insecure={insecure}")),
+        Overridable::Timeout => overrides.timeout.map(|secs| format!("--timeout {secs}")),
+        // A key given at launch is what the session signs in with,
+        // whatever mode the profile names.
+        Overridable::AuthMode => overrides.api_key.as_ref().map(|_| "--api-key".to_owned()),
     }
 }
 
@@ -99,15 +96,12 @@ pub(crate) fn current() -> Session {
 }
 
 /// Move the session to `profile`, the one a wizard or Settings just
-/// connected with. `keep_flags` says whether the launch flags still apply
-/// to it.
-pub(crate) fn switch_to(profile: &str, keep_flags: bool) {
+/// connected with, under `flags`: the launch flags that form tested the
+/// connection with. A flag the form asked about or changed has had its
+/// answer saved in the profile, and is not among them.
+pub(crate) fn switch_to(profile: &str, flags: ConnectionOverrides) {
     if let Ok(mut slot) = SESSION.write() {
-        let moved = slot
-            .clone()
-            .unwrap_or_default()
-            .moved_to(profile, keep_flags);
-        *slot = Some(moved);
+        *slot = Some(Session::moved_to(profile, flags));
     }
 }
 
@@ -129,34 +123,28 @@ mod tests {
         }
     }
 
+    /// The form that connected the session says which launch flags it
+    /// tested under; the session keeps exactly those, and nothing else
+    /// of the launch.
     #[test]
-    fn launch_flags_stay_while_the_session_keeps_its_profile() {
-        let session = launched().moved_to("home", true);
+    fn the_session_keeps_the_flags_its_connection_was_tested_under() {
+        let launch = launched();
+        let kept = ConnectionOverrides {
+            site: launch.overrides.site.clone(),
+            no_cache: true,
+            ..ConnectionOverrides::default()
+        };
 
-        assert_eq!(session.overrides.site.as_deref(), Some("lab"));
+        let session = Session::moved_to("home", kept);
+
+        assert_eq!(session.profile.as_deref(), Some("home"));
         assert_eq!(
             session.override_on(Overridable::Site).as_deref(),
             Some("--site lab")
         );
-        assert_eq!(
-            session.override_on(Overridable::Insecure).as_deref(),
-            Some("--insecure=true")
-        );
-        assert_eq!(session.override_on(Overridable::Url), None);
-        assert!(session.launch_totp.is_none(), "a launch code is spent");
-    }
-
-    #[test]
-    fn switching_profiles_leaves_the_launch_flags_behind() {
-        let session = launched().moved_to("work", true);
-
-        assert_eq!(session.profile.as_deref(), Some("work"));
-        assert_eq!(session.overrides.site, None);
         assert_eq!(session.override_on(Overridable::Insecure), None);
-
-        // So does a wizard that asked for every value again.
-        let session = launched().moved_to("home", false);
-        assert_eq!(session.profile.as_deref(), Some("home"));
-        assert_eq!(session.overrides.site, None);
+        assert!(session.overrides.no_cache);
+        assert!(session.launch_totp.is_none(), "a launch code is spent");
+        assert!(session.setup_reason.is_none());
     }
 }
