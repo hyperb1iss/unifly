@@ -46,8 +46,10 @@ impl App {
             return Ok(Some(Action::Repaint));
         }
 
-        if self.active_screen == ScreenId::Setup || self.active_screen == ScreenId::Settings {
-            return self.forward_key_to_active_screen(key);
+        // F1 is help where `?` cannot be: a form would type it.
+        let modal = self.pending_confirm.is_some() || self.prompt.is_some();
+        if key.code == KeyCode::F(1) && !modal {
+            return Ok(Some(Action::ToggleHelp));
         }
 
         if self.pending_confirm.is_some() {
@@ -63,10 +65,6 @@ impl App {
 
         if self.prompt.is_some() {
             return Ok(self.handle_prompt_key_event(key));
-        }
-
-        if self.search_active {
-            return self.handle_search_key_event(key);
         }
 
         if self.help_visible {
@@ -85,6 +83,18 @@ impl App {
                 }
                 _ => None,
             });
+        }
+
+        // Setup and Settings take every remaining key: no global shortcut
+        // may fire while their fields have the keyboard. The dialogs and
+        // overlays above come first, so a question one of them asks can
+        // be answered.
+        if self.fills_frame() {
+            return self.forward_key_to_active_screen(key);
+        }
+
+        if self.search_active {
+            return self.handle_search_key_event(key);
         }
 
         if self.about_visible {
@@ -561,7 +571,7 @@ mod tests {
                 .is_none(),
             "a tap inside the overlay does nothing"
         );
-        let action = tap(&mut app, "to close", "Esc or ? to close");
+        let action = tap(&mut app, "to close", "Esc to close");
         assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
         app.help_visible = false;
 
@@ -783,7 +793,7 @@ mod tests {
             "Notifications",
             "Refresh now, or retry",
             "Select text",
-            "Esc or ? to close",
+            "Esc to close",
         ] {
             assert!(text.contains(needed), "{needed}:\n{text}");
         }
@@ -1005,6 +1015,41 @@ mod tests {
             .handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
             .expect("key");
         assert!(cancelled.is_none() && app.prompt.is_none());
+    }
+
+    #[test]
+    fn dialogs_and_f1_help_work_over_the_setup_wizard() {
+        // With no controller the app opens on the wizard, which otherwise
+        // takes every key for its fields.
+        let mut app = App::new(None, None, false, true);
+        assert_eq!(app.active_screen, ScreenId::Setup);
+
+        let help = app
+            .handle_key_event(key(KeyCode::F(1), KeyModifiers::NONE))
+            .expect("key");
+        assert!(matches!(help, Some(Action::ToggleHelp)), "{help:?}");
+        app.process_action(&Action::ToggleHelp).expect("open help");
+        let text = render_lines(100, 30, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Keyboard Shortcuts"), "{text}");
+        assert!(text.contains("Setup screen"), "{text}");
+        assert!(!text.contains("Jump to screen"), "{text}");
+        let close = app
+            .handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("key");
+        assert!(matches!(close, Some(Action::ToggleHelp)), "{close:?}");
+        app.process_action(&Action::ToggleHelp).expect("close help");
+
+        // A question asked over the wizard is drawn and can be answered.
+        app.pending_confirm = Some(crate::tui::action::ConfirmRequest::new(
+            "Discard your changes?",
+            Action::Refresh,
+        ));
+        let text = render_lines(100, 30, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Discard your changes?"), "{text}");
+        let yes = app
+            .handle_key_event(key(KeyCode::Char('y'), KeyModifiers::NONE))
+            .expect("key");
+        assert!(matches!(yes, Some(Action::ConfirmYes)), "{yes:?}");
     }
 
     #[test]

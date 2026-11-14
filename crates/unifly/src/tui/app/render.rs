@@ -36,16 +36,19 @@ impl App {
         let area = frame.area();
         self.hits.clear();
 
-        if self.active_screen == ScreenId::Setup || self.active_screen == ScreenId::Settings {
+        // Setup and Settings draw the whole frame, with no tab or status
+        // bar. Toasts and dialogs still go over them: what they report (a
+        // keyring fallback, a failed save) has to be seen, and what they
+        // ask has to be answered.
+        if self.fills_frame() {
             if let Some(screen) = self.screens.get(&self.active_screen) {
                 screen.render(frame, area);
             }
             if self.effects_enabled && self.effects.is_active() {
                 self.effects.process(delta, frame.buffer_mut(), area);
             }
-            // Setup and Settings draw the whole frame, and what they report
-            // (a keyring fallback, a failed save) still has to be seen.
             self.render_toasts(frame, area);
+            self.render_overlays(frame, area);
             return;
         }
 
@@ -83,6 +86,16 @@ impl App {
 
         self.render_toasts(frame, content_area);
 
+        self.render_overlays(frame, area);
+    }
+
+    /// Whether the active screen takes the whole frame, chrome and all.
+    pub(super) fn fills_frame(&self) -> bool {
+        self.active_screen == ScreenId::Setup || self.active_screen == ScreenId::Settings
+    }
+
+    /// Draw the dialogs and overlays that sit on top of any screen.
+    fn render_overlays(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(confirm) = &self.pending_confirm {
             let prompt = self.shown_text(&confirm.prompt);
             let detail = confirm.detail.as_deref().map(|text| self.shown_text(text));
@@ -108,11 +121,17 @@ impl App {
                 .get(&self.active_screen)
                 .map(|screen| screen.help())
                 .unwrap_or_default();
+            let global = if self.fills_frame() {
+                FORM_KEYS
+            } else {
+                GLOBAL_KEYS
+            };
             Self::render_help_overlay(
                 frame,
                 area,
                 self.active_screen,
                 &screen_keys,
+                global,
                 &mut self.hits,
             );
         }
@@ -365,10 +384,11 @@ impl App {
         area: Rect,
         screen: ScreenId,
         screen_keys: &[(&'static str, &'static str)],
+        global: &[(&'static str, &'static str)],
         hits: &mut HitMap<Click>,
     ) {
         let left = help_column(&format!("{screen} screen"), screen_keys);
-        let right = help_column("Everywhere", GLOBAL_KEYS);
+        let right = help_column("Everywhere", global);
         let rows = left.len().max(right.len());
 
         let help_width = 78u16.min(area.width.saturating_sub(2));
@@ -381,7 +401,7 @@ impl App {
         Self::register_modal(hits, area, help_area);
 
         frame.render_widget(Clear, help_area);
-        let close = close_button(" Esc or ? to close ");
+        let close = close_button(" Esc to close ");
         let close_row = Rect {
             x: help_area.x.saturating_add(2),
             y: help_area.bottom().saturating_sub(1),
@@ -628,10 +648,19 @@ const GLOBAL_KEYS: &[(&str, &str)] = &[
     ("n", "Notifications"),
     (",", "Settings"),
     ("a", "About"),
-    ("?", "This help"),
+    ("?  F1", "This help"),
     ("q  ^c", "Quit"),
     ("^l", "Redraw"),
     ("Mouse", "Tap tabs, rows, hints"),
+    ("Shift+drag", "Select text"),
+];
+
+/// Keys that still work while a full-frame form has the keyboard.
+const FORM_KEYS: &[(&str, &str)] = &[
+    ("F1", "This help"),
+    ("^c", "Quit"),
+    ("^l", "Redraw"),
+    ("Mouse", "Tap fields and hints"),
     ("Shift+drag", "Select text"),
 ];
 
