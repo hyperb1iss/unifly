@@ -102,17 +102,24 @@ impl Component for FirewallScreen {
             ("Enter", "Show / hide the detail"),
             ("Esc", "Hide the detail"),
         ]);
+        // Only a rule an admin made takes a switch, a move, or a delete.
+        let ours = self.can_toggle();
         match self.sub_tab {
-            FirewallSubTab::Policies => keys.extend([
-                ("E", "Enable / disable"),
-                ("L", "Logging on / off"),
-                ("K/J", "Pick it up to move it"),
-                ("D", "Delete the policy"),
-            ]),
-            FirewallSubTab::AclRules | FirewallSubTab::NatPolicies => {
+            FirewallSubTab::Policies => {
+                if ours {
+                    keys.push(("E", "Enable / disable"));
+                }
+                if self.selected_policy().is_some() {
+                    keys.push(("L", "Logging on / off"));
+                }
+                if ours {
+                    keys.extend([("K/J", "Pick it up to move it"), ("D", "Delete the policy")]);
+                }
+            }
+            FirewallSubTab::AclRules | FirewallSubTab::NatPolicies if ours => {
                 keys.extend([("E", "Enable / disable"), ("D", "Delete the rule")]);
             }
-            FirewallSubTab::Zones => {}
+            _ => {}
         }
         keys
     }

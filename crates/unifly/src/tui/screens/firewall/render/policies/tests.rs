@@ -61,10 +61,10 @@ fn a_fixed_policy_carries_the_mark_and_offers_no_move_or_delete() {
     screen.select(3);
     let hints = text(&screen, 100, 14);
     assert!(
-        !hints.contains("K up") && !hints.contains("delete"),
+        !hints.contains("K up") && !hints.contains("delete") && !hints.contains("E on/off"),
         "{hints}"
     );
-    assert!(hints.contains("E on/off"), "{hints}");
+    assert!(hints.contains("L log"), "{hints}");
 }
 
 #[test]

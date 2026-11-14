@@ -10,6 +10,7 @@ mod navigation;
 mod networks_firewall;
 mod notify;
 mod render;
+mod rule_switch;
 mod screens;
 mod setup;
 mod stats;

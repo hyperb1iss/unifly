@@ -123,11 +123,28 @@ fn a_picked_up_policy_moves_on_screen_and_nothing_is_sent_until_enter() {
         "one step crosses the fixed policy"
     );
 
+    // What goes to the controller is the order on screen before and
+    // after, not a count of key presses to replay on its own list.
     let sent = press(&mut screen, KeyCode::Enter);
-    assert!(
-        matches!(&sent, Some(Action::MovePolicy { policy, steps: 1 }) if policy.name == "b"),
-        "{sent:?}"
+    let Some(Action::MovePolicy { policy, plan }) = &sent else {
+        panic!("the move is sent: {sent:?}");
+    };
+    assert_eq!(policy.name, "b");
+    let ids = |names: &[&str]| -> Vec<EntityId> {
+        names
+            .iter()
+            .map(|name| EntityId::Legacy((*name).into()))
+            .collect()
+    };
+    assert_eq!(
+        (&plan.started.before, &plan.started.after),
+        (&ids(&["a", "b"]), &ids(&["c"]))
     );
+    assert_eq!(
+        (&plan.drafted.before, &plan.drafted.after),
+        (&ids(&["a"]), &ids(&["b", "c"]))
+    );
+    assert!(plan.split_shown);
     assert!(!screen.is_drafting());
     assert_eq!(
         names(&screen),

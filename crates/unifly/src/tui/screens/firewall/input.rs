@@ -1,13 +1,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use unifly_api::model::EntityOrigin;
-use unifly_api::{Command, UpdateAclRuleRequest, UpdateNatPolicyRequest};
+use unifly_api::{Command, EntityId};
 
-use crate::tui::action::{Action, ConfirmRequest, FirewallSubTab, Notice, Notification};
+use crate::tui::action::{
+    Action, ConfirmRequest, FirewallSubTab, Notice, Notification, RuleSwitch,
+};
 use crate::tui::widgets::click::{self, Click};
 
 use super::FirewallScreen;
-use super::reorder::{Reorder, Stage, is_fixed, pair_range, shifted};
+use super::reorder::{Reorder, Stage, owner, pair_range, plan, shifted};
 
 /// The action that runs `command` under `pending` and `done` toasts.
 fn run(command: Command, pending: String, done: String) -> Action {
@@ -18,31 +20,31 @@ fn run(command: Command, pending: String, done: String) -> Action {
 }
 
 /// Ask before switching a rule on or off: either way the firewall treats
-/// traffic differently the moment it lands.
-fn confirm_toggle(kind: &str, name: &str, enabled: bool, command: Command) -> Action {
-    let (verb, pending, done, cost) = if enabled {
+/// traffic differently the moment it lands. The app flips the switch and
+/// reports what the controller then says the rule is.
+fn confirm_toggle(
+    kind: &str,
+    name: &str,
+    enabled: bool,
+    id: &EntityId,
+    switch: RuleSwitch,
+) -> Action {
+    let (verb, cost) = if enabled {
         (
             "Disable",
-            "Disabling",
-            "Disabled",
             "It stops matching traffic at once; whatever comes after it decides instead.",
         )
     } else {
-        (
-            "Enable",
-            "Enabling",
-            "Enabled",
-            "It starts matching traffic at once.",
-        )
+        ("Enable", "It starts matching traffic at once.")
     };
     Action::ShowConfirm(
         ConfirmRequest::new(
             format!("{verb} {kind} {name}?"),
-            run(
-                command,
-                format!("{pending} {name}\u{2026}"),
-                format!("{done} {name}"),
-            ),
+            Action::SetRuleSwitch {
+                id: id.clone(),
+                switch,
+                on: !enabled,
+            },
         )
         .detail(cost),
     )
@@ -64,6 +66,13 @@ fn confirm_delete(kind: &str, name: &str, command: Command) -> Action {
 
 fn refuse(message: String) -> Action {
     Action::Notify(Notification::warning(message))
+}
+
+/// Why a rule that is not an admin's cannot take `change`, or `None` for
+/// one that can. The controller refuses these writes; saying so here
+/// costs no round trip and names the reason.
+fn not_ours(name: &str, origin: Option<EntityOrigin>, change: &str) -> Option<Action> {
+    owner(origin).map(|owner| refuse(format!("{name} is {owner} and {change}")))
 }
 
 impl FirewallScreen {
@@ -149,10 +158,8 @@ impl FirewallScreen {
         }
         let policy = self.selected_policy()?;
         let name = &policy.name;
-        if is_fixed(&policy) {
-            return Some(refuse(format!(
-                "{name} is system-defined and keeps its place"
-            )));
+        if let Some(refusal) = not_ours(name, policy.origin, "keeps its place") {
+            return Some(refusal);
         }
         if policy.source.zone_id.is_none() || policy.destination.zone_id.is_none() {
             return Some(refuse(format!(
@@ -187,136 +194,137 @@ impl FirewallScreen {
         self.select_policy(&id);
     }
 
-    /// Send the picked-up policy's move to the controller. A policy put
-    /// back where it started has nothing to send.
+    /// Send the picked-up policy's move to the controller, as the order
+    /// on screen now and the order the draft leaves. A policy put back
+    /// where it started has nothing to send.
     fn apply_move(&mut self) -> Option<Action> {
-        let reorder = self.reorder.as_mut()?;
-        if reorder.steps == 0 {
+        let reorder = self.reorder.as_ref()?;
+        let plan = (reorder.steps != 0)
+            .then(|| plan(&self.policies, &reorder.policy.id, reorder.steps))
+            .flatten();
+        let Some(plan) = plan else {
             self.end_reorder();
             return Some(Action::Invalidate);
-        }
+        };
+        let reorder = self.reorder.as_mut()?;
         reorder.stage = Stage::Sent;
         Some(Action::MovePolicy {
             policy: std::sync::Arc::clone(&reorder.policy),
-            steps: reorder.steps,
+            plan: Box::new(plan),
         })
     }
 
+    /// Whether `E` and `D` do anything on the selected row. Only the
+    /// rules an admin made can be switched on and off or deleted.
+    pub(super) fn can_toggle(&self) -> bool {
+        let ours = |origin| owner(origin).is_none();
+        match self.sub_tab {
+            FirewallSubTab::Policies => self
+                .selected_policy()
+                .is_some_and(|policy| ours(policy.origin)),
+            FirewallSubTab::AclRules => self
+                .selected_acl_rule()
+                .is_some_and(|rule| ours(rule.origin)),
+            FirewallSubTab::NatPolicies => self
+                .selected_nat_policy()
+                .is_some_and(|rule| ours(rule.origin)),
+            FirewallSubTab::Zones => false,
+        }
+    }
+
     fn toggle_enabled(&self) -> Option<Action> {
+        const CHANGE: &str = "cannot be switched on or off here";
         match self.sub_tab {
             FirewallSubTab::Policies => {
                 let policy = self.selected_policy()?;
-                Some(confirm_toggle(
-                    "policy",
-                    &policy.name,
-                    policy.enabled,
-                    Command::PatchFirewallPolicy {
-                        id: policy.id.clone(),
-                        enabled: Some(!policy.enabled),
-                        logging: None,
-                        report_flow_enabled: None,
-                    },
-                ))
+                not_ours(&policy.name, policy.origin, CHANGE).or_else(|| {
+                    Some(confirm_toggle(
+                        "policy",
+                        &policy.name,
+                        policy.enabled,
+                        &policy.id,
+                        RuleSwitch::PolicyEnabled,
+                    ))
+                })
             }
             FirewallSubTab::AclRules => {
                 let rule = self.selected_acl_rule()?;
-                Some(confirm_toggle(
-                    "ACL rule",
-                    &rule.name,
-                    rule.enabled,
-                    Command::UpdateAclRule {
-                        id: rule.id.clone(),
-                        update: UpdateAclRuleRequest {
-                            enabled: Some(!rule.enabled),
-                            ..UpdateAclRuleRequest::default()
-                        },
-                    },
-                ))
+                not_ours(&rule.name, rule.origin, CHANGE).or_else(|| {
+                    Some(confirm_toggle(
+                        "ACL rule",
+                        &rule.name,
+                        rule.enabled,
+                        &rule.id,
+                        RuleSwitch::AclEnabled,
+                    ))
+                })
             }
             FirewallSubTab::NatPolicies => {
                 let rule = self.selected_nat_policy()?;
-                Some(confirm_toggle(
-                    "NAT rule",
-                    &rule.name,
-                    rule.enabled,
-                    Command::UpdateNatPolicy {
-                        id: rule.id.clone(),
-                        update: UpdateNatPolicyRequest {
-                            enabled: Some(!rule.enabled),
-                            ..UpdateNatPolicyRequest::default()
-                        },
-                    },
-                ))
+                not_ours(&rule.name, rule.origin, CHANGE).or_else(|| {
+                    Some(confirm_toggle(
+                        "NAT rule",
+                        &rule.name,
+                        rule.enabled,
+                        &rule.id,
+                        RuleSwitch::NatEnabled,
+                    ))
+                })
             }
             FirewallSubTab::Zones => None,
         }
     }
 
     /// Logging changes what is recorded, not what passes, so it needs no
-    /// confirmation.
+    /// confirmation. It is the one switch the controller also takes on
+    /// its built-in policies; the app checks afterwards that it took.
     fn toggle_logging(&self) -> Option<Action> {
         let policy = self.selected_policy()?;
-        let name = &policy.name;
-        let (state, turning) = if policy.logging_enabled {
-            ("off", "Turning logging off")
-        } else {
-            ("on", "Turning logging on")
-        };
-        Some(run(
-            Command::PatchFirewallPolicy {
-                id: policy.id.clone(),
-                enabled: None,
-                logging: Some(!policy.logging_enabled),
-                report_flow_enabled: None,
-            },
-            format!("{turning} for {name}\u{2026}"),
-            format!("Logging is {state} for {name}"),
-        ))
+        Some(Action::SetRuleSwitch {
+            id: policy.id.clone(),
+            switch: RuleSwitch::PolicyLogging,
+            on: !policy.logging_enabled,
+        })
     }
 
     fn request_delete(&self) -> Option<Action> {
+        const CHANGE: &str = "cannot be deleted";
         match self.sub_tab {
             FirewallSubTab::Policies => {
                 let policy = self.selected_policy()?;
-                if is_fixed(&policy) {
-                    return Some(refuse(format!(
-                        "{} is system-defined and cannot be deleted",
-                        policy.name
-                    )));
-                }
-                Some(confirm_delete(
-                    "policy",
-                    &policy.name,
-                    Command::DeleteFirewallPolicy {
-                        id: policy.id.clone(),
-                    },
-                ))
+                not_ours(&policy.name, policy.origin, CHANGE).or_else(|| {
+                    Some(confirm_delete(
+                        "policy",
+                        &policy.name,
+                        Command::DeleteFirewallPolicy {
+                            id: policy.id.clone(),
+                        },
+                    ))
+                })
             }
             FirewallSubTab::AclRules => {
                 let rule = self.selected_acl_rule()?;
-                Some(confirm_delete(
-                    "ACL rule",
-                    &rule.name,
-                    Command::DeleteAclRule {
-                        id: rule.id.clone(),
-                    },
-                ))
+                not_ours(&rule.name, rule.origin, CHANGE).or_else(|| {
+                    Some(confirm_delete(
+                        "ACL rule",
+                        &rule.name,
+                        Command::DeleteAclRule {
+                            id: rule.id.clone(),
+                        },
+                    ))
+                })
             }
             FirewallSubTab::NatPolicies => {
                 let rule = self.selected_nat_policy()?;
-                if rule.origin == Some(EntityOrigin::SystemDefined) {
-                    return Some(refuse(format!(
-                        "{} is system-defined and cannot be deleted",
-                        rule.name
-                    )));
-                }
-                Some(confirm_delete(
-                    "NAT rule",
-                    &rule.name,
-                    Command::DeleteNatPolicy {
-                        id: rule.id.clone(),
-                    },
-                ))
+                not_ours(&rule.name, rule.origin, CHANGE).or_else(|| {
+                    Some(confirm_delete(
+                        "NAT rule",
+                        &rule.name,
+                        Command::DeleteNatPolicy {
+                            id: rule.id.clone(),
+                        },
+                    ))
+                })
             }
             FirewallSubTab::Zones => None,
         }

@@ -384,6 +384,36 @@ pub struct PromptRequest {
     pub secret: bool,
 }
 
+/// A zone pair's user policies in evaluation order: those before its
+/// system-defined policies, and those after.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PairOrder {
+    pub before: Vec<EntityId>,
+    pub after: Vec<EntityId>,
+}
+
+/// A drafted policy move as the Firewall screen showed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyMove {
+    /// The zone pair's order when the move was applied.
+    pub started: PairOrder,
+    /// The order the draft leaves it in.
+    pub drafted: PairOrder,
+    /// Whether the table showed the pair's system-defined policies.
+    /// Without them it cannot tell the halves apart, and both orders hold
+    /// every policy in `before`.
+    pub split_shown: bool,
+}
+
+/// A yes/no setting of a firewall rule that the Firewall screen flips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleSwitch {
+    PolicyEnabled,
+    PolicyLogging,
+    AclEnabled,
+    NatEnabled,
+}
+
 /// A question the user answers before `action` is dispatched.
 #[derive(Debug, Clone)]
 pub struct ConfirmRequest {
@@ -592,17 +622,24 @@ pub enum Action {
     NetworkCreate(Box<CreateNetworkRequest>),
     /// Check what uses a network, then ask before deleting it.
     RequestDeleteNetwork(EntityId),
-    /// Move this policy `steps` places through its zone pair's ordering on
-    /// the controller, up when negative. It names the policy, not a row
-    /// index, so refreshes queued ahead of the action cannot redirect the
-    /// move to another one.
+    /// Write this policy's drafted move to the controller. It names the
+    /// policy and the order the draft was made on, so a refresh queued
+    /// ahead of the action cannot redirect the move, and an order that
+    /// changed under the draft is caught before anything is written.
     MovePolicy {
         policy: Arc<FirewallPolicy>,
-        steps: i32,
+        plan: Box<PolicyMove>,
     },
     /// A policy move ended; `moved` says whether the order changed.
     PolicyMoveSettled {
         moved: bool,
+    },
+    /// Flip one switch of a firewall rule and check, once the data has
+    /// been fetched again, that the controller did.
+    SetRuleSwitch {
+        id: EntityId,
+        switch: RuleSwitch,
+        on: bool,
     },
     // ── WiFi ──────────────────────────────────────────────────────
     /// The neighbor scan could not be read; the WiFi screen shows why.

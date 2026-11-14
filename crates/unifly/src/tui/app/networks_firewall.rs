@@ -93,7 +93,8 @@ impl App {
                 self.forward_to_screen(ScreenId::Networks, &Action::NetworkEditResult(shown))?;
             }
             Action::RequestDeleteNetwork(id) => self.request_delete_network(id),
-            Action::MovePolicy { policy, steps } => self.move_firewall_policy(policy, *steps),
+            Action::MovePolicy { policy, plan } => self.move_firewall_policy(policy, plan),
+            Action::SetRuleSwitch { id, switch, on } => self.set_rule_switch(id, *switch, *on),
             // The move's own task has already freed the keys.
             Action::PolicyMoveSettled { .. } => {
                 self.forward_to_screen(ScreenId::Firewall, action)?;

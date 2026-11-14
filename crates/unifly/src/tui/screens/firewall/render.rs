@@ -15,7 +15,6 @@ use crate::tui::widgets::detail_grid::{render_empty, render_panel, split_detail}
 use crate::tui::widgets::sub_tabs;
 
 use super::FirewallScreen;
-use super::reorder::is_fixed;
 
 /// Rows a table keeps when the detail panel opens: its header and four
 /// rules.
@@ -128,14 +127,18 @@ impl FirewallScreen {
         ];
         let toggle = Hint::button("E", "on/off", click::char_key('E'));
         let delete = Hint::button("D", "delete", click::char_key('D'));
+        // A rule that is not an admin's takes no switch, move, or delete;
+        // a built-in policy still takes logging.
+        let ours = self.can_toggle();
         match self.sub_tab {
             FirewallSubTab::Policies => {
-                hints.extend([toggle, Hint::button("L", "log", click::char_key('L'))]);
-                // A system-defined policy can be neither moved nor deleted.
-                if self
-                    .selected_policy()
-                    .is_some_and(|policy| !is_fixed(&policy))
-                {
+                if ours {
+                    hints.push(toggle);
+                }
+                if self.selected_policy().is_some() {
+                    hints.push(Hint::button("L", "log", click::char_key('L')));
+                }
+                if ours {
                     hints.extend([
                         Hint::button("K", "up", click::char_key('K')),
                         Hint::button("J", "down", click::char_key('J')),
@@ -143,10 +146,10 @@ impl FirewallScreen {
                     ]);
                 }
             }
-            FirewallSubTab::AclRules | FirewallSubTab::NatPolicies => {
+            FirewallSubTab::AclRules | FirewallSubTab::NatPolicies if ours => {
                 hints.extend([toggle, delete]);
             }
-            FirewallSubTab::Zones => {}
+            _ => {}
         }
         hints.push(tabs);
         click::key_hints(&hints)

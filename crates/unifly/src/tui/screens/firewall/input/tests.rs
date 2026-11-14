@@ -3,8 +3,12 @@ use std::sync::Arc;
 use crossterm::event::KeyCode;
 use unifly_api::Command;
 
-use super::super::fixtures::{acl_rule, busy_screen, draw, nat_rule, press};
-use crate::tui::action::{Action, FirewallSubTab};
+use serde_json::json;
+
+use super::super::fixtures::{
+    acl_rule, busy_screen, draw, nat_rule, policy, press, screen_with, user,
+};
+use crate::tui::action::{Action, FirewallSubTab, RuleSwitch};
 use crate::tui::component::Component;
 use crate::tui::screens::firewall::FirewallScreen;
 use crate::tui::widgets::click::click_label;
@@ -19,6 +23,18 @@ fn confirmed(action: Option<Action>) -> (String, Command) {
     };
     assert!(confirm.detail.is_some(), "the question says what yes costs");
     (confirm.prompt, *command)
+}
+
+/// The switch a confirmation flips on yes, and its question.
+fn switched(action: Option<Action>) -> (String, RuleSwitch, bool) {
+    let Some(Action::ShowConfirm(confirm)) = action else {
+        panic!("a confirmation, not {action:?}");
+    };
+    let Action::SetRuleSwitch { switch, on, .. } = *confirm.action else {
+        panic!("yes flips a switch, not {:?}", confirm.action);
+    };
+    assert!(confirm.detail.is_some(), "the question says what yes costs");
+    (confirm.prompt, switch, on)
 }
 
 fn warning(action: Option<Action>) -> String {
@@ -69,36 +85,24 @@ fn enabling_and_deleting_ask_first_and_logging_does_not() {
     let mut screen = busy_screen();
     screen.select(1);
 
-    let (prompt, command) = confirmed(press(&mut screen, KeyCode::Char('E')));
-    assert_eq!(prompt, "Disable policy a?");
-    assert!(
-        matches!(
-            command,
-            Command::PatchFirewallPolicy {
-                enabled: Some(false),
-                logging: None,
-                ..
-            }
-        ),
-        "{command:?}"
+    let toggle = switched(press(&mut screen, KeyCode::Char('E')));
+    assert_eq!(
+        toggle,
+        ("Disable policy a?".into(), RuleSwitch::PolicyEnabled, false)
     );
 
     let logging = press(&mut screen, KeyCode::Char('L'));
-    let Some(Action::Run { command, notice }) = logging else {
-        panic!("logging changes at once: {logging:?}");
-    };
     assert!(
         matches!(
-            *command,
-            Command::PatchFirewallPolicy {
-                enabled: None,
-                logging: Some(true),
+            logging,
+            Some(Action::SetRuleSwitch {
+                switch: RuleSwitch::PolicyLogging,
+                on: true,
                 ..
-            }
+            })
         ),
-        "{command:?}"
+        "logging changes at once: {logging:?}"
     );
-    assert_eq!(notice.done, "Logging is on for a");
 
     let (prompt, command) = confirmed(press(&mut screen, KeyCode::Char('D')));
     assert_eq!(prompt, "Delete policy a?");
@@ -106,7 +110,7 @@ fn enabling_and_deleting_ask_first_and_logging_does_not() {
 }
 
 #[test]
-fn a_system_defined_policy_refuses_to_move_or_be_deleted_without_a_round_trip() {
+fn a_system_defined_policy_takes_logging_and_refuses_the_rest_without_a_round_trip() {
     let mut screen = busy_screen();
     screen.select(3);
 
@@ -117,6 +121,61 @@ fn a_system_defined_policy_refuses_to_move_or_be_deleted_without_a_round_trip() 
     assert!(screen.reorder.is_none());
     let refusal = warning(press(&mut screen, KeyCode::Char('D')));
     assert_eq!(refusal, "sys is system-defined and cannot be deleted");
+    let refusal = warning(press(&mut screen, KeyCode::Char('E')));
+    assert_eq!(
+        refusal,
+        "sys is system-defined and cannot be switched on or off here"
+    );
+
+    // Logging is the one switch the controller takes on its own policies.
+    let logging = press(&mut screen, KeyCode::Char('L'));
+    assert!(
+        matches!(
+            logging,
+            Some(Action::SetRuleSwitch {
+                switch: RuleSwitch::PolicyLogging,
+                ..
+            })
+        ),
+        "{logging:?}"
+    );
+    let hints = draw(&screen, 120, 24).join("\n");
+    assert!(hints.contains("log"), "{hints}");
+    for gone in ["on/off", "delete", " up", "down"] {
+        assert!(!hints.contains(gone), "{gone} is offered:\n{hints}");
+    }
+}
+
+/// A policy the controller derived from another, such as an allow rule's
+/// return traffic, is not an admin's to move, switch, or delete.
+#[test]
+fn a_derived_policy_refuses_to_move_switch_or_be_deleted() {
+    let lan = ("lan", "wan");
+    let mut screen = screen_with(vec![
+        user("a", lan, 10_000),
+        policy("ret", lan, 10_001, &json!({ "origin": "Derived" })),
+        user("b", lan, 10_002),
+    ]);
+    screen.select(1);
+    assert_eq!(
+        screen.selected_policy().map(|policy| policy.name.clone()),
+        Some("ret".into())
+    );
+
+    for (key, refusal) in [
+        ('K', "ret is derived from another rule and keeps its place"),
+        (
+            'E',
+            "ret is derived from another rule and cannot be switched on or off here",
+        ),
+        (
+            'D',
+            "ret is derived from another rule and cannot be deleted",
+        ),
+    ] {
+        assert_eq!(warning(press(&mut screen, KeyCode::Char(key))), refusal);
+    }
+    assert!(screen.reorder.is_none());
 }
 
 #[test]
@@ -145,15 +204,14 @@ fn acl_and_nat_rules_toggle_and_delete_with_a_question() {
     ])));
 
     screen.apply_action(&Action::FirewallSubTab(FirewallSubTab::AclRules));
-    let (prompt, command) = confirmed(press(&mut screen, KeyCode::Char('E')));
-    assert_eq!(prompt, "Enable ACL rule Quarantine?");
-    let Command::UpdateAclRule { update, .. } = command else {
-        panic!("an ACL update");
-    };
+    let toggle = switched(press(&mut screen, KeyCode::Char('E')));
     assert_eq!(
-        serde_json::to_value(update).expect("request JSON"),
-        serde_json::json!({ "enabled": true }),
-        "only the switch is sent"
+        toggle,
+        (
+            "Enable ACL rule Quarantine?".into(),
+            RuleSwitch::AclEnabled,
+            true
+        )
     );
     let (prompt, command) = confirmed(press(&mut screen, KeyCode::Char('D')));
     assert_eq!(prompt, "Delete ACL rule Quarantine?");
@@ -168,20 +226,30 @@ fn acl_and_nat_rules_toggle_and_delete_with_a_question() {
     );
 
     screen.apply_action(&Action::FirewallSubTab(FirewallSubTab::NatPolicies));
-    let (prompt, command) = confirmed(press(&mut screen, KeyCode::Char('E')));
-    assert_eq!(prompt, "Disable NAT rule Egress?");
-    let Command::UpdateNatPolicy { update, .. } = command else {
-        panic!("a NAT update");
-    };
+    let toggle = switched(press(&mut screen, KeyCode::Char('E')));
     assert_eq!(
-        serde_json::to_value(update).expect("request JSON"),
-        serde_json::json!({ "enabled": false })
+        toggle,
+        (
+            "Disable NAT rule Egress?".into(),
+            RuleSwitch::NatEnabled,
+            false
+        )
     );
     press(&mut screen, KeyCode::Char('j'));
     let refusal = warning(press(&mut screen, KeyCode::Char('D')));
     assert_eq!(
         refusal,
         "Masquerade is system-defined and cannot be deleted"
+    );
+    let refusal = warning(press(&mut screen, KeyCode::Char('E')));
+    assert_eq!(
+        refusal,
+        "Masquerade is system-defined and cannot be switched on or off here"
+    );
+    let hints = draw(&screen, 120, 24).join("\n");
+    assert!(
+        !hints.contains("on/off") && !hints.contains("delete"),
+        "a rule the controller owns offers no write:\n{hints}"
     );
 
     screen.apply_action(&Action::FirewallSubTab(FirewallSubTab::Zones));
@@ -233,6 +301,14 @@ fn help_lists_the_keys_of_the_tab_and_mode_on_screen() {
     };
     for key in ["Enter", "E", "L", "K/J", "D"] {
         assert!(keys(&screen).contains(&key), "{key}");
+    }
+    screen.select(3);
+    assert!(
+        keys(&screen).contains(&"L"),
+        "a built-in policy takes logging"
+    );
+    for key in ["E", "K/J", "D"] {
+        assert!(!keys(&screen).contains(&key), "{key} on a built-in policy");
     }
     screen.apply_action(&Action::FirewallSubTab(FirewallSubTab::Zones));
     assert!(!keys(&screen).contains(&"E"), "zones are read-only");
