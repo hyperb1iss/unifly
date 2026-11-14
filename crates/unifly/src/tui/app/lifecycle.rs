@@ -83,10 +83,13 @@ impl App {
             return self.refuse_in_demo_fleet();
         }
         self.screens.remove(&ScreenId::Settings);
-        self.install_screen(
-            ScreenId::Setup,
-            crate::tui::screens::onboarding::OnboardingScreen::for_new_profile(profile_name),
-        )?;
+        let mut wizard =
+            crate::tui::screens::onboarding::OnboardingScreen::for_new_profile(profile_name);
+        if self.sanitizer.is_some() {
+            // As with Settings: a redacting session shows no real values.
+            wizard.hide_values();
+        }
+        self.install_screen(ScreenId::Setup, wizard)?;
         self.set_active_screen(ScreenId::Setup);
         Ok(())
     }
@@ -255,6 +258,55 @@ mod tests {
 
         app.close_settings();
         assert_eq!(app.active_screen, ScreenId::Dashboard);
+    }
+
+    fn redacting() -> std::sync::Arc<crate::sanitizer::Sanitizer> {
+        std::sync::Arc::new(crate::sanitizer::Sanitizer::new(
+            &crate::config::DemoConfig::default(),
+        ))
+    }
+
+    fn setup_frame(app: &App) -> String {
+        let screen = app.screens.get(&ScreenId::Setup).expect("setup screen");
+        crate::tui::table::render_lines(80, 24, |frame, area| screen.render(frame, area)).join("\n")
+    }
+
+    /// Settings hides its values while the session redacts what it shows,
+    /// and the wizard holds the same ones: the launch's wizard and one
+    /// opened for a new profile both come up hiding them.
+    #[tokio::test]
+    async fn a_redacting_session_opens_the_wizard_with_its_values_hidden() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app =
+            App::new(None, Some(redacting()), false, true).with_setup_profile("office", None);
+        assert_eq!(app.active_screen, ScreenId::Setup);
+        let type_key = |app: &mut App, code: KeyCode| {
+            if let Some(action) = app.handle_key_event(KeyEvent::from(code)).expect("key") {
+                app.process_action(&action).expect("action");
+            }
+        };
+        type_key(&mut app, KeyCode::Enter);
+        type_key(&mut app, KeyCode::Enter);
+        for ch in "https://10.7.7.7".chars() {
+            type_key(&mut app, KeyCode::Char(ch));
+        }
+        let rows = setup_frame(&app);
+        assert!(rows.contains("Controller URL"), "{rows}");
+        assert!(
+            !rows.contains("10.7.7.7"),
+            "the address is on screen:\n{rows}"
+        );
+
+        let controller = Controller::new(unifly_api::ControllerConfig {
+            url: "http://127.0.0.1:1".parse().expect("url"),
+            ..unifly_api::ControllerConfig::default()
+        });
+        let mut app = App::new(Some(controller), Some(redacting()), false, true);
+        app.open_setup_for("lab-profile").expect("open setup");
+        let rows = setup_frame(&app);
+        assert!(rows.contains("Set up a new profile."), "{rows}");
+        assert!(!rows.contains("lab-profile"), "{rows}");
     }
 
     #[tokio::test]

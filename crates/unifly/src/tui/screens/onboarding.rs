@@ -132,6 +132,9 @@ pub struct OnboardingScreen {
     site_choice: SiteChoice,
     /// What the save reported, such as a secret kept in plaintext.
     notices: Vec<String>,
+    /// Draw every value masked and name nothing: the session is redacting
+    /// what it shows.
+    private: bool,
     /// What the last frame drew where: key hints, then rows and fields.
     hits: RefCell<HitMap<Click>>,
     targets: RefCell<HitMap<WizardHit>>,

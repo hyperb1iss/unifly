@@ -119,8 +119,12 @@ impl OnboardingScreen {
         None
     }
 
-    /// Show or hide the secret in the focused field.
+    /// Show or hide the secret in the focused field. A session that is
+    /// redacting what it shows never reveals one.
     fn toggle_reveal(&mut self) {
+        if self.private {
+            return;
+        }
         if let Some(field) = self.active_text_field() {
             self.reveal.toggle(field);
         }

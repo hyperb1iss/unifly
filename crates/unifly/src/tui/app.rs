@@ -215,7 +215,8 @@ impl App {
         use crate::tui::screens::onboarding::OnboardingScreen;
 
         if let Some(setup) = self.screens.get_mut(&ScreenId::Setup) {
-            let screen = match cfg.and_then(|cfg| Some((cfg.profiles.get(profile_name)?, cfg))) {
+            let mut screen = match cfg.and_then(|cfg| Some((cfg.profiles.get(profile_name)?, cfg)))
+            {
                 Some((existing, cfg)) => OnboardingScreen::for_existing_profile(
                     profile_name,
                     existing,
@@ -224,6 +225,11 @@ impl App {
                 ),
                 None => OnboardingScreen::for_profile(profile_name),
             };
+            if self.sanitizer.is_some() {
+                // The session is redacting what it shows, and the wizard
+                // holds the controller's real address, user, and site.
+                screen.hide_values();
+            }
             *setup = Box::new(screen);
         }
         self

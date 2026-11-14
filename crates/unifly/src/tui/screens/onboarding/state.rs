@@ -63,6 +63,7 @@ impl OnboardingScreen {
             site_index: 0,
             site_choice,
             notices: Vec::new(),
+            private: false,
             hits: std::cell::RefCell::default(),
             targets: std::cell::RefCell::default(),
         }
@@ -137,10 +138,17 @@ impl OnboardingScreen {
         }
     }
 
+    /// Draw every value masked, never reveal one, and name neither the
+    /// profile nor the controller: the session is redacting what it shows.
+    pub(crate) fn hide_values(&mut self) {
+        self.private = true;
+    }
+
     /// Why the wizard opened for a profile that already exists, when the
-    /// launch recorded a reason.
+    /// launch recorded a reason. The raw error can name the controller and
+    /// the account, so a redacting session does not show it.
     pub(super) fn repair_reason(&self) -> Option<&str> {
-        (self.purpose == Purpose::Repair)
+        (self.purpose == Purpose::Repair && !self.private)
             .then_some(self.session.setup_reason.as_deref())
             .flatten()
     }
@@ -485,7 +493,11 @@ impl OnboardingScreen {
             // have said which ones it has.
             self.known_sites.clone_from(&failure.sites);
             self.site_choice = SiteChoice::Open;
-            self.show_site_step(Some(failure.summary));
+            let shown = failure
+                .paragraphs(self.private)
+                .first()
+                .map(|(_, text)| (*text).to_owned());
+            self.show_site_step(shown);
             return;
         }
         self.failure = Some(failure);

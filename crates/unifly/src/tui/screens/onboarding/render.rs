@@ -168,20 +168,26 @@ impl OnboardingScreen {
 
     fn render_welcome(&self, frame: &mut Frame, area: Rect) {
         let body = Self::render_heading(frame, area, "Welcome to unifly");
-        let name = &self.profile_name;
+        // A redacting session does not name the profile.
+        let named = if self.private {
+            String::new()
+        } else {
+            format!(" \"{}\"", self.profile_name)
+        };
         let mut paragraphs: Vec<(Tone, String)> = Vec::new();
         if self.purpose == Purpose::NewProfile {
+            let comma = if named.is_empty() { "" } else { "," };
             paragraphs.push((
                 Tone::Advice,
                 format!(
-                    "Set up a new profile, \"{name}\". Nothing changes until its connection \
+                    "Set up a new profile{comma}{named}. Nothing changes until its connection \
                      test passes."
                 ),
             ));
         } else if self.purpose == Purpose::Repair {
             paragraphs.push((
                 Tone::Advice,
-                format!("The profile \"{name}\" could not connect."),
+                format!("The profile{named} could not connect."),
             ));
             if let Some(reason) = self.repair_reason() {
                 paragraphs.push((Tone::Error, reason.to_owned()));
@@ -337,15 +343,24 @@ impl OnboardingScreen {
             DraftField::Site => Some("default".to_owned()),
             _ => None,
         });
-        // A repaired profile may already name where its codes come from.
-        let tag = (field == DraftField::Totp)
-            .then(|| self.draft.mfa_source())
-            .flatten();
+        // A repaired profile may already name where its codes come from,
+        // or a variable that wins over the value shown.
+        let tag = if field == DraftField::Totp {
+            self.draft.mfa_source().map(|source| {
+                if self.private {
+                    "set in the profile".to_owned()
+                } else {
+                    source
+                }
+            })
+        } else {
+            self.draft.env_in_use(field)
+        };
         let view = FieldView {
             label: field_label(field),
             input,
             active,
-            masked: !self.reveal.shows(field),
+            masked: self.private || !self.reveal.shows(field),
             placeholder: placeholder.as_deref(),
             tag: tag.as_deref(),
         };
@@ -371,7 +386,11 @@ impl OnboardingScreen {
                 .skip(first)
                 .take(visible),
         ) {
-            let label = if site.display_name == site.internal_reference {
+            let label = if self.private {
+                // Site names are the user's; the list still has to be
+                // something to pick from.
+                format!("Site {}", index + 1)
+            } else if site.display_name == site.internal_reference {
                 site.internal_reference.clone()
             } else {
                 format!("{} ({})", site.internal_reference, site.display_name)
@@ -388,22 +407,29 @@ impl OnboardingScreen {
     }
 
     fn render_testing(&self, frame: &mut Frame, area: Rect) {
-        let target = self.draft.target();
         match (self.phase, &self.failure) {
-            (TestPhase::Testing, _) => render_waiting(
-                frame,
-                area,
-                &self.throbber_state,
-                "Testing connection",
-                &format!("Connecting to {target}"),
-            ),
-            (TestPhase::Saving, _) => render_waiting(
-                frame,
-                area,
-                &self.throbber_state,
-                "Saving",
-                &format!("Writing the profile \"{}\"", self.profile_name),
-            ),
+            (TestPhase::Testing, _) => {
+                let detail = if self.private {
+                    "Esc cancels the test".to_owned()
+                } else {
+                    format!("Connecting to {}", self.draft.target())
+                };
+                render_waiting(
+                    frame,
+                    area,
+                    &self.throbber_state,
+                    "Testing connection",
+                    &detail,
+                );
+            }
+            (TestPhase::Saving, _) => {
+                let detail = if self.private {
+                    "Writing the profile".to_owned()
+                } else {
+                    format!("Writing the profile \"{}\"", self.profile_name)
+                };
+                render_waiting(frame, area, &self.throbber_state, "Saving", &detail);
+            }
             (TestPhase::Idle, Some(failure)) => {
                 let heading = if failure.kind == FailureKind::Save {
                     "Connected, but not saved"
@@ -422,7 +448,7 @@ impl OnboardingScreen {
                 );
                 let body = inset(below(area, if area.height >= 8 { 2 } else { 1 }), 3);
                 let lines = message_lines(
-                    &failure.paragraphs(false),
+                    &failure.paragraphs(self.private),
                     usize::from(body.width),
                     usize::from(body.height),
                 );
@@ -444,13 +470,23 @@ impl OnboardingScreen {
             row(area, 0),
         );
         let body = inset(below(area, if area.height >= 8 { 2 } else { 1 }), 3);
-        let details = format!(
-            "Profile {} \u{00B7} {} \u{00B7} site {}",
-            self.profile_name,
-            self.draft.target(),
-            self.draft.site.text().trim()
-        );
-        let saved = format!("Saved to {}", crate::config::config_path().display());
+        // A redacting session names neither the profile, the controller,
+        // the site, nor the home directory the config lives under.
+        let details = if self.private {
+            "The profile is saved and its connection works.".to_owned()
+        } else {
+            format!(
+                "Profile {} \u{00B7} {} \u{00B7} site {}",
+                self.profile_name,
+                self.draft.target(),
+                self.draft.site.text().trim()
+            )
+        };
+        let saved = if self.private {
+            "Saved to the config file.".to_owned()
+        } else {
+            format!("Saved to {}", crate::config::config_path().display())
+        };
         let mut paragraphs = vec![(Tone::Advice, details.as_str())];
         // A profile that checks no certificate says so before it is used.
         if self.skips_verification() {
@@ -558,11 +594,13 @@ impl OnboardingScreen {
             Some(WizardField::Insecure) => {
                 hints.push(Hint::button("Space", "toggle", click::char_key(' ')));
             }
-            Some(WizardField::Text(field)) if field.is_secret() => hints.push(Hint::button(
-                "Ctrl+T",
-                "show",
-                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
-            )),
+            Some(WizardField::Text(field)) if field.is_secret() && !self.private => {
+                hints.push(Hint::button(
+                    "Ctrl+T",
+                    "show",
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                ));
+            }
             _ => {}
         }
         hints

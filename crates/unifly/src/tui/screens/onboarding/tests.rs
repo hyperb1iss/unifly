@@ -1082,6 +1082,115 @@ fn a_repair_can_fix_the_ca_certificate() {
     assert_eq!(fresh.fields().len(), 2);
 }
 
+fn see(frames: &mut Vec<String>, screen: &OnboardingScreen) {
+    frames.push(frame(screen, 80, 24).join("\n"));
+}
+
+/// While the session redacts what it shows, the wizard shows no address,
+/// user, site, profile name, launch error or MFA command on any step, and
+/// reveals nothing. Settings hides the same.
+#[test]
+fn a_redacting_session_sees_no_values_on_any_step() {
+    let profile: crate::config::Profile = toml::from_str(
+        "controller = \"https://10.7.7.7\"\nauth_mode = \"session\"\nusername = \"netadmin\"\n\
+         password = \"hunter2pw\"\nsite = \"hq-site\"\n\
+         totp_command = [\"oathtool\", \"--totp\", \"SEEDSEED\"]\n",
+    )
+    .expect("profile parses");
+    let repair = || {
+        let session = Session {
+            setup_reason: Some("could not sign in to https://10.7.7.7 as netadmin".into()),
+            ..Session::default()
+        };
+        let mut screen = OnboardingScreen::in_session("office-profile", session).repairing(
+            &profile,
+            &crate::config::Defaults::default(),
+            &MemoryStore::default(),
+        );
+        screen.hide_values();
+        screen
+    };
+    let mut frames = Vec::new();
+
+    let mut screen = repair();
+    see(&mut frames, &screen);
+    press(&mut screen, KeyCode::Enter);
+    see(&mut frames, &screen);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.step, WizardStep::Url);
+    see(&mut frames, &screen);
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.step, WizardStep::Credentials);
+    for _ in 0..3 {
+        // Ctrl+T reveals nothing, on any field.
+        ctrl(&mut screen, 't');
+        see(&mut frames, &screen);
+        press(&mut screen, KeyCode::Down);
+    }
+    let keys = frames.last().expect("a frame");
+    assert!(!keys.contains("Ctrl+T"), "no reveal is offered:\n{keys}");
+    assert!(keys.contains("set in the profile"), "{keys}");
+
+    press(&mut screen, KeyCode::Enter);
+    assert_eq!(screen.phase, TestPhase::Testing);
+    see(&mut frames, &screen);
+    let mut refused = failure(FailureKind::Unreachable, DraftField::Url);
+    refused.summary = "Nothing is accepting connections at https://10.7.7.7/.".into();
+    refused.detail = Some("tcp connect error for netadmin@10.7.7.7".into());
+    finish(&mut screen, Err(refused));
+    see(&mut frames, &screen);
+    assert!(
+        frames
+            .last()
+            .is_some_and(|rows| rows.contains("could not be reached")),
+        "the class of failure is still said"
+    );
+
+    press(&mut screen, KeyCode::Enter);
+    finish(&mut screen, Ok(pass("hq-site", &["hq-site", "lab-site"])));
+    assert_eq!(screen.phase, TestPhase::Saving);
+    see(&mut frames, &screen);
+    saved(&mut screen, Ok(Vec::new()));
+    assert_eq!(screen.step, WizardStep::Done);
+    see(&mut frames, &screen);
+
+    // A site the controller does not have turns into a list to pick from,
+    // which numbers the sites instead of naming them.
+    let mut screen = repair();
+    for _ in 0..4 {
+        press(&mut screen, KeyCode::Enter);
+    }
+    let mut missing = failure(FailureKind::Site, DraftField::Site);
+    missing.summary = "There is no site \"hq-site\" on this controller.".into();
+    missing.sites = sites(&["main-site", "lab-site"]);
+    finish(&mut screen, Err(missing));
+    assert_eq!(screen.step, WizardStep::Site);
+    see(&mut frames, &screen);
+    let picker = frames.last().expect("a frame");
+    assert!(
+        picker.contains("Site 1") && picker.contains("Site 2"),
+        "{picker}"
+    );
+
+    let hidden = [
+        "10.7.7.7",
+        "netadmin",
+        "hunter2pw",
+        "hq-site",
+        "lab-site",
+        "main-site",
+        "office-profile",
+        "oathtool",
+        "SEEDSEED",
+        "config.toml",
+    ];
+    for rows in &frames {
+        for value in hidden {
+            assert!(!rows.contains(value), "{value} is on screen:\n{rows}");
+        }
+    }
+}
+
 /// A wizard opened from a running session for a new profile can be left
 /// from its first step; a first-run wizard has nowhere to go back to.
 #[test]
