@@ -33,7 +33,14 @@ impl Controller {
     /// Pulls devices, clients, and events from the controller APIs, converts
     /// them to domain types, and applies them to the store. Events are
     /// broadcast through the event channel after snapshot application.
+    ///
+    /// The demo fleet applies every change to the store as it happens and
+    /// has nothing to fetch from, so its store is always current.
     pub async fn full_refresh(&self) -> Result<(), CoreError> {
+        #[cfg(feature = "demo")]
+        if self.demo_runtime().is_some() {
+            return Ok(());
+        }
         self.refresh_with_scope(RefreshScope::All).await
     }
 

@@ -107,12 +107,14 @@ pub async fn spawn_data_bridge(
     }
 
     let _ = action_tx.send(Action::Connected);
+    // The demo fleet answers every read from its simulation, whatever
+    // clients it holds.
+    let demo = controller.is_demo();
     let _ = action_tx.send(Action::AccessUpdated(crate::tui::action::Access {
-        integration: controller.has_integration_access().await,
-        session: controller.has_session_access().await,
-        live_events: controller.has_live_event_access().await,
+        integration: demo || controller.has_integration_access().await,
+        session: demo || controller.has_session_access().await,
+        live_events: demo || controller.has_live_event_access().await,
     }));
-
     // Surface any warnings from connect (e.g. Session auth failure)
     for warning in controller.take_warnings().await {
         let _ = action_tx.send(Action::Notify(crate::tui::action::Notification {

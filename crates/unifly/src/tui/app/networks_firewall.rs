@@ -23,11 +23,6 @@ pub(super) fn is_connected(controller: &Controller) -> bool {
 /// Fetch the controller's data after a write, so the screens show it
 /// before anything says it is done. Returns whether the data is current.
 pub(super) async fn refresh_after_write(controller: &Controller) -> bool {
-    // The demo fleet applies a write to the store as it accepts it, and
-    // has no controller to fetch from.
-    if controller.is_demo() {
-        return true;
-    }
     match controller.full_refresh().await {
         Ok(()) => true,
         Err(error) => {
