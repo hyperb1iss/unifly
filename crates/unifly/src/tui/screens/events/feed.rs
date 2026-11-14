@@ -12,19 +12,28 @@ use unifly_api::Event;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(in crate::tui::screens) enum EventKey {
     Id(String),
-    /// Events the controller gave no id: the same instant, type, and text.
-    Content(i64, String, String),
+    /// Events the controller gave no id: the same instant, type, text, and
+    /// device and client, as the library's own event store tells them.
+    Content {
+        at: i64,
+        event_type: String,
+        message: String,
+        device: Option<String>,
+        client: Option<String>,
+    },
 }
 
 impl EventKey {
     pub(in crate::tui::screens) fn of(event: &Event) -> Self {
         match &event.id {
             Some(id) => Self::Id(id.to_string()),
-            None => Self::Content(
-                event.timestamp.timestamp_millis(),
-                event.event_type.clone(),
-                event.message.clone(),
-            ),
+            None => Self::Content {
+                at: event.timestamp.timestamp_millis(),
+                event_type: event.event_type.clone(),
+                message: event.message.clone(),
+                device: event.device_mac.as_ref().map(ToString::to_string),
+                client: event.client_mac.as_ref().map(ToString::to_string),
+            },
         }
     }
 }
@@ -173,6 +182,46 @@ pub(in crate::tui::screens) mod tests {
         assert!(feed.insert(event_at(3, None)).is_some());
         assert!(feed.insert(event_at(3, None)).is_none());
         assert!(feed.insert(event_at(4, None)).is_some());
+        assert_eq!(feed.len(), 2);
+    }
+
+    #[test]
+    fn a_live_event_and_its_polled_copy_are_one_row() {
+        // The frame the live stream sends, then the row a poll lists for
+        // the same event: same `_id`, but no MACs and a rendered message.
+        let live = Event::from(
+            serde_json::from_value::<unifly_api::websocket::UnifiEvent>(json!({
+                "_id": "66f0c0ffee0000000000abcd",
+                "key": "EVT_WU_Connected",
+                "subsystem": "wlan",
+                "site_id": "site1",
+                "datetime": "2026-10-12T09:03:00Z",
+                "msg": "User[aa:bb:cc:dd:ee:01] has connected",
+                "user": "aa:bb:cc:dd:ee:01"
+            }))
+            .expect("frame"),
+        );
+        assert!(live.id.is_some(), "the frame's id is kept");
+        let polled = event_at(3, Some("66f0c0ffee0000000000abcd"));
+
+        let mut feed = Feed::new(100);
+        assert!(feed.insert(Arc::new(live)).is_some());
+        assert!(feed.insert(polled).is_none());
+        assert_eq!(feed.len(), 1);
+    }
+
+    #[test]
+    fn events_without_an_id_differ_by_the_device_or_client_they_name() {
+        let named = |client: &str| {
+            let mut event = (*event_at(3, None)).clone();
+            event.message = "a client connected".into();
+            event.client_mac = Some(unifly_api::MacAddress::new(client));
+            Arc::new(event)
+        };
+        let mut feed = Feed::new(100);
+        assert!(feed.insert(named("aa:bb:cc:dd:ee:01")).is_some());
+        assert!(feed.insert(named("aa:bb:cc:dd:ee:02")).is_some());
+        assert!(feed.insert(named("aa:bb:cc:dd:ee:01")).is_none());
         assert_eq!(feed.len(), 2);
     }
 

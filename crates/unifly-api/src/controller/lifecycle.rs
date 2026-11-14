@@ -488,8 +488,7 @@ impl Controller {
                                 }
 
                                 if ws_event.key.starts_with("EVT_") {
-                                    let event = crate::model::event::Event::from((*ws_event).clone());
-                                    let _ = event_tx.send(Arc::new(event));
+                                    publish_live_event(&store, &event_tx, &ws_event);
                                 }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -543,6 +542,20 @@ impl Controller {
             .connection_state
             .send_replace(ConnectionState::Disconnected);
         debug!("disconnected");
+    }
+}
+
+/// Hand an `EVT_*` frame to event subscribers, unless they already have its
+/// event: a refresh may have listed it before the frame was read, and the
+/// controller replays its backlog when the stream reconnects.
+fn publish_live_event(
+    store: &crate::store::DataStore,
+    event_tx: &tokio::sync::broadcast::Sender<Arc<crate::model::event::Event>>,
+    frame: &crate::websocket::UnifiEvent,
+) {
+    let event = crate::model::event::Event::from(frame.clone());
+    if store.note_live_event(&event) {
+        let _ = event_tx.send(Arc::new(event));
     }
 }
 

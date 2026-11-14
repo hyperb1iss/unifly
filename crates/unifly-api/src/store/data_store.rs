@@ -3,7 +3,8 @@
 // Thread-safe, lock-free storage for all UniFi domain entities.
 // Mutations are broadcast to subscribers via `watch` channels.
 
-use std::sync::Arc;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
@@ -41,6 +42,40 @@ pub struct DataStore {
     pub(crate) site_health: watch::Sender<Arc<Vec<HealthSummary>>>,
     pub(crate) last_full_refresh: watch::Sender<Option<DateTime<Utc>>>,
     pub(crate) last_ws_event: watch::Sender<Option<DateTime<Utc>>>,
+    /// Events handed to subscribers straight off the live stream, which no
+    /// refresh has stored yet.
+    live_events: Mutex<RecentKeys>,
+}
+
+/// The storage keys of the last [`RecentKeys::CAPACITY`] live events.
+///
+/// A live event is broadcast the moment its frame arrives and is stored
+/// only when a later refresh lists it. Until then the store alone cannot
+/// tell that it was already handed on, so its key is remembered here.
+#[derive(Default)]
+struct RecentKeys {
+    order: VecDeque<String>,
+    held: HashSet<String>,
+}
+
+impl RecentKeys {
+    /// More than a refresh interval of events on a busy site; a key only
+    /// has to last until the next refresh stores its event.
+    const CAPACITY: usize = 4096;
+
+    /// Remember `key`. Returns whether it was not already held.
+    fn insert(&mut self, key: String) -> bool {
+        if !self.held.insert(key.clone()) {
+            return false;
+        }
+        self.order.push_back(key);
+        if self.order.len() > Self::CAPACITY
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.held.remove(&oldest);
+        }
+        true
+    }
 }
 
 impl DataStore {
@@ -67,6 +102,7 @@ impl DataStore {
             site_health,
             last_full_refresh,
             last_ws_event,
+            live_events: Mutex::default(),
         }
     }
 
@@ -244,6 +280,30 @@ impl DataStore {
 
     pub(crate) fn mark_ws_event(&self, timestamp: DateTime<Utc>) {
         self.last_ws_event.send_replace(Some(timestamp));
+    }
+
+    /// Record an event that arrived on the live stream. Returns whether
+    /// subscribers have not been handed it yet: `false` for a frame whose
+    /// event a refresh already stored, or that arrived twice.
+    pub(crate) fn note_live_event(&self, event: &Event) -> bool {
+        let key = super::event_storage_key(event);
+        if self.events.get_by_key(&key).is_some() {
+            return false;
+        }
+        self.live_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key)
+    }
+
+    /// Whether the event stored under `key` was already handed to
+    /// subscribers from the live stream.
+    pub(crate) fn live_event_seen(&self, key: &str) -> bool {
+        self.live_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .held
+            .contains(key)
     }
 
     /// How long ago the last full refresh occurred, or `None` if never refreshed.
