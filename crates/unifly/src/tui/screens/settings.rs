@@ -6,8 +6,9 @@
 //!
 //! `Enter` tests the connection with what the form holds. A test that
 //! passes saves that profile and emits `ApplyConnection` so the app
-//! reconnects with it; `Esc` cancels a running test, and on the form asks
-//! before dropping edits. Theme and sponsor-button changes apply at once.
+//! reconnects with it; `Esc` cancels a running test, and on the form the
+//! app's confirm dialog asks before edits are dropped. Theme and
+//! sponsor-button changes apply at once.
 
 mod input;
 mod render;
@@ -40,8 +41,6 @@ pub(super) enum SettingsState {
     Testing,
     /// The test passed and the profile is being saved.
     Saving,
-    /// Asking whether to drop unsaved edits before leaving.
-    Confirming(Leave),
     /// Typing the name of a new profile.
     Naming,
 }

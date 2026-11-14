@@ -4,7 +4,7 @@ use unifly_api::SiteHint;
 
 use super::{FormEntry, Leave, Message, SettingsField, SettingsScreen, SettingsState};
 use crate::config::resolve::ConnectionOverrides;
-use crate::tui::action::Action;
+use crate::tui::action::{Action, ConfirmRequest};
 use crate::tui::forms::controller_profile::{AuthMode, ControllerProfileDraft, DraftField, Reveal};
 use crate::tui::forms::probe::{ProbeFailure, ProbeRequest, ProbeResult, ProbeSlot};
 use crate::tui::forms::session::{self, Overridable, Session};
@@ -433,7 +433,7 @@ impl SettingsScreen {
     /// Whether the form is taking keys as they are typed. It does on every
     /// field: text fields edit, the site picker turns into one on the
     /// first letter, and the theme picker filters as it is typed in. Only
-    /// a running test, a save, and a yes-or-no question do not.
+    /// a running test and a save do not.
     pub(super) fn typing(&self) -> bool {
         matches!(self.state, SettingsState::Editing | SettingsState::Naming)
     }
@@ -484,17 +484,25 @@ fn stepped(index: usize, len: usize, by: isize) -> usize {
 // ── Leaving the form ────────────────────────────────────────────────
 
 impl SettingsScreen {
-    /// Leave for `to`, asking first when that would drop edits.
+    /// Leave for `to`. When that would drop edits, the app's confirm
+    /// dialog asks first, and only a yes goes on.
     pub(super) fn leave(&mut self, to: Leave) -> Option<Action> {
         if self.is_dirty() {
-            self.state = SettingsState::Confirming(to);
-            return None;
+            let question = match &to {
+                Leave::Close => "Close Settings?",
+                Leave::Profile(_) => "Switch profiles?",
+                Leave::NewProfile(_) => "Set up a new profile?",
+            };
+            let go = match to {
+                Leave::Close => Action::CloseSettings,
+                Leave::Profile(name) => Action::SettingsShowProfile(name),
+                Leave::NewProfile(name) => Action::SetupNewProfile(name),
+            };
+            return Some(Action::ShowConfirm(
+                ConfirmRequest::new(question, go)
+                    .detail("The changes you have not saved are dropped."),
+            ));
         }
-        self.leave_now(to)
-    }
-
-    pub(super) fn leave_now(&mut self, to: Leave) -> Option<Action> {
-        self.state = SettingsState::Editing;
         match to {
             Leave::Close => Some(Action::CloseSettings),
             Leave::NewProfile(name) => Some(Action::SetupNewProfile(name)),
@@ -506,7 +514,8 @@ impl SettingsScreen {
     }
 
     /// Show another saved profile, read fresh from the config file.
-    fn switch_to_profile(&mut self, name: &str) {
+    pub(super) fn switch_to_profile(&mut self, name: &str) {
+        self.state = SettingsState::Editing;
         let Some(path) = self.config_path.clone() else {
             return;
         };

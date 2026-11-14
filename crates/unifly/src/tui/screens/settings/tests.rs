@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use unifly_api::SiteHint;
 
-use super::{Leave, Message, SettingsField, SettingsScreen, SettingsState};
+use super::{Message, SettingsField, SettingsScreen, SettingsState};
 use crate::config::resolve::ConnectionOverrides;
 use crate::tui::action::Action;
 use crate::tui::component::Component;
@@ -755,8 +755,10 @@ fn the_spinner_asks_for_a_frame_on_every_tick_while_it_runs() {
     assert!(rows.contains("Esc cancel"), "{rows}");
 }
 
-/// Esc on a form with edits asks before dropping them; on a form with
-/// none it just closes.
+/// Esc on a form with edits hands the question to the app's confirm
+/// dialog, which answers only to y, n and Esc: Enter, the key that tests
+/// and saves, can never drop the edits. On a form with none it just
+/// closes.
 #[test]
 fn esc_asks_before_dropping_edits() {
     let mut screen = test_screen();
@@ -767,25 +769,28 @@ fn esc_asks_before_dropping_edits() {
 
     screen.focus(SettingsField::Url);
     type_text(&mut screen, "/edited");
-    assert!(press(&mut screen, KeyCode::Esc).is_none());
-    assert_eq!(screen.state, SettingsState::Confirming(Leave::Close));
-    let rows = frame(&screen, 80, 24).join("\n");
-    assert!(rows.contains("drop the changes"), "{rows}");
-    assert!(rows.contains("y drop them"), "{rows}");
+    let asked = press(&mut screen, KeyCode::Esc);
+    let Some(Action::ShowConfirm(confirm)) = asked else {
+        panic!("edits are asked about: {asked:?}");
+    };
+    assert_eq!(confirm.prompt, "Close Settings?");
+    assert!(
+        confirm
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("dropped")),
+        "{confirm:?}"
+    );
+    assert!(matches!(*confirm.action, Action::CloseSettings));
 
-    assert!(press(&mut screen, KeyCode::Char('n')).is_none());
+    // The form itself is unchanged and still editing: nothing closes
+    // until the dialog's yes arrives.
     assert_eq!(screen.state, SettingsState::Editing);
     assert_eq!(
         screen.draft.url.text(),
         "https://console.example.com/edited",
         "the edits are kept"
     );
-
-    press(&mut screen, KeyCode::Esc);
-    assert!(matches!(
-        press(&mut screen, KeyCode::Char('y')),
-        Some(Action::CloseSettings)
-    ));
 }
 
 /// Launch flags keep overriding the profile after Settings reconnects,
@@ -955,15 +960,23 @@ fn the_profile_picker_shows_another_profile_and_asks_before_dropping_edits() {
     screen.focus(SettingsField::Username);
     type_text(&mut screen, "2");
     screen.focus(SettingsField::Profile);
-    press(&mut screen, KeyCode::Left);
-    assert_eq!(
-        screen.state,
-        SettingsState::Confirming(Leave::Profile("home".into()))
-    );
+    let asked = press(&mut screen, KeyCode::Left);
+    let Some(Action::ShowConfirm(confirm)) = asked else {
+        panic!("edits are asked about: {asked:?}");
+    };
+    assert_eq!(confirm.prompt, "Switch profiles?");
     assert_eq!(screen.profile_name, "work");
-    press(&mut screen, KeyCode::Char('y'));
+    assert_eq!(
+        screen.draft.username.text(),
+        "admin2",
+        "nothing dropped yet"
+    );
+
+    // The dialog's yes comes back as the action it was given.
+    screen.apply_action(&confirm.action);
     assert_eq!(screen.profile_name, "home");
     assert_eq!(screen.draft.api_key.text(), "home-key");
+    assert!(!screen.is_dirty());
 }
 
 #[test]

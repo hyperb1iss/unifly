@@ -26,6 +26,7 @@ impl App {
                 notices,
                 flags,
             } => self.apply_connection(profile_name, config, notices, flags)?,
+            Action::SettingsShowProfile(_) => self.forward_to_screen(ScreenId::Settings, action)?,
             Action::SetupNewProfile(name) => self.open_setup_for(name)?,
             Action::SetupCancelled => self.close_setup(),
             _ => return Ok(false),
@@ -106,6 +107,44 @@ mod tests {
             )),
             "{sent:?}"
         );
+        app.data_cancel.cancel();
+    }
+
+    /// Leaving Settings with edits asks in the app's own dialog, which
+    /// answers to y, n and Esc only. Enter is the form's "test & save"
+    /// key and must never be the one that drops the edits.
+    #[tokio::test]
+    async fn enter_never_answers_the_question_about_dropping_edits() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = live_app();
+        open_blank_settings(&mut app);
+        let press = |app: &mut App, code: KeyCode| {
+            if let Some(action) = app.handle_key_event(KeyEvent::from(code)).expect("key") {
+                app.process_action(&action).expect("action");
+            }
+            for action in drain(app) {
+                app.process_action(&action).expect("follow-up");
+            }
+        };
+
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.pending_confirm.is_some(), "the edit is asked about");
+        assert_eq!(app.active_screen, ScreenId::Settings);
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_confirm.is_some(), "Enter answers nothing");
+        assert_eq!(app.active_screen, ScreenId::Settings);
+
+        press(&mut app, KeyCode::Char('n'));
+        assert!(app.pending_confirm.is_none());
+        assert_eq!(app.active_screen, ScreenId::Settings, "the form stays");
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.active_screen, ScreenId::Dashboard);
+        assert!(!app.screens.contains_key(&ScreenId::Settings));
         app.data_cancel.cancel();
     }
 

@@ -44,14 +44,6 @@ impl SettingsScreen {
             }
             // A save cannot be taken back halfway, so it runs to its end.
             SettingsState::Saving => None,
-            SettingsState::Confirming(to) => match (key.code, plain_char(key)) {
-                (KeyCode::Enter, _) | (_, Some('y' | 'Y')) => self.leave_now(to),
-                (KeyCode::Esc, _) | (_, Some('n' | 'N')) => {
-                    self.state = SettingsState::Editing;
-                    None
-                }
-                _ => None,
-            },
             SettingsState::Naming => self.handle_naming_key(key),
             SettingsState::Editing => self.handle_editing_key(key),
         }
@@ -255,6 +247,13 @@ impl SettingsScreen {
                 password,
             } if *profile == self.profile_name => {
                 self.draft.note_keyring(*api_key, *password);
+                Some(Action::Invalidate)
+            }
+            // The answer to "switch profiles and drop the changes?".
+            Action::SettingsShowProfile(name)
+                if matches!(self.state, SettingsState::Editing | SettingsState::Naming) =>
+            {
+                self.switch_to_profile(name);
                 Some(Action::Invalidate)
             }
             // The spinner only turns when a frame is drawn for it.

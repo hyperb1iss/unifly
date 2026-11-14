@@ -5,7 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use super::{FieldHit, FormEntry, Leave, Message, SettingsField, SettingsScreen, SettingsState};
+use super::{FieldHit, FormEntry, Message, SettingsField, SettingsScreen, SettingsState};
 use crate::tui::forms::controller_profile::{DraftField, EXAMPLE_URL};
 use crate::tui::forms::probe::Tone;
 use crate::tui::forms::widgets::{
@@ -395,20 +395,9 @@ impl SettingsScreen {
         hits.push(arrows.next, FieldHit::Step(field, 1));
     }
 
-    /// What the area under the form says: a question, the last result, or
-    /// else what the focused field is for.
+    /// What the area under the form says: the last result, or else what
+    /// the focused field is for.
     pub(super) fn message_paragraphs(&self) -> Vec<(Tone, String)> {
-        if let SettingsState::Confirming(to) = &self.state {
-            let what = match to {
-                Leave::Close => "Close Settings",
-                Leave::Profile(_) => "Switch profiles",
-                Leave::NewProfile(_) => "Set up a new profile",
-            };
-            return vec![(
-                Tone::Notice,
-                format!("{what} and drop the changes you have not saved?"),
-            )];
-        }
         match &self.message {
             Some(Message::Failure(failure)) => failure
                 .paragraphs(self.private)
@@ -486,10 +475,6 @@ impl SettingsScreen {
         let hints = match &self.state {
             SettingsState::Testing => vec![Hint::button("Esc", "cancel", KeyCode::Esc)],
             SettingsState::Saving => vec![Hint::info("", "saving the profile")],
-            SettingsState::Confirming(_) => vec![
-                Hint::button("y", "drop them", click::char_key('y')),
-                Hint::button("n", "keep editing", click::char_key('n')),
-            ],
             SettingsState::Naming => vec![
                 Hint::button("Enter", "set it up", KeyCode::Enter),
                 Hint::button("Esc", "cancel", KeyCode::Esc),

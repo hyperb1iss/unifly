@@ -711,6 +711,8 @@ pub enum Action {
         /// in force for the session.
         flags: crate::config::resolve::ConnectionOverrides,
     },
+    /// Show another saved profile in Settings.
+    SettingsShowProfile(String),
     /// Open the setup wizard for a new profile with this name.
     SetupNewProfile(String),
     /// Leave a setup wizard that was opened from a running session.
