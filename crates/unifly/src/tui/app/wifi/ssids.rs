@@ -813,45 +813,32 @@ mod tests {
         controller.disconnect().await;
     }
 
-    /// A controller that answers every write with 200 and goes on
-    /// reporting the SSID as it was.
-    #[tokio::test]
-    async fn a_write_the_controller_did_not_apply_is_reported_as_a_failure() {
-        use wiremock::matchers::{body_partial_json, method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+    const SITE: &str = "550e8400-e29b-41d4-a716-446655440000";
+    const SSID: &str = "7a1d0c7e-52c7-4b7e-9d0a-2f3b9d6a4c11";
+    /// The Integration API as the cloud connector serves it.
+    const BASE: &str = "/v1/connector/consoles/console-1/proxy/network/integration/v1";
 
-        const SITE: &str = "550e8400-e29b-41d4-a716-446655440000";
-        const SSID: &str = "7a1d0c7e-52c7-4b7e-9d0a-2f3b9d6a4c11";
-        let server = MockServer::start().await;
-        let base = "/v1/connector/consoles/console-1/proxy/network/integration/v1";
-        let unchanged = serde_json::json!({
-            "type": "STANDARD", "id": SSID, "name": "Studio", "enabled": true,
-            "metadata": {"origin": "USER_DEFINED"}, "hideName": false,
-            "securityConfiguration": {"type": "OPEN"},
-            "broadcastingFrequenciesGHz": [2.4, 5]
-        });
-        Mock::given(method("GET"))
-            .and(path(format!("{base}/sites")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "offset": 0, "limit": 50, "count": 1, "totalCount": 1,
-                "data": [{ "id": SITE, "internalReference": "default", "name": "Default" }],
-            })))
-            .mount(&server)
-            .await;
-        let record = format!("{base}/sites/{SITE}/wifi/broadcasts/{SSID}");
-        Mock::given(method("GET"))
-            .and(path(&record))
-            .respond_with(ResponseTemplate::new(200).set_body_json(unchanged.clone()))
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .and(path(&record))
-            .and(body_partial_json(serde_json::json!({"hideName": true})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(unchanged))
-            .expect(1)
-            .mount(&server)
-            .await;
+    fn page(data: &serde_json::Value) -> serde_json::Value {
+        let count = data.as_array().map_or(0, Vec::len);
+        serde_json::json!({
+            "offset": 0, "limit": 200, "count": count, "totalCount": count, "data": data,
+        })
+    }
 
+    /// A controller on `server`, connected as far as knowing its site.
+    async fn http_controller(server: &wiremock::MockServer) -> Controller {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        Mock::given(method("GET"))
+            .and(path(format!("{BASE}/sites")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(page(&serde_json::json!([
+                    { "id": SITE, "internalReference": "default", "name": "Default" }
+                ]))),
+            )
+            .mount(server)
+            .await;
         let controller = Controller::new(unifly_api::ControllerConfig {
             url: server.uri().parse().expect("mock server URL"),
             auth: unifly_api::AuthCredentials::Cloud {
@@ -868,6 +855,154 @@ mod tests {
             .connect_lightweight()
             .await
             .expect("the connector resolves the site");
+        controller
+    }
+
+    /// Serve one hidden SSID the way a controller does: a list entry that
+    /// says nothing of `hideName`, and a record that carries it and takes
+    /// writes. Returns the record's `hideName`.
+    async fn serve_a_hidden_ssid(
+        server: &wiremock::MockServer,
+    ) -> Arc<std::sync::atomic::AtomicBool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, Request, ResponseTemplate};
+
+        let empty = page(&serde_json::json!([]));
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty))
+            .with_priority(10)
+            .mount(server)
+            .await;
+        // The overview of the 11.0.97 spec: no hideName.
+        Mock::given(method("GET"))
+            .and(path(format!("{BASE}/sites/{SITE}/wifi/broadcasts")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(page(&serde_json::json!([{
+                    "type": "STANDARD", "id": SSID, "name": "Backstage", "enabled": true,
+                    "metadata": {"origin": "USER_DEFINED"},
+                    "securityConfiguration": {"type": "OPEN"},
+                    "broadcastingFrequenciesGHz": [5]
+                }]))),
+            )
+            .mount(server)
+            .await;
+        let detail = |hide_name: bool| {
+            serde_json::json!({
+                "type": "STANDARD", "id": SSID, "name": "Backstage", "enabled": true,
+                "metadata": {"origin": "USER_DEFINED"}, "hideName": hide_name,
+                "clientIsolationEnabled": true,
+                "securityConfiguration": {"type": "OPEN"},
+                "broadcastingFrequenciesGHz": [5]
+            })
+        };
+        let hidden = Arc::new(AtomicBool::new(true));
+        let record = format!("{BASE}/sites/{SITE}/wifi/broadcasts/{SSID}");
+        let state = Arc::clone(&hidden);
+        Mock::given(method("GET"))
+            .and(path(&record))
+            .respond_with(move |_: &Request| {
+                ResponseTemplate::new(200).set_body_json(detail(state.load(Ordering::SeqCst)))
+            })
+            .mount(server)
+            .await;
+        let state = Arc::clone(&hidden);
+        Mock::given(method("PUT"))
+            .and(path(&record))
+            .respond_with(move |request: &Request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.body).unwrap_or_default();
+                let hide_name = body["hideName"].as_bool().unwrap_or(true);
+                state.store(hide_name, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(detail(hide_name))
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+        hidden
+    }
+
+    /// The whole hide key against a controller over HTTP: the list says
+    /// nothing of `hideName`, the record says the SSID is hidden, and the
+    /// one write that follows shows it again.
+    #[tokio::test]
+    async fn the_hide_key_unhides_an_ssid_whose_list_entry_does_not_say_it_is_hidden() {
+        let server = wiremock::MockServer::start().await;
+        let hidden = serve_a_hidden_ssid(&server).await;
+        let controller = http_controller(&server).await;
+        controller.full_refresh().await.expect("the lists load");
+        let listed = controller.wifi_broadcasts_snapshot();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].hidden, None, "the list does not say");
+
+        let mut app = App::new(Some(controller.clone()), None, false, true);
+        app.active_screen = ScreenId::Wifi;
+        app.process_action(&Action::WifiBroadcastsUpdated(listed))
+            .expect("SSIDs reach the screen");
+        app.process_action(&Action::WifiSubTab(WifiSubTab::Ssids))
+            .expect("sub-tab");
+
+        press(&mut app, 'H');
+        assert!(app.pending_confirm.is_none(), "H reads before it asks");
+        handle_until(&mut app, |action| {
+            matches!(action, Action::WifiAnswer { .. })
+        })
+        .await;
+        let confirm = app.pending_confirm.clone().expect("a confirmation");
+        assert_eq!(confirm.prompt, "Announce Backstage again?");
+        press(&mut app, 'y');
+        finish_write(&mut app).await;
+
+        let toast = app.notices.latest().expect("a toast");
+        assert_eq!(toast.level, NotificationLevel::Success, "{}", toast.message);
+        assert_eq!(toast.message, "Backstage announces its name again");
+        assert!(!hidden.load(std::sync::atomic::Ordering::SeqCst));
+        let writes: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .expect("requests are recorded")
+            .iter()
+            .filter(|request| request.method.as_str() == "PUT")
+            .map(|request| serde_json::from_slice(&request.body).unwrap_or_default())
+            .collect();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0]["hideName"], false, "{}", writes[0]);
+        assert_eq!(
+            writes[0]["clientIsolationEnabled"], true,
+            "the rest of the record is sent back as it was read"
+        );
+        controller.disconnect().await;
+        server.verify().await;
+    }
+
+    /// A controller that answers every write with 200 and goes on
+    /// reporting the SSID as it was.
+    #[tokio::test]
+    async fn a_write_the_controller_did_not_apply_is_reported_as_a_failure() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let unchanged = serde_json::json!({
+            "type": "STANDARD", "id": SSID, "name": "Studio", "enabled": true,
+            "metadata": {"origin": "USER_DEFINED"}, "hideName": false,
+            "securityConfiguration": {"type": "OPEN"},
+            "broadcastingFrequenciesGHz": [2.4, 5]
+        });
+        let record = format!("{BASE}/sites/{SITE}/wifi/broadcasts/{SSID}");
+        Mock::given(method("GET"))
+            .and(path(&record))
+            .respond_with(ResponseTemplate::new(200).set_body_json(unchanged.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(&record))
+            .and(body_partial_json(serde_json::json!({"hideName": true})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(unchanged))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let controller = http_controller(&server).await;
         let mut app = App::new(Some(controller), None, false, true);
         app.active_screen = ScreenId::Wifi;
 
