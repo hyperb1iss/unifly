@@ -303,7 +303,7 @@ impl OnboardingScreen {
                     frame,
                     slot,
                     "Skip TLS verify",
-                    self.draft.insecure,
+                    self.draft.insecure(),
                     active,
                     "accept a self-signed certificate",
                 ),

@@ -311,7 +311,7 @@ fn clicks_only_hit_the_rows_that_were_drawn() {
     screen.draft.auth_mode = AuthMode::Hybrid;
     screen.focus(SettingsField::Profile);
     let rows = frame(&screen, 80, 14);
-    let insecure = screen.draft.insecure;
+    let insecure = screen.draft.insecure();
     let donate = screen.show_donate;
 
     // The toggles are scrolled out of view: no cell of this frame flips
@@ -321,7 +321,7 @@ fn clicks_only_hit_the_rows_that_were_drawn() {
             screen.handle_mouse_input(left_click(column, row));
         }
     }
-    assert_eq!(screen.draft.insecure, insecure);
+    assert_eq!(screen.draft.insecure(), insecure);
     assert_eq!(screen.show_donate, donate);
     assert!(screen.theme_selector.borrow().is_none());
 
@@ -339,7 +339,7 @@ fn a_click_toggles_a_checkbox_and_steps_a_picker_by_its_arrows() {
     let rows = frame(&screen, 120, 40);
 
     screen.handle_mouse_input(click_label(&rows, "Skip TLS verify", "[ ]"));
-    assert!(screen.draft.insecure);
+    assert!(screen.draft.insecure());
     assert_eq!(screen.active_field, SettingsField::Insecure);
 
     let rows = frame(&screen, 120, 40);
@@ -369,7 +369,7 @@ fn a_click_toggles_a_checkbox_and_steps_a_picker_by_its_arrows() {
 fn cycling_through_cloud_leaves_the_profile_as_it_was() {
     let (mut screen, _dir) = screen_for(TWO_PROFILES, "work");
     let before = screen.draft.clone();
-    assert!(screen.draft.insecure);
+    assert!(screen.draft.insecure());
     screen.focus(SettingsField::AuthMode);
 
     for _ in 0..AuthMode::ALL.len() {
@@ -928,6 +928,36 @@ fn a_redacting_session_sees_no_values() {
     }
     assert!(rows.contains("Settings"), "{rows}");
     assert!(rows.contains("profile 2"), "{rows}");
+}
+
+/// The form asks before dropping edits only when a save would change the
+/// profile, and a save changes only what was edited: keys the form does
+/// not show for the current mode come back exactly as they were.
+#[test]
+fn an_untouched_form_is_clean_and_saves_the_profile_as_it_was() {
+    let toml = "[profiles.home]\ncontroller = \"https://10.0.0.1\"\nauth_mode = \"integration\"\n\
+         api_key = \"config-key\"\napi_key_env = \"UNIFLY_TEST_UNSET_KEY\"\n\
+         host_id = \"console-1\"\nhost_id_env = \"UNIFLY_TEST_UNSET_HOST\"\n\
+         username = \"admin\"\npassword = \"config-password\"\n";
+    let (mut screen, dir) = screen_for(toml, "home");
+    let before = crate::config::load_config_from(&dir.path().join("config.toml"))
+        .expect("load")
+        .profiles["home"]
+        .clone();
+
+    assert!(!screen.is_dirty());
+    assert_eq!(
+        toml::to_string(&screen.draft.to_profile()).expect("serializes"),
+        toml::to_string(&before).expect("serializes"),
+    );
+
+    // Leaving the mode is an edit, and still drops nothing.
+    screen.draft.auth_mode = AuthMode::Session;
+    assert!(screen.is_dirty());
+    let saved = screen.draft.to_profile();
+    assert_eq!(saved.api_key.as_deref(), Some("config-key"));
+    assert_eq!(saved.api_key_env.as_deref(), Some("UNIFLY_TEST_UNSET_KEY"));
+    assert_eq!(saved.host_id_env.as_deref(), Some("UNIFLY_TEST_UNSET_HOST"));
 }
 
 /// The command that makes MFA codes may carry the seed in its arguments,

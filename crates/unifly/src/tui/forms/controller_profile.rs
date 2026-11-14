@@ -189,10 +189,13 @@ pub(crate) struct ControllerProfileDraft {
     /// A one-time MFA code for the next sign-in. Never saved.
     pub(crate) totp: LineInput,
     pub(crate) site: LineInput,
-    pub(crate) insecure: bool,
-    /// Whether the user changed the insecure toggle. Until they do, saving
-    /// keeps the stored value, including "unset".
-    insecure_touched: bool,
+    /// The insecure toggle as the user set it. Until they do, the form
+    /// shows what the stored value resolves to and saving keeps that
+    /// stored value, including "unset".
+    insecure_choice: Option<bool>,
+    /// `[defaults].insecure`, which an unset `insecure` inherits when the
+    /// profile has no CA certificate.
+    inherited_insecure: bool,
     pub(crate) ca_cert: LineInput,
     /// Request timeout in seconds; empty inherits `[defaults]`.
     pub(crate) timeout: LineInput,
@@ -425,6 +428,13 @@ fn roll_back(
 /// profile so saving writes them back unchanged instead of erasing them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LoadedProfileFields {
+    /// Credentials as the file held them. A mode that does not use one
+    /// writes it back as it was, and an API key or host ID left as loaded
+    /// keeps the environment variable that goes with it.
+    api_key: Option<String>,
+    host_id: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
     totp_env: Option<String>,
     totp_command: Option<Vec<String>>,
     /// The stored `insecure`, which may be unset (inherit `[defaults]`).
@@ -448,8 +458,8 @@ impl Default for ControllerProfileDraft {
             password: LineInput::default(),
             totp: LineInput::default(),
             site: LineInput::new("default"),
-            insecure: false,
-            insecure_touched: false,
+            insecure_choice: None,
+            inherited_insecure: false,
             ca_cert: LineInput::default(),
             timeout: LineInput::default(),
             loaded: None,
@@ -480,8 +490,8 @@ impl ControllerProfileDraft {
             password: text(&profile.password),
             totp: LineInput::default(),
             site: LineInput::new(profile.site.as_str()),
-            insecure: !is_cloud && profile.insecure.unwrap_or(false),
-            insecure_touched: false,
+            insecure_choice: None,
+            inherited_insecure: false,
             ca_cert: LineInput::new(
                 profile
                     .ca_cert
@@ -496,6 +506,10 @@ impl ControllerProfileDraft {
                     .unwrap_or_default(),
             ),
             loaded: Some(LoadedProfileFields {
+                api_key: profile.api_key.clone(),
+                host_id: profile.host_id.clone(),
+                username: profile.username.clone(),
+                password: profile.password.clone(),
                 totp_env: profile.totp_env.clone(),
                 totp_command: profile.totp_command.clone(),
                 insecure: profile.insecure,
@@ -539,23 +553,34 @@ impl ControllerProfileDraft {
         }
     }
 
-    /// Show what an unset `insecure` actually resolves to, so the toggle
-    /// tells the truth: a profile CA means verification, otherwise
-    /// `[defaults].insecure` applies. An explicit value is shown as is.
+    /// Tell the draft what an unset `insecure` inherits, so the toggle
+    /// shows what the profile resolves to.
     pub(crate) fn with_inherited_insecure(mut self, defaults: &crate::config::Defaults) -> Self {
-        if self.auth_mode != AuthMode::Cloud
-            && let Some(loaded) = &self.loaded
-            && loaded.insecure.is_none()
-        {
-            self.insecure = self.ca_cert.is_empty() && defaults.insecure;
-        }
+        self.inherited_insecure = defaults.insecure;
         self
+    }
+
+    /// Whether the profile, saved as the form stands, skips TLS
+    /// verification. Until the toggle is touched this is what the stored
+    /// value resolves to right now: an explicit value as it is, and an
+    /// unset one from the CA field (a CA means verification) and then
+    /// `[defaults].insecure`. So editing the CA field can never leave the
+    /// toggle showing something other than what a save produces.
+    pub(crate) fn insecure(&self) -> bool {
+        if let Some(chosen) = self.insecure_choice {
+            return chosen;
+        }
+        match &self.loaded {
+            Some(loaded) => loaded
+                .insecure
+                .unwrap_or(self.ca_cert.is_empty() && self.inherited_insecure),
+            None => false,
+        }
     }
 
     /// Flip the insecure toggle. From then on saving writes it explicitly.
     pub(crate) fn toggle_insecure(&mut self) {
-        self.insecure = !self.insecure;
-        self.insecure_touched = true;
+        self.insecure_choice = Some(!self.insecure());
     }
 
     /// The `insecure` value to save: the stored one (possibly unset) until
@@ -563,12 +588,11 @@ impl ControllerProfileDraft {
     /// always saves the toggle. A cloud profile never verifies less than
     /// the system does, so it only carries what it was loaded with.
     fn insecure_to_save(&self) -> Option<bool> {
-        match &self.loaded {
-            Some(loaded) if !self.insecure_touched || self.auth_mode == AuthMode::Cloud => {
-                loaded.insecure
-            }
-            None if self.auth_mode == AuthMode::Cloud => None,
-            _ => Some(self.insecure),
+        match (&self.loaded, self.insecure_choice) {
+            (Some(loaded), _) if self.auth_mode == AuthMode::Cloud => loaded.insecure,
+            (None, _) if self.auth_mode == AuthMode::Cloud => None,
+            (Some(loaded), None) => loaded.insecure,
+            (_, chosen) => Some(chosen.unwrap_or(false)),
         }
     }
 
@@ -709,8 +733,7 @@ impl ControllerProfileDraft {
     /// Set the insecure toggle to `insecure`, as a choice made for this
     /// profile.
     pub(crate) fn set_insecure(&mut self, insecure: bool) {
-        self.insecure = insecure;
-        self.insecure_touched = true;
+        self.insecure_choice = Some(insecure);
     }
 
     pub(crate) fn validate_url(&self) -> Result<(), FieldError> {
@@ -846,36 +869,64 @@ impl ControllerProfileDraft {
         }
     }
 
+    /// The environment variable that still supplies `field` although the
+    /// field shows a value: the profile sets both, and the variable wins
+    /// while it is set. Typing another value replaces the variable.
+    pub(crate) fn env_in_use(&self, field: DraftField) -> Option<String> {
+        let loaded = self.loaded.as_ref()?;
+        let (input, stored, env) = match field {
+            DraftField::ApiKey => (&self.api_key, &loaded.api_key, &self.api_key_env),
+            DraftField::HostId => (&self.host_id, &loaded.host_id, &self.host_id_env),
+            _ => return None,
+        };
+        let name = env.as_deref().filter(|name| !name.trim().is_empty())?;
+        (!input.is_empty()
+            && as_loaded(input, stored.as_deref())
+            && std::env::var_os(name).is_some())
+        .then(|| format!("${name} is used while it is set"))
+    }
+
     /// The profile to connect with: typed credentials inline, and those
     /// left in the keyring absent, so credential resolution reads them from
     /// there. Use [`Self::plan_save`] for what goes to `config.toml`.
+    ///
+    /// Only what the form changed differs from the profile it was loaded
+    /// from. Credentials of a mode the form is not on are written back as
+    /// loaded, and so is the variable behind an API key or host ID that
+    /// was left alone: a value the test did not exercise is never written
+    /// in place of one that was stored.
     pub(crate) fn to_profile(&self) -> crate::config::Profile {
         let loaded = self.loaded.clone().unwrap_or_default();
         let mode = self.auth_mode;
         let is_cloud = mode == AuthMode::Cloud;
-        let typed = |input: &LineInput| {
-            let value = input.text().trim();
-            (!value.is_empty()).then(|| value.to_owned())
+        let (api_key, api_key_env) = if mode.uses_api_key() {
+            with_env(&self.api_key, loaded.api_key, self.api_key_env.clone())
+        } else {
+            (loaded.api_key, self.api_key_env.clone())
         };
-        let api_key = mode.uses_api_key().then(|| typed(&self.api_key)).flatten();
-        let host_id = is_cloud.then(|| typed(&self.host_id)).flatten();
+        let (host_id, host_id_env) = if is_cloud {
+            with_env(&self.host_id, loaded.host_id, self.host_id_env.clone())
+        } else {
+            (loaded.host_id, self.host_id_env.clone())
+        };
+        let (username, password) = if mode.uses_login() {
+            (
+                Some(self.username.text().trim().to_string()),
+                (!self.password.is_empty()).then(|| self.password.text().to_owned()),
+            )
+        } else {
+            (loaded.username, loaded.password)
+        };
         crate::config::Profile {
             controller: self.controller_to_save(),
             site: self.site.text().trim().to_string(),
             auth_mode: mode.config_value().to_string(),
-            api_key_env: (mode.uses_api_key() && api_key.is_none())
-                .then(|| self.api_key_env.clone())
-                .flatten(),
             api_key,
-            host_id_env: (is_cloud && host_id.is_none())
-                .then(|| self.host_id_env.clone())
-                .flatten(),
+            api_key_env,
             host_id,
-            username: mode
-                .uses_login()
-                .then(|| self.username.text().trim().to_string()),
-            password: (mode.uses_login() && !self.password.is_empty())
-                .then(|| self.password.text().to_owned()),
+            host_id_env,
+            username,
+            password,
             totp_env: loaded.totp_env,
             totp_command: loaded.totp_command,
             ca_cert: self.ca_cert_path(),
@@ -911,6 +962,30 @@ impl ControllerProfileDraft {
             });
         }
         SavePlan { profile, keyring }
+    }
+}
+
+/// Whether `input` still holds the value the profile was loaded with.
+fn as_loaded(input: &LineInput, stored: Option<&str>) -> bool {
+    input.text().trim() == stored.map_or("", str::trim)
+}
+
+/// What a value that may also come from an environment variable saves as:
+/// the typed value, and the variable unless a different value was typed
+/// in its place. An emptied field falls back to the variable.
+fn with_env(
+    input: &LineInput,
+    stored: Option<String>,
+    env: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if as_loaded(input, stored.as_deref()) {
+        return (stored, env);
+    }
+    let typed = input.text().trim();
+    if typed.is_empty() {
+        (None, env)
+    } else {
+        (Some(typed.to_owned()), None)
     }
 }
 
@@ -1313,7 +1388,7 @@ mod tests {
 
         let mut draft =
             ControllerProfileDraft::from_profile(&profile).with_inherited_insecure(&defaults);
-        assert!(draft.insecure, "shows the inherited value");
+        assert!(draft.insecure(), "shows the inherited value");
         assert_eq!(
             draft.to_profile().insecure,
             None,
@@ -1321,14 +1396,137 @@ mod tests {
         );
 
         draft.toggle_insecure();
-        assert!(!draft.insecure);
+        assert!(!draft.insecure());
         assert_eq!(draft.to_profile().insecure, Some(false));
 
         // A profile CA means verification, whatever [defaults] says.
         profile.ca_cert = Some("/etc/ssl/certs/unifi-ca.pem".into());
         let draft =
             ControllerProfileDraft::from_profile(&profile).with_inherited_insecure(&defaults);
-        assert!(!draft.insecure);
+        assert!(!draft.insecure());
+    }
+
+    /// The toggle has to show what a save produces at every moment. With
+    /// `insecure` unset, that depends on the CA field: clearing the CA
+    /// falls through to `[defaults].insecure`, and typing one restores
+    /// verification.
+    #[test]
+    fn an_unset_insecure_follows_the_ca_field_as_it_is_edited() {
+        let defaults = crate::config::Defaults {
+            insecure: true,
+            ..crate::config::Defaults::default()
+        };
+        let mut profile = hybrid_profile(Some("k"), Some("p"));
+        profile.insecure = None;
+        profile.ca_cert = Some("/etc/ssl/certs/unifi-ca.pem".into());
+        let mut draft =
+            ControllerProfileDraft::from_profile(&profile).with_inherited_insecure(&defaults);
+        assert!(!draft.insecure(), "a CA means verification");
+
+        draft.ca_cert.clear();
+        assert!(draft.insecure(), "without the CA, [defaults] applies");
+        let saved = draft.to_profile();
+        assert_eq!(saved.insecure, None, "unset stays unset");
+        let resolved = saved
+            .insecure
+            .unwrap_or(saved.ca_cert.is_none() && defaults.insecure);
+        assert_eq!(resolved, draft.insecure(), "what is shown is what is saved");
+
+        draft.ca_cert.set("/etc/ssl/certs/other-ca.pem");
+        assert!(!draft.insecure());
+
+        // Once chosen, the toggle no longer moves with the CA field.
+        draft.toggle_insecure();
+        draft.ca_cert.clear();
+        assert!(draft.insecure());
+        assert_eq!(draft.to_profile().insecure, Some(true));
+    }
+
+    /// A stored `insecure` is shown as stored in every mode the form can
+    /// be switched to, since that is what a save writes back.
+    #[test]
+    fn a_cloud_profile_switched_to_a_local_mode_shows_its_stored_insecure() {
+        let mut profile = hybrid_profile(Some("k"), None);
+        profile.auth_mode = "cloud".into();
+        profile.host_id = Some("console-1".into());
+        profile.insecure = Some(true);
+        let mut draft = ControllerProfileDraft::from_profile(&profile);
+
+        draft.auth_mode = AuthMode::ApiKey;
+        assert!(draft.insecure());
+        assert_eq!(draft.to_profile().insecure, Some(true));
+    }
+
+    /// A profile may set both a plaintext key and the variable that
+    /// overrides it. Saving without touching the key keeps both, so the
+    /// profile goes on using the same key; a key typed in its place is
+    /// the one tested, and replaces the variable.
+    #[test]
+    fn an_untouched_key_keeps_the_variable_that_goes_with_it() {
+        let mut profile = hybrid_profile(Some("config-key"), Some("p"));
+        profile.api_key_env = Some("UNIFLY_TEST_UNSET_KEY".into());
+        profile.auth_mode = "cloud".into();
+        profile.host_id = Some("console-1".into());
+        profile.host_id_env = Some("UNIFLY_TEST_UNSET_HOST".into());
+        let mut draft = ControllerProfileDraft::from_profile(&profile);
+
+        assert_eq!(toml_of(&draft.to_profile()), toml_of(&profile));
+
+        draft.site.set("lab");
+        let saved = draft.to_profile();
+        assert_eq!(saved.api_key.as_deref(), Some("config-key"));
+        assert_eq!(saved.api_key_env.as_deref(), Some("UNIFLY_TEST_UNSET_KEY"));
+        assert_eq!(saved.host_id_env.as_deref(), Some("UNIFLY_TEST_UNSET_HOST"));
+
+        draft.api_key.set("typed-key");
+        let saved = draft.to_profile();
+        assert_eq!(saved.api_key.as_deref(), Some("typed-key"));
+        assert_eq!(saved.api_key_env, None, "the typed key is the one in use");
+        assert_eq!(
+            saved.host_id_env.as_deref(),
+            Some("UNIFLY_TEST_UNSET_HOST"),
+            "the host ID was not touched"
+        );
+
+        // Emptying the field falls back to the variable.
+        draft.api_key.clear();
+        let saved = draft.to_profile();
+        assert_eq!(saved.api_key, None);
+        assert_eq!(saved.api_key_env.as_deref(), Some("UNIFLY_TEST_UNSET_KEY"));
+    }
+
+    /// Switching the auth mode must not erase the credentials of the mode
+    /// left behind: they are not shown, so they are not the form's to drop.
+    #[test]
+    fn credentials_of_a_mode_not_in_use_are_saved_as_loaded() {
+        let mut profile = hybrid_profile(Some("config-key"), Some("config-password"));
+        profile.host_id = Some("console-1".into());
+        let mut draft = ControllerProfileDraft::from_profile(&profile);
+
+        draft.auth_mode = AuthMode::ApiKey;
+        // Edits made before leaving the mode were never tested.
+        draft.username.set("someone-else");
+        draft.password.set("typo");
+        let saved = draft.to_profile();
+        assert_eq!(saved.auth_mode, "integration");
+        assert_eq!(saved.username.as_deref(), Some("bliss"));
+        assert_eq!(saved.password.as_deref(), Some("config-password"));
+        assert_eq!(saved.host_id.as_deref(), Some("console-1"));
+
+        draft.auth_mode = AuthMode::Session;
+        draft.api_key.set("typo-key");
+        let saved = draft.to_profile();
+        assert_eq!(saved.api_key.as_deref(), Some("config-key"));
+        assert_eq!(saved.username.as_deref(), Some("someone-else"));
+
+        // Nothing of an unused mode reaches the keyring either.
+        let store = MemoryStore::default();
+        let stored = draft
+            .plan_save("home")
+            .store_secrets(&store)
+            .expect("saves");
+        assert_eq!(stored.profile.api_key.as_deref(), Some("config-key"));
+        assert!(store.secret("home/api-key").is_none());
     }
 
     /// A TOTP command may carry the seed in its arguments, so only the
@@ -1802,6 +2000,6 @@ mod tests {
         assert_eq!(draft.auth_mode, AuthMode::Session);
         assert_eq!(draft.username.text(), "bliss");
         assert_eq!(draft.password.text(), "hunter2");
-        assert!(!draft.insecure);
+        assert!(!draft.insecure());
     }
 }

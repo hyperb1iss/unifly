@@ -127,7 +127,7 @@ fn prefill(draft: &mut ControllerProfileDraft, session: &Session) {
         draft.host_id.set(host_id.as_str());
     }
     if let Some(insecure) = flags.insecure
-        && insecure != draft.insecure
+        && insecure != draft.insecure()
     {
         draft.set_insecure(insecure);
     }
@@ -471,7 +471,7 @@ impl OnboardingScreen {
     /// to accept.
     pub(super) fn offers_trust(&self) -> bool {
         self.phase == TestPhase::Idle
-            && !self.draft.insecure
+            && !self.draft.insecure()
             && self.draft.auth_mode != AuthMode::Cloud
             && self
                 .failure

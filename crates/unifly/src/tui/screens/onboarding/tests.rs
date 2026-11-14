@@ -319,7 +319,7 @@ fn the_auth_mode_is_asked_before_the_address_and_cloud_has_none() {
     press(&mut screen, KeyCode::Enter);
     assert_eq!(screen.step, WizardStep::Url);
     assert!(screen.draft.url.is_empty());
-    assert!(!screen.draft.insecure);
+    assert!(!screen.draft.insecure());
 }
 
 /// The example address is a hint, not text: typing starts from an empty
@@ -605,10 +605,10 @@ fn an_unverified_certificate_can_be_accepted_from_the_failure() {
     );
     let rows = frame(&screen, 80, 24).join("\n");
     assert!(rows.contains("accept the certificate and retry"), "{rows}");
-    assert!(!screen.draft.insecure);
+    assert!(!screen.draft.insecure());
 
     press(&mut screen, KeyCode::Char('t'));
-    assert!(screen.draft.insecure);
+    assert!(screen.draft.insecure());
     assert_eq!(screen.phase, TestPhase::Testing);
 
     // Already skipping verification: there is nothing left to accept.
@@ -843,7 +843,7 @@ fn launch_flags_prefill_the_steps_and_then_stand_down() {
 
     assert_eq!(screen.draft.url.text(), "https://10.9.9.9");
     assert_eq!(screen.draft.site.text(), "lab");
-    assert!(screen.draft.insecure);
+    assert!(screen.draft.insecure());
     assert!(screen.draft.api_key.is_empty());
     let rows = {
         press(&mut screen, KeyCode::Enter);

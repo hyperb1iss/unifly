@@ -260,7 +260,7 @@ impl SettingsScreen {
                 frame,
                 row,
                 field.label(),
-                self.draft.insecure,
+                self.draft.insecure(),
                 active,
                 overridden
                     .as_deref()
@@ -282,7 +282,11 @@ impl SettingsScreen {
                 active,
                 if active { "Enter to change" } else { "" },
             ),
-            _ => self.render_text_field(frame, row, field, overridden.as_deref()),
+            _ => {
+                // A value the form shows may still lose to a variable.
+                let tag = overridden.or_else(|| self.draft.env_in_use(field.draft_field()?));
+                self.render_text_field(frame, row, field, tag.as_deref());
+            }
         }
     }
 
