@@ -31,7 +31,7 @@ use unifly_api::{Client, Device, EntityId, MacAddress};
 use crate::tui::action::{Access, Action, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::component::Component;
 use crate::tui::table::TableScroll;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 /// What the Overview draws beside the AP table. One panel at a time, so
 /// nothing waits hidden behind another.
@@ -195,6 +195,10 @@ impl Component for WifiScreen {
 
     fn help(&self) -> Vec<(&'static str, &'static str)> {
         self.help_keys()
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn id(&self) -> &'static str {

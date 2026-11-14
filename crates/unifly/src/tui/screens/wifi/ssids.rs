@@ -325,6 +325,7 @@ mod tests {
     use crate::tui::component::Component;
     use crate::tui::screens::wifi::WifiScreen;
     use crate::tui::table::render_lines;
+    use crate::tui::widgets::click::hint_text;
 
     /// An SSID as the controller lists it: the summary, with none of the
     /// settings only the full record carries.
@@ -658,20 +659,14 @@ mod tests {
 
     #[test]
     fn the_hide_hint_names_a_direction_only_once_it_is_known() {
-        let hint = |screen: &WifiScreen| {
-            draw(screen)
-                .lines()
-                .rev()
-                .find(|line| line.contains("H "))
-                .unwrap_or_default()
-                .to_owned()
-        };
+        // A trailing gap, so "hide" is told from "hide/unhide".
+        let hint = |screen: &WifiScreen| format!("{}  ", hint_text(&screen.hints()));
         let mut screen = ssid_screen();
         assert!(hint(&screen).contains("H hide/unhide"), "{}", hint(&screen));
         screen.apply_action(&record(&ssid(1, "Guest", "Open"), true));
         assert!(hint(&screen).contains("H unhide"), "{}", hint(&screen));
         screen.apply_action(&record(&ssid(1, "Guest", "Open"), false));
-        assert!(hint(&screen).contains("H hide "), "{}", hint(&screen));
+        assert!(hint(&screen).contains("H hide  "), "{}", hint(&screen));
     }
 
     #[test]
@@ -852,9 +847,11 @@ mod tests {
             "{answer:?}"
         );
         assert!(screen.ssid_prompt.is_none(), "no prompt opens");
+        let offered = hint_text(&screen.hints());
+        assert!(offered.contains("N rename"), "{offered}");
         assert!(
-            !draw(&screen).contains("P passphrase"),
-            "the hint bar does not offer what cannot be done"
+            !offered.contains("P passphrase"),
+            "the status bar does not offer what cannot be done: {offered}"
         );
         screen.handle_key_input(KeyEvent::from(KeyCode::Enter));
         let shown = draw(&screen);

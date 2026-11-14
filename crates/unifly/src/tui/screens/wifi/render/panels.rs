@@ -11,7 +11,10 @@ use unifly_api::{Device, DeviceState};
 
 use super::empty::{NO_SESSION_CHANNELS, NO_SESSION_EXPERIENCE};
 use super::tables::count_label;
-use super::{health_color, kbps_to_mbps, panel_block, render_notice, state_color, state_label};
+use super::{
+    NOTE_PANEL_ROWS, health_color, kbps_to_mbps, panel_block, render_notice, state_color,
+    state_label,
+};
 use crate::tui::action::WifiBand;
 use crate::tui::screens::wifi::WifiScreen;
 use crate::tui::screens::wifi::roam::{band_name, json_i32, json_string, json_u64};
@@ -22,6 +25,11 @@ use crate::tui::screens::wifi::state::{
 use crate::tui::theme;
 use crate::tui::widgets::hyperchart::{HeatmapCell, HyperHeatmap};
 use crate::tui::widgets::signal_bars;
+
+/// Rows a panel of `lines` takes with its frame.
+fn framed(lines: usize) -> u16 {
+    u16::try_from(lines).unwrap_or(u16::MAX).saturating_add(2)
+}
 
 fn muted() -> Style {
     Style::default().fg(theme::text_muted())
@@ -45,6 +53,14 @@ fn percent(value: Option<f64>) -> String {
 }
 
 impl WifiScreen {
+    /// Rows the AP detail takes with all the room it wants, frame
+    /// included: every line it has, down to its last client.
+    pub(super) fn ap_detail_height(&self) -> u16 {
+        self.selected_ap().map_or(NOTE_PANEL_ROWS, |ap| {
+            framed(self.ap_detail_lines(ap, usize::MAX).len())
+        })
+    }
+
     pub(super) fn render_ap_detail(&self, frame: &mut Frame, area: Rect) {
         let block = panel_block(" AP Detail ", self.focused);
         let inner = block.inner(area);
@@ -54,7 +70,13 @@ impl WifiScreen {
             render_notice(frame, inner, "No access point selected");
             return;
         };
+        let lines = self.ap_detail_lines(ap, usize::from(inner.height));
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
 
+    /// The AP detail's lines for a panel `rows` tall inside its frame.
+    /// The client list is cut to what is left under the rest.
+    fn ap_detail_lines(&self, ap: &Device, rows: usize) -> Vec<Line<'static>> {
         let clients = self.ap_clients(ap);
         let mut lines = vec![ap_heading(ap)];
         lines.push(match self.ap_health(ap) {
@@ -110,13 +132,22 @@ impl WifiScreen {
         }
         lines.extend(ap.radios.iter().map(radio_line));
 
-        lines.push(Line::from(""));
-        if !self.session_missing() {
-            let room = usize::from(inner.height).saturating_sub(lines.len() + 1);
+        // A gap, the list's heading, and at least one row of it: a panel
+        // without room for all three leaves the list to the table above,
+        // whose Clients column counts it.
+        let room = rows.saturating_sub(lines.len() + 2);
+        if !self.session_missing() && room > 0 {
+            lines.push(Line::from(""));
             lines.extend(client_lines(clients, room));
         }
+        lines
+    }
 
-        frame.render_widget(Paragraph::new(lines), inner);
+    /// Rows the experience panel takes, frame included: its lines, or
+    /// room for the one note it shows instead.
+    pub(super) fn client_detail_height(&self) -> u16 {
+        self.client_detail_lines()
+            .map_or(NOTE_PANEL_ROWS, |lines| framed(lines.len()))
     }
 
     pub(super) fn render_client_detail(&self, frame: &mut Frame, area: Rect) {
@@ -124,13 +155,22 @@ impl WifiScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        match self.client_detail_lines() {
+            Ok(lines) => {
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+            }
+            Err(note) => render_notice(frame, inner, &note),
+        }
+    }
+
+    /// The experience panel's lines, or the note it shows in their place:
+    /// that nothing is selected, or why the detail is not on hand.
+    fn client_detail_lines(&self) -> Result<Vec<Line<'static>>, String> {
         let Some(client) = self.selected_client() else {
-            render_notice(frame, inner, "No client selected");
-            return;
+            return Err("No client selected".to_owned());
         };
         if self.session_missing() {
-            render_notice(frame, inner, NO_SESSION_EXPERIENCE);
-            return;
+            return Err(NO_SESSION_EXPERIENCE.to_owned());
         }
 
         // The detail on hand may belong to the client selected before.
@@ -141,15 +181,13 @@ impl WifiScreen {
             .filter(|detail| ip.as_deref() == Some(detail.ip.as_str()));
         let Some(detail) = detail.map(|detail| &detail.data) else {
             let name = display_client_name(client);
-            let status = match ip.as_deref() {
+            return Err(match ip.as_deref() {
                 None => format!("{name} has no IP address, so its WiFi detail cannot be read"),
                 Some(ip) => match self.client_detail_error(ip) {
                     Some(error) => format!("WiFi detail unavailable: {error}. Retrying."),
                     None => format!("Loading WiFi detail for {name}\u{2026}"),
                 },
-            };
-            render_notice(frame, inner, &status);
-            return;
+            });
         };
 
         let ssid = client
@@ -167,28 +205,52 @@ impl WifiScreen {
             Span::styled(ssid, secondary()),
         ])];
         lines.extend(experience_lines(detail));
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        Ok(lines)
+    }
+
+    /// Rows the channel map takes, frame included: its summary and the
+    /// rows its cells wrap to at `width`.
+    pub(super) fn channel_map_height(&self, width: u16) -> u16 {
+        self.channel_map_content()
+            .map_or(NOTE_PANEL_ROWS, |(header, cells)| {
+                let map = HyperHeatmap::new(&cells).rows(width.saturating_sub(2));
+                framed(header.len()).saturating_add(map)
+            })
     }
 
     pub(super) fn render_channel_map(&self, frame: &mut Frame, area: Rect) {
-        let band = self.selected_band;
-        let block = panel_block(format!(" Channels · {} ", band.label()), self.focused);
+        // The band is on the toolbar, with the keys that change it.
+        let block = panel_block(" Channels ", self.focused);
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        let (header, cells) = match self.channel_map_content() {
+            Ok(content) => content,
+            Err(note) => {
+                render_notice(frame, inner, &note);
+                return;
+            }
+        };
+        let rows = u16::try_from(header.len()).unwrap_or(u16::MAX);
+        let [top, map] =
+            Layout::vertical([Constraint::Length(rows), Constraint::Min(1)]).areas(inner);
+        frame.render_widget(Paragraph::new(header), top);
+        frame.render_widget(HyperHeatmap::new(&cells), map);
+    }
+
+    /// The channel map's summary lines and cells, or the note it shows in
+    /// their place: why the channel list is not on hand.
+    fn channel_map_content(&self) -> Result<(Vec<Line<'static>>, Vec<HeatmapCell>), String> {
         if self.session_missing() {
-            render_notice(frame, inner, NO_SESSION_CHANNELS);
-            return;
+            return Err(NO_SESSION_CHANNELS.to_owned());
         }
 
         let occupancy = self.channel_occupancy();
         if occupancy.is_empty() {
-            let status = match &self.channels_error {
+            return Err(match &self.channels_error {
                 Some(error) => format!("Channel list unavailable: {error}"),
                 None => "Loading the channel list\u{2026}".to_owned(),
-            };
-            render_notice(frame, inner, &status);
-            return;
+            });
         }
 
         let cells: Vec<HeatmapCell> = occupancy
@@ -241,12 +303,7 @@ impl WifiScreen {
             )));
         }
         header.push(Line::from(""));
-
-        let rows = u16::try_from(header.len()).unwrap_or(u16::MAX);
-        let [top, map] =
-            Layout::vertical([Constraint::Length(rows), Constraint::Min(1)]).areas(inner);
-        frame.render_widget(Paragraph::new(header), top);
-        frame.render_widget(HyperHeatmap::new(&cells), map);
+        Ok((header, cells))
     }
 
     /// What the SSID authenticates with. A passphrase itself is never
@@ -333,6 +390,17 @@ impl WifiScreen {
         rows
     }
 
+    /// Rows the SSID detail takes in a panel `width` wide, frame
+    /// included: its record in one column, or `folded` into two where
+    /// the panel has the width for them.
+    pub(super) fn ssid_detail_height(&self, width: u16, folded: bool) -> u16 {
+        self.selected_ssid().map_or(NOTE_PANEL_ROWS, |ssid| {
+            let inner = usize::from(width.saturating_sub(2));
+            let rows = if folded { 0 } else { usize::MAX };
+            framed(self.ssid_detail_lines(ssid, inner, rows).len())
+        })
+    }
+
     pub(super) fn render_ssid_detail(&self, frame: &mut Frame, area: Rect) {
         let block = panel_block(" SSID Detail ", self.focused);
         let inner = block.inner(area);
@@ -342,6 +410,19 @@ impl WifiScreen {
             render_notice(frame, inner, "No SSID selected");
             return;
         };
+        let lines =
+            self.ssid_detail_lines(ssid, usize::from(inner.width), usize::from(inner.height));
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    /// The SSID detail's lines for a panel `width` by `height` inside its
+    /// frame.
+    fn ssid_detail_lines(
+        &self,
+        ssid: &WifiBroadcast,
+        width: usize,
+        height: usize,
+    ) -> Vec<Line<'static>> {
         let rows = self.ssid_detail_rows(ssid);
 
         let pair = |(label, value): &(&str, String)| {
@@ -363,8 +444,8 @@ impl WifiScreen {
         }
         // A short panel folds the record into two columns, so none of it
         // falls off the bottom.
-        let room = usize::from(inner.height).saturating_sub(lines.len() + 1);
-        let half = usize::from(inner.width / 2);
+        let room = height.saturating_sub(lines.len() + 1);
+        let half = width / 2;
         if rows.len() > room && half >= 28 {
             let (left, right) = rows.split_at(rows.len().div_ceil(2));
             for (index, left) in left.iter().enumerate() {
@@ -380,7 +461,7 @@ impl WifiScreen {
             lines.extend(rows.iter().map(|row| Line::from(pair(row).to_vec())));
         }
         lines.push(Line::from(pair(&("ID", ssid.id.to_string())).to_vec()));
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        lines
     }
 }
 

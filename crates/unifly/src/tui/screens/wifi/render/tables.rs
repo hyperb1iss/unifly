@@ -1,6 +1,7 @@
 //! The WiFi screen's tables: AP health, wireless clients, SSIDs, neighbor
-//! APs, and roam history, each sized to what its cells hold. A table with
-//! no rows draws one line saying why instead of a bare header.
+//! APs, and roam history, each sized to what its cells hold and drawn
+//! straight into the screen's frame. A table with no rows draws one line
+//! saying why instead of a bare header.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -13,8 +14,8 @@ use unifly_api::{Client, Device, DeviceState};
 
 use super::panels::{bands_label, enabled_label, security_label};
 use super::{
-    band_label, health_color, health_label, kbps_to_mbps, panel_block, render_notice, signal_color,
-    signal_text, state_color, state_label,
+    band_label, health_color, health_label, kbps_to_mbps, render_notice, signal_color, signal_text,
+    state_color, state_label,
 };
 use crate::tui::action::{WifiBand, WifiSortField};
 use crate::tui::screens::wifi::WifiScreen;
@@ -117,11 +118,7 @@ impl WifiScreen {
         }
     }
 
-    pub(super) fn render_ap_table(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" AP Health ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
+    pub(super) fn render_ap_table(&self, frame: &mut Frame, inner: Rect) {
         let aps = self.ap_devices();
         if aps.is_empty() {
             render_notice(frame, inner, &self.ap_empty_reason());
@@ -290,11 +287,7 @@ impl WifiScreen {
         }
     }
 
-    pub(super) fn render_client_table(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" Wireless Clients ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
+    pub(super) fn render_client_table(&self, frame: &mut Frame, inner: Rect) {
         let clients = self.wireless_clients();
         if clients.is_empty() {
             render_notice(frame, inner, &self.client_empty_reason());
@@ -385,11 +378,7 @@ impl WifiScreen {
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
-    pub(super) fn render_ssid_table(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block(" SSIDs ", self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
+    pub(super) fn render_ssid_table(&self, frame: &mut Frame, inner: Rect) {
         let ssids = self.visible_ssids();
         if ssids.is_empty() {
             render_notice(frame, inner, &self.ssid_empty_reason());
@@ -491,18 +480,7 @@ impl WifiScreen {
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
-    pub(super) fn render_neighbors(&self, frame: &mut Frame, area: Rect) {
-        let band = self.selected_band.label();
-        let failed = self.neighbors_error.is_some() && self.neighbors_loaded_at.is_some();
-        let title = if failed {
-            format!(" Neighbor APs · {band} · refresh failed ")
-        } else {
-            format!(" Neighbor APs · {band} ")
-        };
-        let block = panel_block(title, self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
+    pub(super) fn render_neighbors(&self, frame: &mut Frame, inner: Rect) {
         // Without a session the scan cannot be this controller's.
         let neighbors = self.visible_neighbors();
         if neighbors.is_empty() || self.session_missing() {
@@ -590,21 +568,7 @@ impl WifiScreen {
         self.hits.borrow_mut().push_table_rows(inner, &state, len);
     }
 
-    pub(super) fn render_roaming(&self, frame: &mut Frame, area: Rect) {
-        // With rows on screen the table keeps them through a failed
-        // refresh, so the title says they are not fresh.
-        let failed = !self.roam_rows.is_empty() && self.roam_history_error().is_some();
-        let title = self.roam_target.as_ref().map_or_else(
-            || " Roaming History ".to_owned(),
-            |target| {
-                let failed = if failed { " · refresh failed" } else { "" };
-                format!(" Roaming History · {}{failed} ", target.label)
-            },
-        );
-        let block = panel_block(title, self.focused);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
+    pub(super) fn render_roaming(&self, frame: &mut Frame, inner: Rect) {
         if let Some(reason) = self.roam_empty_reason() {
             render_notice(frame, inner, &reason);
             return;
@@ -761,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tap_inside_a_narrow_overlay_leaves_the_rows_beneath_alone() {
+    fn a_tap_inside_the_panel_under_the_table_changes_nothing() {
         use crate::tui::component::Component;
         use crate::tui::widgets::click::left_click;
 
@@ -780,9 +744,14 @@ mod tests {
         screen.overview_panel = crate::tui::screens::wifi::OverviewPanel::Detail;
         let selected = screen.ap_table_state.selected();
 
-        // Under 110 columns the AP detail draws as an overlay over the table.
-        render_lines(80, 22, |frame, area| screen.render(frame, area));
-        let action = screen.handle_mouse_input(left_click(40, 11));
+        // Under 110 columns the AP detail sits under the table.
+        let rows = render_lines(80, 22, |frame, area| screen.render(frame, area));
+        let panel = rows
+            .iter()
+            .position(|row| row.contains("AP Detail"))
+            .expect("the panel is drawn");
+        let inside = u16::try_from(panel + 2).expect("a row on screen");
+        let action = screen.handle_mouse_input(left_click(40, inside));
 
         assert!(action.is_none(), "{action:?}");
         assert_eq!(screen.ap_table_state.selected(), selected);
@@ -791,6 +760,7 @@ mod tests {
             crate::tui::screens::wifi::OverviewPanel::Detail
         );
     }
+
     #[test]
     fn every_radio_lands_in_its_band() {
         let tri_band = ap(&json!([

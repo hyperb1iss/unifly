@@ -145,7 +145,7 @@ impl WifiScreen {
         }
     }
 
-    /// Mouse and touch input: sub-tabs, rows, chips, and hints by click,
+    /// Mouse and touch input: sub-tabs, rows, and toolbar chips by click,
     /// the list by wheel.
     pub(super) fn handle_mouse_input(&mut self, mouse: MouseEvent) -> Option<Action> {
         // As for a key: the mouse reaches the screen only with no prompt up.

@@ -1,6 +1,6 @@
-//! The WiFi screen's key documentation: the hint bar for the current mode
-//! and the full list for the help overlay. Both live here, next to each
-//! other, so a key that changes is changed in both.
+//! The WiFi screen's key documentation: the status bar's actions for the
+//! current mode and the full list for the help overlay. Both live here,
+//! next to each other, so a key that changes is changed in both.
 
 use crossterm::event::KeyCode;
 
@@ -36,39 +36,46 @@ pub(super) fn next_sort_field(sub_tab: WifiSubTab, current: WifiSortField) -> Wi
     cycle[index.map_or(0, |index| (index + 1) % cycle.len())]
 }
 
+/// Rank of the sort hint: the arrow on the sorted column already says
+/// what the order is, so the key is the first to leave a narrow bar.
+const SORT_RANK: u8 = 6;
+
+fn sort_hint() -> (u8, Hint) {
+    (SORT_RANK, Hint::button("s", "sort", click::char_key('s')))
+}
+
 impl WifiScreen {
-    /// The keys worth showing for what is on screen right now, most useful
-    /// first: the bar is cut at the panel's width.
-    pub(super) fn hints(&self) -> Vec<Hint> {
+    /// What the status bar offers for the active sub-tab and selection,
+    /// ranked for a narrow bar: the way into a panel first, the way out
+    /// last. Moving, switching tabs, and the band keys on the toolbar are
+    /// in the help.
+    pub(super) fn status_hints(&self) -> Vec<(u8, Hint)> {
         let mut hints = Vec::new();
-        self.panel_hints(&mut hints);
-        hints.push(Hint::button("h/l", "tab", click::char_key('l')));
         match self.sub_tab {
             WifiSubTab::Overview => self.overview_hints(&mut hints),
             WifiSubTab::Clients => self.clients_hints(&mut hints),
             WifiSubTab::Ssids => self.ssids_hints(&mut hints),
             WifiSubTab::Neighbors => {
                 if !self.session_missing() {
-                    hints.push(Hint::button("s", "sort", click::char_key('s')));
-                    hints.push(Hint::button("f", "band", click::char_key('f')));
+                    hints.push(sort_hint());
                 }
             }
             WifiSubTab::Roaming => {
                 if self.roam_target.is_some() && !self.session_missing() {
-                    hints.push(Hint::button("r", "refresh", click::char_key('r')));
+                    hints.push((0, Hint::button("r", "refresh", click::char_key('r'))));
                 }
             }
         }
-        if self.focus_shown() && !self.panel_open() {
-            hints.push(Hint::button("Esc", "all APs", KeyCode::Esc));
-        }
-        if self.active_len() > 1 {
-            hints.push(Hint::info("j/k", "move"));
+        if self.panel_open() {
+            hints.push((0, Hint::button("Esc", "close", KeyCode::Esc)));
+        } else if self.focus_shown() {
+            hints.push((1, Hint::button("Esc", "all APs", KeyCode::Esc)));
         }
         hints
     }
 
-    /// Whether the active sub-tab has a panel open over or beside its list.
+    /// Whether the active sub-tab has a panel open beside or under its
+    /// list.
     pub(super) fn panel_open(&self) -> bool {
         match self.sub_tab {
             WifiSubTab::Overview => self.overview_panel != OverviewPanel::None,
@@ -87,19 +94,8 @@ impl WifiScreen {
             )
     }
 
-    /// The keys of the open panel, ahead of everything else.
-    fn panel_hints(&self, hints: &mut Vec<Hint>) {
-        if !self.panel_open() {
-            return;
-        }
-        if self.channel_map_open() {
-            hints.push(Hint::button("[/]", "band", click::char_key(']')));
-        }
-        hints.push(Hint::button("Esc", "close", KeyCode::Esc));
-    }
-
-    fn overview_hints(&self, hints: &mut Vec<Hint>) {
-        let channels = Hint::button("c", "channels", click::char_key('c'));
+    fn overview_hints(&self, hints: &mut Vec<(u8, Hint)>) {
+        let channels = (2, Hint::button("c", "channels", click::char_key('c')));
         let Some(ap) = self.selected_ap() else {
             if !self.channel_map_open() {
                 hints.push(channels);
@@ -107,76 +103,88 @@ impl WifiScreen {
             return;
         };
         if self.overview_panel != OverviewPanel::Detail {
-            hints.push(Hint::button("Enter", "detail", KeyCode::Enter));
+            hints.push((0, Hint::button("Enter", "detail", KeyCode::Enter)));
         }
         let focused = self
             .focused_ap
             .as_ref()
             .is_some_and(|focused| focused.id == ap.id);
-        hints.push(Hint::button(
-            "Space",
-            if focused { "unfocus" } else { "focus" },
-            click::char_key(' '),
+        hints.push((
+            1,
+            Hint::button(
+                "Space",
+                if focused { "unfocus" } else { "focus" },
+                click::char_key(' '),
+            ),
         ));
         if !self.channel_map_open() {
             hints.push(channels);
         }
-        hints.push(Hint::button("s", "sort", click::char_key('s')));
-        hints.push(Hint::button("o", "device", click::char_key('o')));
-        hints.push(Hint::button("R", "restart", click::char_key('R')));
-        hints.push(Hint::button("L", "locate", click::char_key('L')));
+        hints.push((4, Hint::button("o", "device", click::char_key('o'))));
+        hints.push((3, Hint::button("R", "restart", click::char_key('R'))));
+        hints.push((4, Hint::button("L", "locate", click::char_key('L'))));
         if ap.firmware_updatable {
-            hints.push(Hint::button("U", "upgrade", click::char_key('U')));
+            hints.push((3, Hint::button("U", "upgrade", click::char_key('U'))));
         }
+        hints.push(sort_hint());
     }
 
-    fn clients_hints(&self, hints: &mut Vec<Hint>) {
+    fn clients_hints(&self, hints: &mut Vec<(u8, Hint)>) {
         let Some(client) = self.selected_client() else {
             return;
         };
         if !self.client_detail_open {
-            hints.push(Hint::button("Enter", "experience", KeyCode::Enter));
+            hints.push((0, Hint::button("Enter", "experience", KeyCode::Enter)));
         }
-        hints.push(Hint::button("o", "client", click::char_key('o')));
-        hints.push(Hint::button("r", "roams", click::char_key('r')));
-        hints.push(Hint::button("s", "sort", click::char_key('s')));
-        hints.push(Hint::button(
-            "b",
-            if client.blocked { "unblock" } else { "block" },
-            click::char_key('b'),
+        hints.push((2, Hint::button("r", "roams", click::char_key('r'))));
+        hints.push((3, Hint::button("o", "client", click::char_key('o'))));
+        hints.push((
+            1,
+            Hint::button(
+                "b",
+                if client.blocked { "unblock" } else { "block" },
+                click::char_key('b'),
+            ),
         ));
-        hints.push(Hint::button("x", "kick", click::char_key('x')));
-        hints.push(Hint::button("F", "forget", click::char_key('F')));
+        hints.push((1, Hint::button("x", "kick", click::char_key('x'))));
+        hints.push((4, Hint::button("F", "forget", click::char_key('F'))));
+        hints.push(sort_hint());
     }
 
-    fn ssids_hints(&self, hints: &mut Vec<Hint>) {
+    fn ssids_hints(&self, hints: &mut Vec<(u8, Hint)>) {
         let Some(ssid) = self.selected_ssid() else {
             return;
         };
         if !self.ssid_detail_open {
-            hints.push(Hint::button("Enter", "detail", KeyCode::Enter));
+            hints.push((0, Hint::button("Enter", "detail", KeyCode::Enter)));
         }
-        hints.push(Hint::button(
-            "E",
-            if ssid.enabled { "disable" } else { "enable" },
-            click::char_key('E'),
+        hints.push((
+            1,
+            Hint::button(
+                "E",
+                if ssid.enabled { "disable" } else { "enable" },
+                click::char_key('E'),
+            ),
         ));
-        hints.push(Hint::button("N", "rename", click::char_key('N')));
+        hints.push((2, Hint::button("N", "rename", click::char_key('N'))));
         // The key still answers on an SSID without one, with the reason.
         if self.ssid_passphrase_refusal(ssid).is_none() {
-            hints.push(Hint::button("P", "passphrase", click::char_key('P')));
+            hints.push((2, Hint::button("P", "passphrase", click::char_key('P'))));
         }
-        hints.push(Hint::button(
-            "H",
-            match self.ssid_setting(ssid, |ssid| ssid.hidden) {
-                Setting::On => "unhide",
-                Setting::Off => "hide",
-                // The key reads the controller before it asks which.
-                _ => "hide/unhide",
-            },
-            click::char_key('H'),
+        hints.push((
+            3,
+            Hint::button(
+                "H",
+                match self.ssid_setting(ssid, |ssid| ssid.hidden) {
+                    Setting::On => "unhide",
+                    Setting::Off => "hide",
+                    // The key reads the controller before it asks which.
+                    _ => "hide/unhide",
+                },
+                click::char_key('H'),
+            ),
         ));
-        hints.push(Hint::button("D", "delete", click::char_key('D')));
+        hints.push((4, Hint::button("D", "delete", click::char_key('D'))));
     }
 
     /// Every key the screen takes in its current sub-tab and mode, for the

@@ -14,6 +14,7 @@ use super::{OverviewPanel, WifiScreen};
 use crate::tui::action::{Access, Action, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::render_lines;
+use crate::tui::widgets::click::hint_text;
 
 fn access_point(id: &str, name: &str) -> Arc<Device> {
     Arc::new(
@@ -161,6 +162,11 @@ fn rendered_at(screen: &WifiScreen, width: u16, height: u16) -> String {
 
 fn rendered(screen: &WifiScreen) -> String {
     rendered_at(screen, 120, 40)
+}
+
+/// What the status bar would offer, each hint as "key label".
+fn hints(screen: &WifiScreen) -> String {
+    hint_text(&screen.hints())
 }
 
 // ── Ordering and selection ────────────────────────────────────────────
@@ -336,12 +342,16 @@ fn space_focuses_the_selected_ap_as_a_chip_that_esc_clears() {
     );
 
     press(&mut screen, ' ');
-    assert!(rendered(&screen).contains("AP ap-a \u{2715}"));
+    assert!(rendered(&screen).contains("focus ap-a \u{2715}"));
     screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
     assert_eq!(screen.wireless_clients().len(), 3, "only ap-a's clients");
     let shown = rendered(&screen);
-    assert!(shown.contains("AP ap-a \u{2715}"), "{shown}");
-    assert!(shown.contains("Esc all APs"), "{shown}");
+    assert!(shown.contains("focus ap-a \u{2715}"), "{shown}");
+    assert!(
+        hints(&screen).ends_with("Esc all APs"),
+        "{}",
+        hints(&screen)
+    );
 
     let cleared = screen.handle_key_input(key(KeyCode::Esc));
     screen.apply_action(&cleared.expect("Esc clears the focus"));
@@ -403,7 +413,9 @@ fn the_overview_shows_one_panel_at_a_time() {
 
     press(&mut screen, 'c');
     assert_eq!(screen.overview_panel, OverviewPanel::Channels);
-    assert!(rendered(&screen).contains("Channels \u{00B7} 2.4 GHz"));
+    let shown = rendered(&screen);
+    assert!(shown.contains(" Channels "), "{shown}");
+    assert!(shown.contains("[/] band 2.4 GHz"), "{shown}");
 
     screen.handle_key_input(key(KeyCode::Enter));
     assert_eq!(screen.overview_panel, OverviewPanel::Detail);
@@ -554,15 +566,16 @@ fn a_filter_belongs_to_the_sub_tab_it_was_typed_on() {
     assert_eq!(screen.wireless_clients().len(), 1);
     assert_eq!(screen.ap_devices().len(), 2, "the AP table is not filtered");
     assert!(screen.focused_ap.is_some(), "and the AP focus is kept");
-    assert!(rendered(&screen).contains("Filter \"client-2\""));
+    let title = |screen: &WifiScreen| rendered(screen).lines().next().map(str::to_owned);
+    assert!(title(&screen).is_some_and(|title| title.contains("WiFi [\"client-2\"] \u{2715}")));
 
     screen.apply_action(&Action::WifiSubTab(WifiSubTab::Overview));
     assert_eq!(screen.search_query(), Some(""));
-    assert!(!rendered(&screen).contains("Filter"));
+    assert!(!rendered(&screen).contains("client-2"));
 
     screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
     screen.apply_action(&Action::CloseSearch);
-    assert!(!rendered(&screen).contains("Filter"));
+    assert!(title(&screen).is_some_and(|title| !title.contains("client-2")));
     assert_eq!(screen.wireless_clients().len(), 3);
 }
 
@@ -999,7 +1012,7 @@ fn block_toggles_on_the_clients_blocked_state() {
         screen.handle_key_input(key(KeyCode::Char('b'))),
         Some(Action::RequestBlockClient(ref id)) if *id == first
     ));
-    assert!(rendered(&screen).contains("b block"));
+    assert!(hints(&screen).contains("b block"));
 
     screen.apply_action(&Action::ClientsUpdated(Arc::new(vec![
         with(&wireless_client(1, AP_A, 80), |client| {
@@ -1011,8 +1024,8 @@ fn block_toggles_on_the_clients_blocked_state() {
         screen.handle_key_input(key(KeyCode::Char('b'))),
         Some(Action::RequestUnblockClient(ref id)) if *id == first
     ));
+    assert!(hints(&screen).contains("b unblock"), "{}", hints(&screen));
     let shown = rendered(&screen);
-    assert!(shown.contains("b unblock"), "{shown}");
     assert!(shown.contains("client-1 (blocked)"), "{shown}");
 }
 
@@ -1049,7 +1062,7 @@ fn an_ap_opens_on_the_devices_screen_and_upgrades_only_when_it_can() {
         matches!(&note, Some(Action::Notify(note)) if note.message.contains("no firmware update")),
         "{note:?}"
     );
-    assert!(!rendered(&screen).contains("U upgrade"));
+    assert!(!hints(&screen).contains("U upgrade"));
 
     let updatable =
         |id: &str, name: &str| with(&access_point(id, name), |ap| ap.firmware_updatable = true);
@@ -1061,7 +1074,7 @@ fn an_ap_opens_on_the_devices_screen_and_upgrades_only_when_it_can() {
         screen.handle_key_input(key(KeyCode::Char('U'))),
         Some(Action::RequestUpgrade(ref id)) if *id == selected
     ));
-    assert!(rendered(&screen).contains("U upgrade"));
+    assert!(hints(&screen).contains("U upgrade"));
 }
 
 // ── Roaming ───────────────────────────────────────────────────────────
@@ -1114,10 +1127,7 @@ fn r_on_a_client_opens_its_roam_history() {
         Some(SECOND_MAC)
     );
     let shown = rendered(&screen);
-    assert!(
-        shown.contains("Roaming History \u{00B7} client-2"),
-        "{shown}"
-    );
+    assert!(shown.contains("client client-2"), "{shown}");
     assert!(
         shown.contains("Loading roam history for client-2"),
         "{shown}"
@@ -1160,7 +1170,7 @@ fn the_roam_history_stays_up_after_its_client_leaves() {
     )])));
     let shown = rendered(&screen);
     assert!(shown.contains("ap-roof"), "{shown}");
-    assert!(shown.contains("Client client-1"), "{shown}");
+    assert!(shown.contains("client client-1"), "{shown}");
     assert!(
         screen.apply_action(&Action::Tick).is_none(),
         "and it is not fetched again"
@@ -1201,7 +1211,7 @@ fn a_failed_roam_history_is_explained_in_the_panel_and_retried_quietly() {
 }
 
 #[test]
-fn a_failed_refresh_of_a_history_on_screen_is_said_in_the_title() {
+fn a_failed_refresh_of_a_history_on_screen_is_said_on_the_toolbar() {
     let mut screen = roaming_screen();
     screen.apply_action(&roams_loaded(FIRST_MAC, "ap-roof"));
     assert!(!rendered(&screen).contains("refresh failed"));
@@ -1325,11 +1335,9 @@ fn every_empty_table_says_which_kind_of_empty_it_is() {
     assert!(rendered(&screen).contains("No neighbors heard on 2.4 GHz"));
 }
 
-/// The keys on the hint bar, read off the rendered frame.
+/// The keys the status bar would offer.
 fn hint_keys(screen: &WifiScreen) -> Vec<String> {
-    let rows = render_lines(220, 30, |frame, area| screen.render(frame, area));
-    let bar = &rows[rows.len() - 2];
-    bar.trim_matches(|ch: char| ch == '\u{2502}' || ch.is_whitespace())
+    hints(screen)
         .split("  ")
         .filter_map(|hint| hint.split(' ').next())
         .filter(|key| !key.is_empty())
@@ -1352,7 +1360,7 @@ fn ssid_fixture() -> Action {
 
 type Mode = (&'static str, fn() -> WifiScreen);
 
-/// One screen per sub-tab and mode the hint bar distinguishes.
+/// One screen per sub-tab and mode the status bar's hints distinguish.
 fn modes() -> Vec<Mode> {
     fn tab(tab: WifiSubTab) -> WifiScreen {
         let mut screen = site();
@@ -1471,7 +1479,13 @@ fn every_hinted_key_does_something_in_its_mode_and_is_in_the_help() {
         let screen = build();
         let help = screen.help();
         let hinted = hint_keys(&screen);
-        assert!(hinted.contains(&"h/l".to_owned()), "{mode}: {hinted:?}");
+        // Moving and switching tabs are in the help, never on the bar.
+        for navigation in ["h/l", "j/k"] {
+            assert!(
+                !hinted.contains(&navigation.to_owned()),
+                "{mode}: {hinted:?}"
+            );
+        }
 
         for label in hinted {
             assert!(
@@ -1549,36 +1563,6 @@ fn the_help_lists_no_key_that_is_dead_in_its_mode() {
     }
 }
 
-/// The hints on the bar of a frame `width` wide, each as "key label".
-fn hint_bar(screen: &WifiScreen, width: u16) -> Vec<String> {
-    let rows = render_lines(width, 20, |frame, area| screen.render(frame, area));
-    rows[rows.len() - 2]
-        .trim_matches(|ch: char| ch == '\u{2502}' || ch.is_whitespace())
-        .split("  ")
-        .filter(|hint| !hint.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-#[test]
-fn a_narrow_hint_bar_drops_whole_hints_instead_of_cutting_one() {
-    for (mode, build) in modes() {
-        let screen = build();
-        let every = hint_bar(&screen, 220);
-        // Below this the first hint alone does not fit, and is cut.
-        for width in (30..=120).step_by(6) {
-            let shown = hint_bar(&screen, width);
-            assert!(
-                shown
-                    .iter()
-                    .zip(&every)
-                    .all(|(shown, whole)| shown == whole),
-                "{mode} at {width}: {shown:?}"
-            );
-        }
-    }
-}
-
 #[test]
 fn help_descriptions_fit_the_overlay_column() {
     for (mode, build) in modes() {
@@ -1600,7 +1584,7 @@ fn a_name_too_long_for_its_column_ends_in_an_ellipsis() {
 
     let shown = rendered_at(&screen, 44, 20);
     assert!(!shown.contains(long), "{shown}");
-    assert!(shown.contains("ap-far-side-\u{2026}"), "{shown}");
+    assert!(shown.contains("ap-far-side-of\u{2026}"), "{shown}");
     assert!(rendered_at(&screen, 160, 20).contains(long));
 }
 
@@ -1624,12 +1608,12 @@ fn a_short_ssid_detail_folds_into_two_columns() {
 }
 
 #[test]
-fn the_hint_bar_offers_nothing_without_a_row_to_act_on() {
+fn the_status_bar_offers_nothing_without_a_row_to_act_on() {
     let mut screen = WifiScreen::new();
     screen.apply_action(&full_access());
     for tab in [WifiSubTab::Clients, WifiSubTab::Ssids, WifiSubTab::Roaming] {
         screen.apply_action(&Action::WifiSubTab(tab));
-        assert_eq!(hint_keys(&screen), ["h/l"], "{tab:?}");
+        assert_eq!(hints(&screen), "", "{tab:?}");
     }
 }
 
@@ -1677,6 +1661,177 @@ fn clicking_the_focus_chip_clears_the_focus() {
         matches!(action, Some(Action::WifiFocusAp(None))),
         "{action:?}"
     );
+}
+
+// ── Chrome: toolbar, frames, and panels ───────────────────────────────
+
+#[test]
+fn tables_are_drawn_straight_into_the_screen_frame() {
+    for (mode, build) in modes() {
+        let screen = build();
+        if screen.panel_open() {
+            continue;
+        }
+        let rows = render_lines(103, 40, |frame, area| screen.render(frame, area));
+        for row in &rows[1..rows.len() - 1] {
+            assert!(
+                !row.contains(['\u{256D}', '\u{2570}']),
+                "{mode}: a frame inside the frame:\n{}",
+                rows.join("\n")
+            );
+        }
+        let text = rows.join("\n");
+        for title in [
+            "AP Health",
+            "Wireless Clients",
+            "Neighbor APs",
+            "Roaming History",
+        ] {
+            assert!(!text.contains(title), "{mode}: {title:?} repeats the tab");
+        }
+    }
+}
+
+#[test]
+fn the_screen_draws_no_hint_row() {
+    for (mode, build) in modes() {
+        let screen = build();
+        let text = rendered_at(&screen, 220, 30);
+        for (_, hint) in screen.hints() {
+            let hint = hint_text(&[(0, hint)]);
+            assert!(!text.contains(&hint), "{mode}: {hint:?} is drawn:\n{text}");
+        }
+        for navigation in ["h/l tab", "j/k move"] {
+            assert!(!text.contains(navigation), "{mode}:\n{text}");
+        }
+    }
+}
+
+#[test]
+fn the_health_line_has_a_row_only_on_the_overview() {
+    let mut screen = site();
+    let banner = "2 access points";
+    let rows = render_lines(103, 20, |frame, area| screen.render(frame, area));
+    assert!(rows[2].contains(banner), "{rows:#?}");
+    assert!(rows[3].starts_with("\u{2502}AP"), "{rows:#?}");
+
+    for (tab, header) in [
+        (WifiSubTab::Clients, "Client"),
+        (WifiSubTab::Ssids, "Loading SSIDs"),
+        (WifiSubTab::Neighbors, "Reading the neighbor scan"),
+        (WifiSubTab::Roaming, "roam history"),
+    ] {
+        screen.apply_action(&Action::WifiSubTab(tab));
+        let rows = render_lines(103, 20, |frame, area| screen.render(frame, area));
+        let text = rows.join("\n");
+        assert!(!text.contains(banner), "{tab:?}:\n{text}");
+        assert!(text.contains(header), "{tab:?}:\n{text}");
+    }
+    // The table starts right under the toolbar.
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Clients));
+    let rows = render_lines(103, 20, |frame, area| screen.render(frame, area));
+    assert!(rows[2].starts_with("\u{2502}Client"), "{rows:#?}");
+}
+
+/// The toolbar row, without the screen's frame.
+fn toolbar_row(screen: &WifiScreen, width: u16) -> String {
+    let rows = render_lines(width, 20, |frame, area| screen.render(frame, area));
+    rows[1].trim_matches('\u{2502}').to_owned()
+}
+
+#[test]
+fn the_band_and_the_focus_sit_against_the_right_edge() {
+    let mut screen = site();
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Neighbors));
+    let row = toolbar_row(&screen, 103);
+    assert!(
+        row.starts_with(" Overview  Clients  SSIDs  Neighbors  Roaming "),
+        "{row:?}"
+    );
+    assert!(row.ends_with("f band 2.4 GHz "), "{row:?}");
+
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Overview));
+    press(&mut screen, ' ');
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Neighbors));
+    let row = toolbar_row(&screen, 103);
+    assert!(
+        row.ends_with("f band 2.4 GHz   focus ap-a \u{2715} "),
+        "{row:?}"
+    );
+    // A narrow row keeps what narrows the table and leaves the band out.
+    let row = toolbar_row(&screen, 70);
+    assert!(row.ends_with("  focus ap-a \u{2715} "), "{row:?}");
+    assert!(!row.contains("band"), "{row:?}");
+}
+
+#[test]
+fn the_focus_stays_in_sight_on_every_sub_tab() {
+    let mut screen = roaming_screen();
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Overview));
+    press(&mut screen, ' ');
+    for tab in WifiSubTab::ALL {
+        screen.apply_action(&Action::WifiSubTab(tab));
+        let row = toolbar_row(&screen, 103);
+        assert!(row.contains("focus ap-"), "{tab:?}: {row:?}");
+    }
+    // On Roaming the client the tab is about keeps the edge.
+    let row = toolbar_row(&screen, 103);
+    assert!(row.ends_with("\u{2715}   client client-1 "), "{row:?}");
+}
+
+#[test]
+fn clicking_a_chip_does_what_its_key_does() {
+    use crate::tui::widgets::click::click_label;
+
+    let mut screen = site();
+    screen.apply_action(&Action::WifiSubTab(WifiSubTab::Neighbors));
+    let rows = render_lines(120, 30, |frame, area| screen.render(frame, area));
+    let action = screen.handle_mouse_input(click_label(&rows, "Roaming", "band"));
+    assert!(
+        matches!(action, Some(Action::PressKey(key)) if key.code == KeyCode::Char('f')),
+        "{action:?}"
+    );
+
+    screen.apply_action(&Action::SearchInput("one".to_owned()));
+    let rows = render_lines(120, 30, |frame, area| screen.render(frame, area));
+    let action = screen.handle_mouse_input(click_label(&rows, "WiFi", "\"one\""));
+    assert!(matches!(action, Some(Action::CloseSearch)), "{action:?}");
+}
+
+#[test]
+fn a_panel_under_its_table_takes_what_it_needs_and_leaves_the_rows_in_view() {
+    // Under 110 columns a panel sits under its table.
+    let frame_of = |screen: &WifiScreen, height: u16| {
+        render_lines(103, height, |frame, area| screen.render(frame, area))
+    };
+    let top_of = |rows: &[String], title: &str| {
+        rows.iter()
+            .position(|row| row.contains(title))
+            .unwrap_or_else(|| panic!("{title} is not drawn:\n{}", rows.join("\n")))
+    };
+
+    let mut overview = site();
+    overview.handle_key_input(key(KeyCode::Enter));
+    let rows = frame_of(&overview, 40);
+    let text = rows.join("\n");
+    // Title, toolbar, banner, header, and both access points.
+    assert_eq!(top_of(&rows, "AP Detail"), 6, "{text}");
+    assert!(
+        rows[4].contains("ap-b") && rows[5].contains("ap-a"),
+        "{text}"
+    );
+    // Three clients on ap-a: the panel closes under the last of them.
+    let last = top_of(&rows, "client-3");
+    assert!(rows[last + 1].contains('\u{2570}'), "{text}");
+    assert!(last + 2 < rows.len() - 1, "the panel stops short:\n{text}");
+
+    let screen = client_detail_screen();
+    let rows = frame_of(&screen, 40);
+    assert_eq!(top_of(&rows, "WiFi Experience"), 5, "{}", rows.join("\n"));
+
+    // A screen too short to share goes to a panel that wants it whole.
+    let rows = frame_of(&overview, 12);
+    assert_eq!(top_of(&rows, "AP Detail"), 3, "{}", rows.join("\n"));
 }
 
 // ── Client index ──────────────────────────────────────────────────────
