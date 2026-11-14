@@ -344,6 +344,11 @@ pub struct SessionClientEntry {
     pub sw_mac: Option<String>,
     #[serde(default)]
     pub sw_port: Option<i32>,
+    /// The station's DHCP reservation, copied from its `rest/user` record.
+    #[serde(default)]
+    pub use_fixedip: Option<bool>,
+    #[serde(default)]
+    pub fixed_ip: Option<String>,
 }
 
 // ── User (known client / DHCP reservation) ──────────────────────────

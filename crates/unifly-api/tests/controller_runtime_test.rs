@@ -2665,3 +2665,6 @@ mod inventory_refresh;
 
 #[path = "controller_runtime/network11.rs"]
 mod network11;
+
+#[path = "controller_runtime/devices_clients.rs"]
+mod devices_clients;

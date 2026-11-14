@@ -10,9 +10,10 @@
 use chrono::{DateTime, Utc};
 
 use super::catalog::{self, AP_FIRMWARE};
+use super::ports::session_network_id;
 use super::sim::{Delta, Pending, Simulation, client_label};
 use crate::command::{Command, CommandResult, UpdateWifiBroadcastRequest};
-use crate::controller::PortProfileUpdate;
+use crate::controller::{PortProfileUpdate, fixed_ip};
 use crate::core_error::CoreError;
 use crate::model::{
     ClientType, DeviceState, EntityId, EventCategory, EventSeverity, GuestAuth, MacAddress,
@@ -96,11 +97,23 @@ impl Simulation {
             Command::UnauthorizeGuest { client_id } => {
                 self.set_guest_access(&client_id, GuestAccess::Revoked, now, &mut delta)?;
             }
-            Command::SetClientFixedIp { mac, ip, .. } => {
-                self.set_fixed_ip(&mac, Some(ip), now, &mut delta)?;
+            Command::SetClientFixedIp {
+                mac,
+                ip,
+                network_id,
+            } => {
+                // The command route names the network by its Session ID
+                // before it writes `rest/user`, and so does this.
+                let network =
+                    fixed_ip::reservation_network(&self.network_conf(), network_id.as_ref(), ip)?;
+                self.reserve_fixed_ip(&mac, ip, &network, now, &mut delta)?;
             }
-            Command::RemoveClientFixedIp { mac, .. } => {
-                self.set_fixed_ip(&mac, None, now, &mut delta)?;
+            Command::RemoveClientFixedIp { mac, network_id } => {
+                let network = network_id
+                    .as_ref()
+                    .map(|wanted| fixed_ip::named_network(&self.network_conf(), wanted))
+                    .transpose()?;
+                self.release_fixed_ip(&mac, network.as_deref(), now, &mut delta)?;
             }
             Command::PatchFirewallPolicy {
                 id,
@@ -529,15 +542,67 @@ impl Simulation {
         Ok(())
     }
 
-    /// Reserve `ip` for a client, or go back to DHCP with `None`.
-    fn set_fixed_ip(
+    /// What `rest/user` does with a reservation: `network` has to be a
+    /// networkconf `_id`, and the address has to sit in that network.
+    pub(super) fn reserve_fixed_ip(
         &mut self,
         mac: &MacAddress,
-        ip: Option<std::net::Ipv4Addr>,
+        ip: std::net::Ipv4Addr,
+        network: &str,
         now: DateTime<Utc>,
         delta: &mut Delta,
     ) -> Result<(), CoreError> {
         let index = self.require_client(mac)?;
+        let held = fixed_ip::network_holding(&self.network_conf(), ip).ok();
+        if !self
+            .fleet
+            .networks
+            .iter()
+            .any(|candidate| session_network_id(candidate) == network)
+        {
+            return Err(CoreError::Rejected {
+                message: format!("api.err.InvalidNetworkId: no network has the ID {network}"),
+            });
+        }
+        if held.as_deref() != Some(network) {
+            return Err(CoreError::Rejected {
+                message: format!("api.err.InvalidFixedIP: {ip} is outside that network's subnet"),
+            });
+        }
+        self.reservations.insert(mac.clone(), network.to_owned());
+        self.set_fixed_ip(index, Some(ip), now, delta);
+        Ok(())
+    }
+
+    /// Drop a client's reservation, on `network` only when one is named.
+    fn release_fixed_ip(
+        &mut self,
+        mac: &MacAddress,
+        network: Option<&str>,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) -> Result<(), CoreError> {
+        let index = self.require_client(mac)?;
+        if let Some(network) = network
+            && self.reservations.get(mac).map(String::as_str) != Some(network)
+        {
+            return Err(CoreError::Rejected {
+                message: format!("no reservation for MAC {mac} on network {network}"),
+            });
+        }
+        self.reservations.remove(mac);
+        self.set_fixed_ip(index, None, now, delta);
+        Ok(())
+    }
+
+    /// Reserve `ip` for a client, or go back to DHCP with `None`.
+    fn set_fixed_ip(
+        &mut self,
+        index: usize,
+        ip: Option<std::net::Ipv4Addr>,
+        now: DateTime<Utc>,
+        delta: &mut Delta,
+    ) {
         let client = &mut self.fleet.clients[index].client;
         client.use_fixedip = ip.is_some();
         client.fixed_ip = ip;
@@ -551,7 +616,6 @@ impl Simulation {
         event.client_mac = Some(updated.mac.clone());
         delta.events.push(event);
         delta.clients.push(updated);
-        Ok(())
     }
 
     /// Apply a port edit from `update_device_port`: the label and the PoE

@@ -86,10 +86,13 @@ pub enum Command {
     UnauthorizeGuest {
         client_id: EntityId,
     },
+    /// Reserve `ip` for a client. `network_id` names the network by
+    /// Integration ID, Session ID, or name; `None` picks the network whose
+    /// subnet holds the address.
     SetClientFixedIp {
         mac: MacAddress,
         ip: std::net::Ipv4Addr,
-        network_id: EntityId,
+        network_id: Option<EntityId>,
     },
     RemoveClientFixedIp {
         mac: MacAddress,

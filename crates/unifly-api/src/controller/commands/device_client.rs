@@ -2,7 +2,8 @@ use crate::command::{Command, CommandResult};
 use crate::core_error::CoreError;
 
 use super::{
-    CommandContext, client_mac, device_mac, require_integration, require_session, require_uuid,
+    CommandContext, client_mac, device_mac, fixed_ip, require_integration, require_session,
+    require_uuid,
 };
 
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
@@ -176,16 +177,24 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
             network_id,
         } => {
             let session = require_session(session)?;
+            let records = session.list_network_conf().await?;
+            let network = fixed_ip::reservation_network(&records, network_id.as_ref(), ip)?;
             session
-                .set_client_fixed_ip(mac.as_str(), &ip.to_string(), &network_id.to_string())
+                .set_client_fixed_ip(mac.as_str(), &ip.to_string(), &network)
                 .await?;
             Ok(CommandResult::Ok)
         }
         Command::RemoveClientFixedIp { mac, network_id } => {
             let session = require_session(session)?;
-            let network_id = network_id.as_ref().map(ToString::to_string);
+            let network = match &network_id {
+                Some(wanted) => {
+                    let records = session.list_network_conf().await?;
+                    Some(fixed_ip::named_network(&records, wanted)?)
+                }
+                None => None,
+            };
             session
-                .remove_client_fixed_ip(mac.as_str(), network_id.as_deref())
+                .remove_client_fixed_ip(mac.as_str(), network.as_deref())
                 .await?;
             Ok(CommandResult::Ok)
         }

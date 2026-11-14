@@ -18,14 +18,17 @@
 // - gateway WAN ports have no switch profile, and every other port sits at
 //   controller defaults (native Mgmt, all VLANs) with no override.
 //
-// Network `_id`s are the fleet's network IDs, so they match `networks list`.
+// A network's Session `_id` is not its Integration ID, as on a real
+// controller: the record carries that one as `external_id`.
 
 use serde_json::{Map, Value, json};
 
 use super::catalog::{OFFLINE_CAMERA, WIRED};
 use super::fleet::{Fleet, GATEWAY, SWITCH_BASE, network_index};
 use super::sim::Simulation;
-use crate::model::{DeviceType, MacAddress, Port, PortConnector, PortState};
+use crate::model::{
+    DeviceType, EntityId, MacAddress, Network, NetworkPurpose, Port, PortConnector, PortState,
+};
 
 /// Endpoints whose port the studio pinned to a fixed speed, in Mbps as the
 /// wire spells it. The ops printer's old NIC only holds a 100 Mbps link.
@@ -36,6 +39,16 @@ const NATIVE: &str = "mgmt";
 
 /// Label the fleet gives a device's own uplink port.
 const UPLINK: &str = "Uplink";
+
+/// The `rest/networkconf` `_id` of a fleet network: 24 hex digits, the
+/// shape of the controller's own record IDs, and never the Integration
+/// UUID the network lists under.
+pub(crate) fn session_network_id(network: &Network) -> String {
+    match &network.id {
+        EntityId::Uuid(uuid) => uuid.simple().to_string().chars().take(24).collect(),
+        EntityId::Legacy(id) => id.clone(),
+    }
+}
 
 /// VLANs a trunk tags beyond its native network.
 enum Tagged {
@@ -264,11 +277,7 @@ impl Simulation {
         let index = self.device_index_by_mac(mac)?;
         let fleet = &self.fleet;
         let device = &fleet.devices[index];
-        let network_ids: Vec<String> = fleet
-            .networks
-            .iter()
-            .map(|network| network.id.to_string())
-            .collect();
+        let network_ids: Vec<String> = fleet.networks.iter().map(session_network_id).collect();
         let mut table = Vec::with_capacity(device.ports.len());
         let mut overrides = Vec::new();
         for port in &device.ports {
@@ -304,10 +313,25 @@ impl Simulation {
             .networks
             .iter()
             .map(|network| {
+                let purpose = match network.purpose {
+                    Some(NetworkPurpose::Guest) => "guest",
+                    _ => "corporate",
+                };
+                // The Session record spells the subnet as the gateway's
+                // address with the prefix length.
+                let ip_subnet = network.gateway_ip.zip(network.subnet.as_deref()).and_then(
+                    |(gateway, subnet)| {
+                        let (_, prefix) = subnet.split_once('/')?;
+                        Some(format!("{gateway}/{prefix}"))
+                    },
+                );
                 json!({
-                    "_id": network.id.to_string(),
+                    "_id": session_network_id(network),
+                    "external_id": network.id.to_string(),
                     "name": network.name,
+                    "purpose": purpose,
                     "vlan": network.vlan_id,
+                    "ip_subnet": ip_subnet,
                 })
             })
             .collect()

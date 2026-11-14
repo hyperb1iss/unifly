@@ -125,6 +125,9 @@ pub(crate) struct Simulation {
     /// Ports an admin edited during the session, keyed by device index
     /// and port index.
     pub(crate) port_edits: std::collections::HashMap<(usize, u32), PortEdit>,
+    /// The networkconf `_id` each fixed IP set this session was written
+    /// under, as `rest/user` keeps it.
+    pub(crate) reservations: std::collections::HashMap<MacAddress, String>,
     initial_clients: usize,
 }
 
@@ -167,6 +170,7 @@ impl Simulation {
                 ping_ms: 6,
             },
             port_edits: std::collections::HashMap::new(),
+            reservations: std::collections::HashMap::new(),
             initial_clients,
         }
     }

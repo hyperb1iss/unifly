@@ -156,9 +156,14 @@ fn wired_clients_sit_on_access_ports_for_their_network() {
         assert_eq!(profile.mode, PortMode::Access, "{:?}", client.name);
         assert_eq!(profile.link_state, PortState::Up, "{:?}", client.name);
         assert_eq!(profile.native_vlan_id, client.vlan, "{:?}", client.name);
+        let network = sim
+            .fleet
+            .networks
+            .iter()
+            .find(|network| Some(&network.id) == client.network_id.as_ref());
         assert_eq!(
             profile.native_network_id,
-            client.network_id.as_ref().map(ToString::to_string),
+            network.map(session_network_id),
             "{:?}",
             client.name
         );
@@ -472,13 +477,38 @@ fn client_records_follow_admin_commands() {
         .find(|client| !client.client.use_fixedip)
         .map(|client| client.client.mac.clone())
         .expect("a client on DHCP");
+    // An address in the Render subnet, named by the Integration ID the
+    // way `networks list` gives it.
     let ip = std::net::Ipv4Addr::new(10, 40, 20, 77);
-    let network_id = sim.fleet.networks[0].id.clone();
+    let network = sim.fleet.network("render").clone();
+    let session_id = super::session_network_id(&network);
+    assert_ne!(session_id, network.id.to_string());
+    // `rest/user` keys on the networkconf `_id`: the Integration ID
+    // written as is, or an address outside the network, is refused.
+    let mut delta = crate::demo::sim::Delta::default();
+    let raw = sim.reserve_fixed_ip(&dhcp, ip, &network.id.to_string(), now, &mut delta);
+    assert!(
+        matches!(&raw, Err(CoreError::Rejected { message }) if message.contains("InvalidNetworkId")),
+        "{raw:?}"
+    );
+    let outside = sim.reserve_fixed_ip(
+        &dhcp,
+        std::net::Ipv4Addr::new(10, 40, 99, 7),
+        &session_id,
+        now,
+        &mut delta,
+    );
+    assert!(
+        matches!(&outside, Err(CoreError::Rejected { message }) if message.contains("InvalidFixedIP")),
+        "{outside:?}"
+    );
+    assert!(find(&sim, &dhcp).is_some_and(|client| !client.use_fixedip));
+
     sim.apply_command(
         Command::SetClientFixedIp {
             mac: dhcp.clone(),
             ip,
-            network_id,
+            network_id: Some(network.id.clone()),
         },
         now,
     )
@@ -487,6 +517,18 @@ fn client_records_follow_admin_commands() {
         find(&sim, &dhcp).and_then(|client| client.fixed_ip),
         Some(ip)
     );
+    assert_eq!(sim.reservations.get(&dhcp), Some(&session_id));
+    // Without a network the subnet picks the same record.
+    sim.apply_command(
+        Command::SetClientFixedIp {
+            mac: dhcp.clone(),
+            ip,
+            network_id: None,
+        },
+        now,
+    )
+    .expect("the subnet names the network");
+    assert_eq!(sim.reservations.get(&dhcp), Some(&session_id));
     sim.apply_command(
         Command::RemoveClientFixedIp {
             mac: dhcp.clone(),

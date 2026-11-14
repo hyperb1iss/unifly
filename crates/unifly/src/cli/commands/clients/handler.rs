@@ -10,7 +10,7 @@ use crate::cli::output;
 use super::render::{
     Reservation, client_row, detail, reservation_row, roam_row, wifi_experience_detail,
 };
-use super::resolve::{resolve_network, resolve_network_by_name};
+use super::resolve::named_network;
 
 fn matches_find_query(client: &Client, query: &str) -> bool {
     let fields = [
@@ -228,19 +228,31 @@ pub(super) async fn handle(
                 reason: format!("'{ip}' is not a valid IPv4 address"),
             })?;
 
-            let network_id = resolve_network(controller, network.as_deref(), ip_addr)?;
+            let network_id = network
+                .as_deref()
+                .map(|name| named_network(controller, name));
             let mac_addr = util::require_mac(
                 &mac,
                 "client actions take the client's MAC (find it with `unifly clients list`)",
             )?;
 
+            let auto_detected = network_id.is_none();
             controller
                 .execute(CoreCommand::SetClientFixedIp {
                     mac: mac_addr,
                     ip: ip_addr,
                     network_id,
                 })
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    unifly_api::CoreError::ValidationFailed { message } if auto_detected => {
+                        CliError::Validation {
+                            field: "network".into(),
+                            reason: format!("{message}; use --network to name one"),
+                        }
+                    }
+                    other => CliError::from(other),
+                })?;
             if !global.quiet {
                 eprintln!("Fixed IP {ip} set for {mac}");
             }
@@ -250,8 +262,7 @@ pub(super) async fn handle(
         ClientsCommand::RemoveIp { mac, network } => {
             let network_id = network
                 .as_deref()
-                .map(|n| resolve_network_by_name(controller, n))
-                .transpose()?;
+                .map(|name| named_network(controller, name));
             let mac_addr = util::require_mac(
                 &mac,
                 "client actions take the client's MAC (find it with `unifly clients list`)",

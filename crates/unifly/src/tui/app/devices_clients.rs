@@ -8,7 +8,7 @@ use color_eyre::eyre::Result;
 use tracing::warn;
 
 use unifly_api::model::{PoeMode, PortProfile};
-use unifly_api::{Command, EntityId, Network, PortProfileUpdate};
+use unifly_api::{Command, CoreError, EntityId, PortProfileUpdate};
 
 use super::App;
 use crate::sanitizer::Sanitizer;
@@ -185,8 +185,9 @@ impl App {
         });
     }
 
-    /// Reserve `ip` for the client on the network whose subnet holds it,
-    /// as `unifly clients set-ip` picks it.
+    /// Reserve `ip` for the client. The controller's own network records
+    /// pick the network whose subnet holds the address, as `unifly clients
+    /// set-ip` does, and the toast reports what the refreshed record shows.
     fn set_fixed_ip(&mut self, id: &EntityId, ip: Ipv4Addr) {
         let name = self.resolve_client_name(id);
         let Some(controller) = self.controller.clone() else {
@@ -197,23 +198,37 @@ impl App {
             self.report_gone(&name);
             return;
         };
-        let Some(network_id) = network_for_ip(&controller.networks_snapshot(), ip) else {
-            self.show_notification(Notification::warning(format!(
-                "{ip} is not inside any network's subnet, so {name} keeps its address"
-            )));
-            return;
+        let command = Command::SetClientFixedIp {
+            mac: mac.clone(),
+            ip,
+            network_id: None,
         };
-        self.run_command(
-            Command::SetClientFixedIp {
-                mac,
-                ip,
-                network_id,
-            },
-            &Notice::new(
-                format!("Reserving {ip} for {name}\u{2026}"),
-                format!("{name} is fixed at {ip} from its next lease"),
-            ),
-        );
+        self.spawn_op(&format!("Reserving {ip} for {name}\u{2026}"), async move {
+            match controller.execute(command).await {
+                Ok(_) => {}
+                Err(CoreError::ValidationFailed { message }) => {
+                    return Notification::warning(format!("{name} keeps its address: {message}"));
+                }
+                Err(error) => {
+                    warn!(%error, "setting a fixed IP failed");
+                    return Notification::error(error.to_string());
+                }
+            }
+            if let Err(error) = controller.full_refresh().await {
+                warn!(%error, "refresh after setting a fixed IP failed");
+            }
+            let took = controller
+                .store()
+                .client_by_mac(&mac)
+                .is_some_and(|client| client.use_fixedip && client.fixed_ip == Some(ip));
+            if took {
+                Notification::success(format!("{name} is fixed at {ip} from its next lease"))
+            } else {
+                Notification::warning(format!(
+                    "The controller accepted {ip} for {name}, but its record does not show it yet"
+                ))
+            }
+        });
     }
 
     fn confirm_remove_fixed_ip(&mut self, id: &EntityId) {
@@ -252,30 +267,6 @@ fn shown_profiles(mut ports: Vec<PortProfile>, sanitizer: Option<&Sanitizer>) ->
         }
     }
     ports
-}
-
-/// The network whose subnet holds `ip`.
-fn network_for_ip(networks: &[Arc<Network>], ip: Ipv4Addr) -> Option<EntityId> {
-    networks
-        .iter()
-        .find(|network| {
-            network
-                .subnet
-                .as_deref()
-                .and_then(parse_cidr)
-                .is_some_and(|(address, prefix)| {
-                    let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
-                    u32::from(ip) & mask == u32::from(address) & mask
-                })
-        })
-        .map(|network| network.id.clone())
-}
-
-/// An IPv4 CIDR such as `10.40.20.1/24` as its address and prefix length.
-fn parse_cidr(value: &str) -> Option<(Ipv4Addr, u32)> {
-    let (address, prefix) = value.split_once('/')?;
-    let prefix: u32 = prefix.parse().ok()?;
-    (prefix <= 32).then_some((address.parse().ok()?, prefix))
 }
 
 #[cfg(test)]
@@ -329,29 +320,6 @@ mod tests {
             .expect("a switch")
     }
 
-    #[test]
-    fn a_fixed_ip_lands_on_the_network_whose_subnet_holds_it() {
-        use crate::tui::screens::devices::fixtures::network;
-
-        let with_subnet = |id: &str, subnet: &str| {
-            let mut network = (*network(id, id, 1)).clone();
-            network.subnet = Some(subnet.to_owned());
-            Arc::new(network)
-        };
-        let networks = [
-            with_subnet("studio", "10.40.20.1/24"),
-            with_subnet("guest", "10.40.60.1/23"),
-            network("no-subnet", "none", 9),
-        ];
-        let pick = |ip: [u8; 4]| network_for_ip(&networks, Ipv4Addr::from(ip));
-
-        assert_eq!(pick([10, 40, 20, 77]), Some(EntityId::from("studio")));
-        assert_eq!(pick([10, 40, 61, 9]), Some(EntityId::from("guest")));
-        assert_eq!(pick([192, 168, 1, 5]), None);
-        assert_eq!(parse_cidr("10.40.20.1/33"), None);
-        assert_eq!(parse_cidr("10.40.20.1"), None);
-    }
-
     #[tokio::test]
     async fn setting_a_fixed_ip_runs_against_the_store_and_refuses_a_stray_address() {
         let demo = demo_fleet().await;
@@ -375,14 +343,19 @@ mod tests {
             ip: Ipv4Addr::new(192, 0, 2, 9),
         })
         .expect("stray address");
-        let toast = app.notices.latest().expect("a toast says why");
-        assert_eq!(toast.level, NotificationLevel::Warning);
+        let refused = next_action(&mut app).await;
         assert!(
-            toast.message.contains("not inside any network's subnet"),
-            "{}",
-            toast.message
+            matches!(&refused, Action::OpFinished { notification, .. }
+                if notification.level == NotificationLevel::Warning
+                    && notification.message.contains("not inside any network's subnet")),
+            "{refused:?}"
         );
-        assert!(app.action_rx.try_recv().is_err(), "a command was queued");
+        assert!(
+            !store
+                .client_by_id(&client.id)
+                .expect("still connected")
+                .use_fixedip
+        );
 
         app.process_action(&Action::RequestSetFixedIp {
             client: client.id.clone(),

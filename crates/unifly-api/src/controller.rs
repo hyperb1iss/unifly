@@ -33,6 +33,8 @@ mod session_queries;
 mod subscriptions;
 mod support;
 
+#[cfg(feature = "demo")]
+pub(crate) use commands::fixed_ip;
 pub use event_history::EventHistoryQuery;
 pub use ports::{ApplyPortsSummary, PortProfileUpdate};
 

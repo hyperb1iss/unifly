@@ -8,6 +8,7 @@ use crate::{IntegrationClient, SessionClient};
 use super::Controller;
 
 mod device_client;
+pub(crate) mod fixed_ip;
 mod network;
 mod policy;
 mod system;
