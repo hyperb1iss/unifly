@@ -343,7 +343,8 @@ crates/unifly/src/tui/
                              #  Networks, Firewall, Topology, Events, Stats,
                              #  Wifi, Onboarding, Settings)
   widgets/                   # shared widgets: click (hit map, key hints),
-                             #  line_input, wrap, detail_grid, sub_tabs
+                             #  line_input, wrap, detail_grid, sub_tabs,
+                             #  toolbar
   forms/                     # profile draft, connection test, and field
                              #  widgets shared by Onboarding and Settings
 ```
@@ -383,14 +384,31 @@ Each screen implements `Component` (`component.rs`):
   `handle_paste()` receives pasted text.
 - `search_query()` returns `Some` where `/` filters something; search
   only opens there.
+- `hints()` returns ranked `click::Hint`s, `(rank, hint)`, for what the
+  selected row or the screen can do right now. Rank 0 matters most, and
+  the highest ranks are dropped first on a narrow terminal.
 
-Each screen also draws its own hint bar from `click::Hint`s. A hint
-with a key is a button that sends `Action::PressKey`, so a tap goes
-through the same key path. Keep `help()`, the hint bar, and the key
-handler in step: all three list only what works for the row, sub-tab,
-and mode on screen. The status bar follows the same rule
-(`status_hints` in `app/render.rs`): while the screen captures input it
-shows only `F1 help` and `^c quit`.
+**One footer.** A screen does not draw a hint row. The status bar
+(`render_status_bar` in `app/render.rs`) draws the active screen's
+`hints()` after the connection state, as many as fit, and keeps the
+app-wide buttons from `status_hints` (`/ search`, `^r retry`, `? help`)
+against the right edge. A hint with a key is a button that sends
+`Action::PressKey`, so a tap goes through the same key path. Navigation
+keys every list shares (`j/k`, `h/l`, `g/G`, paging) belong in `help()`
+only, never in `hints()`. Keep `help()`, `hints()`, and the key handler
+in step: all three cover only what works for the row, sub-tab, and mode
+on screen. While the screen captures input the status bar shows only
+`F1 help` and `^c quit`, and the form draws its own key line (Setup,
+Settings, the Networks form).
+
+**Toolbar row.** Filter and sub-tab strips go through
+`widgets/sub_tabs.rs` (`sub_tab_strip`: every tab keeps its width, and
+the active one is bold and underlined, never bracketed). State that
+describes the view (the sort, a band, an AP focus, the feed state, a
+move in progress) goes through `widgets/toolbar.rs`: `toolbar::render`
+puts the strip on the left and a `toolbar::chip` against the right
+edge, and drops the right side when the row has no room. A chip shows
+the key that changes it. Row counts go in the screen title.
 
 **Writes** never touch the Controller from a screen. A screen returns
 an action and the App runs it:
@@ -961,7 +979,7 @@ remote-access suggest-port` and `vpn remote-access download-config
 - **Refuse locally, with the reason.** A key the row or the profile's
   access cannot serve returns an info toast from the screen (`refusal`,
   `not_ours`, `NEEDS_SESSION`, `NEEDS_INTEGRATION`) and is left out of
-  the hint bar and `help()`. Do not confirm first and fail afterwards.
+  `hints()` and `help()`. Do not confirm first and fail afterwards.
 - **An unknown setting is not `false`.** The WiFi list is a summary, so
   the SSIDs tab reads each record (`screens/wifi/ssid_detail.rs`) and
   draws `Setting::Reading`, `Unknown`, or `Absent` until it knows. A

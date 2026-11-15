@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Ports and Clients tabs have their own cursor, so every row is reachable on
   a short terminal, and the Ports tab can power cycle a PoE port, turn its
   PoE off and back on in the mode it had, and rename it. The table filters
-  by type and sorts by column (`s`, `r` to reverse).
+  by type and sorts by column (`s`, `r` to reverse), and the Updates filter
+  counts the devices with firmware waiting.
 - **Clients**: `b` blocks or unblocks by the client's state, `x` kicks a
   wireless client, `I` sets or removes a fixed IP, `A` authorizes a guest
   for a number of minutes or revokes one, and `F` forgets the client. A
@@ -59,16 +60,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   event's device or client, a category filter (`h`/`l`), search by message
   text, older history a page at a time from the oldest event shown (`o`,
   with `Esc` to cancel a load), firewall blocks on demand (`f`), and an
-  Alarms view (`v`) that archives one alarm or all of them. The status line
-  says whether events arrive live, by polling, or not at all, and how far
-  back the feed reaches, and the Dashboard title counts the active alarms.
+  Alarms view (`v`) that archives one alarm or all of them. The toolbar
+  says whether events arrive live, by polling, or not at all, and counts the
+  active alarms, the top border says how far back the feed reaches, and the
+  Dashboard title counts the active alarms too.
 - **Topology**: the map opens fitted to the screen, never below 80% so names
   stay whole, `f` fits and `r` resets to 100%, `[` and `]` walk a device
-  cursor, and `Enter` or a second tap opens the selected device.
+  cursor, and `Enter` or a second tap opens the selected device. The legend
+  sits on the map's bottom border.
 - **Dashboard**: arrows and `hjkl` move a focus across the panels, `Enter`
   opens the focused panel's screen or the gateway, a tapped access point or
   client row opens it, and `S` runs a WAN speed test whose result shows on
-  the Gateway panel's new `Spd` line.
+  the Gateway panel's new `Speed` line. The Networks panel is one headed
+  line per network, and the Gateway panel spells its labels out.
 - **Feedback for every command.** A progress toast appears when a command
   starts and becomes its result, and the controller's data is fetched again
   when it lands, so the screens show the change at once. Toasts stack and
@@ -113,9 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   controller. The ordering is written only if the controller still has the
   order the table showed; otherwise the list is refreshed and nothing is
   written.
-- Toasts moved from the bottom-right to the top-right corner, clear of the
-  hint row, and no longer replace one another. The newest is always drawn,
-  and a toast that just arrived is never the one evicted.
+- Toasts moved from the bottom-right to the top-right corner, under the
+  toolbar row, and no longer replace one another. The newest is always
+  drawn, and a toast that just arrived is never the one evicted.
 - `Ctrl+r` refreshes the data while connected. It still retries the
   connection while disconnected. Held down it is one refresh, and it does
   nothing while a form is open.
@@ -135,9 +139,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a profile. A save keeps the keys the form did not change, such as
   `api_key_env`, `host_id_env`, and the credentials of auth modes not in
   use.
-- Hint bars and the help overlay list only the keys that work for the row,
-  sub-tab, and mode on screen, and while a form has the keyboard the status
-  bar shows only `F1 help` and `^c quit`. Empty tables and panels say
+- **One footer replaces the per-screen hint rows.** The status bar shows
+  the connection state, then the actions the selected row or the screen can
+  take, as many as fit, with `/ search`, `^r retry` while disconnected, and
+  `? help` against the right edge. Navigation keys, `^r refresh`,
+  `, settings`, and `q quit` still work and are listed in the help overlay
+  instead. Tabs and filters no longer put the active one in brackets: every
+  tab keeps its width and the active one is bold and underlined. The sort
+  and other view state sit at the right of the toolbar row as a chip that
+  shows its key (`s sort name ↑`), and row counts are in the screen title.
+- The status bar and the help overlay list only the keys that work for the
+  row, sub-tab, and mode on screen, and while a form has the keyboard the
+  status bar shows only `F1 help` and `^c quit`. Empty tables and panels say
   whether they are waiting, have nothing, or need access this profile lacks,
   and a key the profile's access cannot serve says so instead of sending a
   command that fails.
@@ -241,7 +254,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The WiFi channel map counts every radio of every online access point, so
   your own APs show on 5 GHz and 6 GHz, marks DFS channels, and counts a
   neighbor once however many access points hear it. Roam history sorts by
-  timestamp, shows local time, and says in its title when a refresh failed.
+  timestamp, shows local time, and says on its toolbar when a refresh
+  failed.
   Client counts that are unknown without a session read as unknown instead
   of zero.
 - The Dashboard no longer draws a stalled WAN rate as a flat line, and

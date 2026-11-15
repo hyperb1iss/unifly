@@ -339,7 +339,7 @@ unifly completions powershell | Out-String | Invoke-Expression
 
 ## 🖥️ TUI
 
-`unifly tui` launches an 11-screen terminal client for monitoring and managing your network. Every screen has a hint bar with the keys that work right now, and `?` lists the rest.
+`unifly tui` launches an 11-screen terminal client for monitoring and managing your network. The status bar on the last row shows the actions that work for the selected row right now, and `?` lists every key.
 
 ```bash
 unifly tui                   # Launch with default profile

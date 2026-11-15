@@ -36,7 +36,7 @@ Navigate with number keys `1`-`9`, `Tab`/`Shift+Tab`, a click or tap on the tab 
 
 ## Key Bindings
 
-Press `?` (or `F1`) on any screen for the keys that work there. The overlay lists the active screen's keys for the mode it is in (list, open detail, form, held policy move) beside the global ones, and the hint bar at the bottom of each screen offers only what works for the selected row. The overlay follows the same rule: it lists `/` only on screens where search filters something, and a description too long for its column wraps onto the next row.
+Press `?` (or `F1`) on any screen for the keys that work there. The overlay lists the active screen's keys for the mode it is in (list, open detail, form, held policy move) beside the global ones and the navigation every list shares. The status bar offers only the actions that work for the selected row (see Status Bar and Toolbar below). The overlay follows the same rule: it lists `/` only on screens where search filters something, and a description too long for its column wraps onto the next row.
 
 ### Global
 
@@ -69,22 +69,30 @@ While a field has the keyboard (the search bar, the Networks form, a prompt, Set
 
 While a form is open (the Networks form, Setup, Settings), the status bar shows only `F1 help` and `^c quit`, and the help overlay lists only the keys that still work. `Ctrl+r` does nothing there, so a refresh cannot swap the record being edited. Held down anywhere else, `Ctrl+r` is one refresh, not a queue of them.
 
+### Status Bar and Toolbar
+
+The status bar is the last row of the screen and the one place a screen's key hints are drawn. From the left it shows the connection state, then `│`, then the actions the selected row or the screen can take right now, such as `Enter detail  b block  x kick  I fixed IP  F forget` on Clients, with `Esc close` last while a detail is open. As many actions as fit are shown, most important first. Against the right edge sit `/ search` on screens that search, `^r retry` while disconnected, and `? help`, and after them the sponsor button on terminals 100 columns or wider.
+
+Navigation that every list shares (`j`/`k`, `h`/`l`, `g`/`G`, paging) is not in the status bar, and neither are `Ctrl+r` to refresh, `,` for Settings, and `q` to quit. The help overlay lists them all.
+
+The first row inside a list screen is its toolbar. Sub-tabs and filters sit on the left, every tab keeps its width, and the active one is bold and underlined in the accent color. State that describes the view sits against the right edge as a chip that shows its own key, such as `s sort name ↑` on Devices and Clients, and is left out when the row has no room for it. Row counts are in the screen title.
+
 ### Mouse and Touch
 
 Tabs, list rows, key hints, dialogs, and dashboard panels take a click, so the TUI runs on a touchscreen kiosk without a keyboard. On a touchscreen, taps work wherever the terminal reports them as mouse clicks.
 
 | Target               | Click or tap                                                                                                                                                                                                                                                                             |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Tabs**             | Switches to the tab: the screen tabs along the bottom, the Devices and Clients filters, the Devices detail tabs, the Firewall and WiFi sub-tabs, the Stats periods, and the Events category chips                                                                                        |
+| **Tabs**             | Switches to the tab: the screen tabs along the bottom, the Devices and Clients filters, the Devices detail tabs, the Firewall and WiFi sub-tabs, the Stats periods, and the Events categories                                                                                            |
 | **Table rows**       | The first tap selects a row, and a second tap does what `Enter` does there: opens a device, client, or event, or toggles a network, firewall, or WiFi detail                                                                                                                             |
 | **Open details**     | A tap on another row moves an open device or client detail to it. The device detail keeps its tab, so stepping from switch to switch stays on their ports. A tap on a port or client row moves its cursor                                                                                |
-| **Key hints**        | Every hint with a key is a button that presses it: `R restart`, `Esc close`, `Space pause`, and the status bar's help, search, refresh, settings, and quit. Hints such as `j/k navigate` are plain text                                                                                  |
+| **Key hints**        | Every hint with a key is a button that presses it: `R restart`, `Esc close`, and the status bar's `/ search`, `^r retry`, and `? help`. Toolbar chips that show a key are buttons too: `s sort`, `Space ● live`, `v alarms`. A form hint such as `←/→ pick` is plain text                |
 | **Dialogs**          | A confirmation takes `y` and `n` taps, and a tap outside it answers no. A prompt cancels on a tap outside it. Help, About, and the notification history close on a tap outside them                                                                                                      |
 | **Notifications**    | A tap dismisses the toast                                                                                                                                                                                                                                                                |
 | **Dashboard panels** | A tap focuses the panel and opens its screen: WAN Traffic opens Stats, Gateway opens the gateway, Connectivity and Capacity open Devices, and Networks, WiFi, Top Clients, and Recent Events open their screens. A tapped access point or client row opens that device or client instead |
 | **Topology**         | A tap selects the device under it, and a second tap opens it on the Devices screen                                                                                                                                                                                                       |
 | **Form fields**      | In the Networks form a tap focuses a field and flips an on/off field. Settings and Setup fields take taps too                                                                                                                                                                            |
-| **WiFi AP focus**    | The `AP name ✕` chip beside the sub-tabs clears the focus                                                                                                                                                                                                                                |
+| **WiFi AP focus**    | The `focus ap-atrium ✕` chip on the toolbar clears the focus                                                                                                                                                                                                                             |
 
 The wheel moves the selection in lists, and an open device or client detail follows it; over a device's Ports or Clients tab it moves that list instead. On Events it moves through the feed, pausing a live feed first when you scroll back. On Topology the wheel zooms on the pointer and a drag pans the map. In the Networks form it steps through the fields. In Settings it scrolls the form, and walks the theme picker when that is open, previewing each theme; a tap outside the picker cancels it.
 
@@ -96,7 +104,7 @@ Typing still needs a keyboard: search, prompts, the Networks form, the Settings 
 
 Everything the TUI does on the controller reports back the same way:
 
-- **Toasts** stack in the top-right corner, up to four at a time, and wrap long text instead of cutting it. One never replaces another, so an error is not wiped by the success that lands after it. The newest toast is always drawn: when the stack is taller than the screen the older ones give way, and when a fifth arrives the oldest one that is not a warning or an error goes first, never the one that just arrived. Notes and successes clear after 3 seconds, warnings after 8, errors after 10. `Esc` dismisses warnings and errors, and a tap dismisses any toast.
+- **Toasts** stack in the top-right corner under the toolbar row, up to four at a time, and wrap long text instead of cutting it. One never replaces another, so an error is not wiped by the success that lands after it. The newest toast is always drawn: when the stack is taller than the screen the older ones give way, and when a fifth arrives the oldest one that is not a warning or an error goes first, never the one that just arrived. Notes and successes clear after 3 seconds, warnings after 8, errors after 10. `Esc` dismisses warnings and errors, and a tap dismisses any toast.
 - **Confirmations** come before anything disruptive (a restart, a block, a delete, turning a rule on or off). The dialog names the target and says what yes costs. `y` confirms; `n` or `Esc` cancels. A question that arrives late, from a check that ran in the background, never replaces a dialog you are reading and never opens over a prompt or the search bar. It is dropped with a notice to press the key again.
 - **Prompts** ask for a single value, such as a fixed IP, a port name, or a passphrase. `Enter` saves and `Esc` cancels. The field takes the line-editing keys and a paste. A passphrase is masked, and `Ctrl+t` shows or hides it. A value that cannot be used reopens the prompt on what you typed, saying what is wrong with it.
 - **Progress**: a command shows a progress toast the moment it starts, and its result takes that toast over. When the command lands, the TUI fetches the controller's data again, so the screens show the change without waiting for the next poll.
@@ -117,12 +125,12 @@ Eight live panels:
 | **Gateway**       | Model, firmware, WAN IP, IPv6, DNS, ISP name, latency, uptime, last speed test                    |
 | **Connectivity**  | Subsystem status dots (WAN/WWW/WLAN/LAN/VPN), aggregate traffic bars                              |
 | **Capacity**      | Color-coded CPU/MEM gauges, load averages, device/client fleet count                              |
-| **Networks**      | VLANs sorted by ID with IPv6 prefix delegation and SLAAC mode                                     |
+| **Networks**      | One line per network by VLAN ID under a header: Name, VLAN, Subnet, Clients, and v6               |
 | **WiFi / APs**    | Client count and WiFi experience percentage per access point                                      |
 | **Top Clients**   | Proportional traffic bars with fractional block characters                                        |
 | **Recent Events** | Compact event display, color-coded by severity                                                    |
 
-The title counts the controller's active alarms. A panel with nothing to show says whether it is still connecting or which access it lacks. A WAN rate that has stopped arriving is not drawn as a flat line: the panel says how old the last one is (`no rate for 47s`), or `not connected`.
+The title counts the controller's active alarms. A panel with nothing to show says whether it is still connecting or which access it lacks. A WAN rate that has stopped arriving is not drawn as a flat line: the panel says how old the last one is (`no rate for 47s`), or `not connected`. The Gateway panel's DNS line lists the servers that fit whole, then `+N` for the rest. The status bar says where `Enter` goes from the focused panel (`Enter open Events`).
 
 | Key                      | Action                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------ |
@@ -131,11 +139,11 @@ The title counts the controller's active alarms. A panel with nothing to show sa
 | `Enter`                  | Open the focused panel's screen (the Gateway panel opens the gateway's detail) |
 | `S`                      | Run a WAN speed test (asks first)                                              |
 
-The speed test needs a gateway on the site and a direct controller session. Its result shows on the Gateway panel's `Spd` line about a minute later, as download, upload, and how long ago it ran (`↓2.4G ↑1.9G just now`).
+The speed test needs a gateway on the site and a direct controller session. Its result shows on the Gateway panel's `Speed` line about a minute later, as download, upload, and how long ago it ran (`↓2.4G ↑1.9G just now`).
 
 ### Devices
 
-The table filters by type and sorts by name, status, clients, traffic, or uptime. `Enter` opens a detail with a tab per aspect the device has: Overview (identity, uplink, and the CPU, memory, load, and traffic figures), Radios on access points, Clients, and Ports on anything with ports. The pane takes the rows its tab needs, and the table keeps the rest. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
+The table filters by type and sorts by name, status, clients, traffic, or uptime. The Updates filter carries the count of devices with firmware waiting (`Updates 1`), and the sort shows at the right of the toolbar (`s sort name ↑`). `Enter` opens a detail with a tab per aspect the device has: Overview (identity, uplink, and the CPU, memory, load, and traffic figures), Radios on access points, Clients, and Ports on anything with ports. The pane takes the rows its tab needs, and the table keeps the rest. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
 
 Devices waiting for adoption are listed with the adopted ones on profiles that reach the Integration API, so `A` has something to act on.
 
@@ -168,7 +176,7 @@ The Ports tab shows each port's mode, native network, and tagged networks where 
 
 ### Clients
 
-The table filters by type and sorts by name, signal, traffic, or duration. `Enter` opens a detail with the address, network and VLAN, uplink, connection time, fixed IP, radio link for wireless clients, traffic, and guest and blocked state.
+The table filters by type and sorts by name, signal, traffic, or duration, and the sort shows at the right of the toolbar (`s sort name ↑`). `Enter` opens a detail with the address, network and VLAN, uplink, connection time, fixed IP, radio link for wireless clients, traffic, and guest and blocked state. The detail takes the rows its content needs, and the table keeps the rest.
 
 | Mode            | Key       | Action                                                         |
 | --------------- | --------- | -------------------------------------------------------------- |
@@ -230,9 +238,9 @@ Four sub-tabs, each with its row count: Policies, Zones, ACL Rules, and NAT. Pol
 | ACL Rules, NAT    | `E`                  | Enable or disable the rule (asks first)             |
 | ACL Rules, NAT    | `D`                  | Delete the rule (asks first)                        |
 
-Reordering is pick up, move, apply. `K` or `J` picks the selected policy up and moves it one place on screen only; the row is marked while it is held and nothing reaches the controller. Keep moving it with `K`/`J`, `k`/`j`, or the arrows, then press `Enter` to write the result as one ordering, or `Esc` to put it back. A toast confirms the move, and a move the controller refuses raises an error and leaves the table as it was. The move is written only if the controller still has the order the table showed. When it does not, nothing is written, the list is refreshed, and a warning says to move the policy again.
+Reordering is pick up, move, apply. `K` or `J` picks the selected policy up and moves it one place on screen only; the row is marked while it is held, the toolbar reads `moving 1 down, not saved`, and nothing reaches the controller. Keep moving it with `K`/`J`, `k`/`j`, or the arrows, then press `Enter` to write the result as one ordering, or `Esc` to put it back. A toast confirms the move, and a move the controller refuses raises an error and leaves the table as it was. The move is written only if the controller still has the order the table showed. When it does not, nothing is written, the list is refreshed, and a warning says to move the policy again.
 
-Rules the controller owns carry a mark and are not yours to change. A system-defined policy, a policy derived from another rule, and an ACL or NAT rule the controller manages refuse `E`, `D`, and a move on the spot, each with its reason, and the hint bar and help leave those keys out for such a row. Logging is the exception: `L` works on a system-defined policy too. A move steps over the system-defined policies of a zone pair as one block. Zones are read-only.
+Rules the controller owns carry a mark and are not yours to change. A system-defined policy, a policy derived from another rule, and an ACL or NAT rule the controller manages refuse `E`, `D`, and a move on the spot, each with its reason, and the status bar and help leave those keys out for such a row. Where a key works, the status bar says what it will do for the selected row: `E enable` or `E disable`, `L log on` or `L log off`. Logging is the exception: `L` works on a system-defined policy too. A move steps over the system-defined policies of a zone pair as one block. Zones are read-only.
 
 Every `E` and `L` is checked against the list read back from the controller. A switch the controller accepted but did not apply is an error (`The controller accepted the change, but X is still enabled`), not a success.
 
@@ -240,7 +248,7 @@ Every `E` and `L` is checked against the list read back from the controller. A s
 
 The screen draws the uplink tree the controller reports: the gateway at the top, every switch and access point under the device it uplinks through, and the parent's port number on each wired link. Dashed lines are uplinks the controller reports as wireless (mesh); a link whose medium is unknown is drawn as a plain line. A device with no reported uplink hangs off the gateway on a dim dotted line, so missing uplink data shows up as such instead of being guessed. Boxes are sized to their names, and when a parent's children would not fit across the screen they wrap onto extra rows hanging off a trunk.
 
-The map opens fitted: the largest zoom that shows the whole tree, following the terminal size. The fit never goes below 80%, the smallest zoom that keeps names whole, so a tree too tall for that starts at the gateway and runs off the bottom. The title shows the zoom, which way more of the tree lies when it does not all fit (`80% fit · more ↓`), and the selected device.
+The map opens fitted: the largest zoom that shows the whole tree, following the terminal size. The fit never goes below 80%, the smallest zoom that keeps names whole, so a tree too tall for that starts at the gateway and runs off the bottom. The title shows the zoom, which way more of the tree lies when it does not all fit (`80% fit · more ↓`), and the selected device. The map's bottom border carries the legend (down, busy, wired, mesh, uplink unknown), as many entries as fit.
 
 | Key                      | Action                                         |
 | ------------------------ | ---------------------------------------------- |
@@ -256,7 +264,7 @@ The map opens fitted: the largest zoom that shows the whole tree, following the 
 
 ### Events
 
-The feed orders events by time and drops repeat deliveries. Its status line says how events arrive: `live` over the WebSocket, `polling (no live stream)` when the profile has session access without a cookie login, or `no event access`. It also counts the active alarms and, once older history is loaded, says how far back the feed reaches (`back to 11-06 17:51`, with `+ blocks` when firewall blocks are in).
+The feed orders events by time and drops repeat deliveries. One toolbar row heads it: the categories on the left, and on the right the feed state and the count of active alarms, each a button that shows its key (`Space ● live`, `v alarms 4`). The feed state says how events arrive: `● live` over the WebSocket, `◐ polling` when the profile has session access without a cookie login, `‖ paused`, or `○ no access`. Once older history is loaded, the right of the top border says how far back the feed reaches (`back to 11-06 17:51`, with `+ blocks` when firewall blocks are in). While the feed is paused, the right of the bottom border gives the cursor position (`event 312 of 314`). Below about 100 columns the feed state and the alarm count move to the title, and `Space pause` and `v alarms` show in the status bar.
 
 | View        | Key         | Action                                          |
 | ----------- | ----------- | ----------------------------------------------- |
@@ -280,15 +288,15 @@ The feed orders events by time and drops repeat deliveries. Its status line says
 
 - **Detail**: the whole message, type, severity, and dated time. Opening it pauses a live feed so the event stays put, and a paused feed counts what arrived below it.
 - **Categories**: All, Device, Client, Network, System, Admin, Firewall, VPN, and Other.
-- **Older history**: each press of `o` loads the events before the oldest one in the feed, a page at a time. A full page says `o for more`. A window with nothing in it widens by itself, from 24 hours to 3 days, 7 days, and 30 days, and the status says so when nothing older is left (`no older events in 30d`). The feed keeps the newest 10,000 events and says when that limit is reached. `f` does nothing while a load runs.
-- **Heatmap**: `p` on a terminal too small to draw it says so.
-- **Alarms**: the controller's unarchived alarms, newest first, read again every minute while the Dashboard or Events is in front, and after every archive. Archiving one alarm also archives the alerts the controller groups with it, and the confirmation says so. An archive the controller accepted while still listing the alarm as active is a warning, not a success. An empty view offers only `v` and `r`.
+- **Older history**: each press of `o` loads the events before the oldest one in the feed, a page at a time. A full page says `o for more`. A window with nothing in it widens by itself, from 24 hours to 3 days, 7 days, and 30 days, and the top border says so when nothing older is left (`no older events in 30d`). The feed keeps the newest 10,000 events and says when that limit is reached. `f` does nothing while a load runs.
+- **Heatmap**: the legend is a `less ░▒▓█ more` scale at the right of the hour axis. `p` on a terminal too small to draw it says so.
+- **Alarms**: the controller's unarchived alarms, newest first and counted in the title, read again every minute while the Dashboard or Events is in front, and after every archive. Archiving one alarm also archives the alerts the controller groups with it, and the confirmation says so. An archive the controller accepted while still listing the alarm as active is a warning, not a success. An empty view offers only `v` and `r`.
 
 Events, older history, firewall blocks, and alarms all need a direct controller session.
 
 ### Stats
 
-WAN bandwidth, client counts, and DPI application and category breakdowns for one of four periods: 1h, 24h, 7d, and 30d.
+WAN bandwidth, client counts, and DPI application and category breakdowns for one of four periods: 1h, 24h, 7d, and 30d. The periods sit on the toolbar, and a reload under way or one that failed shows at its right.
 
 | Key       | Action                            |
 | --------- | --------------------------------- |
@@ -299,7 +307,7 @@ Charts are only drawn under the period they belong to. While a period loads the 
 
 ### WiFi
 
-Five sub-tabs: Overview, Clients, SSIDs, Neighbors, and Roaming. Each keeps its own sort, search filter, and panel, so nothing done on one changes another.
+Five sub-tabs: Overview, Clients, SSIDs, Neighbors, and Roaming. Each keeps its own sort, search filter, and panel, so nothing done on one changes another. Tables draw straight into the screen frame, and the access point summary line shows on Overview only. A detail or panel takes the rows its content needs: it sits beside its table on a screen at least 110 columns wide, and under the table below that.
 
 | Sub-tab   | Key             | Action                                                                  |
 | --------- | --------------- | ----------------------------------------------------------------------- |
@@ -326,14 +334,15 @@ Five sub-tabs: Overview, Clients, SSIDs, Neighbors, and Roaming. Each keeps its 
 | Neighbors | `f` / `[` `]`   | Next band / previous and next band                                      |
 | Roaming   | `r` / `Enter`   | Refresh the history                                                     |
 
-- **AP focus** narrows the Overview, Clients, and Neighbors sub-tabs to one access point. It shows as a chip beside the sub-tabs, and `Esc` clears it once the sub-tab's panel is closed.
+- **AP focus** narrows the Overview, Clients, and Neighbors sub-tabs to one access point. It shows as a chip at the right of the toolbar on every sub-tab (`focus ap-atrium ✕`), dimmed where it narrows nothing, and `Esc` clears it once the sub-tab's panel is closed.
+- **Band**: the band on show is a toolbar chip with its key, `f band 2.4 GHz` on Neighbors and `[/] band 2.4 GHz` while the channel map is open.
 - **Channel map**: every radio of every online access point counts on its band, next to the neighbors heard there, with DFS channels marked. A neighbor heard by several of your access points counts once, by its BSSID.
 - **WiFi experience** shows a client's signal, rates, and the uplink path between it and the gateway.
 - **SSIDs** lists every broadcast with its state, client count, security, bands, network, and hidden flag. The controller's list leaves out visibility, isolation, band steering, fast roaming, and MLO, so the sub-tab reads each SSID in full. Until that read lands the Hidden column shows `…`, and `?` when it failed. The detail rows show `…` while reading, `unknown` when the read failed, and `─` for a setting the controller's record does not carry. A setting is never drawn as "no" before it is known.
 - **SSID writes**: `H` reads the SSID from the controller first, then asks `Hide X?` or `Announce X again?` by what it found. `E` asks before enabling as well as before disabling, since either one reprovisions the access points. A second write to an SSID while one is still being applied is refused with a toast. Each write is checked against the record read back, and one the controller accepted but did not apply is reported as a failure.
 - **Rename**: a name holds up to 32 bytes (32 plain characters, fewer with accents or emoji), and a name another SSID already has is refused. In a `--demo` session the prompt opens empty, so a stand-in name is never written back.
 - **Passphrase**: 8 to 63 ASCII characters, asked for twice because it is typed hidden (`Ctrl+t` shows it). The current passphrase is never shown: the detail's Passphrase row reads `not shown (P to set)`, a count such as `3 per-network keys`, `RADIUS sign-in`, or `none`. `P` is refused on open and enterprise SSIDs, which have no passphrase, and on an SSID that gives each network its own key, which has no single passphrase to change.
-- **Roaming** shows the history of the client selected on the Clients sub-tab, in local time, and stays up when that client leaves the list. When a refresh fails, the history already on screen stays and the title adds `· refresh failed`.
+- **Roaming** shows the history of the client selected on the Clients sub-tab, in local time, and stays up when that client leaves the list. The toolbar names the client at its right. When a refresh fails, the history already on screen stays and the toolbar adds `refresh failed`.
 
 The access point list comes with the devices. SSIDs come from the Integration API. Wireless client data, WiFi experience, the channel map, neighbor scans, and roam history need a direct controller session, and each panel says so when the profile has none.
 
