@@ -19,6 +19,9 @@ use crate::tui::widgets::wrap::wrap;
 /// Columns the sponsor button takes: ` ♥ Sponsor `.
 const DONATE_WIDTH: u16 = 11;
 
+/// Terminal width from which the sponsor button shows.
+const DONATE_FROM: u16 = 100;
+
 /// Columns kept clear between the status bar's left and right groups.
 const STATUS_GAP: u16 = 2;
 
@@ -303,24 +306,17 @@ impl App {
 
         // What the screen can do with its selection takes the middle, as
         // many actions as fit. The sponsor button takes the corner only
-        // while it costs none of them, nor the app-wide keys, nor the
-        // connection state.
+        // on a terminal wide enough to hold a screen's main actions beside
+        // it. The width decides, not what the actions are, so the keys at
+        // the right never shift as the selection or the screen changes.
         let offered = self
             .screens
             .get(&self.active_screen)
             .map(|screen| screen.hints())
             .unwrap_or_default();
-        let mut donate = self.show_donate && 1 + indicator_width + 1 + DONATE_WIDTH <= area.width;
-        let (mut global_x, mut left_room, hint_room) = place(donate);
-        let mut context = click::fit_hints(offered.clone(), hint_room);
-        if donate && (global_x.is_none() || context.len() < offered.len()) {
-            let (wider_x, wider_room, hint_room) = place(false);
-            let wider = click::fit_hints(offered, hint_room);
-            if wider.len() > context.len() || (global_x.is_none() && wider_x.is_some()) {
-                donate = false;
-                (global_x, left_room, context) = (wider_x, wider_room, wider);
-            }
-        }
+        let donate = self.show_donate && area.width >= DONATE_FROM;
+        let (global_x, left_room, hint_room) = place(donate);
+        let context = click::fit_hints(offered, hint_room);
         let global_area = global_x.map(|x| Rect {
             x: area.x + x,
             width: global_width,

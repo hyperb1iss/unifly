@@ -27,6 +27,9 @@ const MAX_VISIBLE: usize = 4;
 const HISTORY: usize = 50;
 /// Text rows one toast may wrap to.
 const MAX_ROWS: u16 = 5;
+/// Rows the stack starts below the top of its area: the screen's border
+/// and its toolbar row.
+const TOAST_TOP: u16 = 2;
 /// A progress toast nobody finished is dropped after this long.
 const PROGRESS_LIMIT: Duration = Duration::from_secs(90);
 
@@ -256,8 +259,9 @@ impl App {
     }
 
     /// Draw the toast stack down the top-right corner, newest at the
-    /// bottom, clear of the screen's hint row and the bars below it. A tap
-    /// on a toast dismisses it.
+    /// bottom, under the screen's toolbar row, whose right end says what
+    /// the view is showing, and clear of the bars below. A tap on a toast
+    /// dismisses it.
     pub(super) fn render_toasts(&mut self, frame: &mut Frame, area: Rect) {
         if self.notices.is_empty() || area.width < 12 || area.height < 4 {
             return;
@@ -265,7 +269,7 @@ impl App {
         let width = area.width.saturating_sub(4).min(64);
         let text_width = width.saturating_sub(6);
         let x = area.right().saturating_sub(width.saturating_add(2));
-        let mut y = area.y.saturating_add(1);
+        let mut y = area.y.saturating_add(TOAST_TOP);
         let floor = area.bottom().saturating_sub(1);
 
         // When the stack is taller than the screen the newest toasts are
