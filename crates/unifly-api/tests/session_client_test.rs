@@ -1145,6 +1145,39 @@ async fn test_mfa_login_failure_masks_a_reflected_challenge_cookie() {
 }
 
 #[tokio::test]
+async fn test_mfa_login_failure_masks_a_challenge_cookie_with_attributes() {
+    let (server, client) = setup_with_jar().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(wiremock::matchers::body_string_contains("ubic_2fa_token"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "code": "AUTHENTICATION_FAILED",
+            "message": "short-cookie-secret"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(499).set_body_json(json!({
+            "errors": ["ubic_2fa_token required"],
+            "token": "UBIC_2FA=short-cookie-secret; Path=/; HttpOnly"
+        })))
+        .mount(&server)
+        .await;
+
+    let secret: secrecy::SecretString = "password".to_string().into();
+    let totp: secrecy::SecretString = "123456".to_string().into();
+    let message = auth_message(client.login("admin", &secret, Some(&totp)).await);
+
+    assert_eq!(
+        message,
+        "MFA login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED: ****"
+    );
+}
+
+#[tokio::test]
 async fn test_unexpected_mfa_cookie_is_not_echoed_in_the_error() {
     let (server, client) = setup_with_jar().await;
 

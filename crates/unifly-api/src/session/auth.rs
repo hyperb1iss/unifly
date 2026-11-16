@@ -247,10 +247,13 @@ impl SessionClient {
         if !status.is_success() {
             let body = resp.bytes().await.unwrap_or_default();
             // Every secret this exchange carried: the password, the code,
-            // and the challenge cookie's value.
+            // and the challenge cookie's value, without its Set-Cookie
+            // attributes (`; Path=/; HttpOnly`).
             let cookie_secret = challenge_cookie
                 .as_deref()
                 .and_then(|cookie| cookie.strip_prefix("UBIC_2FA="))
+                .and_then(|rest| rest.split(';').next())
+                .map(str::trim)
                 .unwrap_or_default();
             return Err(Error::Authentication {
                 message: login_failure_message(
