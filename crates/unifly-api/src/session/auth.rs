@@ -200,10 +200,10 @@ impl SessionClient {
 
         if let Some(cookie_value) = challenge.token {
             if !cookie_value.starts_with("UBIC_2FA=") {
-                // The value is session material; name the cookie only.
-                let name = cookie_value.split_once('=').map_or("", |(name, _)| name);
+                // The value is session material; never echo any of it. Even a
+                // "name" before `=` can be most of a bare base64 token.
                 return Err(Error::Authentication {
-                    message: format!("unexpected MFA cookie {name:?} (expected UBIC_2FA=...)"),
+                    message: "unexpected MFA cookie format (expected UBIC_2FA=...)".into(),
                 });
             }
             self.add_cookie(&cookie_value, login_url)?;

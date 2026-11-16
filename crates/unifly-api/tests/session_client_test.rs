@@ -1087,14 +1087,14 @@ async fn test_mfa_login_failure_reports_only_the_error_code() {
 }
 
 #[tokio::test]
-async fn test_unexpected_mfa_cookie_names_the_cookie_without_its_value() {
+async fn test_unexpected_mfa_cookie_is_not_echoed_in_the_error() {
     let (server, client) = setup_with_jar().await;
 
     Mock::given(method("POST"))
         .and(path("/api/login"))
         .respond_with(ResponseTemplate::new(499).set_body_json(json!({
             "errors": ["ubic_2fa_token required"],
-            "token": "OTHER_COOKIE=secret-session-material"
+            "token": "c2VjcmV0LXNlc3Npb24tbWF0ZXJpYWw="
         })))
         .mount(&server)
         .await;
@@ -1104,10 +1104,10 @@ async fn test_unexpected_mfa_cookie_names_the_cookie_without_its_value() {
     let message = auth_message(client.login("admin", &secret, Some(&totp)).await);
 
     assert!(
-        message.contains("unexpected MFA cookie \"OTHER_COOKIE\""),
+        message.contains("unexpected MFA cookie format"),
         "{message}"
     );
-    assert!(!message.contains("secret-session-material"), "{message}");
+    assert!(!message.contains("c2VjcmV0"), "{message}");
 }
 
 // ── Session re-authentication ───────────────────────────────────────
