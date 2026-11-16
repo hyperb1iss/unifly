@@ -79,13 +79,8 @@ fn a_network_is_offered_the_fields_its_kind_takes() {
     assert!(gateway.contains(&Field::Internet) && gateway.contains(&Field::Ipv6));
 }
 
-/// Turning IPv6 on needs a prefix source and an address assignment the
-/// form cannot ask for, so it only offers the way it can go: off.
 #[test]
-fn ipv6_is_offered_only_where_it_can_be_turned_off_and_says_what_goes() {
-    let without = edit(&json!({"ipv6_enabled": false, "ipv6_mode": null}));
-    assert!(!without.fields().contains(&Field::Ipv6));
-
+fn ipv6_turns_off_and_says_what_goes() {
     let mut form = edit(&json!({}));
     assert_eq!(form.note(Field::Ipv6), None);
     flip(&mut form, Field::Ipv6);
@@ -100,6 +95,23 @@ fn ipv6_is_offered_only_where_it_can_be_turned_off_and_says_what_goes() {
     // Flipped back before saving, nothing is sent.
     flip(&mut form, Field::Ipv6);
     assert!(matches!(form.submit(), Ok(Submit::Unchanged)));
+}
+
+/// A gateway network without IPv6 offers it, and says where turning it on
+/// takes its settings from.
+#[test]
+fn ipv6_turns_on_as_prefix_delegation() {
+    let mut form = edit(&json!({"ipv6_enabled": false, "ipv6_mode": null}));
+    assert!(form.fields().contains(&Field::Ipv6));
+    assert_eq!(form.note(Field::Ipv6), None);
+    flip(&mut form, Field::Ipv6);
+    assert_eq!(
+        form.note(Field::Ipv6).as_deref(),
+        Some("prefix from the WAN, by SLAAC")
+    );
+    assert_eq!(request(&form), json!({"ipv6_enabled": true}));
+    let costs = form.consequences().join("\n");
+    assert!(costs.contains("prefix delegated from the WAN"), "{costs}");
 }
 
 #[test]

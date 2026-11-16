@@ -685,7 +685,7 @@ fn ap_matches(device: &Device, query: &str) -> bool {
 /// Whether a client matches a lowercased search `query`.
 fn client_matches(client: &Client, query: &str) -> bool {
     display_client_name(client).to_lowercase().contains(query)
-        || client.ip.is_some_and(|ip| ip.to_string().contains(query))
+        || client.addresses().any(|ip| ip.to_string().contains(query))
         || client.mac.as_str().contains(query)
         || client
             .wireless

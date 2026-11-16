@@ -639,10 +639,10 @@ fn the_whole_detail_fits_a_24_row_terminal_and_shows_a_disabled_network() {
     // Three fields to a row: labels and values each start in one column
     // whichever row they are on.
     assert_eq!(column("Purpose", "Status"), column("Lease", "Lease"));
-    assert_eq!(column("Purpose", "Purpose"), column("Prefix", "IPv6"));
+    assert_eq!(column("Purpose", "Purpose"), column("Cellular", "IPv6"));
     assert_eq!(
         column("Purpose", "Corporate"),
-        column("Prefix", "Static"),
+        column("Cellular", "Static"),
         "values line up under each other"
     );
     // The management type sits after the addresses: a gateway-managed
@@ -678,8 +678,8 @@ fn the_screen_draws_no_hint_row_and_the_detail_takes_only_its_rows() {
         .expect("the panel is drawn");
     assert!(rows[top + 1].contains("Status"), "{}", rows[top + 1]);
     assert!(rows[38].starts_with("\u{2502}\u{2570}"), "{}", rows[38]);
-    assert!(rows[37].contains("Prefix"), "{}", rows[37]);
-    assert!(top >= 28, "the panel takes {} rows:\n{text}", 39 - top);
+    assert!(rows[37].contains("Addresses"), "{}", rows[37]);
+    assert!(top >= 27, "the panel takes {} rows:\n{text}", 39 - top);
 }
 
 #[test]

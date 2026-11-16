@@ -120,17 +120,67 @@ pub(super) fn detail_grid(network: &Network, zones: &[Arc<FirewallZone>]) -> Det
     grid.field("mDNS", label, style);
     let (label, style) = switch(network.cellular_backup_enabled);
     grid.field("Cellular", label, style);
-    let (ipv6, style) = if network.ipv6_enabled {
-        let mode = network.ipv6_mode.as_ref();
-        (
-            mode.map_or_else(|| "On".to_owned(), ToString::to_string),
-            on,
-        )
-    } else {
-        ("Off".to_owned(), off)
-    };
-    grid.field("IPv6", ipv6, style);
-    let (prefix, style) = or_none(network.ipv6_prefix.clone());
-    grid.field("Prefix", prefix, style);
+    ipv6_fields(&mut grid, network);
     grid
+}
+
+/// The fields that describe the network's IPv6 setup: whether it is on,
+/// then its subnets and how hosts are addressed and routed.
+fn ipv6_fields(grid: &mut DetailGrid, network: &Network) {
+    let value = Style::default().fg(theme::accent_secondary());
+    let on = Style::default().fg(theme::success());
+    let off = Style::default().fg(theme::text_muted());
+    if !network.ipv6_enabled {
+        grid.field("IPv6", "Off", off);
+        return;
+    }
+    let mode = network.ipv6_mode.as_ref();
+    grid.field(
+        "IPv6",
+        mode.map_or_else(|| "On".to_owned(), ToString::to_string),
+        on,
+    );
+    // A delegated prefix is known once the gateway reports it.
+    match &network.ipv6_prefix {
+        Some(prefix) => grid.wide("Prefix", prefix.clone(), value),
+        None => grid.wide("Prefix", NONE, off),
+    };
+    if !network.ipv6_additional_subnets.is_empty() {
+        grid.wide("Aliases", network.ipv6_additional_subnets.join(", "), value);
+    }
+    let dhcpv6 = network.dhcpv6_enabled.then(|| {
+        match (&network.dhcpv6_range_start, &network.dhcpv6_range_stop) {
+            (Some(start), Some(stop)) => format!("DHCPv6 {start} to {stop}"),
+            _ => "DHCPv6".to_owned(),
+        }
+    });
+    let addressing = match (network.slaac_enabled, dhcpv6) {
+        (true, Some(dhcpv6)) => Some(format!("SLAAC and {dhcpv6}")),
+        (true, None) => Some("SLAAC".to_owned()),
+        (false, dhcpv6) => dhcpv6,
+    };
+    // Without SLAAC or DHCPv6, hosts get no IPv6 address at all.
+    let warning = Style::default().fg(theme::warning());
+    // A DHCPv6 range needs the width of the pane; SLAAC alone does not.
+    match addressing {
+        Some(addressing) if network.dhcpv6_range_start.is_some() => {
+            grid.wide("Addresses", addressing, value)
+        }
+        Some(addressing) => grid.field("Addresses", addressing, value),
+        None => grid.field("Addresses", "none", warning),
+    };
+    // Without router advertisements hosts have no IPv6 default route.
+    match network.ipv6_ra_priority {
+        Some(priority) => grid.field("RA", format!("{priority} priority"), value),
+        None => grid.field("RA", "Off", warning),
+    };
+    // Without an override the gateway picks the servers, which needs no row.
+    if !network.ipv6_dns_servers.is_empty() {
+        let dns: Vec<String> = network
+            .ipv6_dns_servers
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        grid.wide("DNSv6", dns.join(", "), value);
+    }
 }

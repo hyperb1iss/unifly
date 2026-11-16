@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 use regex::Regex;
@@ -20,9 +20,6 @@ const CUTE_NAMES: &[&str] = &[
     "Quasar", "Clover", "Ember", "Tinker", "Velvet", "Cricket", "Biscuit", "Phantom", "Stardust",
     "Marble", "Glimmer", "Waffle", "Pebble", "Fizz", "Comet",
 ];
-
-/// What every IPv6 address is replaced with, from the documentation range.
-const IPV6_STAND_IN: &str = "2001:db8::cafe";
 
 const CUTE_SSIDS: &[&str] = &[
     "SilkNet",
@@ -54,6 +51,7 @@ pub struct Sanitizer {
     name_map: DashMap<String, String>,
     ssid_map: DashMap<String, String>,
     ip_map: DashMap<IpAddr, IpAddr>,
+    ipv6_map: DashMap<Ipv6Addr, Ipv6Addr>,
     mac_map: DashMap<String, String>,
     /// Every stand-in handed out, so text or values that already carry
     /// one are never mapped a second time.
@@ -63,6 +61,7 @@ pub struct Sanitizer {
     name_counter: AtomicUsize,
     ssid_counter: AtomicUsize,
     wan_ip_counter: AtomicU8,
+    ipv6_counter: AtomicU16,
 }
 
 impl Sanitizer {
@@ -120,6 +119,7 @@ impl Sanitizer {
             name_map: DashMap::new(),
             ssid_map: DashMap::new(),
             ip_map: DashMap::new(),
+            ipv6_map: DashMap::new(),
             mac_map: DashMap::new(),
             name_stand_ins: DashMap::new(),
             ssid_stand_ins: DashMap::new(),
@@ -127,6 +127,7 @@ impl Sanitizer {
             name_counter: AtomicUsize::new(1),
             ssid_counter: AtomicUsize::new(1),
             wan_ip_counter: AtomicU8::new(1),
+            ipv6_counter: AtomicU16::new(1),
         }
     }
 
@@ -175,6 +176,37 @@ impl Sanitizer {
 
     pub fn sanitize_ip_opt(&self, ip: &Option<IpAddr>) -> Option<IpAddr> {
         ip.map(|addr| self.sanitize_wan_ip(addr))
+    }
+
+    /// The stand-in for an IPv6 address: one from the documentation range
+    /// per address, so the same address reads the same everywhere and two
+    /// hosts never share one. Loopback, the unspecified address, and
+    /// documentation addresses identify nothing and stay.
+    pub fn sanitize_ipv6(&self, ip: Ipv6Addr) -> Ipv6Addr {
+        let [first, second, ..] = ip.segments();
+        if ip.is_loopback() || ip.is_unspecified() || (first, second) == (0x2001, 0xdb8) {
+            return ip;
+        }
+        *self.ipv6_map.entry(ip).or_insert_with(|| {
+            let index = self.ipv6_counter.fetch_add(1, Ordering::Relaxed);
+            Ipv6Addr::new(0x2001, 0xdb8, 0xcafe, 0, 0, 0, 0, index)
+        })
+    }
+
+    /// `subnet`, an IPv6 address with an optional prefix length, with its
+    /// address replaced.
+    fn sanitize_ipv6_subnet(&self, subnet: &str) -> String {
+        let (address, length) = subnet
+            .split_once('/')
+            .map_or((subnet, None), |(address, length)| (address, Some(length)));
+        let Ok(address) = address.parse::<Ipv6Addr>() else {
+            return self.sanitize_text(subnet);
+        };
+        let address = self.sanitize_ipv6(address);
+        length.map_or_else(
+            || address.to_string(),
+            |length| format!("{address}/{length}"),
+        )
     }
 
     pub fn sanitize_ssid(&self, ssid: &str) -> String {
@@ -340,8 +372,8 @@ impl Sanitizer {
         {
             return self.sanitize_wan_ip(ip).to_string();
         }
-        if ip_str.trim().parse::<Ipv6Addr>().is_ok() {
-            return IPV6_STAND_IN.to_owned();
+        if let Ok(ip) = ip_str.trim().parse::<Ipv6Addr>() {
+            return self.sanitize_ipv6(ip).to_string();
         }
         ip_str.to_owned()
     }
@@ -382,7 +414,7 @@ impl Sanitizer {
             .collect()
     }
 
-    /// Replace each IPv6 address in `text` with the documentation stand-in.
+    /// Replace each IPv6 address in `text` with its documentation stand-in.
     ///
     /// An address is the longest stretch of a hex, colon, and dot run that
     /// parses as one and touches no letter or digit outside it, so it is
@@ -408,7 +440,7 @@ impl Sanitizer {
                 if ip.is_loopback() || ip.is_unspecified() {
                     out.push_str(text.get(start..end).unwrap_or_default());
                 } else {
-                    out.push_str(IPV6_STAND_IN);
+                    out.push_str(&self.sanitize_ipv6(ip).to_string());
                 }
                 copied = end;
                 start = end;
@@ -430,7 +462,13 @@ impl Sanitizer {
         }
         d.ip = self.sanitize_ip_opt(&d.ip);
         if self.redact_wan_ips {
-            d.wan_ipv6 = d.wan_ipv6.as_ref().map(|_| IPV6_STAND_IN.to_owned());
+            d.wan_ipv6 = d
+                .wan_ipv6
+                .as_deref()
+                .map(|ip| self.sanitize_ipv6_subnet(ip));
+            for ip in &mut d.ipv6_addresses {
+                *ip = self.sanitize_ipv6(*ip);
+            }
         }
         if self.redact_macs {
             d.mac = self.sanitize_mac(&d.mac);
@@ -447,6 +485,11 @@ impl Sanitizer {
         // a client's network name matching its renamed network.
         c.network_name = self.sanitize_name_opt(&c.network_name);
         c.ip = self.sanitize_ip_opt(&c.ip);
+        if self.redact_wan_ips {
+            for ip in &mut c.ipv6_addresses {
+                *ip = self.sanitize_ipv6(*ip);
+            }
+        }
         if let Some(ref mut wi) = c.wireless {
             wi.ssid = wi.ssid.as_ref().map(|s| self.sanitize_ssid(s));
         }
@@ -463,6 +506,20 @@ impl Sanitizer {
     pub fn sanitize_network(&self, network: &Network) -> Network {
         let mut n = network.clone();
         n.name = self.sanitize_name(&n.name);
+        if self.redact_wan_ips {
+            n.ipv6_prefix = n
+                .ipv6_prefix
+                .as_deref()
+                .map(|subnet| self.sanitize_ipv6_subnet(subnet));
+            for subnet in &mut n.ipv6_additional_subnets {
+                *subnet = self.sanitize_ipv6_subnet(subnet);
+            }
+            for server in &mut n.ipv6_dns_servers {
+                if let IpAddr::V6(v6) = server {
+                    *v6 = self.sanitize_ipv6(*v6);
+                }
+            }
+        }
         n
     }
 
@@ -1184,11 +1241,16 @@ mod tests {
         let s = Sanitizer::new(&DemoConfig::default());
         assert_eq!(
             s.sanitize_text("WAN up on 2001:470:1f0b:5c::2, gateway fe80::1."),
-            "WAN up on 2001:db8::cafe, gateway 2001:db8::cafe."
+            "WAN up on 2001:db8:cafe::1, gateway 2001:db8:cafe::2."
         );
         assert_eq!(
             s.sanitize_text("listening on [2600:1700:abcd::7]:443"),
-            "listening on [2001:db8::cafe]:443"
+            "listening on [2001:db8:cafe::3]:443"
+        );
+        // An address seen again gets the stand-in it got before.
+        assert_eq!(
+            s.sanitize_text("gateway fe80::1 again"),
+            "gateway 2001:db8:cafe::2 again"
         );
         // Loopback and the unspecified address identify nothing.
         assert_eq!(
@@ -1199,21 +1261,22 @@ mod tests {
 
     #[test]
     fn default_text_redacts_ipv6_glued_to_its_neighbours() {
-        let s = Sanitizer::new(&DemoConfig::default());
         for (text, expected) in [
-            ("addr:2001:470::1", "addr:2001:db8::cafe"),
-            ("IPv6:2001:470:1f0b::2/64", "IPv6:2001:db8::cafe/64"),
-            ("2001:470::1_x", "2001:db8::cafe_x"),
-            ("WAN 2001:470::1: down", "WAN 2001:db8::cafe: down"),
-            ("fe80::1%eth0 is up", "2001:db8::cafe%eth0 is up"),
+            ("addr:2001:470::1", "addr:2001:db8:cafe::1"),
+            ("IPv6:2001:470:1f0b::2/64", "IPv6:2001:db8:cafe::1/64"),
+            ("2001:470::1_x", "2001:db8:cafe::1_x"),
+            ("WAN 2001:470::1: down", "WAN 2001:db8:cafe::1: down"),
+            ("fe80::1%eth0 is up", "2001:db8:cafe::1%eth0 is up"),
             ("2001:db8::cafe stays", "2001:db8::cafe stays"),
             (
                 "EUI-64 0011:2233:4455:6677:8899:aabb:ccdd:eeff",
-                "EUI-64 2001:db8::cafe",
+                "EUI-64 2001:db8:cafe::1",
             ),
         ] {
+            let s = Sanitizer::new(&DemoConfig::default());
             assert_eq!(s.sanitize_text(text), expected, "{text}");
         }
+        let s = Sanitizer::new(&DemoConfig::default());
         for text in [
             "Vec::new()",
             "Self::DEFAULT",

@@ -182,7 +182,7 @@ impl ClientCells {
                 .unwrap_or("unknown")
                 .to_owned(),
             ip: client
-                .ip
+                .primary_address()
                 .map_or_else(|| DASH.to_owned(), |ip| ip.to_string()),
             mac: client.mac.to_string(),
             via,

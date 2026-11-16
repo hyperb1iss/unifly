@@ -468,6 +468,44 @@ fn the_detail_names_whose_address_a_message_spells_out() {
     assert_eq!(hints(&screen), "Esc close");
 }
 
+/// An IPv6 address names its holder however the message spells it.
+#[test]
+fn the_detail_names_whose_ipv6_address_a_message_spells_out() {
+    let mut screen = connected(FULL);
+    let laptop: Arc<Client> = Arc::new(
+        serde_json::from_value(json!({
+            "id": "client-1", "mac": "82:8b:02:66:7c:01", "ip": "10.4.20.198",
+            "ipv6_addresses": ["2001:db8:3fa:0:194b:731a:4103:7ab2", "fe80::194b:731a:4103:7ab2"],
+            "name": null, "hostname": "selene", "client_type": "Wireless",
+            "connected_at": null, "uplink_device_id": null, "uplink_device_mac": null,
+            "switch_port": null, "network_id": null, "vlan": null, "wireless": null,
+            "guest_auth": null, "is_guest": false, "tx_bytes": null, "rx_bytes": null,
+            "bandwidth": null, "os_name": null, "device_class": null,
+            "use_fixedip": false, "fixed_ip": null, "blocked": false
+        }))
+        .expect("client fixture"),
+    );
+    screen
+        .update(&Action::ClientsUpdated(Arc::new(vec![laptop])))
+        .expect("clients");
+    screen
+        .update(&Action::EventReceived(custom(
+            1,
+            "Firewall",
+            "Blocked [2001:DB8:3FA::194B:731A:4103:7AB2]:443 from 2001:db8:77::9.",
+            None,
+        )))
+        .expect("update");
+
+    press(&mut screen, KeyCode::Enter);
+    let text = draw(&screen).join("\n");
+    assert!(
+        text.contains("Client    selene  2001:db8:3fa:0:194b:731a:4103:7ab2"),
+        "{text}"
+    );
+    assert_eq!(hints(&screen), "c client  Esc close");
+}
+
 #[test]
 fn h_and_l_step_the_category_filter() {
     let mut screen = connected(FULL);

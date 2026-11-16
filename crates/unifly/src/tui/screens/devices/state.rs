@@ -225,13 +225,13 @@ impl DevicesScreen {
     }
 }
 
-/// Whether `device` matches a lowercased search query by name, model, IP,
-/// or MAC.
+/// Whether `device` matches a lowercased search query by name, model, any
+/// of its IP addresses, or MAC.
 fn matches_query(device: &Device, query: &str) -> bool {
     let holds = |text: Option<&str>| text.is_some_and(|text| text.to_lowercase().contains(query));
     holds(device.name.as_deref())
         || holds(device.model.as_deref())
-        || device.ip.is_some_and(|ip| ip.to_string().contains(query))
+        || device.addresses().any(|ip| ip.to_string().contains(query))
         || device.mac.to_string().to_lowercase().contains(query)
 }
 

@@ -134,7 +134,7 @@ impl EventsScreen {
                 let device = self
                     .devices
                     .iter()
-                    .find(|device| device.ip == Some(address))?;
+                    .find(|device| device.has_address(address))?;
                 (event.device_mac.as_ref() != Some(&device.mac)).then_some((device, address))
             })
             .collect()
@@ -149,7 +149,7 @@ impl EventsScreen {
                 let client = self
                     .clients
                     .iter()
-                    .find(|client| client.ip == Some(address))?;
+                    .find(|client| client.has_address(address))?;
                 (event.client_mac.as_ref() != Some(&client.mac)).then_some((client, address))
             })
             .collect()

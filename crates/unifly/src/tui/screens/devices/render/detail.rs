@@ -244,6 +244,12 @@ fn overview_fields(screen: &DevicesScreen, device: &Device) -> Vec<Field> {
             .color(theme::text_primary())
             .marker(status_indicator::status_span(device.state)),
         Field::optional("IP", device.ip.map(|ip| ip.to_string())).color(theme::accent_tertiary()),
+    ];
+    if let Some(ipv6) = &device.wan_ipv6 {
+        fields.push(Field::new("WAN IPv6", ipv6.clone()).color(theme::accent_tertiary()));
+    }
+    fields.extend(grid::ipv6_fields(&device.ipv6_addresses));
+    fields.extend([
         Field::new("MAC", device.mac.to_string()).color(theme::accent_tertiary()),
         Field::new("Type", type_label(device.device_type)),
         Field::optional("Uplink", uplink_label(screen, device)),
@@ -257,10 +263,7 @@ fn overview_fields(screen: &DevicesScreen, device: &Device) -> Vec<Field> {
         Field::optional("Last seen", last_seen.map(grid::ago)),
         Field::optional("Adopted", device.adopted_at.map(grid::local_time)),
         Field::optional("Serial", device.serial.clone()),
-    ];
-    if let Some(ipv6) = &device.wan_ipv6 {
-        fields.push(Field::new("WAN IPv6", ipv6.clone()).color(theme::accent_tertiary()));
-    }
+    ]);
     fields
 }
 

@@ -1,11 +1,15 @@
 //! An aligned label and value grid for the detail panes, and the text
 //! helpers the panes share.
 
+use std::net::Ipv6Addr;
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+
+use unifly_api::model::{Ipv6Scope, ipv6_in_scope};
 
 use crate::tui::theme;
 
@@ -62,6 +66,25 @@ impl Field {
 
 /// What stands in for a value the controller did not report.
 pub const DASH: &str = "\u{2500}";
+
+/// The fields that show a host's IPv6 `addresses`: the first one the
+/// internet routes to and the first unique local one, each counting the
+/// others of its kind. Link-local ones are left out; every host has one
+/// and none can be reached without naming an interface.
+pub fn ipv6_fields(addresses: &[Ipv6Addr]) -> Vec<Field> {
+    [("IPv6", Ipv6Scope::Global), ("ULA", Ipv6Scope::UniqueLocal)]
+        .into_iter()
+        .filter_map(|(label, scope)| {
+            let mut found = ipv6_in_scope(addresses, scope);
+            let first = found.next()?;
+            let value = match found.count() {
+                0 => first.to_string(),
+                more => format!("{first} (+{more})"),
+            };
+            Some(Field::new(label, value).color(theme::accent_tertiary()))
+        })
+        .collect()
+}
 
 /// Columns `text` takes when drawn.
 pub fn width_of(text: &str) -> usize {
