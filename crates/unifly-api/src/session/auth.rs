@@ -86,9 +86,7 @@ fn login_failure_detail(body: &[u8], secrets: &[&str]) -> Option<String> {
     .chain(errors.into_iter().flatten())
     .filter_map(error_code)
     {
-        let leaks_secret = secrets
-            .iter()
-            .any(|secret| !secret.is_empty() && code.contains(secret));
+        let leaks_secret = secrets.iter().any(|secret| reveals_secret(&code, secret));
         let code = if leaks_secret {
             "****".to_owned()
         } else {
@@ -100,6 +98,23 @@ fn login_failure_detail(body: &[u8], secrets: &[&str]) -> Option<String> {
     }
 
     (!codes.is_empty()).then(|| codes.join(": "))
+}
+
+/// Shortest code that is masked for being part of a secret. Shorter
+/// fragments (`401` inside a password) are not a usable leak, and masking
+/// them would hide real error codes.
+const MIN_SECRET_FRAGMENT: usize = 4;
+
+/// Whether an error code reveals `secret`: contains it whole, or is a
+/// fragment of it (a server that truncates what it quotes back), compared
+/// case-insensitively.
+fn reveals_secret(code: &str, secret: &str) -> bool {
+    if secret.is_empty() {
+        return false;
+    }
+    let code = code.to_ascii_lowercase();
+    let secret = secret.to_ascii_lowercase();
+    code.contains(&secret) || (code.len() >= MIN_SECRET_FRAGMENT && secret.contains(&code))
 }
 
 impl SessionClient {
@@ -493,5 +508,85 @@ impl SessionClient {
         Err(Error::Authentication {
             message: "could not detect controller platform: both login probes returned 404".into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::login_failure_detail;
+
+    const SECRETS: [&str; 3] = [
+        "hunter2-password",         // password
+        "123456",                   // TOTP code
+        "c2hvcnQtY29va2llLXZhbHVl", // challenge cookie value
+    ];
+
+    /// Every form a secret can take in a reflected response (see the
+    /// threat model): whole, embedded in a code, truncated, case-changed,
+    /// and quoted in free text.
+    fn reflected_forms(secret: &str) -> Vec<String> {
+        let fragment = &secret[..(secret.len() / 2).max(4)];
+        vec![
+            secret.to_owned(),
+            format!("ERR_{secret}_X"),
+            fragment.to_owned(),
+            secret.to_ascii_uppercase(),
+            format!("Invalid password: {secret}"),
+        ]
+    }
+
+    /// Every recognized field, holding `value`.
+    fn bodies(value: &str) -> Vec<Value> {
+        vec![
+            json!({ "meta": { "rc": "error", "msg": value } }),
+            json!({ "code": value }),
+            json!({ "message": value }),
+            json!({ "error": { "code": value } }),
+            json!({ "error": { "message": value } }),
+            json!({ "errors": ["ubic_2fa_token_required", value] }),
+        ]
+    }
+
+    #[test]
+    fn no_form_of_a_submitted_secret_survives_in_any_field() {
+        for secret in SECRETS {
+            for form in reflected_forms(secret) {
+                let needle = form.to_ascii_lowercase();
+                for body in bodies(&form) {
+                    let raw = serde_json::to_vec(&body).expect("serialize");
+                    let detail = login_failure_detail(&raw, &SECRETS).unwrap_or_default();
+                    assert!(
+                        !detail.to_ascii_lowercase().contains(&needle),
+                        "{form:?} leaked from {body} as {detail:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn free_text_is_dropped_even_without_a_secret_in_it() {
+        // Free text can carry what the masking cannot know about.
+        for body in bodies("Invalid username or password") {
+            let raw = serde_json::to_vec(&body).expect("serialize");
+            let detail = login_failure_detail(&raw, &SECRETS).unwrap_or_default();
+            assert!(
+                !detail.contains("Invalid"),
+                "free text kept from {body}: {detail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_error_codes_survive_masking() {
+        for code in ["api.err.Invalid", "AUTHENTICATION_FAILED", "401"] {
+            for body in bodies(code) {
+                let raw = serde_json::to_vec(&body).expect("serialize");
+                let detail = login_failure_detail(&raw, &SECRETS).unwrap_or_default();
+                assert!(detail.contains(code), "{code} lost from {body}: {detail:?}");
+            }
+        }
     }
 }
