@@ -78,16 +78,22 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
         .iter()
         .map(|client| (MacAddress::new(&client.mac), client))
         .collect();
-    let session_by_ip: HashMap<&str, &SessionClientEntry> = session_clients
-        .iter()
-        .filter_map(|client| client.ip.as_deref().map(|ip| (ip, client)))
-        .collect();
+    // An address two stations report names neither of them.
+    let mut session_by_ip: HashMap<&str, Option<&SessionClientEntry>> = HashMap::new();
+    for client in session_clients {
+        if let Some(ip) = client.ip.as_deref() {
+            session_by_ip
+                .entry(ip)
+                .and_modify(|found| *found = None)
+                .or_insert(Some(client));
+        }
+    }
     let mut merged = 0u32;
     for client in clients.iter_mut() {
         // The MAC names the station; the address serves a record without one.
         let ip_key = client.ip.map(|ip| ip.to_string());
-        let by_ip = || ip_key.as_deref().and_then(|ip| session_by_ip.get(ip));
-        if let Some(session_client) = session_by_mac.get(&client.mac).or_else(by_ip) {
+        let by_ip = || ip_key.as_deref().and_then(|ip| *session_by_ip.get(ip)?);
+        if let Some(session_client) = session_by_mac.get(&client.mac).copied().or_else(by_ip) {
             if client.tx_bytes.is_none() {
                 client.tx_bytes = session_client
                     .tx_bytes
