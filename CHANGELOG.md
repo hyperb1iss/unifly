@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-16
+
 ### Added
 
 - **IPv6 across the board.** Clients and devices carry every IPv6 address
@@ -38,8 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and DHCPv6 reads on where the address assignment carries a DHCP
   configuration.
 - Redacted screenshots gave every IPv6 address one stand-in, so two hosts
-  could share one. Each address now gets its own from the documentation
-  range.
+  could share one, and missed IPv6 in a client's or device's `ip`. Each
+  address now gets its own stand-in of the same reach, and IPv6 is also
+  redacted when only MACs are hidden, since a SLAAC address spells out its
+  MAC.
+- A hybrid client with no IPv4 address took nothing from the session
+  records, because the merge matched by IPv4 alone. It now matches by MAC
+  first.
 
 ## [0.14.0] - 2026-11-16
 
@@ -1450,7 +1457,8 @@ same running notes. Each of those releases has its own notes on the
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/hyperb1iss/unifly/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/hyperb1iss/unifly/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/hyperb1iss/unifly/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...v0.12.1
