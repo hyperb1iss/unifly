@@ -27,6 +27,96 @@ struct MfaChallengeResponse {
     token: Option<String>,
 }
 
+/// Longest error token taken from a login failure response.
+const MAX_LOGIN_ERROR_TOKEN: usize = 64;
+
+/// The error message for a failed login: the status, plus the
+/// controller's own error codes when the body carries them.
+///
+/// Only the error fields UniFi controllers send are read: `meta.msg`
+/// (classic), `code`/`message` and `error.code`/`error.message` (UniFi
+/// OS), and `errors[]` (SSO). Of those, only code-like values such as
+/// `api.err.Invalid` or `AUTHENTICATION_FAILED` are kept; free text is
+/// dropped, since a proxy or misbehaving server can quote the request,
+/// password included, back in it. Any value that still contains one of
+/// the `secrets` the request carried is masked.
+fn login_failure_message(
+    prefix: &str,
+    status: reqwest::StatusCode,
+    body: &[u8],
+    secrets: &[&str],
+) -> String {
+    match login_failure_detail(body, secrets) {
+        Some(detail) => format!("{prefix} (HTTP {status}): {detail}"),
+        None => format!("{prefix} (HTTP {status})"),
+    }
+}
+
+fn login_failure_detail(body: &[u8], secrets: &[&str]) -> Option<String> {
+    use serde_json::Value;
+
+    /// A short identifier-style value: no spaces, no free text.
+    fn error_code(field: &Value) -> Option<String> {
+        let code = match field {
+            Value::String(text) => text.trim().to_owned(),
+            Value::Number(number) => number.to_string(),
+            _ => return None,
+        };
+        let code_like = !code.is_empty()
+            && code.len() <= MAX_LOGIN_ERROR_TOKEN
+            && code
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+        code_like.then_some(code)
+    }
+
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let errors = value.get("errors").and_then(Value::as_array);
+
+    let mut codes: Vec<String> = Vec::new();
+    for code in [
+        value.pointer("/meta/msg"),
+        value.get("code"),
+        value.get("message"),
+        value.pointer("/error/code"),
+        value.pointer("/error/message"),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(errors.into_iter().flatten())
+    .filter_map(error_code)
+    {
+        let leaks_secret = secrets.iter().any(|secret| reveals_secret(&code, secret));
+        let code = if leaks_secret {
+            "****".to_owned()
+        } else {
+            code
+        };
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+    }
+
+    (!codes.is_empty()).then(|| codes.join(": "))
+}
+
+/// Shortest code that is masked for being part of a secret. Shorter
+/// fragments (`401` inside a password) are not a usable leak, and masking
+/// them would hide real error codes.
+const MIN_SECRET_FRAGMENT: usize = 4;
+
+/// Whether an error code reveals `secret`: contains it whole, or is a
+/// fragment of it (a server that truncates what it quotes back), compared
+/// case-insensitively.
+fn reveals_secret(code: &str, secret: &str) -> bool {
+    if secret.is_empty() {
+        return false;
+    }
+    let code = code.to_ascii_lowercase();
+    let secret = secret.to_ascii_lowercase();
+    code.contains(&secret) || (code.len() >= MIN_SECRET_FRAGMENT && secret.contains(&code))
+}
+
 impl SessionClient {
     /// Authenticate with the controller using username/password.
     ///
@@ -90,9 +180,14 @@ impl SessionClient {
         }
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.bytes().await.unwrap_or_default();
             return Err(Error::Authentication {
-                message: format!("login failed (HTTP {status}): {body}"),
+                message: login_failure_message(
+                    "login failed",
+                    status,
+                    &body,
+                    &[password.expose_secret()],
+                ),
             });
         }
 
@@ -134,15 +229,16 @@ impl SessionClient {
             message: "failed to parse MFA challenge response".into(),
         })?;
 
-        if let Some(cookie_value) = challenge.token {
+        let challenge_cookie = challenge.token;
+        if let Some(cookie_value) = &challenge_cookie {
             if !cookie_value.starts_with("UBIC_2FA=") {
+                // The value is session material; never echo any of it. Even a
+                // "name" before `=` can be most of a bare base64 token.
                 return Err(Error::Authentication {
-                    message: format!(
-                        "unexpected MFA cookie format (expected UBIC_2FA=...): {cookie_value}"
-                    ),
+                    message: "unexpected MFA cookie format (expected UBIC_2FA=...)".into(),
                 });
             }
-            self.add_cookie(&cookie_value, login_url)?;
+            self.add_cookie(cookie_value, login_url)?;
         }
 
         // Retry login with TOTP token. Once sent, the code is spent
@@ -164,9 +260,23 @@ impl SessionClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.bytes().await.unwrap_or_default();
+            // Every secret this exchange carried: the password, the code,
+            // and the challenge cookie's value, without its Set-Cookie
+            // attributes (`; Path=/; HttpOnly`).
+            let cookie_secret = challenge_cookie
+                .as_deref()
+                .and_then(|cookie| cookie.strip_prefix("UBIC_2FA="))
+                .and_then(|rest| rest.split(';').next())
+                .map(str::trim)
+                .unwrap_or_default();
             return Err(Error::Authentication {
-                message: format!("MFA login failed (HTTP {status}): {body}"),
+                message: login_failure_message(
+                    "MFA login failed",
+                    status,
+                    &body,
+                    &[password.expose_secret(), code, cookie_secret],
+                ),
             });
         }
 
@@ -398,5 +508,85 @@ impl SessionClient {
         Err(Error::Authentication {
             message: "could not detect controller platform: both login probes returned 404".into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::login_failure_detail;
+
+    const SECRETS: [&str; 3] = [
+        "hunter2-password",         // password
+        "123456",                   // TOTP code
+        "c2hvcnQtY29va2llLXZhbHVl", // challenge cookie value
+    ];
+
+    /// Every form a secret can take in a reflected response (see the
+    /// threat model): whole, embedded in a code, truncated, case-changed,
+    /// and quoted in free text.
+    fn reflected_forms(secret: &str) -> Vec<String> {
+        let fragment = &secret[..(secret.len() / 2).max(4)];
+        vec![
+            secret.to_owned(),
+            format!("ERR_{secret}_X"),
+            fragment.to_owned(),
+            secret.to_ascii_uppercase(),
+            format!("Invalid password: {secret}"),
+        ]
+    }
+
+    /// Every recognized field, holding `value`.
+    fn bodies(value: &str) -> Vec<Value> {
+        vec![
+            json!({ "meta": { "rc": "error", "msg": value } }),
+            json!({ "code": value }),
+            json!({ "message": value }),
+            json!({ "error": { "code": value } }),
+            json!({ "error": { "message": value } }),
+            json!({ "errors": ["ubic_2fa_token_required", value] }),
+        ]
+    }
+
+    #[test]
+    fn no_form_of_a_submitted_secret_survives_in_any_field() {
+        for secret in SECRETS {
+            for form in reflected_forms(secret) {
+                let needle = form.to_ascii_lowercase();
+                for body in bodies(&form) {
+                    let raw = serde_json::to_vec(&body).expect("serialize");
+                    let detail = login_failure_detail(&raw, &SECRETS).unwrap_or_default();
+                    assert!(
+                        !detail.to_ascii_lowercase().contains(&needle),
+                        "{form:?} leaked from {body} as {detail:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn free_text_is_dropped_even_without_a_secret_in_it() {
+        // Free text can carry what the masking cannot know about.
+        for body in bodies("Invalid username or password") {
+            let raw = serde_json::to_vec(&body).expect("serialize");
+            let detail = login_failure_detail(&raw, &SECRETS).unwrap_or_default();
+            assert!(
+                !detail.contains("Invalid"),
+                "free text kept from {body}: {detail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_error_codes_survive_masking() {
+        for code in ["api.err.Invalid", "AUTHENTICATION_FAILED", "401"] {
+            for body in bodies(code) {
+                let raw = serde_json::to_vec(&body).expect("serialize");
+                let detail = login_failure_detail(&raw, &SECRETS).unwrap_or_default();
+                assert!(detail.contains(code), "{code} lost from {body}: {detail:?}");
+            }
+        }
     }
 }

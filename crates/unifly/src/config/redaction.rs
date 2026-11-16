@@ -31,6 +31,25 @@ pub fn redact_url_userinfo(url: &str) -> String {
     }
 }
 
+/// Shown in place of a secret stored in config.toml.
+pub const MASKED: &str = "****";
+
+/// A `totp_command` with its arguments masked: they can carry a TOTP seed
+/// (`oathtool --totp -b SEED`). The program stays, so the output still
+/// says which helper runs.
+pub fn masked_totp_command(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if index == 0 {
+                arg.clone()
+            } else {
+                MASKED.into()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::redact_url_userinfo;

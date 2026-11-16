@@ -1,8 +1,5 @@
 use crate::cli::error::CliError;
-use crate::config::{Config, Profile};
-
-/// Shown in place of a secret stored in config.toml.
-const MASKED: &str = "****";
+use crate::config::{Config, MASKED, Profile, masked_totp_command};
 
 /// Mask every secret stored in `cfg` so no output format can print one.
 /// Masking keeps the field, so the output still says a secret is set.
@@ -18,22 +15,6 @@ pub(super) fn redact_secrets(cfg: &mut Config) {
             *argv = masked_totp_command(argv);
         }
     }
-}
-
-/// A `totp_command` with its arguments masked: they can carry a TOTP seed
-/// (`oathtool --totp -b SEED`). The program stays, so the output still
-/// says which helper runs.
-fn masked_totp_command(argv: &[String]) -> Vec<String> {
-    argv.iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            if index == 0 {
-                arg.clone()
-            } else {
-                MASKED.into()
-            }
-        })
-        .collect()
 }
 
 pub(super) fn format_config_redacted(cfg: &Config) -> String {

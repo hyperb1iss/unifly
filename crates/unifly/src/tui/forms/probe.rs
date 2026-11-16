@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(code.field, Some(DraftField::Totp));
         // What the controller says when it refuses the code itself.
         let refused = rejected(
-            "MFA login failed (HTTP 401 Unauthorized): {\"code\":\"AUTHENTICATION_FAILED\"}",
+            "MFA login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED",
             AuthMode::Session,
         );
         assert_eq!(refused.kind, FailureKind::Mfa);

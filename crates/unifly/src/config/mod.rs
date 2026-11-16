@@ -10,7 +10,7 @@ mod redaction;
 pub mod resolve;
 pub mod totp_command;
 pub use controller::ConnectionUsage;
-pub use redaction::redact_url_userinfo;
+pub use redaction::{MASKED, masked_totp_command, redact_url_userinfo};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -239,7 +239,7 @@ fn default_effects() -> bool {
 }
 
 /// A named controller profile.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Profile {
     /// Controller base URL (e.g., "https://192.168.1.1").
     #[serde(default)]
@@ -306,6 +306,33 @@ pub struct Profile {
 
     /// Override timeout.
     pub timeout: Option<u64>,
+}
+
+impl std::fmt::Debug for Profile {
+    /// Masked the same way as `config show`, so a `{:?}` in a log line or
+    /// trace can never print a stored secret.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let masked = |secret: &Option<String>| secret.as_ref().map(|_| MASKED);
+        f.debug_struct("Profile")
+            .field("controller", &redact_url_userinfo(&self.controller))
+            .field("site", &self.site)
+            .field("auth_mode", &self.auth_mode)
+            .field("api_key", &masked(&self.api_key))
+            .field("api_key_env", &self.api_key_env)
+            .field("host_id", &self.host_id)
+            .field("host_id_env", &self.host_id_env)
+            .field("username", &self.username)
+            .field("password", &masked(&self.password))
+            .field("totp_env", &self.totp_env)
+            .field(
+                "totp_command",
+                &self.totp_command.as_deref().map(masked_totp_command),
+            )
+            .field("ca_cert", &self.ca_cert)
+            .field("insecure", &self.insecure)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 fn default_site() -> String {
@@ -1016,6 +1043,31 @@ mod tests {
             insecure: Some(true),
             timeout: Some(45),
         }
+    }
+
+    /// `{:?}` on a `Profile` masks every secret `config show` masks.
+    #[test]
+    fn profile_debug_masks_secrets() {
+        let mut profile = cloud_profile();
+        profile.controller = "https://admin:url-secret@10.0.0.1".into();
+        profile.password = Some("super-secret-password".into());
+        profile.totp_command = Some(vec!["oathtool".into(), "SEED-SECRET".into()]);
+
+        let debug_output = format!("{profile:?}");
+
+        for secret in [
+            "cloud-key",
+            "super-secret-password",
+            "SEED-SECRET",
+            "url-secret",
+        ] {
+            assert!(
+                !debug_output.contains(secret),
+                "{secret} leaked: {debug_output}"
+            );
+        }
+        assert!(debug_output.contains("oathtool"), "{debug_output}");
+        assert!(debug_output.contains("10.0.0.1"), "{debug_output}");
     }
 
     #[test]
