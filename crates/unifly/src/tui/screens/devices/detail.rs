@@ -10,6 +10,7 @@ use unifly_api::model::{PoeMode, Port, PortProfile};
 use unifly_api::{Client, Device, EntityId};
 
 use super::DevicesScreen;
+use super::commands::is_gateway;
 use crate::tui::action::{Action, DeviceDetailTab};
 use crate::tui::table::TableScroll;
 use crate::tui::widgets::click::HitMap;
@@ -118,23 +119,60 @@ impl DevicesScreen {
         self.devices.iter().find(|device| device.id == *id)
     }
 
-    /// Clients connected through `device`: by uplink MAC, else uplink ID,
+    /// The device `client` attaches to: by uplink MAC, else uplink ID,
     /// else, for a wireless client reporting neither, by BSSID.
+    pub(super) fn attach_device(&self, client: &Client) -> Option<&Arc<Device>> {
+        self.devices.iter().find(|device| {
+            if let Some(mac) = &client.uplink_device_mac {
+                return *mac == device.mac;
+            }
+            if let Some(id) = &client.uplink_device_id {
+                return *id == device.id;
+            }
+            client
+                .wireless
+                .as_ref()
+                .and_then(|wireless| wireless.bssid.as_ref())
+                .is_some_and(|bssid| *bssid == device.mac)
+        })
+    }
+
+    /// Whether `device` reaches `ancestor` by following uplinks.
+    fn is_downstream_of(&self, device: &Device, ancestor: &Device) -> bool {
+        let mut current = device;
+        // A chain longer than the fleet is a loop in the reported uplinks.
+        for _ in 0..self.devices.len() {
+            let upstream = self.devices.iter().find(|other| {
+                current
+                    .uplink_device_mac
+                    .as_ref()
+                    .is_some_and(|mac| *mac == other.mac)
+                    || current
+                        .uplink_device_id
+                        .as_ref()
+                        .is_some_and(|id| *id == other.id)
+            });
+            match upstream {
+                Some(upstream) if upstream.id == ancestor.id => return true,
+                Some(upstream) => current = upstream,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// The clients the Clients tab lists for `device`: the ones attached to
+    /// it. A gateway counts every client that reaches it, so its list also
+    /// takes the clients of the devices downstream of it.
     pub(super) fn device_clients(&self, device: &Device) -> Vec<&Arc<Client>> {
+        let whole_branch = is_gateway(device);
         self.clients
             .iter()
             .filter(|client| {
-                if let Some(mac) = &client.uplink_device_mac {
-                    return *mac == device.mac;
-                }
-                if let Some(id) = &client.uplink_device_id {
-                    return *id == device.id;
-                }
-                client
-                    .wireless
-                    .as_ref()
-                    .and_then(|wireless| wireless.bssid.as_ref())
-                    .is_some_and(|bssid| *bssid == device.mac)
+                self.attach_device(client).is_some_and(|attached| {
+                    attached.id == device.id
+                        || (whole_branch && self.is_downstream_of(attached, device))
+                })
             })
             .collect()
     }
