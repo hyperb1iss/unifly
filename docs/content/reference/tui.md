@@ -143,7 +143,7 @@ The speed test needs a gateway on the site and a direct controller session. Its 
 
 ### Devices
 
-The table filters by type and sorts by name, status, clients, traffic, or uptime. The Updates filter carries the count of devices with firmware waiting (`Updates 1`), and the sort shows at the right of the toolbar (`s sort name ↑`). `Enter` opens a detail with a tab per aspect the device has: Overview (identity, uplink, and the CPU, memory, load, and traffic figures), Radios on access points, Clients, and Ports on anything with ports. The pane takes the rows its tab needs, and the table keeps the rest. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
+The table filters by type and sorts by name, status, clients, traffic, or uptime. The Updates filter carries the count of devices with firmware waiting (`Updates 1`), and the sort shows at the right of the toolbar (`s sort name ↑`). `Enter` opens a detail with a tab per aspect the device has: Overview (identity, uplink, and the CPU, memory, load, and traffic figures), Radios on access points, Clients, and Ports on anything with ports. The pane takes the rows its tab needs, and the table keeps the rest. A gateway's Clients tab lists every client that reaches it, with a Via column naming the switch or access point each one attaches to; other devices list their own. The Ports and Clients tabs have a cursor of their own, with a position such as `port 3 of 24` on the pane's border (`port 9 · 3 of 4` where the port's number and its row differ), so every row is reachable on a short terminal.
 
 Devices waiting for adoption are listed with the adopted ones on profiles that reach the Integration API, so `A` has something to act on.
 
@@ -265,6 +265,8 @@ The map opens fitted: the largest zoom that shows the whole tree, following the 
 ### Events
 
 The feed orders events by time and drops repeat deliveries. One toolbar row heads it: the categories on the left, and on the right the feed state and the count of active alarms, each a button that shows its key (`Space ● live`, `v alarms 4`). The feed state says how events arrive: `● live` over the WebSocket, `◐ polling` when the profile has session access without a cookie login, `‖ paused`, or `○ no access`. Once older history is loaded, the right of the top border says how far back the feed reaches (`back to 11-06 17:51`, with `+ blocks` when firewall blocks are in). While the feed is paused, the right of the bottom border gives the cursor position (`event 312 of 314`). Below about 100 columns the feed state and the alarm count move to the title, and `Space pause` and `v alarms` show in the status bar.
+
+An open event names its device and client. Where the message only spells out an address (`A network intrusion attempt from 171.25.193.9 to 10.4.20.198`), the detail adds a line for each address a known device or connected client holds, and `d` or `c` opens it.
 
 | View        | Key         | Action                                          |
 | ----------- | ----------- | ----------------------------------------------- |

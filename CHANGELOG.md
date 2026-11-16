@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   restart, locate, and upgrade. Devices waiting for adoption are listed
   beside the adopted ones, so adopt has something to act on. The detail's
   Ports and Clients tabs have their own cursor, so every row is reachable on
-  a short terminal, and the Ports tab can power cycle a PoE port, turn its
+  a short terminal. A gateway's Clients tab lists every client that reaches
+  it and names the switch or access point each one attaches to. The Ports
+  tab can power cycle a PoE port, turn its
   PoE off and back on in the mode it had, and rename it. The table filters
   by type and sorts by column (`s`, `r` to reverse), and the Updates filter
   counts the devices with firmware waiting.
@@ -57,7 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   to one access point, and the WiFi experience panel shows the client's
   uplink path.
 - **Events**: a cursor with a detail pane (`Enter`) that jumps to the
-  event's device or client, a category filter (`h`/`l`), search by message
+  event's device or client and names the device or client behind an address
+  the message spells out, a category filter (`h`/`l`), search by message
   text, older history a page at a time from the oldest event shown (`o`,
   with `Esc` to cancel a load), firewall blocks on demand (`f`), and an
   Alarms view (`v`) that archives one alarm or all of them. The toolbar
