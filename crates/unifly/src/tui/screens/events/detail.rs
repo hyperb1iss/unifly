@@ -1,5 +1,8 @@
 //! The detail pane under the list: everything the selected event carries.
 
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
+
 use chrono::{Local, Utc};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -7,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use unifly_api::MacAddress;
+use unifly_api::{Client, Device, Event, MacAddress};
 
 use super::EventsScreen;
 use super::render::{category_label, severity_color, severity_label};
@@ -94,6 +97,23 @@ impl EventsScreen {
                 });
             lines.push(entity_line(label("Client"), mac, name, "not connected"));
         }
+        // A message that spells out an address leaves the reader to work
+        // out whose it is; the lists already say.
+        for (device, address) in self.devices_by_address(event) {
+            let name = device
+                .name
+                .clone()
+                .unwrap_or_else(|| device.mac.to_string());
+            lines.push(address_line(label("Device"), name, address));
+        }
+        for (client, address) in self.clients_by_address(event) {
+            let name = client
+                .name
+                .clone()
+                .or_else(|| client.hostname.clone())
+                .unwrap_or_else(|| client.mac.to_string());
+            lines.push(address_line(label("Client"), name, address));
+        }
 
         let message = wrap::wrap_clamped(&event.message, value_columns, MESSAGE_LINES);
         for (index, text) in message.into_iter().enumerate() {
@@ -103,6 +123,36 @@ impl EventsScreen {
             ]));
         }
         Some(lines)
+    }
+
+    /// The devices whose addresses `event`'s message spells out, leaving
+    /// out the one the event already names by MAC.
+    pub(super) fn devices_by_address(&self, event: &Event) -> Vec<(&Arc<Device>, IpAddr)> {
+        addresses(&event.message)
+            .into_iter()
+            .filter_map(|address| {
+                let device = self
+                    .devices
+                    .iter()
+                    .find(|device| device.ip == Some(address))?;
+                (event.device_mac.as_ref() != Some(&device.mac)).then_some((device, address))
+            })
+            .collect()
+    }
+
+    /// The connected clients whose addresses `event`'s message spells out,
+    /// leaving out the one the event already names by MAC.
+    pub(super) fn clients_by_address(&self, event: &Event) -> Vec<(&Arc<Client>, IpAddr)> {
+        addresses(&event.message)
+            .into_iter()
+            .filter_map(|address| {
+                let client = self
+                    .clients
+                    .iter()
+                    .find(|client| client.ip == Some(address))?;
+                (event.client_mac.as_ref() != Some(&client.mac)).then_some((client, address))
+            })
+            .collect()
     }
 
     pub(super) fn render_detail(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
@@ -140,5 +190,76 @@ fn entity_line(
             Span::styled(mac.to_string(), plain),
             Span::styled(format!("  ({missing})"), muted),
         ]),
+    }
+}
+
+/// A device or client the message names by address: its name, then the
+/// address that ties it to the message.
+fn address_line(label: Span<'static>, name: String, address: IpAddr) -> Line<'static> {
+    Line::from(vec![
+        label,
+        Span::styled(name, Style::default().fg(theme::accent_secondary())),
+        Span::styled(
+            format!("  {address}"),
+            Style::default().fg(theme::text_muted()),
+        ),
+    ])
+}
+
+/// The IP addresses `message` spells out, in order, each once. An IPv4
+/// address may carry a port.
+fn addresses(message: &str) -> Vec<IpAddr> {
+    let mut found = Vec::new();
+    let tokens = message.split(|c: char| !(c.is_ascii_hexdigit() || c == '.' || c == ':'));
+    for token in tokens.filter(|token| !token.is_empty()) {
+        // Punctuation that ends a clause is not part of the address.
+        let trimmed = token.trim_end_matches(['.', ':']);
+        let address = token.parse().or_else(|_| trimmed.parse()).ok().or_else(|| {
+            let (host, _port) = trimmed.rsplit_once(':')?;
+            host.parse::<Ipv4Addr>().ok().map(IpAddr::V4)
+        });
+        if let Some(address) = address
+            && !found.contains(&address)
+        {
+            found.push(address);
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::addresses;
+
+    fn found(message: &str) -> Vec<String> {
+        addresses(message)
+            .into_iter()
+            .map(|address| address.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn addresses_are_read_out_of_a_sentence() {
+        assert_eq!(
+            found(
+                "A network intrusion attempt from 171.25.193.9 to 10.4.20.198 has been detected."
+            ),
+            ["171.25.193.9", "10.4.20.198"]
+        );
+        // The full stop that ends the sentence, a port, and a repeat.
+        assert_eq!(
+            found("Blocked 10.0.0.7:443 -> 10.0.0.9. Again: 10.0.0.7"),
+            ["10.0.0.7", "10.0.0.9"]
+        );
+        assert_eq!(
+            found("lease for fd00::1a2b, was [2001:db8::1]:8443"),
+            ["fd00::1a2b", "2001:db8::1"]
+        );
+    }
+
+    #[test]
+    fn words_and_versions_are_not_addresses() {
+        assert_eq!(found("ap-loft upgraded to 8.1.113"), Vec::<String>::new());
+        assert_eq!(found("bad cafe: face added at 10:42"), Vec::<String>::new());
     }
 }

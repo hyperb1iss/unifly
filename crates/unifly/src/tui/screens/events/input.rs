@@ -102,21 +102,36 @@ impl EventsScreen {
     }
 
     /// The device the selected event names, when it is still on the
-    /// controller.
+    /// controller: by MAC, else the first its message names by address.
     pub(super) fn selected_device_id(&self) -> Option<EntityId> {
-        let mac = self.selected()?.device_mac.as_ref()?;
-        self.devices
-            .iter()
-            .find(|device| &device.mac == mac)
+        let event = self.selected()?;
+        let by_mac = event
+            .device_mac
+            .as_ref()
+            .and_then(|mac| self.devices.iter().find(|device| &device.mac == mac));
+        by_mac
+            .or_else(|| {
+                self.devices_by_address(event)
+                    .first()
+                    .map(|(device, _)| *device)
+            })
             .map(|device| device.id.clone())
     }
 
-    /// The client the selected event names, when it is connected.
+    /// The client the selected event names, when it is connected: by MAC,
+    /// else the first its message names by address.
     pub(super) fn selected_client_id(&self) -> Option<EntityId> {
-        let mac = self.selected()?.client_mac.as_ref()?;
-        self.clients
-            .iter()
-            .find(|client| &client.mac == mac)
+        let event = self.selected()?;
+        let by_mac = event
+            .client_mac
+            .as_ref()
+            .and_then(|mac| self.clients.iter().find(|client| &client.mac == mac));
+        by_mac
+            .or_else(|| {
+                self.clients_by_address(event)
+                    .first()
+                    .map(|(client, _)| *client)
+            })
             .map(|client| client.id.clone())
     }
 

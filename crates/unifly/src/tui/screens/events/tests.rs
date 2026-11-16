@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use serde_json::json;
 use unifly_api::model::EventCategory;
-use unifly_api::{Device, Event};
+use unifly_api::{Client, Device, Event};
 
 use super::EventsScreen;
 use super::feed::tests::{event, event_at};
@@ -419,6 +419,53 @@ fn the_detail_jumps_to_the_devices_the_event_names() {
         matches!(no_client, Some(Action::Notify(_))),
         "{no_client:?}"
     );
+}
+
+#[test]
+fn the_detail_names_whose_address_a_message_spells_out() {
+    let mut screen = connected(FULL);
+    let laptop: Arc<Client> = Arc::new(
+        serde_json::from_value(json!({
+            "id": "client-1", "mac": "82:8b:02:66:7c:01", "ip": "10.4.20.198",
+            "name": null, "hostname": "selene", "client_type": "Wireless",
+            "connected_at": null, "uplink_device_id": null, "uplink_device_mac": null,
+            "switch_port": null, "network_id": null, "vlan": null, "wireless": null,
+            "guest_auth": null, "is_guest": false, "tx_bytes": null, "rx_bytes": null,
+            "bandwidth": null, "os_name": null, "device_class": null,
+            "use_fixedip": false, "fixed_ip": null, "blocked": false
+        }))
+        .expect("client fixture"),
+    );
+    screen
+        .update(&Action::ClientsUpdated(Arc::new(vec![Arc::clone(&laptop)])))
+        .expect("clients");
+    screen
+        .update(&Action::EventReceived(custom(
+            1,
+            "Firewall",
+            "A network intrusion attempt from 171.25.193.9 to 10.4.20.198 has been detected.",
+            None,
+        )))
+        .expect("update");
+
+    press(&mut screen, KeyCode::Enter);
+    let text = draw(&screen).join("\n");
+    assert!(text.contains("Client    selene  10.4.20.198"), "{text}");
+    // An address nobody on the network holds gets no line.
+    assert_eq!(text.matches("171.25.193.9").count(), 2, "{text}");
+    assert_eq!(hints(&screen), "c client  Esc close");
+    let jump = press(&mut screen, KeyCode::Char('c'));
+    assert!(
+        matches!(&jump, Some(Action::ShowClient(id)) if *id == laptop.id),
+        "{jump:?}"
+    );
+
+    // Once the client leaves, the line and the key go with it.
+    screen
+        .update(&Action::ClientsUpdated(Arc::new(Vec::new())))
+        .expect("clients");
+    assert!(!draw(&screen).join("\n").contains("selene"));
+    assert_eq!(hints(&screen), "Esc close");
 }
 
 #[test]
