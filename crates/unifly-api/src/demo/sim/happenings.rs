@@ -10,7 +10,7 @@ use crate::demo::catalog::{self, AP_FIRMWARE};
 use crate::demo::fleet::clients::attach_to_ap;
 use crate::demo::fleet::devices::pick_ap;
 use crate::demo::fleet::history::{event, security_event};
-use crate::demo::fleet::{DemoClient, SWITCH_BASE, lan_ip, uuid_from};
+use crate::demo::fleet::{DemoClient, SWITCH_BASE, lan_ip, lan_ipv6, uuid_from};
 use crate::model::common::DataSource;
 use crate::model::{
     Client, ClientType, DeviceState, EntityId, Event, EventCategory, EventSeverity, MacAddress,
@@ -403,10 +403,17 @@ impl Simulation {
         let switch_name = switch.name.clone().unwrap_or_default();
         let cameras = self.fleet.network("cameras").clone();
         let ip = lan_ip(50, 24);
+        let id = EntityId::Uuid(uuid_from(&mut self.rng));
+        let mac = MacAddress::new(self.rng.mac());
+        let ipv6_addresses = match cameras.vlan_id {
+            Some(vlan) if cameras.ipv6_enabled => lan_ipv6(vlan, &mac),
+            _ => Vec::new(),
+        };
         let client = Client {
-            id: EntityId::Uuid(uuid_from(&mut self.rng)),
-            mac: MacAddress::new(self.rng.mac()),
+            id,
+            mac,
             ip: Some(IpAddr::V4(ip)),
+            ipv6_addresses,
             name: Some(name.into()),
             hostname: Some(name.into()),
             client_type: ClientType::Wired,

@@ -257,6 +257,18 @@ pub fn warn_unrenderable_create(quiet: bool) {
     }
 }
 
+/// A host's IPv6 addresses as one line, widest reach first, leaving out
+/// link-local ones: every host has one and none is reachable without an
+/// interface. `None` when that leaves nothing.
+pub(crate) fn ipv6_list(addresses: &[std::net::Ipv6Addr]) -> Option<String> {
+    let shown: Vec<String> = addresses
+        .iter()
+        .filter(|address| !address.is_unicast_link_local())
+        .map(ToString::to_string)
+        .collect();
+    (!shown.is_empty()).then(|| shown.join(", "))
+}
+
 /// Print the rendered output to stdout, respecting quiet mode.
 pub fn print_output(output: &str, quiet: bool) {
     if quiet || output.is_empty() {

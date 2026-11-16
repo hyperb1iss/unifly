@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-16
+
+### Added
+
+- **IPv6 across the board.** Clients and devices carry every IPv6 address
+  the controller reports (`ipv6_addresses`, widest reach first), and the
+  TUI shows the first global and unique local one in each detail with a
+  count of the rest. Search on Clients, Devices, and WiFi matches any
+  address, `clients get` and `devices get` accept an IPv6 address, the
+  Events detail names a client or device behind an IPv6 address in a
+  message, and a client with no IPv4 address shows its IPv6 one in lists.
+- **Networks show their real IPv6 setup.** The prefix a prefix-delegation
+  network serves now comes from the gateway, which is the only place the
+  controller reports what the WAN was delegated. The TUI detail and
+  `networks get` add aliases, SLAAC and DHCPv6 with its range, router
+  advertisement priority, and IPv6 DNS servers, and `networks list` gains
+  an IPv6 column.
+- **IPv6 can be turned on, not only off.** The TUI network editor and
+  `networks update --ipv6 true` set up prefix delegation from the WAN the
+  site already uses (else the primary), handed out by SLAAC, with router
+  advertisements on: what the controller's own form starts from.
+
+### Fixed
+
+- `wan_ipv6` named every device's own LAN address as its WAN address,
+  falling back to it whenever a device had no WAN. It is now set on
+  gateways only, from their WAN.
+- A network's IPv6 prefix showed its unique local alias, and DHCPv6 always
+  read off, because both were read from fields the Network 11 API does not
+  have. The prefix comes from the gateway, aliases are listed as aliases,
+  and DHCPv6 reads on where the address assignment carries a DHCP
+  configuration.
+- Redacted screenshots gave every IPv6 address one stand-in, so two hosts
+  could share one, and missed IPv6 in a client's or device's `ip`. Each
+  address now gets its own stand-in of the same reach, and IPv6 is also
+  redacted when only MACs are hidden, since a SLAAC address spells out its
+  MAC.
+- A hybrid client with no IPv4 address took nothing from the session
+  records, because the merge matched by IPv4 alone. It now matches by MAC
+  first.
+
 ## [0.14.0] - 2026-11-16
 
 ### Added
@@ -1416,7 +1457,8 @@ same running notes. Each of those releases has its own notes on the
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/hyperb1iss/unifly/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/hyperb1iss/unifly/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/hyperb1iss/unifly/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...v0.12.1

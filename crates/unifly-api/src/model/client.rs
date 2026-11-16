@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use super::common::{Bandwidth, DataSource};
 use super::entity_id::{EntityId, MacAddress};
@@ -49,6 +49,10 @@ pub struct Client {
     pub id: EntityId,
     pub mac: MacAddress,
     pub ip: Option<IpAddr>,
+    /// Every IPv6 address the client holds, widest reach first: global,
+    /// then unique local, then link-local.
+    #[serde(default)]
+    pub ipv6_addresses: Vec<Ipv6Addr>,
     pub name: Option<String>,
     pub hostname: Option<String>,
     pub client_type: ClientType,
@@ -99,4 +103,32 @@ pub struct Client {
     #[serde(skip)]
     #[allow(dead_code)]
     pub(crate) updated_at: DateTime<Utc>,
+}
+
+impl Client {
+    /// Every address the client holds: its IPv4 one, then its IPv6 ones.
+    pub fn addresses(&self) -> impl Iterator<Item = IpAddr> + '_ {
+        self.ip
+            .into_iter()
+            .chain(self.ipv6_addresses.iter().copied().map(IpAddr::V6))
+    }
+
+    /// Whether `address` is one of the client's, IPv4 or IPv6.
+    pub fn has_address(&self, address: IpAddr) -> bool {
+        self.addresses().any(|own| own == address)
+    }
+
+    /// The address to reach the client at: its own `ip`, else the widest
+    /// reaching IPv6 one. A link-local address needs an interface to mean
+    /// anything, so it is never the answer.
+    pub fn primary_address(&self) -> Option<IpAddr> {
+        let reachable = |ip: &IpAddr| !matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local());
+        self.ip.filter(reachable).or_else(|| {
+            self.ipv6_addresses
+                .iter()
+                .copied()
+                .map(IpAddr::V6)
+                .find(reachable)
+        })
+    }
 }

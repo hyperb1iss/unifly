@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::catalog::NETWORKS;
 use super::commands::ADMIN_INFO;
-use super::fleet::uuid_from;
+use super::fleet::{lan_ipv6_subnets, uuid_from};
 use super::sim::{Delta, Simulation};
 use crate::command::{
     CreateNetworkRequest, DhcpUpdate, UpdateAclRuleRequest, UpdateNatPolicyRequest,
@@ -22,7 +22,8 @@ use crate::core_error::CoreError;
 use crate::integration_types::FirewallPolicyOrdering;
 use crate::model::common::DataSource;
 use crate::model::{
-    DhcpConfig, EntityId, EntityOrigin, FirewallPolicy, Network, NetworkManagement, NetworkPurpose,
+    DhcpConfig, EntityId, EntityOrigin, FirewallPolicy, Ipv6Mode, Ipv6RaPriority, Network,
+    NetworkManagement, NetworkPurpose,
 };
 use crate::store::RefreshSnapshot;
 
@@ -223,8 +224,14 @@ impl Simulation {
             ipv6_enabled: false,
             ipv6_mode: None,
             ipv6_prefix: None,
+            ipv6_additional_subnets: Vec::new(),
             dhcpv6_enabled: false,
+            dhcpv6_range_start: None,
+            dhcpv6_range_stop: None,
             slaac_enabled: false,
+            ipv6_dns_servers: Vec::new(),
+            ipv6_ra_priority: None,
+            ipv6_wan_id: None,
             ntp_server: None,
             pxe_enabled: false,
             tftp_server: None,
@@ -261,6 +268,7 @@ impl Simulation {
         if let Some(vlan) = update.vlan_id {
             self.vlan_taken(vlan, Some(id))?;
         }
+        let wan = self.wans().into_iter().next().map(|wan| wan.id);
         let stored = self
             .fleet
             .networks
@@ -308,22 +316,30 @@ impl Simulation {
             network.mdns_forwarding_enabled = mdns;
         }
         match update.ipv6_enabled {
-            // An IPv6 configuration cannot be made from a yes: it needs a
-            // prefix source and an address assignment.
+            // On takes a prefix delegated from the WAN, by SLAAC, as the
+            // controller does.
             Some(true) if !network.ipv6_enabled => {
-                return Err(invalid(
-                    "IPv6 cannot be turned on from here: it needs settings (address \
-                     assignment and a prefix source) that only the controller's own \
-                     interface collects",
-                ));
+                let vlan = network.vlan_id.unwrap_or(1);
+                network.ipv6_enabled = true;
+                network.ipv6_mode = Some(Ipv6Mode::PrefixDelegation);
+                network.ipv6_prefix = Some(lan_ipv6_subnets(vlan).0);
+                network.slaac_enabled = true;
+                network.ipv6_ra_priority = Some(Ipv6RaPriority::High);
+                network.ipv6_wan_id = wan;
             }
             // Off removes the whole configuration.
             Some(false) => {
                 network.ipv6_enabled = false;
                 network.ipv6_mode = None;
                 network.ipv6_prefix = None;
+                network.ipv6_additional_subnets.clear();
                 network.slaac_enabled = false;
                 network.dhcpv6_enabled = false;
+                network.dhcpv6_range_start = None;
+                network.dhcpv6_range_stop = None;
+                network.ipv6_dns_servers.clear();
+                network.ipv6_ra_priority = None;
+                network.ipv6_wan_id = None;
             }
             Some(true) | None => {}
         }

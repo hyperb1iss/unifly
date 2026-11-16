@@ -1,4 +1,3 @@
-use std::net::Ipv6Addr;
 use std::sync::Arc;
 
 use crate::config::{ControllerConfig, TlsVerification};
@@ -9,46 +8,6 @@ use crate::transport::{TlsMode, TransportConfig};
 use crate::{IntegrationClient, SessionClient};
 
 use super::Controller;
-
-fn parse_ipv6_text(raw: &str) -> Option<Ipv6Addr> {
-    let candidate = raw.trim().split('/').next().unwrap_or(raw).trim();
-    candidate.parse::<Ipv6Addr>().ok()
-}
-
-fn pick_ipv6_from_value(value: &serde_json::Value) -> Option<String> {
-    let mut first_link_local: Option<String> = None;
-
-    let iter: Box<dyn Iterator<Item = &serde_json::Value> + '_> = match value {
-        serde_json::Value::Array(items) => Box::new(items.iter()),
-        _ => Box::new(std::iter::once(value)),
-    };
-
-    for item in iter {
-        if let Some(ipv6) = item.as_str().and_then(parse_ipv6_text) {
-            let ip_text = ipv6.to_string();
-            if !ipv6.is_unicast_link_local() {
-                return Some(ip_text);
-            }
-            if first_link_local.is_none() {
-                first_link_local = Some(ip_text);
-            }
-        }
-    }
-
-    first_link_local
-}
-
-/// Pick the device's public IPv6 from `wan1.ipv6` first, then the top-level
-/// `ipv6` field. Either may be a string or an array of strings.
-pub(super) fn parse_session_device_wan_ipv6(
-    wan1_ipv6: Option<&serde_json::Value>,
-    ipv6: Option<&serde_json::Value>,
-) -> Option<String> {
-    if let Some(value) = wan1_ipv6.and_then(pick_ipv6_from_value) {
-        return Some(value);
-    }
-    ipv6.and_then(pick_ipv6_from_value)
-}
 
 pub(super) fn convert_health_summaries(raw: Vec<serde_json::Value>) -> Vec<HealthSummary> {
     raw.into_iter()

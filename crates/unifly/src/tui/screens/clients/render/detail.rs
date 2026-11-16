@@ -51,13 +51,16 @@ pub(super) fn detail_height(screen: &ClientsScreen, client: &Client, width: u16,
 fn fields(screen: &ClientsScreen, client: &Client) -> Vec<Field> {
     let mut fields = vec![
         Field::optional("IP", client.ip.map(|ip| ip.to_string())).color(theme::accent_tertiary()),
+    ];
+    fields.extend(grid::ipv6_fields(&client.ipv6_addresses));
+    fields.extend([
         Field::new("MAC", client.mac.to_string()).color(theme::accent_tertiary()),
         Field::optional("Network", network(screen, client)),
         Field::optional("Uplink", screen.links.uplink_label(client)),
         Field::optional("Connected", client.connected_at.map(connected_for)),
         Field::optional("Since", client.connected_at.map(grid::local_time)),
         fixed_ip(client),
-    ];
+    ]);
     if let Some(hostname) = client.hostname.as_deref()
         && client.name.as_deref().is_some_and(|name| name != hostname)
     {

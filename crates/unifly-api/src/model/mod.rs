@@ -4,6 +4,7 @@
 // entity. They merge data from both the Integration API and the Session
 // API into a single clean interface that consumers (CLI/TUI) depend on.
 
+pub mod address;
 pub mod common;
 pub mod entity_id;
 
@@ -25,6 +26,9 @@ pub mod wifi;
 // Core identity
 pub use entity_id::{EntityId, MacAddress};
 
+// Addresses
+pub use address::{Ipv6Scope, ipv6_in_scope};
+
 // Common building blocks
 pub use common::{Bandwidth, DataSource, EntityOrigin, Throughput};
 
@@ -41,7 +45,9 @@ pub use device::{
 pub use client::{Client, ClientType, GuestAuth, WirelessInfo};
 
 // Network
-pub use network::{DhcpConfig, Ipv6Mode, Network, NetworkManagement, NetworkPurpose};
+pub use network::{
+    DhcpConfig, Ipv6Mode, Ipv6RaPriority, Network, NetworkManagement, NetworkPurpose,
+};
 
 // WiFi
 pub use wifi::{WifiBroadcast, WifiBroadcastType, WifiSecurityMode};

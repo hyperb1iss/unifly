@@ -3,6 +3,8 @@
 use super::*;
 
 const NETWORK: &str = "8a1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a11";
+/// The WAN the controller lists first, its primary.
+const PRIMARY_WAN: &str = "5b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a55";
 
 /// A gateway-managed network that uses the optional parts of the schema.
 fn gateway_network() -> serde_json::Value {
@@ -85,6 +87,16 @@ async fn run_on_network(network: serde_json::Value, command: unifly_api::Command
     Mock::given(method("DELETE"))
         .and(path(route.clone()))
         .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(integration_route("wans")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "offset": 0, "limit": 25, "count": 2, "totalCount": 2, "data": [
+                {"id": PRIMARY_WAN, "name": "WAN"},
+                {"id": "6b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a66", "name": "WAN2"},
+            ]
+        })))
         .mount(&server)
         .await;
     let controller = Controller::new(base_config(
@@ -197,16 +209,24 @@ async fn turning_ipv6_off_removes_its_configuration_and_nothing_else() {
     assert_eq!(body, expected);
 }
 
-/// An IPv6 configuration needs an interface type, an address assignment,
-/// and a prefix source. A yes cannot supply them, so nothing is sent.
+/// A yes on a network without IPv6 asks for what the controller's own
+/// form starts from: a prefix delegated from the primary WAN, handed out
+/// by SLAAC, with the gateway advertised as the router.
 #[tokio::test]
-async fn turning_ipv6_on_is_refused_where_there_is_no_configuration_to_keep() {
+async fn turning_ipv6_on_delegates_a_prefix_from_the_primary_wan() {
     let mut network = gateway_network();
     network.as_object_mut().unwrap().remove("ipv6Configuration");
-    let refusal = update_network(network, json!({"ipv6_enabled": true}))
+    let body = update_network(network.clone(), json!({"ipv6_enabled": true}))
         .await
-        .refusal();
-    assert!(refusal.contains("IPv6 cannot be turned on"), "{refusal}");
+        .put_body();
+    let mut expected = as_written(&network);
+    expected["ipv6Configuration"] = json!({
+        "interfaceType": "PREFIX_DELEGATION",
+        "prefixDelegationWanInterfaceId": PRIMARY_WAN,
+        "clientAddressAssignment": {"slaacEnabled": true},
+        "routerAdvertisement": {"priority": "HIGH"},
+    });
+    assert_eq!(body, expected);
 
     // Restating that a configured network has IPv6 changes nothing.
     let network = gateway_network();

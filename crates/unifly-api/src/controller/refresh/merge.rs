@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::model::{Client, Device, MacAddress};
 use crate::session::models::{SessionClientEntry, SessionDevice, SessionUserEntry};
 
-use super::super::support::parse_session_device_wan_ipv6;
+use crate::convert::{parse_ipv6_list, parse_wan_ipv6};
 
 pub(super) fn merge_session_clients(
     clients: &mut [Client],
@@ -32,13 +32,15 @@ pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[S
                     .and_then(|count| count.try_into().ok());
             }
             if device.wan_ipv6.is_none() {
-                device.wan_ipv6 = parse_session_device_wan_ipv6(
+                device.wan_ipv6 = parse_wan_ipv6(
                     legacy_device
                         .wan1
                         .as_ref()
                         .and_then(|wan| wan.ipv6.as_ref()),
-                    legacy_device.ipv6.as_ref(),
                 );
+            }
+            if device.ipv6_addresses.is_empty() {
+                device.ipv6_addresses = parse_ipv6_list(legacy_device.ipv6.as_ref());
             }
             if device.ports.is_empty()
                 || device.radios.is_empty()
@@ -72,14 +74,26 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
         return;
     }
 
-    let session_by_ip: HashMap<&str, &SessionClientEntry> = session_clients
+    let session_by_mac: HashMap<MacAddress, &SessionClientEntry> = session_clients
         .iter()
-        .filter_map(|client| client.ip.as_deref().map(|ip| (ip, client)))
+        .map(|client| (MacAddress::new(&client.mac), client))
         .collect();
+    // An address two stations report names neither of them.
+    let mut session_by_ip: HashMap<&str, Option<&SessionClientEntry>> = HashMap::new();
+    for client in session_clients {
+        if let Some(ip) = client.ip.as_deref() {
+            session_by_ip
+                .entry(ip)
+                .and_modify(|found| *found = None)
+                .or_insert(Some(client));
+        }
+    }
     let mut merged = 0u32;
     for client in clients.iter_mut() {
+        // The MAC names the station; the address serves a record without one.
         let ip_key = client.ip.map(|ip| ip.to_string());
-        if let Some(session_client) = ip_key.as_deref().and_then(|ip| session_by_ip.get(ip)) {
+        let by_ip = || ip_key.as_deref().and_then(|ip| *session_by_ip.get(ip)?);
+        if let Some(session_client) = session_by_mac.get(&client.mac).copied().or_else(by_ip) {
             if client.tx_bytes.is_none() {
                 client.tx_bytes = session_client
                     .tx_bytes
@@ -92,6 +106,14 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
             }
             if client.hostname.is_none() {
                 client.hostname.clone_from(&session_client.hostname);
+            }
+            if client.ipv6_addresses.is_empty() {
+                client.ipv6_addresses = parse_ipv6_list(
+                    session_client
+                        .ipv6_addresses
+                        .iter()
+                        .chain(session_client.last_ipv6.iter()),
+                );
             }
             if client.network_name.is_none() {
                 client.network_name = session_client
@@ -122,7 +144,7 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
         total_clients = clients.len(),
         legacy_available = session_by_ip.len(),
         merged,
-        "client traffic merge (by IP)"
+        "client traffic merge (by MAC, else IP)"
     );
 }
 
@@ -166,36 +188,4 @@ fn merge_user_reservations(
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::integration_types::ClientResponse;
-    use crate::model::Client;
-    use crate::session::models::SessionClientEntry;
-
-    #[test]
-    fn hybrid_clients_take_the_session_network_name() {
-        let mut clients: Vec<Client> = vec![
-            ClientResponse {
-                id: uuid::Uuid::from_u128(1),
-                name: "render-07".into(),
-                client_type: "WIRED".into(),
-                ip_address: Some("10.40.20.17".into()),
-                connected_at: None,
-                mac_address: Some("3e:bf:ec:41:e9:0c".into()),
-                access: serde_json::json!({ "type": "DEFAULT" }),
-            }
-            .into(),
-        ];
-        let session: SessionClientEntry = serde_json::from_value(serde_json::json!({
-            "_id": "abc",
-            "mac": "3e:bf:ec:41:e9:0c",
-            "ip": "10.40.20.17",
-            "network": "Render",
-            "network_id": "5f1a2b3c4d5e6f7a8b9c0d1e"
-        }))
-        .expect("deserialize");
-
-        super::merge_session_clients(&mut clients, &[session], &[]);
-
-        assert_eq!(clients[0].network_name.as_deref(), Some("Render"));
-    }
-}
+mod tests;

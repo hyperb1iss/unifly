@@ -17,6 +17,7 @@ mod optional;
 mod pending;
 mod periodic;
 mod poll;
+mod prefixes;
 mod session;
 
 use events::unseen_events;
@@ -92,6 +93,10 @@ impl Controller {
             &mut integration.devices,
             session.devices.as_deref().unwrap_or_default(),
         );
+        prefixes::merge(
+            &mut integration.networks,
+            session.devices.as_deref().unwrap_or_default(),
+        );
 
         // A failed session fetch would otherwise store these records without
         // their session-merged fields for a cycle.
@@ -104,6 +109,7 @@ impl Controller {
         );
         if session.devices.is_none() {
             carry::session_device_fields(&mut integration.devices, |mac| store.device_by_mac(mac));
+            carry::delegated_prefixes(&mut integration.networks, |id| store.network_by_id(id));
         }
 
         if let Some(health) = session.health {

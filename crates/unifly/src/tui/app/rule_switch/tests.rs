@@ -96,7 +96,13 @@ async fn logging_reaches_a_built_in_policy_and_acl_and_nat_rules_toggle() {
         NotificationLevel::Success,
         "ACL rule"
     );
-    assert_eq!(demo.acl_rules_snapshot()[0].enabled, !acl.enabled);
+    // A snapshot's order is not stable, so the rule is found by its ID.
+    let now = demo
+        .acl_rules_snapshot()
+        .iter()
+        .find(|rule| rule.id == acl.id)
+        .map(|rule| rule.enabled);
+    assert_eq!(now, Some(!acl.enabled));
 
     let nat = demo
         .nat_policies_snapshot()

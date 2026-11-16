@@ -203,7 +203,7 @@ impl ClientCells {
         Self {
             name: client_name(client).to_owned(),
             ip: client
-                .ip
+                .primary_address()
                 .map_or_else(|| "─".into(), |client_ip| client_ip.to_string()),
             mac: layout.mac.then(|| client.mac.to_string()),
             network: layout

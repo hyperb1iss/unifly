@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use super::common::{Bandwidth, DataSource, EntityOrigin};
 use super::entity_id::{EntityId, MacAddress};
@@ -240,7 +240,12 @@ pub struct Device {
     pub id: EntityId,
     pub mac: MacAddress,
     pub ip: Option<IpAddr>,
+    /// The gateway's public IPv6 address on its primary WAN. Only gateways
+    /// have one.
     pub wan_ipv6: Option<String>,
+    /// The device's own IPv6 addresses on the LAN, widest reach first.
+    #[serde(default)]
+    pub ipv6_addresses: Vec<Ipv6Addr>,
     pub name: Option<String>,
     pub model: Option<String>,
     pub device_type: DeviceType,
@@ -293,4 +298,19 @@ pub struct Device {
     #[serde(skip)]
     #[allow(dead_code)]
     pub(crate) updated_at: DateTime<Utc>,
+}
+
+impl Device {
+    /// Every address the device holds on the LAN: its IPv4 one, then its
+    /// IPv6 ones.
+    pub fn addresses(&self) -> impl Iterator<Item = IpAddr> + '_ {
+        self.ip
+            .into_iter()
+            .chain(self.ipv6_addresses.iter().copied().map(IpAddr::V6))
+    }
+
+    /// Whether `address` is one of the device's on the LAN, IPv4 or IPv6.
+    pub fn has_address(&self, address: IpAddr) -> bool {
+        self.addresses().any(|own| own == address)
+    }
 }

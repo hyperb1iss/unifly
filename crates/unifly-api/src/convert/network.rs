@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::integration_types;
 use crate::model::common::DataSource;
 use crate::model::entity_id::EntityId;
-use crate::model::network::{DhcpConfig, Ipv6Mode, Network, NetworkManagement};
+use crate::model::network::{DhcpConfig, Ipv6Mode, Ipv6RaPriority, Network, NetworkManagement};
 
 use super::helpers::origin_from_metadata;
 
@@ -170,7 +170,7 @@ fn parse_network_fields(
         .map(String::from);
 
     // ── IPv6 ────────────────────────────────────────────────────
-    let ipv6 = net_field(extra, metadata, "ipv6Configuration");
+    let ipv6 = net_field(extra, metadata, "ipv6Configuration").filter(|v| v.is_object());
     let ipv6_enabled = ipv6.is_some();
     let ipv6_mode = ipv6
         .and_then(|v| v.get("interfaceType").or_else(|| v.get("type")))
@@ -180,38 +180,60 @@ fn parse_network_fields(
             "STATIC" => Some(Ipv6Mode::Static),
             _ => None,
         });
-    let slaac_enabled = ipv6
-        .and_then(|v| {
-            v.get("clientAddressAssignment")
-                .and_then(|ca| ca.get("slaacEnabled"))
-                .and_then(Value::as_bool)
-                .or_else(|| {
-                    v.get("slaac")
-                        .and_then(|s| s.get("enabled"))
-                        .and_then(Value::as_bool)
-                })
-        })
+    let assignment = ipv6.and_then(|v| v.get("clientAddressAssignment"));
+    let slaac_enabled = assignment
+        .and_then(|a| a.get("slaacEnabled"))
+        .and_then(Value::as_bool)
         .unwrap_or(false);
-    let dhcpv6_enabled = ipv6
-        .and_then(|v| {
-            v.get("clientAddressAssignment")
-                .and_then(|ca| ca.get("dhcpv6Enabled"))
-                .and_then(Value::as_bool)
-                .or_else(|| {
-                    v.get("dhcpv6")
-                        .and_then(|d| d.get("enabled"))
-                        .and_then(Value::as_bool)
-                })
-        })
-        .unwrap_or(false);
-    let ipv6_prefix = ipv6.and_then(|v| {
-        v.get("additionalHostIpSubnets")
-            .and_then(Value::as_array)
-            .and_then(|a| a.first())
+    // DHCPv6 is on when the assignment carries a DHCP configuration.
+    let dhcpv6 = assignment.and_then(|a| a.get("dhcpConfiguration"));
+    let dhcpv6_enabled = dhcpv6.is_some_and(Value::is_object);
+    let suffix = |bound: &str| {
+        dhcpv6
+            .and_then(|d| d.get("ipAddressSuffixRange"))
+            .and_then(|range| range.get(bound))
             .and_then(Value::as_str)
             .map(String::from)
-            .or_else(|| v.get("prefix").and_then(Value::as_str).map(String::from))
-    });
+    };
+    let (dhcpv6_range_start, dhcpv6_range_stop) = (suffix("start"), suffix("stop"));
+    // A static network names its own subnet. A delegated one learns it from
+    // the WAN, so the refresh fills it in from what the gateway reports.
+    let ipv6_prefix = ipv6
+        .filter(|_| ipv6_mode == Some(Ipv6Mode::Static))
+        .and_then(|v| {
+            let host = v.get("hostIpAddress")?.as_str()?;
+            let length = v.get("prefixLength")?.as_u64()?;
+            Some(format!("{host}/{length}"))
+        });
+    let strings = |key: &str| -> Vec<&str> {
+        ipv6.and_then(|v| v.get(key))
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    };
+    let ipv6_additional_subnets = strings("additionalHostIpSubnets")
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let ipv6_dns_servers = strings("dnsServerIpAddressesOverride")
+        .into_iter()
+        .filter_map(|server| server.parse().ok())
+        .collect();
+    let ipv6_wan_id = ipv6
+        .and_then(|v| v.get("prefixDelegationWanInterfaceId"))
+        .and_then(Value::as_str)
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        .map(EntityId::Uuid);
+    let ipv6_ra_priority = ipv6
+        .and_then(|v| v.get("routerAdvertisement"))
+        .and_then(|ra| ra.get("priority"))
+        .and_then(Value::as_str)
+        .and_then(|priority| match priority {
+            "LOW" => Some(Ipv6RaPriority::Low),
+            "MEDIUM" => Some(Ipv6RaPriority::Medium),
+            "HIGH" => Some(Ipv6RaPriority::High),
+            _ => None,
+        });
 
     // ── Management type ─────────────────────────────────────────
     // The controller names it. The shape of the record is only a guide
@@ -244,8 +266,14 @@ fn parse_network_fields(
         ipv6_enabled,
         ipv6_mode,
         ipv6_prefix,
+        ipv6_additional_subnets,
         dhcpv6_enabled,
+        dhcpv6_range_start,
+        dhcpv6_range_stop,
         slaac_enabled,
+        ipv6_dns_servers,
+        ipv6_ra_priority,
+        ipv6_wan_id,
         ntp_server,
         pxe_enabled,
         tftp_server,
@@ -377,5 +405,80 @@ mod tests {
             dhcp.relay_servers,
             ["10.0.0.5", "10.0.0.6"].map(|server| server.parse::<IpAddr>().expect("address"))
         );
+    }
+
+    /// The shape a Network 11 gateway reports for a prefix-delegation
+    /// network: no subnet of its own, since the WAN supplies it.
+    fn delegated(extra: &serde_json::Value) -> Network {
+        let mut ipv6 = json!({
+            "interfaceType": "PREFIX_DELEGATION",
+            "prefixDelegationWanInterfaceId": "5b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a55",
+            "clientAddressAssignment": {"slaacEnabled": true},
+            "routerAdvertisement": {"priority": "HIGH"},
+            "additionalHostIpSubnets": ["fd00:c0de:15::1/64"],
+            "dnsServerIpAddressesOverride": ["fd00:c0de:15::2", "2606:4700:4700::1111"],
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            ipv6[key] = value.clone();
+        }
+        network(&json!({"management": "GATEWAY", "ipv6Configuration": ipv6}))
+    }
+
+    #[test]
+    fn a_delegated_network_reads_its_settings_and_waits_for_its_prefix() {
+        let network = delegated(&json!({}));
+        assert!(network.ipv6_enabled && network.slaac_enabled && !network.dhcpv6_enabled);
+        assert_eq!(network.ipv6_mode, Some(Ipv6Mode::PrefixDelegation));
+        // The ULA is an additional subnet, not the delegated prefix.
+        assert_eq!(network.ipv6_prefix, None);
+        assert_eq!(network.ipv6_additional_subnets, ["fd00:c0de:15::1/64"]);
+        assert_eq!(network.ipv6_ra_priority, Some(Ipv6RaPriority::High));
+        assert_eq!(network.ipv6_dns_servers.len(), 2);
+        assert_eq!(
+            network.ipv6_wan_id,
+            Some(EntityId::Uuid(
+                "5b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a55"
+                    .parse()
+                    .expect("uuid")
+            ))
+        );
+    }
+
+    #[test]
+    fn dhcpv6_is_on_where_the_assignment_carries_a_dhcp_configuration() {
+        let network = delegated(&json!({
+            "clientAddressAssignment": {
+                "slaacEnabled": false,
+                "dhcpConfiguration": {
+                    "ipAddressSuffixRange": {"start": "::2", "stop": "::7d1"},
+                    "leaseTimeSeconds": 86_400,
+                },
+            },
+        }));
+        assert!(network.dhcpv6_enabled && !network.slaac_enabled);
+        assert_eq!(network.dhcpv6_range_start.as_deref(), Some("::2"));
+        assert_eq!(network.dhcpv6_range_stop.as_deref(), Some("::7d1"));
+    }
+
+    #[test]
+    fn a_static_network_names_its_own_subnet() {
+        let network = delegated(&json!({
+            "interfaceType": "STATIC", "hostIpAddress": "2001:db8:3fa::1", "prefixLength": 64,
+        }));
+        assert_eq!(network.ipv6_mode, Some(Ipv6Mode::Static));
+        assert_eq!(network.ipv6_prefix.as_deref(), Some("2001:db8:3fa::1/64"));
+    }
+
+    #[test]
+    fn no_configuration_or_a_null_one_is_ipv6_off() {
+        for ipv6 in [None, Some(json!(null))] {
+            let mut fields = json!({"management": "GATEWAY"});
+            if let Some(ipv6) = ipv6 {
+                fields["ipv6Configuration"] = ipv6;
+            }
+            let network = network(&fields);
+            assert!(!network.ipv6_enabled && network.ipv6_mode.is_none());
+            assert!(network.ipv6_ra_priority.is_none() && network.ipv6_wan_id.is_none());
+        }
     }
 }

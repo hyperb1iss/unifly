@@ -40,6 +40,25 @@ impl std::fmt::Display for Ipv6Mode {
     }
 }
 
+/// How strongly the gateway asks hosts to prefer it as their IPv6 router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum Ipv6RaPriority {
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for Ipv6RaPriority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => f.write_str("Low"),
+            Self::Medium => f.write_str("Medium"),
+            Self::High => f.write_str("High"),
+        }
+    }
+}
+
 /// DHCP server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpConfig {
@@ -81,9 +100,33 @@ pub struct Network {
     // IPv6
     pub ipv6_enabled: bool,
     pub ipv6_mode: Option<Ipv6Mode>,
+    /// The IPv6 subnet the network serves, as the gateway's address on it
+    /// with the prefix length (`2001:db8:4e48:10::1/64`): the
+    /// one configured on a static network, or the one the gateway carved
+    /// from the prefix its WAN was delegated.
     pub ipv6_prefix: Option<String>,
+    /// Further subnets the gateway serves on the network, such as a unique
+    /// local one, as configured.
+    #[serde(default)]
+    pub ipv6_additional_subnets: Vec<String>,
     pub dhcpv6_enabled: bool,
+    /// The DHCPv6 pool as address suffixes within the prefix (`::2`).
+    #[serde(default)]
+    pub dhcpv6_range_start: Option<String>,
+    #[serde(default)]
+    pub dhcpv6_range_stop: Option<String>,
     pub slaac_enabled: bool,
+    /// The IPv6 DNS servers hosts are given. Empty means the gateway picks
+    /// them.
+    #[serde(default)]
+    pub ipv6_dns_servers: Vec<IpAddr>,
+    /// Router advertisement priority. `None` when the gateway does not
+    /// advertise itself, which leaves hosts without a default route.
+    #[serde(default)]
+    pub ipv6_ra_priority: Option<Ipv6RaPriority>,
+    /// The WAN a prefix-delegation network takes its prefix from.
+    #[serde(default)]
+    pub ipv6_wan_id: Option<EntityId>,
 
     // Advanced DHCP / Boot
     pub ntp_server: Option<IpAddr>,

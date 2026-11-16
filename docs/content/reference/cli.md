@@ -119,7 +119,7 @@ unifly clients roams <CLIENT>                   # Roaming history for a client
 unifly clients wifi <CLIENT>                    # WiFi experience details for a client
 ```
 
-`<CLIENT>` is a name, hostname, ID, IP, or MAC in any common spelling. Other `get` commands take an ID or the record's name, compared case-insensitively (DNS policies by domain, vouchers by code).
+`<CLIENT>` is a name, hostname, ID, IP (IPv4 or any of the client's IPv6 addresses), or MAC in any common spelling. Other `get` commands take an ID or the record's name, compared case-insensitively (DNS policies by domain, vouchers by code).
 
 Gotchas: `list` returns enriched data in Hybrid mode (traffic bytes, hostname, wireless, VLAN). `block`/`unblock`/`kick`/`forget` and DHCP reservation commands require Session API.
 
@@ -131,11 +131,14 @@ unifly networks get <ID|NAME>                   # Full network details
 unifly networks create --name "IoT" --management gateway --vlan 20 --ipv4-host "10.0.20.1/24"
 unifly networks create -F network.json          # Create from JSON file
 unifly networks update <ID|NAME> --enabled false
+unifly networks update <ID|NAME> --ipv6 true      # Prefix delegation from the WAN, by SLAAC
 unifly networks delete <ID|NAME>
 unifly networks refs <ID|NAME>                   # What depends on this network?
 ```
 
 Gotchas: `list` returns summary data without `ipv4Configuration`. Use `get` for full config. `refs` is the only pre-delete dependency check; use it before deleting.
+
+IPv6: `list` shows each network's IPv6 prefix, and `get` adds the mode, aliases such as a ULA, SLAAC and DHCPv6, router advertisement priority, and IPv6 DNS servers. A prefix-delegation network's prefix comes from the gateway, so it reads `-` until the WAN has one. `update --ipv6 true` on a network without IPv6 sets it up the way the controller's own form starts: a prefix delegated from the WAN the site's other IPv6 networks use (else the first WAN listed), handed out by SLAAC, with router advertisements on. `--ipv6 false` deletes the network's IPv6 settings.
 
 Gateway- and switch-managed creation require `--ipv4-host <ADDRESS/PREFIX>`,
 even with DHCP disabled. Switch-managed creation also requires

@@ -128,13 +128,12 @@ impl EventsScreen {
     /// The devices whose addresses `event`'s message spells out, leaving
     /// out the one the event already names by MAC.
     pub(super) fn devices_by_address(&self, event: &Event) -> Vec<(&Arc<Device>, IpAddr)> {
-        addresses(&event.message)
-            .into_iter()
+        identifying_addresses(&event.message)
             .filter_map(|address| {
                 let device = self
                     .devices
                     .iter()
-                    .find(|device| device.ip == Some(address))?;
+                    .find(|device| device.has_address(address))?;
                 (event.device_mac.as_ref() != Some(&device.mac)).then_some((device, address))
             })
             .collect()
@@ -143,13 +142,12 @@ impl EventsScreen {
     /// The connected clients whose addresses `event`'s message spells out,
     /// leaving out the one the event already names by MAC.
     pub(super) fn clients_by_address(&self, event: &Event) -> Vec<(&Arc<Client>, IpAddr)> {
-        addresses(&event.message)
-            .into_iter()
+        identifying_addresses(&event.message)
             .filter_map(|address| {
                 let client = self
                     .clients
                     .iter()
-                    .find(|client| client.ip == Some(address))?;
+                    .find(|client| client.has_address(address))?;
                 (event.client_mac.as_ref() != Some(&client.mac)).then_some((client, address))
             })
             .collect()
@@ -206,6 +204,15 @@ fn address_line(label: Span<'static>, name: String, address: IpAddr) -> Line<'st
     ])
 }
 
+/// The addresses in `message` that can name one host. Every link has its
+/// own `fe80::/10`, so a link-local address could belong to a host on any
+/// of them.
+fn identifying_addresses(message: &str) -> impl Iterator<Item = IpAddr> {
+    addresses(message)
+        .into_iter()
+        .filter(|ip| !matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local()))
+}
+
 /// The IP addresses `message` spells out, in order, each once. An IPv4
 /// address may carry a port.
 fn addresses(message: &str) -> Vec<IpAddr> {
@@ -229,7 +236,7 @@ fn addresses(message: &str) -> Vec<IpAddr> {
 
 #[cfg(test)]
 mod tests {
-    use super::addresses;
+    use super::{addresses, identifying_addresses};
 
     fn found(message: &str) -> Vec<String> {
         addresses(message)
@@ -255,6 +262,14 @@ mod tests {
             found("lease for fd00::1a2b, was [2001:db8::1]:8443"),
             ["fd00::1a2b", "2001:db8::1"]
         );
+    }
+
+    #[test]
+    fn a_link_local_address_names_no_one() {
+        let named: Vec<String> = identifying_addresses("from fe80::1 to 2001:db8::9")
+            .map(|address| address.to_string())
+            .collect();
+        assert_eq!(named, ["2001:db8::9"]);
     }
 
     #[test]

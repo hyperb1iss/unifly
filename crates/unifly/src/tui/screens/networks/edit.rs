@@ -173,10 +173,6 @@ pub(super) struct NetworkForm {
 /// DHCP settings and isolation for networks a gateway or switch manages,
 /// and internet, mDNS, and IPv6 settings for gateway networks. A kind
 /// this version does not know gets what every kind takes.
-///
-/// IPv6 shows only where it is on, because it can only be turned off
-/// here: turning it on needs a prefix source and an address assignment
-/// that a yes/no field cannot give.
 fn fields_for(network: &Network) -> Vec<Field> {
     let (addressed, routed) = match network.management {
         Some(NetworkManagement::Gateway) => (true, true),
@@ -198,10 +194,7 @@ fn fields_for(network: &Network) -> Vec<Field> {
         ]);
     }
     if routed {
-        fields.extend([Field::Internet, Field::Mdns]);
-        if network.ipv6_enabled {
-            fields.push(Field::Ipv6);
-        }
+        fields.extend([Field::Internet, Field::Mdns, Field::Ipv6]);
     }
     fields
 }
@@ -478,7 +471,9 @@ impl NetworkForm {
             Field::Dhcp => self
                 .relay_target()
                 .map(|servers| format!("relays to {servers}")),
-            Field::Ipv6 if !self.ipv6 => Some("deletes its IPv6 settings".into()),
+            Field::Ipv6 if !self.changed(Field::Ipv6) => None,
+            Field::Ipv6 if self.ipv6 => Some("prefix from the WAN, by SLAAC".into()),
+            Field::Ipv6 => Some("deletes its IPv6 settings".into()),
             _ => None,
         }
     }
@@ -498,12 +493,16 @@ impl NetworkForm {
                 ));
             }
         }
-        if self.changed(Field::Ipv6) && !self.ipv6 {
-            lines.push(
-                "Its IPv6 settings are deleted. Only the controller's own interface can set \
-                 IPv6 up again."
-                    .into(),
-            );
+        if self.changed(Field::Ipv6) {
+            lines.push(if self.ipv6 {
+                "IPv6 takes a prefix delegated from the WAN the site already uses, handed \
+                 out by SLAAC."
+                    .into()
+            } else {
+                "Its IPv6 settings are deleted. Turned back on here, IPv6 starts over from a \
+                 prefix delegated from the WAN, by SLAAC."
+                    .into()
+            });
         }
         if self.changed(Field::Internet) && !self.internet {
             lines.push("Devices on it lose internet access.".into());

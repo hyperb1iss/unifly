@@ -90,6 +90,14 @@ pub(super) fn detail(device: &Arc<Device>) -> String {
             "IP:       {}",
             device.ip.map_or_else(|| "-".into(), |ip| ip.to_string())
         ),
+    ];
+    if let Some(ipv6) = &device.wan_ipv6 {
+        lines.push(format!("WAN IPv6: {ipv6}"));
+    }
+    if let Some(ipv6) = crate::cli::output::ipv6_list(&device.ipv6_addresses) {
+        lines.push(format!("IPv6:     {ipv6}"));
+    }
+    lines.extend([
         format!("Model:    {}", device.model.as_deref().unwrap_or("-")),
         format!("Type:     {:?}", device.device_type),
         format!("State:    {:?}", device.state),
@@ -97,7 +105,7 @@ pub(super) fn detail(device: &Arc<Device>) -> String {
             "Firmware: {}",
             device.firmware_version.as_deref().unwrap_or("-")
         ),
-    ];
+    ]);
     if let Some(uptime) = device.stats.uptime_secs {
         lines.push(format!("Uptime:   {uptime}s"));
     }

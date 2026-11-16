@@ -29,7 +29,10 @@ pub(super) fn client_row(client: &Arc<Client>, painter: &Painter) -> ClientRow {
         .unwrap_or_default();
     ClientRow {
         name: painter.name(&name),
-        ip: painter.ip(&client.ip.map(|ip| ip.to_string()).unwrap_or_default()),
+        ip: painter.ip(&client
+            .primary_address()
+            .map(|ip| ip.to_string())
+            .unwrap_or_default()),
         ctype: painter.muted(&format!("{:?}", client.client_type)),
         uplink: painter.mac(
             &client
@@ -51,10 +54,15 @@ pub(super) fn detail(client: &Arc<Client>) -> String {
             "IP:        {}",
             client.ip.map_or_else(|| "-".into(), |ip| ip.to_string())
         ),
+    ];
+    if let Some(ipv6) = crate::cli::output::ipv6_list(&client.ipv6_addresses) {
+        lines.push(format!("IPv6:      {ipv6}"));
+    }
+    lines.extend([
         format!("Type:      {:?}", client.client_type),
         format!("Guest:     {}", client.is_guest),
         format!("Blocked:   {}", client.blocked),
-    ];
+    ]);
     if let Some(port) = client.switch_port {
         lines.push(format!("Switch Port: {port}"));
     }

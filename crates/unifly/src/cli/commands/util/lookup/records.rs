@@ -42,8 +42,8 @@ impl Lookup for Device {
         Some(&self.mac)
     }
 
-    fn ip(&self) -> Option<IpAddr> {
-        self.ip
+    fn has_ip(&self, ip: IpAddr) -> bool {
+        self.has_address(ip)
     }
 
     fn names(&self) -> Vec<&str> {
@@ -67,8 +67,8 @@ impl Lookup for Client {
         Some(&self.mac)
     }
 
-    fn ip(&self) -> Option<IpAddr> {
-        self.ip
+    fn has_ip(&self, ip: IpAddr) -> bool {
+        self.has_address(ip)
     }
 
     fn names(&self) -> Vec<&str> {

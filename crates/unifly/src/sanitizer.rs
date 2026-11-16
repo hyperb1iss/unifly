@@ -2,13 +2,14 @@ use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 use regex::Regex;
 
 use unifly_api::model::{
-    AclRule, Alarm, FirewallPolicy, FirewallZone, IpSpec, NatPolicy, TrafficFilter, WifiBroadcast,
+    AclRule, Alarm, FirewallPolicy, FirewallZone, IpSpec, Ipv6Scope, NatPolicy, TrafficFilter,
+    WifiBroadcast,
 };
 use unifly_api::session::models::RogueAp;
 use unifly_api::{Client, Device, Event, HealthSummary, MacAddress, Network};
@@ -20,9 +21,6 @@ const CUTE_NAMES: &[&str] = &[
     "Quasar", "Clover", "Ember", "Tinker", "Velvet", "Cricket", "Biscuit", "Phantom", "Stardust",
     "Marble", "Glimmer", "Waffle", "Pebble", "Fizz", "Comet",
 ];
-
-/// What every IPv6 address is replaced with, from the documentation range.
-const IPV6_STAND_IN: &str = "2001:db8::cafe";
 
 const CUTE_SSIDS: &[&str] = &[
     "SilkNet",
@@ -54,6 +52,8 @@ pub struct Sanitizer {
     name_map: DashMap<String, String>,
     ssid_map: DashMap<String, String>,
     ip_map: DashMap<IpAddr, IpAddr>,
+    ipv6_map: DashMap<Ipv6Addr, Ipv6Addr>,
+    ipv6_stand_ins: DashMap<Ipv6Addr, ()>,
     mac_map: DashMap<String, String>,
     /// Every stand-in handed out, so text or values that already carry
     /// one are never mapped a second time.
@@ -63,6 +63,7 @@ pub struct Sanitizer {
     name_counter: AtomicUsize,
     ssid_counter: AtomicUsize,
     wan_ip_counter: AtomicU8,
+    ipv6_counter: AtomicU16,
 }
 
 impl Sanitizer {
@@ -120,6 +121,8 @@ impl Sanitizer {
             name_map: DashMap::new(),
             ssid_map: DashMap::new(),
             ip_map: DashMap::new(),
+            ipv6_map: DashMap::new(),
+            ipv6_stand_ins: DashMap::new(),
             mac_map: DashMap::new(),
             name_stand_ins: DashMap::new(),
             ssid_stand_ins: DashMap::new(),
@@ -127,6 +130,7 @@ impl Sanitizer {
             name_counter: AtomicUsize::new(1),
             ssid_counter: AtomicUsize::new(1),
             wan_ip_counter: AtomicU8::new(1),
+            ipv6_counter: AtomicU16::new(1),
         }
     }
 
@@ -174,7 +178,59 @@ impl Sanitizer {
     }
 
     pub fn sanitize_ip_opt(&self, ip: &Option<IpAddr>) -> Option<IpAddr> {
-        ip.map(|addr| self.sanitize_wan_ip(addr))
+        ip.map(|addr| match addr {
+            IpAddr::V6(v6) if self.redacts_ipv6() => IpAddr::V6(self.sanitize_ipv6(v6)),
+            addr => self.sanitize_wan_ip(addr),
+        })
+    }
+
+    /// The stand-in for an IPv6 address: one per address, so the same
+    /// address reads the same everywhere and two hosts never share one. A
+    /// stand-in keeps its address's reach (global ones come from the
+    /// documentation range), so a redacted link-local address still reads
+    /// as link-local. Loopback, the unspecified address, documentation
+    /// addresses, and stand-ins identify nothing and stay.
+    pub fn sanitize_ipv6(&self, ip: Ipv6Addr) -> Ipv6Addr {
+        let [first, second, ..] = ip.segments();
+        if ip.is_loopback()
+            || ip.is_unspecified()
+            || (first, second) == (0x2001, 0xdb8)
+            || self.ipv6_stand_ins.contains_key(&ip)
+        {
+            return ip;
+        }
+        *self.ipv6_map.entry(ip).or_insert_with(|| {
+            let index = self.ipv6_counter.fetch_add(1, Ordering::Relaxed);
+            let stand_in = match Ipv6Scope::of(&ip) {
+                Ipv6Scope::Global => Ipv6Addr::new(0x2001, 0xdb8, 0xcafe, 0, 0, 0, 0, index),
+                Ipv6Scope::UniqueLocal => Ipv6Addr::new(0xfd00, 0xdb8, 0xcafe, 0, 0, 0, 0, index),
+                Ipv6Scope::LinkLocal => Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0xcafe, index),
+            };
+            self.ipv6_stand_ins.insert(stand_in, ());
+            stand_in
+        })
+    }
+
+    /// Whether IPv6 addresses are redacted. A SLAAC address built from the
+    /// host's MAC spells that MAC out, so redacting MACs redacts them too.
+    fn redacts_ipv6(&self) -> bool {
+        self.redact_wan_ips || self.redact_macs
+    }
+
+    /// `subnet`, an IPv6 address with an optional prefix length, with its
+    /// address replaced.
+    fn sanitize_ipv6_subnet(&self, subnet: &str) -> String {
+        let (address, length) = subnet
+            .split_once('/')
+            .map_or((subnet, None), |(address, length)| (address, Some(length)));
+        let Ok(address) = address.parse::<Ipv6Addr>() else {
+            return self.sanitize_text(subnet);
+        };
+        let address = self.sanitize_ipv6(address);
+        length.map_or_else(
+            || address.to_string(),
+            |length| format!("{address}/{length}"),
+        )
     }
 
     pub fn sanitize_ssid(&self, ssid: &str) -> String {
@@ -256,6 +312,11 @@ impl Sanitizer {
                 .into_owned();
         }
 
+        // IPv6 first: an IPv4-mapped address must reach its stand-in whole,
+        // not with its IPv4 tail already replaced.
+        if self.redacts_ipv6() {
+            result = self.redact_ipv6(&result);
+        }
         if self.redact_wan_ips {
             result = self
                 .ip_regex
@@ -269,8 +330,6 @@ impl Sanitizer {
                     ip_str.to_owned()
                 })
                 .into_owned();
-
-            result = self.redact_ipv6(&result);
         }
 
         if self.redact_macs {
@@ -332,16 +391,18 @@ impl Sanitizer {
     }
 
     pub fn sanitize_wan_ip_str(&self, ip_str: &str) -> String {
-        if !self.redact_wan_ips {
-            return ip_str.to_owned();
+        if let Ok(ip) = ip_str.trim().parse::<Ipv6Addr>() {
+            return if self.redacts_ipv6() {
+                self.sanitize_ipv6(ip).to_string()
+            } else {
+                ip_str.to_owned()
+            };
         }
-        if let Ok(ip) = ip_str.parse::<IpAddr>()
+        if self.redact_wan_ips
+            && let Ok(ip) = ip_str.parse::<IpAddr>()
             && is_public_ip(ip)
         {
             return self.sanitize_wan_ip(ip).to_string();
-        }
-        if ip_str.trim().parse::<Ipv6Addr>().is_ok() {
-            return IPV6_STAND_IN.to_owned();
         }
         ip_str.to_owned()
     }
@@ -382,7 +443,7 @@ impl Sanitizer {
             .collect()
     }
 
-    /// Replace each IPv6 address in `text` with the documentation stand-in.
+    /// Replace each IPv6 address in `text` with its documentation stand-in.
     ///
     /// An address is the longest stretch of a hex, colon, and dot run that
     /// parses as one and touches no letter or digit outside it, so it is
@@ -408,7 +469,7 @@ impl Sanitizer {
                 if ip.is_loopback() || ip.is_unspecified() {
                     out.push_str(text.get(start..end).unwrap_or_default());
                 } else {
-                    out.push_str(IPV6_STAND_IN);
+                    out.push_str(&self.sanitize_ipv6(ip).to_string());
                 }
                 copied = end;
                 start = end;
@@ -429,8 +490,14 @@ impl Sanitizer {
             port.name = self.sanitize_name_opt(&port.name);
         }
         d.ip = self.sanitize_ip_opt(&d.ip);
-        if self.redact_wan_ips {
-            d.wan_ipv6 = d.wan_ipv6.as_ref().map(|_| IPV6_STAND_IN.to_owned());
+        if self.redacts_ipv6() {
+            d.wan_ipv6 = d
+                .wan_ipv6
+                .as_deref()
+                .map(|ip| self.sanitize_ipv6_subnet(ip));
+            for ip in &mut d.ipv6_addresses {
+                *ip = self.sanitize_ipv6(*ip);
+            }
         }
         if self.redact_macs {
             d.mac = self.sanitize_mac(&d.mac);
@@ -447,6 +514,11 @@ impl Sanitizer {
         // a client's network name matching its renamed network.
         c.network_name = self.sanitize_name_opt(&c.network_name);
         c.ip = self.sanitize_ip_opt(&c.ip);
+        if self.redacts_ipv6() {
+            for ip in &mut c.ipv6_addresses {
+                *ip = self.sanitize_ipv6(*ip);
+            }
+        }
         if let Some(ref mut wi) = c.wireless {
             wi.ssid = wi.ssid.as_ref().map(|s| self.sanitize_ssid(s));
         }
@@ -463,6 +535,20 @@ impl Sanitizer {
     pub fn sanitize_network(&self, network: &Network) -> Network {
         let mut n = network.clone();
         n.name = self.sanitize_name(&n.name);
+        if self.redacts_ipv6() {
+            n.ipv6_prefix = n
+                .ipv6_prefix
+                .as_deref()
+                .map(|subnet| self.sanitize_ipv6_subnet(subnet));
+            for subnet in &mut n.ipv6_additional_subnets {
+                *subnet = self.sanitize_ipv6_subnet(subnet);
+            }
+            for server in &mut n.ipv6_dns_servers {
+                if let IpAddr::V6(v6) = server {
+                    *v6 = self.sanitize_ipv6(*v6);
+                }
+            }
+        }
         n
     }
 
@@ -1184,11 +1270,16 @@ mod tests {
         let s = Sanitizer::new(&DemoConfig::default());
         assert_eq!(
             s.sanitize_text("WAN up on 2001:470:1f0b:5c::2, gateway fe80::1."),
-            "WAN up on 2001:db8::cafe, gateway 2001:db8::cafe."
+            "WAN up on 2001:db8:cafe::1, gateway fe80::cafe:2."
         );
         assert_eq!(
             s.sanitize_text("listening on [2600:1700:abcd::7]:443"),
-            "listening on [2001:db8::cafe]:443"
+            "listening on [2001:db8:cafe::3]:443"
+        );
+        // An address seen again gets the stand-in it got before.
+        assert_eq!(
+            s.sanitize_text("gateway fe80::1 again"),
+            "gateway fe80::cafe:2 again"
         );
         // Loopback and the unspecified address identify nothing.
         assert_eq!(
@@ -1199,21 +1290,22 @@ mod tests {
 
     #[test]
     fn default_text_redacts_ipv6_glued_to_its_neighbours() {
-        let s = Sanitizer::new(&DemoConfig::default());
         for (text, expected) in [
-            ("addr:2001:470::1", "addr:2001:db8::cafe"),
-            ("IPv6:2001:470:1f0b::2/64", "IPv6:2001:db8::cafe/64"),
-            ("2001:470::1_x", "2001:db8::cafe_x"),
-            ("WAN 2001:470::1: down", "WAN 2001:db8::cafe: down"),
-            ("fe80::1%eth0 is up", "2001:db8::cafe%eth0 is up"),
+            ("addr:2001:470::1", "addr:2001:db8:cafe::1"),
+            ("IPv6:2001:470:1f0b::2/64", "IPv6:2001:db8:cafe::1/64"),
+            ("2001:470::1_x", "2001:db8:cafe::1_x"),
+            ("WAN 2001:470::1: down", "WAN 2001:db8:cafe::1: down"),
+            ("fe80::1%eth0 is up", "fe80::cafe:1%eth0 is up"),
             ("2001:db8::cafe stays", "2001:db8::cafe stays"),
             (
                 "EUI-64 0011:2233:4455:6677:8899:aabb:ccdd:eeff",
-                "EUI-64 2001:db8::cafe",
+                "EUI-64 2001:db8:cafe::1",
             ),
         ] {
+            let s = Sanitizer::new(&DemoConfig::default());
             assert_eq!(s.sanitize_text(text), expected, "{text}");
         }
+        let s = Sanitizer::new(&DemoConfig::default());
         for text in [
             "Vec::new()",
             "Self::DEFAULT",
@@ -1222,6 +1314,56 @@ mod tests {
         ] {
             assert_eq!(s.sanitize_text(text), text);
         }
+    }
+
+    #[test]
+    fn an_ipv6_stand_in_keeps_its_reach_and_is_not_mapped_again() {
+        let s = Sanitizer::new(&DemoConfig::default());
+        let stand_in = |text: &str| s.sanitize_ipv6(text.parse().expect("an IPv6 address"));
+        let global = stand_in("2601:600:8284:c9d1::9");
+        let unique_local = stand_in("fd00:c0de:babe:d::9");
+        let link_local = stand_in("fe80::1c2d:3eff:fe4f:5a6b");
+        assert_eq!(Ipv6Scope::of(&global), Ipv6Scope::Global);
+        assert_eq!(Ipv6Scope::of(&unique_local), Ipv6Scope::UniqueLocal);
+        assert_eq!(Ipv6Scope::of(&link_local), Ipv6Scope::LinkLocal);
+        for redacted in [global, unique_local, link_local] {
+            assert_eq!(s.sanitize_ipv6(redacted), redacted);
+        }
+    }
+
+    /// Text and a field holding the same address show the same stand-in,
+    /// an IPv4-mapped one included.
+    #[test]
+    fn an_ipv6_address_reads_the_same_in_text_and_in_a_field() {
+        let s = Sanitizer::new(&DemoConfig::default());
+        let mapped: Ipv6Addr = "::ffff:8.8.8.8".parse().expect("an IPv6 address");
+        let in_text = s.sanitize_text("peer ::ffff:8.8.8.8 dropped");
+        assert_eq!(in_text, format!("peer {} dropped", s.sanitize_ipv6(mapped)));
+        let v6_ip = Some(IpAddr::V6(
+            "2601:600:8284:c9d1::9".parse().expect("address"),
+        ));
+        assert_eq!(
+            s.sanitize_ip_opt(&v6_ip),
+            Some(IpAddr::V6(s.sanitize_ipv6(
+                "2601:600:8284:c9d1::9".parse().expect("address")
+            )))
+        );
+        assert_ne!(s.sanitize_ip_opt(&v6_ip), v6_ip);
+    }
+
+    /// A SLAAC address spells out the MAC it was built from.
+    #[test]
+    fn redacting_macs_redacts_ipv6_addresses_too() {
+        let s = Sanitizer::new(&DemoConfig {
+            redact_wan_ips: false,
+            redact_macs: true,
+            ..DemoConfig::default()
+        });
+        let eui64 = "2601:600:8284:c9d1:6e63:f8ff:fe36:5342";
+        assert!(
+            !s.sanitize_text(&format!("from {eui64}"))
+                .contains("fe36:5342")
+        );
     }
 
     #[test]

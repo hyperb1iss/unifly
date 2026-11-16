@@ -310,12 +310,12 @@ impl ClientsScreen {
 }
 
 /// Whether `client` matches a lowercased search query by name, hostname,
-/// IP, or MAC.
+/// any of its IP addresses, or MAC.
 fn matches_query(client: &Client, query: &str) -> bool {
     let holds = |text: Option<&str>| text.is_some_and(|text| text.to_lowercase().contains(query));
     holds(client.name.as_deref())
         || holds(client.hostname.as_deref())
-        || client.ip.is_some_and(|ip| ip.to_string().contains(query))
+        || crate::tui::search::address_matches(client.addresses(), query)
         || client.mac.to_string().to_lowercase().contains(query)
 }
 

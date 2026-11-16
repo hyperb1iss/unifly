@@ -176,7 +176,7 @@ The Ports tab shows each port's mode, native network, and tagged networks where 
 
 ### Clients
 
-The table filters by type and sorts by name, signal, traffic, or duration, and the sort shows at the right of the toolbar (`s sort name ↑`). `Enter` opens a detail with the address, network and VLAN, uplink, connection time, fixed IP, radio link for wireless clients, traffic, and guest and blocked state. The detail takes the rows its content needs, and the table keeps the rest.
+The table filters by type and sorts by name, signal, traffic, or duration, and the sort shows at the right of the toolbar (`s sort name ↑`). `Enter` opens a detail with the IPv4 address, the first global and unique local IPv6 addresses (with a count of any others), network and VLAN, uplink, connection time, fixed IP, radio link for wireless clients, traffic, and guest and blocked state. The detail takes the rows its content needs, and the table keeps the rest.
 
 | Mode            | Key       | Action                                                         |
 | --------------- | --------- | -------------------------------------------------------------- |
@@ -198,7 +198,7 @@ The table filters by type and sorts by name, signal, traffic, or duration, and t
 
 ### Networks
 
-`Enter` shows or hides a detail panel with the network's status, purpose, zone, gateway and subnet, DHCP range, lease, DNS, and IPv6 settings. A network that relays DHCP to another server reads `Relay` in the DHCP column, and its detail names the servers.
+`Enter` shows or hides a detail panel with the network's status, purpose, zone, gateway and subnet, DHCP range, lease, DNS, and IPv6 settings: the mode, the prefix it serves (for prefix delegation, the one the gateway carved from its WAN's delegation), aliases such as a ULA, how hosts get addresses (SLAAC, DHCPv6 and its range), router advertisement priority, and IPv6 DNS servers where they are overridden. A missing address assignment or router advertisement shows as a warning, since hosts then get no address or no default route. A network that relays DHCP to another server reads `Relay` in the DHCP column, and its detail names the servers.
 
 | Mode | Key                 | Action                                   |
 | ---- | ------------------- | ---------------------------------------- |
@@ -215,9 +215,9 @@ The table filters by type and sorts by name, signal, traffic, or duration, and t
 | Form | `Enter`             | Save                                     |
 | Form | `Esc`               | Close without saving                     |
 
-- **The form** creates and edits with the same fields: name, VLAN ID, gateway and prefix, enabled, the DHCP server with its range and DNS servers, isolation, internet access, mDNS forwarding, and IPv6. A network only offers the fields its kind can take, and one whose kind the controller does not report offers name, VLAN ID, and enabled. IPv6 shows only on a network that has it on, and can only be turned off: the controller's own interface is where IPv6 is set up. A validation error sits under the field it is about and moves the focus there.
+- **The form** creates and edits with the same fields: name, VLAN ID, gateway and prefix, enabled, the DHCP server with its range and DNS servers, isolation, internet access, mDNS forwarding, and IPv6. A network only offers the fields its kind can take, and one whose kind the controller does not report offers name, VLAN ID, and enabled. IPv6 is offered on gateway-managed networks. Turning it on sets up what the controller's own form starts from: a prefix delegated from the WAN the site's other IPv6 networks use, handed out by SLAAC, with router advertisements on. A static prefix, DHCPv6, or a different WAN is set up in the controller's own interface. A validation error sits under the field it is about and moves the focus there.
 - **Limits the form checks**: a VLAN ID from 2 to 4009 (the default network keeps VLAN 1), a prefix from /8 to /30, a DHCP range inside the subnet's usable addresses and clear of the gateway's own, and at most four DNS servers, each an IPv4 address.
-- **Saving** locks the form while the controller has the draft and closes it once the new values are on screen. A save the controller refuses keeps the form open with your draft and the reason. A save that turns a network off, cuts its internet access, isolates it, or changes its VLAN, addressing, DHCP, or IPv6 lists what changes and asks first. Turning the DHCP server off deletes its range, lease time, and options, turning one on replaces a relay, and turning IPv6 off deletes its settings; the form and the confirmation both say so.
+- **Saving** locks the form while the controller has the draft and closes it once the new values are on screen. A save the controller refuses keeps the form open with your draft and the reason. A save that turns a network off, cuts its internet access, isolates it, or changes its VLAN, addressing, DHCP, or IPv6 lists what changes and asks first. Turning the DHCP server off deletes its range, lease time, and options, turning one on replaces a relay, turning IPv6 off deletes its settings, and turning it on says where its prefix comes from; the form and the confirmation both say so.
 - **Deleting** asks the controller what uses the network, and the confirmation names it (`In use by 14 clients, 1 WiFi network`). If you have moved on by the time that check returns, no dialog opens: a toast says to press `D` on the network again. When the check itself fails, the confirmation says the controller refuses the delete if something uses the network. The default network cannot be deleted.
 
 ### Firewall
