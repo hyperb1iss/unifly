@@ -118,16 +118,17 @@ impl Client {
         self.addresses().any(|own| own == address)
     }
 
-    /// The address to reach the client at: its IPv4 one, else the widest
-    /// reaching IPv6 one short of link-local, which needs an interface to
-    /// mean anything.
+    /// The address to reach the client at: its own `ip`, else the widest
+    /// reaching IPv6 one. A link-local address needs an interface to mean
+    /// anything, so it is never the answer.
     pub fn primary_address(&self) -> Option<IpAddr> {
-        self.ip.or_else(|| {
+        let reachable = |ip: &IpAddr| !matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local());
+        self.ip.filter(reachable).or_else(|| {
             self.ipv6_addresses
                 .iter()
-                .find(|ip| !ip.is_unicast_link_local())
                 .copied()
                 .map(IpAddr::V6)
+                .find(reachable)
         })
     }
 }

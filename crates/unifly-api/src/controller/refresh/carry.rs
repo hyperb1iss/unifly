@@ -99,16 +99,22 @@ pub(super) fn session_device_fields(
 }
 
 /// Carry the delegated subnet each network last showed when the session
-/// devices fetch, the only source of it, failed.
+/// devices fetch, the only source of it, failed. Only a prefix delegated
+/// from the same WAN carries: one from a static setup or another WAN is
+/// not the subnet the network serves now.
 pub(super) fn delegated_prefixes(
     networks: &mut [Network],
     stored: impl Fn(&EntityId) -> Option<Arc<Network>>,
 ) {
+    let delegated = Some(Ipv6Mode::PrefixDelegation);
     for network in networks {
-        if network.ipv6_mode != Some(Ipv6Mode::PrefixDelegation) {
+        if network.ipv6_mode != delegated {
             continue;
         }
-        if let Some(previous) = stored(&network.id) {
+        if let Some(previous) = stored(&network.id)
+            && previous.ipv6_mode == delegated
+            && previous.ipv6_wan_id == network.ipv6_wan_id
+        {
             fill(&mut network.ipv6_prefix, previous.ipv6_prefix.as_ref());
         }
     }
@@ -128,9 +134,9 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{session_client_fields, session_device_fields};
+    use super::{delegated_prefixes, session_client_fields, session_device_fields};
     use crate::integration_types::{ClientResponse, DeviceResponse};
-    use crate::model::{Client, ClientType, Device, MacAddress};
+    use crate::model::{Client, ClientType, Device, MacAddress, Network};
     use crate::session::models::SessionClientEntry;
 
     const CLIENT_MAC: &str = "aa:bb:cc:dd:ee:ff";
@@ -306,5 +312,37 @@ mod tests {
             Some(MacAddress::new("11:22:33:44:55:66"))
         );
         assert_eq!(device.uplink_port_idx, Some(4));
+    }
+
+    fn delegated(wan: &str, prefix: Option<&str>) -> Network {
+        let details: crate::integration_types::NetworkDetailsResponse =
+            serde_json::from_value(serde_json::json!({
+                "id": "8a1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a01", "name": "Home", "enabled": true,
+                "management": "GATEWAY", "vlanId": 13, "metadata": {"origin": "USER_DEFINED"},
+                "ipv6Configuration": {
+                    "interfaceType": "PREFIX_DELEGATION",
+                    "prefixDelegationWanInterfaceId": wan,
+                    "clientAddressAssignment": {"slaacEnabled": true},
+                },
+            }))
+            .expect("network");
+        let mut network = Network::from(details);
+        network.ipv6_prefix = prefix.map(String::from);
+        network
+    }
+
+    #[test]
+    fn a_delegated_prefix_carries_only_from_the_same_wan() {
+        let primary = "5b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a55";
+        let backup = "6b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a66";
+        let stored = Arc::new(delegated(primary, Some("2001:db8:3fa::1/64")));
+
+        let mut same = [delegated(primary, None)];
+        delegated_prefixes(&mut same, |_| Some(Arc::clone(&stored)));
+        assert_eq!(same[0].ipv6_prefix.as_deref(), Some("2001:db8:3fa::1/64"));
+
+        let mut moved = [delegated(backup, None)];
+        delegated_prefixes(&mut moved, |_| Some(Arc::clone(&stored)));
+        assert_eq!(moved[0].ipv6_prefix, None);
     }
 }

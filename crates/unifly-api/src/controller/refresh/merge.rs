@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::model::{Client, Device, Ipv6Mode, Ipv6Scope, MacAddress, Network};
+use crate::model::{Client, Device, MacAddress};
 use crate::session::models::{SessionClientEntry, SessionDevice, SessionUserEntry};
 
 use crate::convert::{parse_ipv6_list, parse_wan_ipv6};
@@ -13,43 +13,6 @@ pub(super) fn merge_session_clients(
     merge_client_traffic(clients, session_clients);
     merge_user_reservations(clients, session_clients, session_users);
     super::client_state::merge(clients, session_clients, session_users);
-}
-
-/// Fill in the subnet each prefix-delegation network serves from the
-/// gateway's network table, which is the only place the controller says
-/// what the WAN was delegated. The table names each network as the
-/// Integration record does; its record IDs are session ones, which never
-/// match an Integration network's UUID.
-pub(super) fn merge_gateway_prefixes(networks: &mut [Network], session_devices: &[SessionDevice]) {
-    let rows = session_devices
-        .iter()
-        .filter_map(|device| device.network_table.as_ref()?.as_array())
-        .flatten();
-    for row in rows {
-        let name = row.get("name").and_then(serde_json::Value::as_str);
-        let Some(network) = networks
-            .iter_mut()
-            .find(|network| name.is_some_and(|name| network.name == name))
-        else {
-            continue;
-        };
-        if network.ipv6_mode != Some(Ipv6Mode::PrefixDelegation) || network.ipv6_prefix.is_some() {
-            continue;
-        }
-        network.ipv6_prefix = row
-            .get("ipv6_subnets")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .find(|subnet| {
-                let address = subnet.split('/').next().unwrap_or(subnet);
-                address
-                    .parse()
-                    .is_ok_and(|address| Ipv6Scope::of(&address) == Ipv6Scope::Global)
-            })
-            .map(String::from);
-    }
 }
 
 pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[SessionDevice]) {
@@ -111,14 +74,20 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
         return;
     }
 
+    let session_by_mac: HashMap<MacAddress, &SessionClientEntry> = session_clients
+        .iter()
+        .map(|client| (MacAddress::new(&client.mac), client))
+        .collect();
     let session_by_ip: HashMap<&str, &SessionClientEntry> = session_clients
         .iter()
         .filter_map(|client| client.ip.as_deref().map(|ip| (ip, client)))
         .collect();
     let mut merged = 0u32;
     for client in clients.iter_mut() {
+        // The MAC names the station; the address serves a record without one.
         let ip_key = client.ip.map(|ip| ip.to_string());
-        if let Some(session_client) = ip_key.as_deref().and_then(|ip| session_by_ip.get(ip)) {
+        let by_ip = || ip_key.as_deref().and_then(|ip| session_by_ip.get(ip));
+        if let Some(session_client) = session_by_mac.get(&client.mac).or_else(by_ip) {
             if client.tx_bytes.is_none() {
                 client.tx_bytes = session_client
                     .tx_bytes
@@ -169,7 +138,7 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
         total_clients = clients.len(),
         legacy_available = session_by_ip.len(),
         merged,
-        "client traffic merge (by IP)"
+        "client traffic merge (by MAC, else IP)"
     );
 }
 

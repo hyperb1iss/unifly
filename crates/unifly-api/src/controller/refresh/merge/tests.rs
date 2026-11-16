@@ -1,6 +1,6 @@
 use crate::integration_types::ClientResponse;
-use crate::model::{Client, Network};
-use crate::session::models::{SessionClientEntry, SessionDevice};
+use crate::model::Client;
+use crate::session::models::SessionClientEntry;
 
 #[test]
 fn hybrid_clients_take_the_session_network_name() {
@@ -57,54 +57,32 @@ fn hybrid_clients_take_the_session_ipv6_addresses() {
     assert!(clients[0].has_address("2001:db8:3fa::9".parse().expect("address")));
 }
 
-fn network(name: &str, ipv6: &serde_json::Value) -> Network {
-    let details: crate::integration_types::NetworkDetailsResponse =
-        serde_json::from_value(serde_json::json!({
-            "id": uuid::Uuid::from_u128(name.len().try_into().unwrap_or_default()), "name": name,
-            "enabled": true, "management": "GATEWAY", "vlanId": 10,
-            "metadata": {"origin": "USER_DEFINED"}, "ipv6Configuration": ipv6,
-        }))
-        .expect("network");
-    Network::from(details)
-}
-
+/// The MAC ties the records together, so a client with no IPv4 address
+/// still takes its session addresses.
 #[test]
-fn a_delegated_network_takes_the_global_subnet_the_gateway_serves_on_it() {
-    let delegated = serde_json::json!({
-        "interfaceType": "PREFIX_DELEGATION",
-        "clientAddressAssignment": {"slaacEnabled": true},
-    });
-    let fixed = serde_json::json!({
-        "interfaceType": "STATIC", "hostIpAddress": "2001:db8:99::1", "prefixLength": 64,
-        "clientAddressAssignment": {"slaacEnabled": true},
-    });
-    let mut networks = vec![
-        network("Home", &delegated),
-        network("Lab", &fixed),
-        network("Off", &serde_json::Value::Null),
+fn an_ipv6_only_client_is_merged_by_its_mac() {
+    let mut clients: Vec<Client> = vec![
+        ClientResponse {
+            id: uuid::Uuid::from_u128(2),
+            name: "printer".into(),
+            client_type: "WIRED".into(),
+            ip_address: None,
+            connected_at: None,
+            mac_address: Some("3E:BF:EC:41:E9:0E".into()),
+            access: serde_json::json!({ "type": "DEFAULT" }),
+        }
+        .into(),
     ];
-    let gateway: SessionDevice = serde_json::from_value(serde_json::json!({
-        "mac": "6c:63:f8:38:d9:01", "type": "udm", "state": 1,
-        "network_table": [
-            {"_id": "65c3d8", "name": "Home",
-             "ipv6_subnets": ["fd00:c0de:15::1/64", "2001:db8:3fa::1/64"]},
-            {"_id": "65c3d9", "name": "Lab", "ipv6_subnets": ["2001:db8:77::1/64"]},
-            {"_id": "65c3da", "name": "Off", "ipv6_subnets": ["2001:db8:78::1/64"]},
-            "not a row",
-        ],
+    let session: SessionClientEntry = serde_json::from_value(serde_json::json!({
+        "_id": "abc",
+        "mac": "3e:bf:ec:41:e9:0e",
+        "hostname": "printer-lab",
+        "ipv6_addresses": ["2001:db8:3fa::7"],
     }))
     .expect("deserialize");
 
-    super::merge_gateway_prefixes(&mut networks, &[gateway]);
+    super::merge_session_clients(&mut clients, &[session], &[]);
 
-    assert_eq!(
-        networks[0].ipv6_prefix.as_deref(),
-        Some("2001:db8:3fa::1/64")
-    );
-    // A static network keeps the subnet it names; one without IPv6 has none.
-    assert_eq!(
-        networks[1].ipv6_prefix.as_deref(),
-        Some("2001:db8:99::1/64")
-    );
-    assert_eq!(networks[2].ipv6_prefix, None);
+    assert_eq!(clients[0].hostname.as_deref(), Some("printer-lab"));
+    assert_eq!(clients[0].primary_address(), "2001:db8:3fa::7".parse().ok());
 }

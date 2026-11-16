@@ -748,9 +748,9 @@ Check them by hand only when bumping the version outside `release.yml`.
   get full config. See `convert.rs::parse_network_fields` which handles
   both old and new styles.
 - **Integration clients lack fields** the UI shows: `wireless`,
-  `uplink_device_mac`, `vlan`, `tx_bytes`, `rx_bytes`, `hostname`. These
-  must come from Session API. Hybrid merge is by IP-address match in
-  `controller::refresh::full_refresh`. Guest, authorized, and blocked
+  `uplink_device_mac`, `vlan`, `tx_bytes`, `rx_bytes`, `hostname`, IPv6
+  addresses. These must come from Session API. Hybrid merge matches by MAC,
+  falling back to the IPv4 address, in `controller::refresh::merge`. Guest, authorized, and blocked
   state is merged by MAC from `stat/sta` and `rest/user`, and block,
   unblock, and kick go to `cmd/stamgr` whenever a session exists: a
   blocked client that left the connected list has no Integration UUID

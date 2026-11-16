@@ -219,6 +219,8 @@ impl From<integration_types::ClientResponse> for Client {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv6Addr;
+
     use super::*;
 
     #[test]
@@ -356,5 +358,14 @@ mod tests {
         assert!(client.has_address("fd00:c0de::9".parse().expect("address")));
         assert!(client.has_address("10.4.20.198".parse().expect("address")));
         assert!(!client.has_address("2001:db8:3fa::b".parse().expect("address")));
+        assert_eq!(client.primary_address(), "10.4.20.198".parse().ok());
+
+        // A link-local address is never the one to reach a client at.
+        let mut only_link_local = client.clone();
+        only_link_local.ip = "fe80::9".parse().ok();
+        only_link_local
+            .ipv6_addresses
+            .retain(Ipv6Addr::is_unicast_link_local);
+        assert_eq!(only_link_local.primary_address(), None);
     }
 }

@@ -17,6 +17,7 @@ mod optional;
 mod pending;
 mod periodic;
 mod poll;
+mod prefixes;
 mod session;
 
 use events::unseen_events;
@@ -92,7 +93,7 @@ impl Controller {
             &mut integration.devices,
             session.devices.as_deref().unwrap_or_default(),
         );
-        merge::merge_gateway_prefixes(
+        prefixes::merge(
             &mut integration.networks,
             session.devices.as_deref().unwrap_or_default(),
         );
