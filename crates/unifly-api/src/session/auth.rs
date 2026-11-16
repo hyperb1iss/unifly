@@ -39,7 +39,7 @@ const MAX_LOGIN_ERROR_TOKEN: usize = 64;
 /// `api.err.Invalid` or `AUTHENTICATION_FAILED` are kept; free text is
 /// dropped, since a proxy or misbehaving server can quote the request,
 /// password included, back in it. Any value that still contains one of
-/// the submitted `secrets` is masked.
+/// the `secrets` the request carried is masked.
 fn login_failure_message(
     prefix: &str,
     status: reqwest::StatusCode,
@@ -214,7 +214,8 @@ impl SessionClient {
             message: "failed to parse MFA challenge response".into(),
         })?;
 
-        if let Some(cookie_value) = challenge.token {
+        let challenge_cookie = challenge.token;
+        if let Some(cookie_value) = &challenge_cookie {
             if !cookie_value.starts_with("UBIC_2FA=") {
                 // The value is session material; never echo any of it. Even a
                 // "name" before `=` can be most of a bare base64 token.
@@ -222,7 +223,7 @@ impl SessionClient {
                     message: "unexpected MFA cookie format (expected UBIC_2FA=...)".into(),
                 });
             }
-            self.add_cookie(&cookie_value, login_url)?;
+            self.add_cookie(cookie_value, login_url)?;
         }
 
         // Retry login with TOTP token. Once sent, the code is spent
@@ -245,12 +246,18 @@ impl SessionClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.bytes().await.unwrap_or_default();
+            // Every secret this exchange carried: the password, the code,
+            // and the challenge cookie's value.
+            let cookie_secret = challenge_cookie
+                .as_deref()
+                .and_then(|cookie| cookie.strip_prefix("UBIC_2FA="))
+                .unwrap_or_default();
             return Err(Error::Authentication {
                 message: login_failure_message(
                     "MFA login failed",
                     status,
                     &body,
-                    &[password.expose_secret(), code],
+                    &[password.expose_secret(), code, cookie_secret],
                 ),
             });
         }
