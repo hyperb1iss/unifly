@@ -31,6 +31,8 @@ struct NetworkRow {
     enabled: String,
     #[tabled(rename = "Subnet")]
     subnet: String,
+    #[tabled(rename = "IPv6")]
+    ipv6: String,
 }
 
 fn network_row(n: &Arc<Network>, p: &output::Painter) -> NetworkRow {
@@ -41,6 +43,11 @@ fn network_row(n: &Arc<Network>, p: &output::Painter) -> NetworkRow {
         management: p.muted(&n.management.map(|m| format!("{m:?}")).unwrap_or_default()),
         enabled: p.enabled(n.enabled),
         subnet: p.ip(&n.subnet.clone().unwrap_or_default()),
+        ipv6: match (&n.ipv6_prefix, n.ipv6_enabled) {
+            (Some(prefix), _) => p.ip(prefix),
+            (None, true) => p.muted(&n.ipv6_mode.map_or_else(|| "on".into(), |m| m.to_string())),
+            (None, false) => p.muted("-"),
+        },
     }
 }
 
@@ -78,7 +85,44 @@ fn detail(n: &Arc<Network>) -> String {
             lines.push(format!("DHCP Stop:  {stop}"));
         }
     }
+    lines.extend(ipv6_detail(n));
     lines.join("\n")
+}
+
+/// The detail lines that describe a network's IPv6 setup.
+fn ipv6_detail(n: &Network) -> Vec<String> {
+    if !n.ipv6_enabled {
+        return vec!["IPv6:       off".into()];
+    }
+    let mut lines = vec![
+        format!(
+            "IPv6:       {}",
+            n.ipv6_mode
+                .map_or_else(|| "on".into(), |mode| mode.to_string())
+        ),
+        format!("Prefix:     {}", n.ipv6_prefix.as_deref().unwrap_or("-")),
+    ];
+    if !n.ipv6_additional_subnets.is_empty() {
+        lines.push(format!(
+            "Aliases:    {}",
+            n.ipv6_additional_subnets.join(", ")
+        ));
+    }
+    lines.push(format!("SLAAC:      {}", n.slaac_enabled));
+    lines.push(format!("DHCPv6:     {}", n.dhcpv6_enabled));
+    if let (Some(start), Some(stop)) = (&n.dhcpv6_range_start, &n.dhcpv6_range_stop) {
+        lines.push(format!("DHCPv6 Range: {start} to {stop}"));
+    }
+    lines.push(format!(
+        "RA:         {}",
+        n.ipv6_ra_priority
+            .map_or_else(|| "off".into(), |priority| format!("{priority} priority"))
+    ));
+    if !n.ipv6_dns_servers.is_empty() {
+        let servers: Vec<String> = n.ipv6_dns_servers.iter().map(ToString::to_string).collect();
+        lines.push(format!("DNSv6:      {}", servers.join(", ")));
+    }
+    lines
 }
 
 fn map_network_management(value: &CliNetworkManagement) -> unifly_api::model::NetworkManagement {
@@ -192,8 +236,14 @@ pub async fn handle(
             name,
             enabled,
             vlan,
+            ipv6,
         } => {
-            if from_file.is_none() && name.is_none() && enabled.is_none() && vlan.is_none() {
+            if from_file.is_none()
+                && name.is_none()
+                && enabled.is_none()
+                && vlan.is_none()
+                && ipv6.is_none()
+            {
                 return Err(CliError::Validation {
                     field: "update".into(),
                     reason: "at least one update flag or --from-file is required".into(),
@@ -211,7 +261,7 @@ pub async fn handle(
                     isolation_enabled: None,
                     internet_access_enabled: None,
                     mdns_forwarding_enabled: None,
-                    ipv6_enabled: None,
+                    ipv6_enabled: ipv6,
                     dhcp: None,
                 }
             };

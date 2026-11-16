@@ -38,9 +38,9 @@ pub trait Lookup {
         None
     }
 
-    /// Network address, for records that have one.
-    fn ip(&self) -> Option<IpAddr> {
-        None
+    /// Whether `ip` is one of the record's network addresses.
+    fn has_ip(&self, _ip: IpAddr) -> bool {
+        false
     }
 
     /// Display names the record answers to (name, hostname, ...).
@@ -129,7 +129,7 @@ fn matching<'a, T: Lookup>(records: &'a [Arc<T>], needle: &str) -> Vec<&'a Arc<T
         return identified;
     }
     match Shape::of(needle) {
-        Shape::Ip(ip) => tier(&|record| record.ip() == Some(ip)),
+        Shape::Ip(ip) => tier(&|record| record.has_ip(ip)),
         Shape::Mac(mac) => tier(&|record| record.mac() == Some(&mac)),
         Shape::Name => {
             let name = needle.to_lowercase();

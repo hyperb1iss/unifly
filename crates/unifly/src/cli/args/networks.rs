@@ -105,6 +105,12 @@ pub enum NetworksCommand {
         /// VLAN ID (1-4009)
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..=4009))]
         vlan: Option<u16>,
+
+        /// Turn IPv6 on or off. On takes a prefix delegated from the WAN
+        /// the site's other networks use (else the primary), handed out by
+        /// SLAAC; off deletes the network's IPv6 settings.
+        #[arg(long, action = clap::ArgAction::Set)]
+        ipv6: Option<bool>,
     },
 
     /// Delete a network
