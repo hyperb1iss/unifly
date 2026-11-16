@@ -178,7 +178,10 @@ impl Sanitizer {
     }
 
     pub fn sanitize_ip_opt(&self, ip: &Option<IpAddr>) -> Option<IpAddr> {
-        ip.map(|addr| self.sanitize_wan_ip(addr))
+        ip.map(|addr| match addr {
+            IpAddr::V6(v6) if self.redacts_ipv6() => IpAddr::V6(self.sanitize_ipv6(v6)),
+            addr => self.sanitize_wan_ip(addr),
+        })
     }
 
     /// The stand-in for an IPv6 address: one per address, so the same
@@ -309,6 +312,11 @@ impl Sanitizer {
                 .into_owned();
         }
 
+        // IPv6 first: an IPv4-mapped address must reach its stand-in whole,
+        // not with its IPv4 tail already replaced.
+        if self.redacts_ipv6() {
+            result = self.redact_ipv6(&result);
+        }
         if self.redact_wan_ips {
             result = self
                 .ip_regex
@@ -322,9 +330,6 @@ impl Sanitizer {
                     ip_str.to_owned()
                 })
                 .into_owned();
-        }
-        if self.redacts_ipv6() {
-            result = self.redact_ipv6(&result);
         }
 
         if self.redact_macs {
@@ -386,16 +391,18 @@ impl Sanitizer {
     }
 
     pub fn sanitize_wan_ip_str(&self, ip_str: &str) -> String {
-        if !self.redact_wan_ips {
-            return ip_str.to_owned();
+        if let Ok(ip) = ip_str.trim().parse::<Ipv6Addr>() {
+            return if self.redacts_ipv6() {
+                self.sanitize_ipv6(ip).to_string()
+            } else {
+                ip_str.to_owned()
+            };
         }
-        if let Ok(ip) = ip_str.parse::<IpAddr>()
+        if self.redact_wan_ips
+            && let Ok(ip) = ip_str.parse::<IpAddr>()
             && is_public_ip(ip)
         {
             return self.sanitize_wan_ip(ip).to_string();
-        }
-        if let Ok(ip) = ip_str.trim().parse::<Ipv6Addr>() {
-            return self.sanitize_ipv6(ip).to_string();
         }
         ip_str.to_owned()
     }
@@ -1322,6 +1329,26 @@ mod tests {
         for redacted in [global, unique_local, link_local] {
             assert_eq!(s.sanitize_ipv6(redacted), redacted);
         }
+    }
+
+    /// Text and a field holding the same address show the same stand-in,
+    /// an IPv4-mapped one included.
+    #[test]
+    fn an_ipv6_address_reads_the_same_in_text_and_in_a_field() {
+        let s = Sanitizer::new(&DemoConfig::default());
+        let mapped: Ipv6Addr = "::ffff:8.8.8.8".parse().expect("an IPv6 address");
+        let in_text = s.sanitize_text("peer ::ffff:8.8.8.8 dropped");
+        assert_eq!(in_text, format!("peer {} dropped", s.sanitize_ipv6(mapped)));
+        let v6_ip = Some(IpAddr::V6(
+            "2601:600:8284:c9d1::9".parse().expect("address"),
+        ));
+        assert_eq!(
+            s.sanitize_ip_opt(&v6_ip),
+            Some(IpAddr::V6(s.sanitize_ipv6(
+                "2601:600:8284:c9d1::9".parse().expect("address")
+            )))
+        );
+        assert_ne!(s.sanitize_ip_opt(&v6_ip), v6_ip);
     }
 
     /// A SLAAC address spells out the MAC it was built from.

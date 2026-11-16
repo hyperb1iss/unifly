@@ -177,8 +177,9 @@ network's whole IPv6 configuration. `true` on a network without one
 creates the setup the controller's own form starts from: a prefix delegated
 from the WAN the site's other IPv6 networks use (else the first WAN listed),
 handed out by SLAAC, with router advertisements at high priority. On a
-network that has IPv6 it changes nothing. A static prefix, DHCPv6, or other
-WAN still needs `--from-file` with a full `ipv6Configuration` or the console.
+network that has IPv6 it changes nothing. A static prefix, DHCPv6, or
+another WAN is set up in the console: an update payload has no
+`ipv6Configuration` field, so a file cannot carry one.
 `networks get` shows the IPv6 mode, the prefix the network serves (for
 prefix delegation, the one the gateway carved from its WAN's delegation),
 aliases such as a ULA, SLAAC and DHCPv6, RA priority, and IPv6 DNS servers.

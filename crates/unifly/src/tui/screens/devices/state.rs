@@ -231,7 +231,7 @@ fn matches_query(device: &Device, query: &str) -> bool {
     let holds = |text: Option<&str>| text.is_some_and(|text| text.to_lowercase().contains(query));
     holds(device.name.as_deref())
         || holds(device.model.as_deref())
-        || device.addresses().any(|ip| ip.to_string().contains(query))
+        || crate::tui::search::address_matches(device.addresses(), query)
         || device.mac.to_string().to_lowercase().contains(query)
 }
 
