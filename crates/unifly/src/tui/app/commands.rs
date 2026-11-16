@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::future::Future;
 
 use color_eyre::eyre::Result;
 use tracing::warn;
@@ -6,103 +6,239 @@ use tracing::warn;
 use unifly_api::{Command, EntityId, MacAddress};
 
 use super::App;
-use crate::tui::action::{Action, ConfirmAction, Notification};
+use crate::tui::action::{Action, ConfirmRequest, Notice, Notification};
+
+/// The action that runs `command` with `pending` and `done` toasts.
+fn run(command: Command, pending: String, done: String) -> Action {
+    Action::Run {
+        command: Box::new(command),
+        notice: Notice::new(pending, done),
+    }
+}
 
 impl App {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_command_action(&mut self, action: &Action) -> Result<bool> {
         match action {
             Action::RequestRestart(id) => {
                 let name = self.resolve_device_name(id);
-                self.queue_confirm(ConfirmAction::RestartDevice {
-                    id: id.clone(),
-                    name,
-                })?;
-            }
-            Action::RequestAdopt(mac) => {
-                self.queue_confirm(ConfirmAction::AdoptDevice { mac: mac.clone() })?;
-            }
-            Action::RequestUnadopt(id) => {
-                let name = self.resolve_device_name(id);
-                self.queue_confirm(ConfirmAction::UnadoptDevice {
-                    id: id.clone(),
-                    name,
-                })?;
+                self.confirm(
+                    ConfirmRequest::new(
+                        format!("Restart {name}?"),
+                        run(
+                            Command::RestartDevice { id: id.clone() },
+                            format!("Restarting {name}\u{2026}"),
+                            format!("Restart sent to {name}"),
+                        ),
+                    )
+                    .detail("Everything connected through it drops until it is back."),
+                );
             }
             Action::RequestLocate(id) => {
-                if let Some(mac) = self.resolve_device_mac(id) {
-                    let name = self.resolve_device_name(id);
-                    self.execute_command(
-                        Command::LocateDevice { mac, enable: true },
-                        format!("Locating {name}"),
-                    );
+                let name = self.resolve_device_name(id);
+                let Some(mac) = self.resolve_device_mac(id) else {
+                    self.report_gone(&name);
+                    return Ok(true);
+                };
+                // The controller does not report the locate LED, so the
+                // app tracks what it switched on, and only once the
+                // controller has accepted the switch.
+                let enable = !self.locating.contains(id);
+                let (pending, done) = if enable {
+                    (
+                        format!("Flashing the LED on {name}\u{2026}"),
+                        format!("Locating {name}: its LED is flashing (L again to stop)"),
+                    )
+                } else {
+                    (
+                        format!("Stopping the LED on {name}\u{2026}"),
+                        format!("Stopped locating {name}"),
+                    )
+                };
+                let Some(controller) = self.controller.clone() else {
+                    self.show_notification(Notification::error("Not connected"));
+                    return Ok(true);
+                };
+                let (tx, id) = (self.action_tx.clone(), id.clone());
+                self.spawn_op(&pending, async move {
+                    match controller
+                        .execute(Command::LocateDevice { mac, enable })
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = tx.send(Action::LocateSet(id, enable));
+                            Notification::success(done)
+                        }
+                        Err(error) => {
+                            warn!(%error, "locate failed");
+                            Notification::error(format!("{error}"))
+                        }
+                    }
+                });
+            }
+            Action::LocateSet(id, enable) => {
+                if *enable {
+                    self.locating.insert(id.clone());
+                } else {
+                    self.locating.remove(id);
                 }
             }
             Action::RequestUpgrade(id) => {
                 let name = self.resolve_device_name(id);
-                if let Some(mac) = self.resolve_device_mac(id) {
-                    self.queue_confirm(ConfirmAction::UpgradeDevice { mac, name })?;
-                }
+                let Some(mac) = self.resolve_device_mac(id) else {
+                    self.report_gone(&name);
+                    return Ok(true);
+                };
+                self.confirm(
+                    ConfirmRequest::new(
+                        format!("Upgrade firmware on {name}?"),
+                        run(
+                            Command::UpgradeDevice {
+                                mac,
+                                firmware_url: None,
+                            },
+                            format!("Starting the upgrade on {name}\u{2026}"),
+                            format!("Upgrade started on {name}"),
+                        ),
+                    )
+                    .detail("It restarts when the new firmware is in place."),
+                );
             }
             Action::RequestPortPowerCycle(device_id, port_idx) => {
-                self.queue_confirm(ConfirmAction::PowerCyclePort {
-                    device_id: device_id.clone(),
-                    port_idx: *port_idx,
-                })?;
+                let name = self.resolve_device_name(device_id);
+                self.confirm(
+                    ConfirmRequest::new(
+                        format!("Power cycle port {port_idx} on {name}?"),
+                        run(
+                            Command::PowerCyclePort {
+                                device_id: device_id.clone(),
+                                port_idx: *port_idx,
+                            },
+                            format!("Power cycling port {port_idx} on {name}\u{2026}"),
+                            format!("Power cycled port {port_idx} on {name}"),
+                        ),
+                    )
+                    .detail("The device it powers restarts."),
+                );
             }
             Action::RequestBlockClient(id) => {
-                let name = self.resolve_client_name(id);
-                self.queue_confirm(ConfirmAction::BlockClient {
-                    id: id.clone(),
-                    name,
-                })?;
+                self.confirm_client(id, |name, mac| {
+                    ConfirmRequest::new(
+                        format!("Block {name}?"),
+                        run(
+                            Command::BlockClient { mac },
+                            format!("Blocking {name}\u{2026}"),
+                            format!("Blocked {name}"),
+                        ),
+                    )
+                    .detail("It is disconnected and cannot rejoin until unblocked.")
+                });
             }
             Action::RequestUnblockClient(id) => {
-                let name = self.resolve_client_name(id);
-                self.queue_confirm(ConfirmAction::UnblockClient {
-                    id: id.clone(),
-                    name,
-                })?;
+                self.confirm_client(id, |name, mac| {
+                    ConfirmRequest::new(
+                        format!("Unblock {name}?"),
+                        run(
+                            Command::UnblockClient { mac },
+                            format!("Unblocking {name}\u{2026}"),
+                            format!("Unblocked {name}"),
+                        ),
+                    )
+                });
             }
             Action::RequestForgetClient(id) => {
-                let name = self.resolve_client_name(id);
-                self.queue_confirm(ConfirmAction::ForgetClient {
-                    id: id.clone(),
-                    name,
-                })?;
+                self.confirm_client(id, |name, mac| {
+                    ConfirmRequest::new(
+                        format!("Forget {name}?"),
+                        run(
+                            Command::ForgetClient { mac },
+                            format!("Forgetting {name}\u{2026}"),
+                            format!("Forgot {name}"),
+                        ),
+                    )
+                    .detail("Its history, name, and fixed IP are deleted.")
+                });
             }
             Action::RequestKickClient(id) => {
-                self.queue_confirm(ConfirmAction::KickClient {
-                    id: id.clone(),
-                    name: self.resolve_client_name(id),
-                })?;
+                self.confirm_client(id, |name, mac| {
+                    ConfirmRequest::new(
+                        format!("Disconnect {name}?"),
+                        run(
+                            Command::KickClient { mac },
+                            format!("Disconnecting {name}\u{2026}"),
+                            format!("Disconnected {name}"),
+                        ),
+                    )
+                    .detail("It may reconnect right away.")
+                });
             }
-            Action::ShowConfirm(confirm) => {
-                self.pending_confirm = Some(confirm.clone());
-            }
+            Action::ShowConfirm(confirm) => self.open_confirm(confirm),
             Action::ConfirmYes => {
                 if let Some(confirm) = self.pending_confirm.take() {
-                    self.execute_confirm(confirm);
+                    self.action_tx.send(*confirm.action)?;
                 }
             }
             Action::ConfirmNo => {
                 self.pending_confirm = None;
             }
-            Action::ReorderPolicy(policy, direction) => {
-                self.reorder_policy(policy, *direction);
+            Action::Run { command, notice } => {
+                self.run_command((**command).clone(), notice);
             }
-            Action::NetworkSave(id, update) => {
-                self.execute_command(
-                    Command::UpdateNetwork {
-                        id: id.clone(),
-                        update: *update.clone(),
-                    },
-                    "Updated network".into(),
-                );
+            Action::OpFinished {
+                progress,
+                notification,
+            } => {
+                self.finish_progress(*progress, notification);
             }
             _ => return Ok(false),
         }
 
         Ok(true)
+    }
+
+    /// Open a confirmation, unless the keyboard already belongs to another
+    /// question. A confirm can arrive late, from background work started
+    /// by a key press; it must never replace the dialog being read, or
+    /// land over a prompt or the search bar and take a typed `y` as its
+    /// answer.
+    fn open_confirm(&mut self, confirm: &ConfirmRequest) {
+        if self.pending_confirm.is_some() || self.prompt.is_some() || self.search_active {
+            self.show_notification(Notification::warning(format!(
+                "Not asked while something else was open: {} Press the key again.",
+                confirm.prompt
+            )));
+            return;
+        }
+        self.pending_confirm = Some(confirm.clone());
+    }
+
+    /// Ask before `request` runs. Opens on the next action, so a second
+    /// request cannot replace a dialog the user is reading.
+    pub(super) fn confirm(&mut self, request: ConfirmRequest) {
+        if self.pending_confirm.is_none() {
+            let _ = self.action_tx.send(Action::ShowConfirm(request));
+        }
+    }
+
+    /// Ask before a client command, built from the client's name and real
+    /// MAC. A client that left since the key was pressed is reported.
+    fn confirm_client(
+        &mut self,
+        id: &EntityId,
+        build: impl FnOnce(&str, MacAddress) -> ConfirmRequest,
+    ) {
+        let name = self.resolve_client_name(id);
+        match self.resolve_client_mac(id) {
+            Some(mac) => self.confirm(build(&name, mac)),
+            None => self.report_gone(&name),
+        }
+    }
+
+    /// Say that the entity a key was pressed for is no longer there.
+    pub(super) fn report_gone(&mut self, name: &str) {
+        self.show_notification(Notification::warning(format!(
+            "{name} is no longer on the controller"
+        )));
     }
 
     /// A device's name for a dialog or toast, sanitized like the screens'
@@ -131,6 +267,7 @@ impl App {
         self.controller
             .as_ref()
             .and_then(|c| c.store().client_by_id(id))
+            .or_else(|| self.blocked_client(id))
             .and_then(|c| c.name.clone().or(c.hostname.clone()))
             .map_or_else(
                 || self.shown_text(&id.to_string()),
@@ -140,7 +277,7 @@ impl App {
 
     /// An entity name as the screens show it: the sanitizer, when one is
     /// on, maps a whole name to the same stand-in it gives the lists.
-    fn shown_name(&self, name: &str) -> String {
+    pub(super) fn shown_name(&self, name: &str) -> String {
         self.sanitizer.as_ref().map_or_else(
             || name.to_owned(),
             |sanitizer| sanitizer.sanitize_name(name),
@@ -152,127 +289,71 @@ impl App {
     /// so an error carrying a real identifier cannot leak one onto the
     /// screen.
     pub(super) fn shown_text(&self, text: &str) -> String {
-        self.sanitizer.as_ref().map_or_else(
-            || text.to_owned(),
-            |sanitizer| sanitizer.sanitize_text(text),
-        )
+        let Some(sanitizer) = &self.sanitizer else {
+            return text.to_owned();
+        };
+        let text = sanitizer.sanitize_text(text);
+        // A connect or command error names the controller it could not
+        // reach; that address is as private as the names behind it.
+        let host = self
+            .controller
+            .as_ref()
+            .and_then(|controller| controller.config().url.host_str().map(str::to_owned));
+        match host {
+            Some(host) if !host.is_empty() => text.replace(&host, "controller.example"),
+            _ => text,
+        }
     }
 
     pub(super) fn resolve_client_mac(&self, id: &EntityId) -> Option<MacAddress> {
         self.controller
             .as_ref()
             .and_then(|c| c.store().client_by_id(id))
+            .or_else(|| self.blocked_client(id))
             .map(|c| c.mac.clone())
     }
 
-    /// Spawn a command execution task. Sends a Notify action on completion.
-    pub(super) fn execute_command(&self, cmd: Command, success_msg: String) {
+    /// Run `command` on the controller. A progress toast shows at once;
+    /// when the controller accepts the command its data is fetched again,
+    /// so the screens show the change before the toast says it is done.
+    pub(super) fn run_command(&mut self, command: Command, notice: &Notice) {
         let Some(controller) = self.controller.clone() else {
-            let _ = self
-                .action_tx
-                .send(Action::Notify(Notification::error("Not connected")));
+            self.show_notification(Notification::error("Not connected"));
             return;
         };
-
-        let tx = self.action_tx.clone();
-        tokio::spawn(async move {
-            match controller.execute(cmd).await {
+        let done = notice.done.clone();
+        self.spawn_op(&notice.pending, async move {
+            match controller.execute(command).await {
                 Ok(_) => {
-                    let _ = tx.send(Action::Notify(Notification::success(success_msg)));
+                    if let Err(error) = controller.full_refresh().await {
+                        warn!(%error, "refresh after a command failed");
+                    }
+                    Notification::success(done)
                 }
-                Err(e) => {
-                    warn!(error = %e, "command execution failed");
-                    let _ = tx.send(Action::Notify(Notification::error(format!("{e}"))));
+                Err(error) => {
+                    warn!(%error, "command execution failed");
+                    Notification::error(format!("{error}"))
                 }
             }
         });
     }
 
-    /// Map a confirmed action to its `Command` and execute it.
-    pub(super) fn execute_confirm(&self, action: ConfirmAction) {
-        match action {
-            ConfirmAction::RestartDevice { id, name } => {
-                self.execute_command(Command::RestartDevice { id }, format!("Restarting {name}"));
-            }
-            ConfirmAction::UpgradeDevice { mac, name } => {
-                self.execute_command(
-                    Command::UpgradeDevice {
-                        mac,
-                        firmware_url: None,
-                    },
-                    format!("Upgrading {name}"),
-                );
-            }
-            ConfirmAction::UnadoptDevice { id, name } => {
-                self.execute_command(Command::RemoveDevice { id }, format!("Removed {name}"));
-            }
-            ConfirmAction::AdoptDevice { mac } => {
-                self.execute_command(
-                    Command::AdoptDevice {
-                        mac: MacAddress::new(&mac),
-                        ignore_device_limit: false,
-                    },
-                    format!("Adopting {mac}"),
-                );
-            }
-            ConfirmAction::PowerCyclePort {
-                device_id,
-                port_idx,
-            } => {
-                self.execute_command(
-                    Command::PowerCyclePort {
-                        device_id,
-                        port_idx,
-                    },
-                    format!("Power cycling port {port_idx}"),
-                );
-            }
-            ConfirmAction::KickClient { id, name } => {
-                if let Some(mac) = self.resolve_client_mac(&id) {
-                    self.execute_command(
-                        Command::KickClient { mac },
-                        format!("Disconnected {name}"),
-                    );
-                }
-            }
-            ConfirmAction::BlockClient { id, name } => {
-                if let Some(mac) = self.resolve_client_mac(&id) {
-                    self.execute_command(Command::BlockClient { mac }, format!("Blocked {name}"));
-                }
-            }
-            ConfirmAction::UnblockClient { id, name } => {
-                if let Some(mac) = self.resolve_client_mac(&id) {
-                    self.execute_command(
-                        Command::UnblockClient { mac },
-                        format!("Unblocked {name}"),
-                    );
-                }
-            }
-            ConfirmAction::ForgetClient { id, name } => {
-                if let Some(mac) = self.resolve_client_mac(&id) {
-                    self.execute_command(Command::ForgetClient { mac }, format!("Forgot {name}"));
-                }
-            }
-            ConfirmAction::DeleteFirewallPolicy { id, name } => {
-                self.execute_command(
-                    Command::DeleteFirewallPolicy { id },
-                    format!("Deleted policy {name}"),
-                );
-            }
-        }
-    }
-
-    /// Show a toast. Every toast passes through here, so its text is
-    /// sanitized once for all of them.
-    pub(super) fn show_notification(&mut self, notification: Notification) {
-        let Notification { message, level } = notification;
-        let message = self.shown_text(&message);
-        self.notification = Some((Notification { message, level }, Instant::now()));
-    }
-
-    fn queue_confirm(&self, confirm: ConfirmAction) -> Result<()> {
-        self.action_tx.send(Action::ShowConfirm(confirm))?;
-        Ok(())
+    /// Run controller work in the background under a progress toast that
+    /// the notification it returns takes over.
+    pub(super) fn spawn_op(
+        &mut self,
+        pending: &str,
+        op: impl Future<Output = Notification> + Send + 'static,
+    ) {
+        let progress = Some(self.begin_progress(pending));
+        let tx = self.action_tx.clone();
+        tokio::spawn(async move {
+            let notification = op.await;
+            let _ = tx.send(Action::OpFinished {
+                progress,
+                notification,
+            });
+        });
     }
 }
 
@@ -280,15 +361,17 @@ impl App {
 mod tests {
     use super::*;
 
-    #[test]
-    fn kick_waits_for_confirmation_and_cancel_clears_it() {
-        let mut app = App::new(None, None, false, true);
-        let id = EntityId::Legacy("client-1".into());
-        app.process_action(&Action::RequestKickClient(id.clone()))
+    #[tokio::test]
+    async fn kick_waits_for_confirmation_and_cancel_clears_it() {
+        let demo = demo_fleet().await;
+        let client = wireless_client(demo.store(), None);
+        let mut app = App::new(Some(demo), None, false, true);
+        app.process_action(&Action::RequestKickClient(client.id.clone()))
             .expect("request");
         let queued = app.action_rx.try_recv().expect("confirmation queued");
         assert!(
-            matches!(&queued, Action::ShowConfirm(ConfirmAction::KickClient { id: target, .. }) if target == &id)
+            matches!(&queued, Action::ShowConfirm(confirm) if confirm.prompt.starts_with("Disconnect ")),
+            "{queued:?}"
         );
         assert!(app.action_rx.try_recv().is_err());
         app.process_action(&queued).expect("show confirmation");
@@ -298,93 +381,138 @@ mod tests {
         assert!(app.action_rx.try_recv().is_err());
     }
 
-    #[test]
-    fn request_adopt_queues_confirmation() {
-        let mut app = App::new(None, None, false, true);
-
-        app.process_action(&Action::RequestAdopt("aa-bb-cc-dd-ee-ff".into()))
-            .expect("request handling should succeed");
-
-        let queued = app
-            .action_rx
-            .try_recv()
-            .expect("confirm action should be queued");
-        assert!(matches!(
-            queued,
-            Action::ShowConfirm(ConfirmAction::AdoptDevice { ref mac })
-                if mac == "aa-bb-cc-dd-ee-ff"
-        ));
+    #[tokio::test]
+    async fn a_command_for_an_entity_that_left_says_so() {
+        // A connected fleet that does not hold this id: the entity left
+        // between the key press and the command.
+        let demo = demo_fleet().await;
+        let mut app = App::new(Some(demo), None, false, true);
+        let id = EntityId::Legacy("gone-since-the-key-press".into());
+        for request in [
+            Action::RequestKickClient(id.clone()),
+            Action::RequestBlockClient(id.clone()),
+            Action::RequestLocate(id.clone()),
+            Action::RequestUpgrade(id.clone()),
+        ] {
+            app.notices.dismiss_sticky();
+            app.process_action(&request).expect("request");
+            assert!(app.action_rx.try_recv().is_err(), "{request:?} queued work");
+            let toast = app.notices.latest().expect("a toast says why");
+            assert!(
+                toast.message.contains("no longer on the controller"),
+                "{request:?}: {}",
+                toast.message
+            );
+        }
     }
 
     #[test]
-    fn moving_a_policy_never_reorders_the_table_on_its_own() {
+    fn under_a_sanitizer_an_error_never_names_the_controller() {
         use std::sync::Arc;
 
-        use crossterm::event::{KeyCode, KeyEvent};
+        use crate::config::DemoConfig;
+        use crate::sanitizer::Sanitizer;
 
-        use crate::tui::screen::ScreenId;
-        use crate::tui::table::render_lines;
-
-        let zone = |name: &str| {
-            Arc::new(
-                serde_json::from_value(serde_json::json!({
-                    "id": name, "name": name, "network_ids": [], "origin": null
-                }))
-                .expect("zone fixture"),
-            )
-        };
-        let policy = |name: &str, index: i32| {
-            Arc::new(
-                serde_json::from_value(serde_json::json!({
-                    "id": name, "name": name, "description": null, "enabled": true,
-                    "index": index, "action": "Allow", "ip_version": "Both",
-                    "source": { "zone_id": "lan", "filter": null },
-                    "destination": { "zone_id": "wan", "filter": null },
-                    "source_summary": null, "destination_summary": null,
-                    "protocol_summary": null, "schedule": null, "ipsec_mode": null,
-                    "connection_states": [], "logging_enabled": false,
-                    "origin": "UserDefined"
-                }))
-                .expect("policy fixture"),
-            )
-        };
-        let mut app = App::new(None, None, false, true);
-        app.active_screen = ScreenId::Dashboard;
-        app.process_action(&Action::FirewallZonesUpdated(Arc::new(vec![
-            zone("lan"),
-            zone("wan"),
-        ])))
-        .expect("zones");
-        app.process_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
-            policy("allow-first", 10_000),
-            policy("block-second", 10_001),
-        ])))
-        .expect("policies");
-        app.switch_screen(ScreenId::Firewall).expect("switch");
-        let order = |app: &mut App| {
-            let rows = render_lines(120, 24, |frame, _| app.render(frame));
-            let at = |name: &str| rows.iter().position(|row| row.contains(name));
-            (at("allow-first"), at("block-second"))
-        };
-        let before = order(&mut app);
-
-        for key in ['j', 'K'] {
-            if let Some(action) = app
-                .handle_key_event(KeyEvent::from(KeyCode::Char(key)))
-                .expect("key")
-            {
-                app.process_action(&action).expect("action");
-            }
-        }
-
-        assert_eq!(
-            order(&mut app),
-            before,
-            "the table moved without the controller"
+        let controller = unifly_api::Controller::new(unifly_api::ControllerConfig {
+            url: "https://unifi-hq.internal:8443".parse().expect("url"),
+            ..unifly_api::ControllerConfig::default()
+        });
+        let app = App::new(
+            Some(controller),
+            Some(Arc::new(Sanitizer::new(&DemoConfig::default()))),
+            false,
+            true,
         );
-        let reported = std::iter::from_fn(|| app.action_rx.try_recv().ok())
-            .any(|action| matches!(action, Action::Notify(ref n) if n.message == "Not connected"));
-        assert!(reported, "the failed move went unreported");
+        let shown =
+            app.shown_text("Cannot connect to controller at https://unifi-hq.internal:8443/");
+        assert!(!shown.contains("unifi-hq"), "{shown}");
+        assert!(shown.contains("controller.example"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn a_command_shows_progress_then_its_result_and_locate_toggles() {
+        let demo = demo_fleet().await;
+        let device = demo
+            .store()
+            .devices_snapshot()
+            .iter()
+            .find(|device| device.name.is_some())
+            .cloned()
+            .expect("a named device");
+        let name = device.name.clone().unwrap_or_default();
+        let mut app = App::new(Some(demo), None, false, true);
+
+        app.process_action(&Action::RequestLocate(device.id.clone()))
+            .expect("locate on");
+        assert_eq!(
+            app.notices.messages(),
+            [format!("Flashing the LED on {name}\u{2026}")],
+            "progress shows while the command runs"
+        );
+        let finished = next_action(&mut app).await;
+        app.process_action(&finished).expect("result");
+        let messages = app.notices.messages();
+        assert_eq!(
+            messages.len(),
+            1,
+            "the result takes over the progress toast"
+        );
+        assert!(
+            messages[0].starts_with(&format!("Locating {name}")),
+            "{messages:?}"
+        );
+
+        app.process_action(&Action::RequestLocate(device.id.clone()))
+            .expect("locate off");
+        let finished = next_action(&mut app).await;
+        app.process_action(&finished).expect("result");
+        assert!(
+            app.notices
+                .messages()
+                .contains(&format!("Stopped locating {name}").as_str()),
+            "{:?}",
+            app.notices.messages()
+        );
+    }
+
+    #[test]
+    fn a_late_confirm_never_replaces_or_interrupts_another_question() {
+        let mut app = App::new(None, None, false, true);
+        app.active_screen = crate::tui::screen::ScreenId::Dashboard;
+        let ask = |prompt: &str| Action::ShowConfirm(ConfirmRequest::new(prompt, Action::Refresh));
+
+        app.process_action(&ask("Restart sw-core?")).expect("first");
+        app.process_action(&ask("Delete network Guest?"))
+            .expect("second");
+        assert_eq!(
+            app.pending_confirm.as_ref().map(|c| c.prompt.as_str()),
+            Some("Restart sw-core?"),
+            "the dialog being read was replaced"
+        );
+        let toast = app
+            .notices
+            .latest()
+            .expect("the dropped question is reported");
+        assert!(
+            toast.message.contains("Delete network Guest?"),
+            "{}",
+            toast.message
+        );
+        app.process_action(&Action::ConfirmNo).expect("dismiss");
+
+        // A prompt and the search bar hold the keyboard the same way.
+        app.process_action(&Action::OpenPrompt(
+            crate::tui::action::PromptRequest::default(),
+        ))
+        .expect("prompt");
+        app.process_action(&ask("Delete network Guest?"))
+            .expect("over a prompt");
+        assert!(app.pending_confirm.is_none());
+        app.prompt = None;
+        app.search_active = true;
+        app.process_action(&ask("Delete network Guest?"))
+            .expect("over search");
+        assert!(app.pending_confirm.is_none());
     }
 
     #[test]
@@ -473,10 +601,50 @@ mod tests {
     }
 
     async fn next_action(app: &mut App) -> Action {
-        tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
-            .await
-            .expect("the request reports back")
-            .expect("the action channel stays open")
+        loop {
+            let action =
+                tokio::time::timeout(std::time::Duration::from_secs(10), app.action_rx.recv())
+                    .await
+                    .expect("the request reports back")
+                    .expect("the action channel stays open");
+            // Bookkeeping a locate sends ahead of its result.
+            if matches!(action, Action::LocateSet(..)) {
+                app.process_action(&action).expect("locate state");
+                continue;
+            }
+            return action;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_locate_the_controller_refuses_leaves_the_led_marked_off() {
+        // No controller answers at this address, so the command fails.
+        let controller = unifly_api::Controller::new(unifly_api::ControllerConfig::default());
+        let id = EntityId::Legacy("device-1".into());
+        let mut app = App::new(Some(controller), None, false, true);
+        app.locating.insert(id.clone());
+        app.process_action(&Action::ControllerChanged)
+            .expect("controller change");
+        assert!(
+            app.locating.is_empty(),
+            "another controller's LEDs are not this one's"
+        );
+
+        // The app only marks an LED on once the controller accepted it.
+        app.process_action(&Action::LocateSet(id.clone(), true))
+            .expect("accepted");
+        assert!(app.locating.contains(&id));
+        app.process_action(&Action::LocateSet(id.clone(), false))
+            .expect("accepted");
+        assert!(!app.locating.contains(&id));
+    }
+
+    /// What a WiFi fetch brought back, out of its controller tag.
+    async fn next_wifi_answer(app: &mut App) -> Action {
+        match next_action(app).await {
+            Action::WifiAnswer { answer, .. } => *answer,
+            other => other,
+        }
     }
 
     #[tokio::test]
@@ -514,16 +682,19 @@ mod tests {
             Action::RequestKickClient(client.id.clone()),
         ] {
             app.process_action(&request).expect("request");
-            let mut toast = next_action(&mut app).await;
-            if matches!(toast, Action::ShowConfirm(_)) {
-                app.process_action(&toast).expect("show confirmation");
+            let mut next = next_action(&mut app).await;
+            if matches!(next, Action::ShowConfirm(_)) {
+                app.process_action(&next).expect("show confirmation");
                 assert_hidden(&mut app, &secrets, "the kick confirmation");
                 app.process_action(&Action::ConfirmYes)
                     .expect("confirm kick");
-                toast = next_action(&mut app).await;
+                let run = next_action(&mut app).await;
+                app.process_action(&run).expect("run the command");
+                next = next_action(&mut app).await;
             }
-            assert!(matches!(toast, Action::Notify(_)), "{toast:?}");
-            app.process_action(&toast).expect("show the toast");
+            assert_hidden(&mut app, &secrets, &format!("progress for {request:?}"));
+            assert!(matches!(next, Action::OpFinished { .. }), "{next:?}");
+            app.process_action(&next).expect("show the toast");
             assert_hidden(&mut app, &secrets, &format!("the toast for {request:?}"));
         }
 
@@ -563,7 +734,7 @@ mod tests {
         let ip = client.ip.map(|ip| ip.to_string()).unwrap_or_default();
         app.process_action(&Action::RequestWifiClientDetail(ip))
             .expect("detail request");
-        let loaded = next_action(&mut app).await;
+        let loaded = next_wifi_answer(&mut app).await;
         let Action::WifiClientDetailLoaded { data, .. } = loaded else {
             panic!("expected the detail, got {loaded:?}");
         };
@@ -619,7 +790,7 @@ mod tests {
         })
         .expect("roam history request");
 
-        let loaded = next_action(&mut app).await;
+        let loaded = next_wifi_answer(&mut app).await;
         let Action::WifiRoamHistoryLoaded { mac, events } = loaded else {
             panic!("expected the roam history, got {loaded:?}");
         };
@@ -684,13 +855,16 @@ mod tests {
         let confirm = app.action_rx.try_recv().expect("a confirmation is queued");
         app.process_action(&confirm).expect("show the confirmation");
         app.process_action(&Action::ConfirmYes).expect("confirm");
+        let run = app.action_rx.try_recv().expect("the command is queued");
+        app.process_action(&run).expect("run the command");
 
         let toast = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
             .await
             .expect("the restart reports back")
             .expect("the action channel stays open");
         assert!(
-            matches!(toast, Action::Notify(ref n) if n.level == crate::tui::action::NotificationLevel::Success),
+            matches!(toast, Action::OpFinished { ref notification, .. }
+                if notification.level == crate::tui::action::NotificationLevel::Success),
             "{toast:?}"
         );
         server.verify().await;
@@ -708,12 +882,19 @@ mod tests {
             .action_rx
             .try_recv()
             .expect("confirm action should be queued");
+        let Action::ShowConfirm(confirm) = queued else {
+            panic!("expected a confirmation, got {queued:?}");
+        };
+        assert!(
+            confirm.prompt.starts_with("Power cycle port 7 on "),
+            "{}",
+            confirm.prompt
+        );
         assert!(matches!(
-            queued,
-            Action::ShowConfirm(ConfirmAction::PowerCyclePort {
-                ref device_id,
-                port_idx: 7,
-            }) if device_id == &EntityId::from("507f1f77bcf86cd799439011")
+            *confirm.action,
+            Action::Run { ref command, .. }
+                if matches!(**command, Command::PowerCyclePort { ref device_id, port_idx: 7 }
+                    if device_id == &EntityId::from("507f1f77bcf86cd799439011"))
         ));
     }
 }

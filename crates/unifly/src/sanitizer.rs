@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use dashmap::DashMap;
 use regex::Regex;
 
-use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast};
+use unifly_api::model::{
+    AclRule, Alarm, FirewallPolicy, FirewallZone, IpSpec, NatPolicy, TrafficFilter, WifiBroadcast,
+};
 use unifly_api::session::models::RogueAp;
 use unifly_api::{Client, Device, Event, HealthSummary, MacAddress, Network};
 
@@ -421,6 +423,11 @@ impl Sanitizer {
     pub fn sanitize_device(&self, device: &Device) -> Device {
         let mut d = device.clone();
         d.name = self.sanitize_name_opt(&d.name);
+        // A port is labeled after what plugs into it, so its name gets the
+        // stand-in that device or client shows under everywhere else.
+        for port in &mut d.ports {
+            port.name = self.sanitize_name_opt(&port.name);
+        }
         d.ip = self.sanitize_ip_opt(&d.ip);
         if self.redact_wan_ips {
             d.wan_ipv6 = d.wan_ipv6.as_ref().map(|_| IPV6_STAND_IN.to_owned());
@@ -470,6 +477,15 @@ impl Sanitizer {
         e
     }
 
+    pub fn sanitize_alarm(&self, alarm: &Alarm) -> Alarm {
+        let mut a = alarm.clone();
+        a.message = self.sanitize_text(&a.message);
+        if self.redact_macs {
+            a.device_mac = self.sanitize_mac_opt(&a.device_mac);
+        }
+        a
+    }
+
     pub fn sanitize_wifi(&self, wifi: &WifiBroadcast) -> WifiBroadcast {
         let mut w = wifi.clone();
         w.name = self.sanitize_ssid(&w.name);
@@ -503,7 +519,51 @@ impl Sanitizer {
             .destination_summary
             .as_ref()
             .map(|s| self.sanitize_text(s));
+        p.source.filter = p.source.filter.as_ref().map(|f| self.sanitize_filter(f));
+        p.destination.filter = p
+            .destination
+            .filter
+            .as_ref()
+            .map(|f| self.sanitize_filter(f));
         p
+    }
+
+    /// A traffic filter with the addresses, MACs, and domains it names
+    /// sanitized like any other drawn text: the Firewall screen's detail
+    /// panel spells a filter out in full.
+    fn sanitize_filter(&self, filter: &TrafficFilter) -> TrafficFilter {
+        let clean = |items: &mut Vec<String>| {
+            for item in items {
+                *item = self.sanitize_text(item);
+            }
+        };
+        let mut filter = filter.clone();
+        match &mut filter {
+            TrafficFilter::Network { mac_addresses, .. }
+            | TrafficFilter::MacAddress { mac_addresses, .. } => clean(mac_addresses),
+            TrafficFilter::IpAddress {
+                addresses,
+                mac_addresses,
+                ..
+            } => {
+                clean(mac_addresses);
+                for address in addresses {
+                    match address {
+                        IpSpec::Address { value } | IpSpec::Subnet { value } => {
+                            *value = self.sanitize_text(value);
+                        }
+                        IpSpec::Range { start, stop } => {
+                            *start = self.sanitize_text(start);
+                            *stop = self.sanitize_text(stop);
+                        }
+                        IpSpec::MatchingList { .. } => {}
+                    }
+                }
+            }
+            TrafficFilter::Domain { domains, .. } => clean(domains),
+            _ => {}
+        }
+        filter
     }
 
     pub fn sanitize_firewall_zone(&self, zone: &FirewallZone) -> FirewallZone {
@@ -599,7 +659,10 @@ impl Sanitizer {
                         serde_json::Value::String(name),
                     ) = (k.as_str(), v)
                     {
-                        serde_json::Value::String(self.sanitize_name(name))
+                        // A name can be an address: an access point nobody
+                        // named reports its MAC. The text pass catches
+                        // what the name mapping lets through.
+                        serde_json::Value::String(self.sanitize_text(&self.sanitize_name(name)))
                     } else {
                         self.clean_json(v, Some(k))
                     };
@@ -828,6 +891,67 @@ mod tests {
             redact_isp: false,
             seed: None,
         }
+    }
+
+    #[test]
+    fn a_policy_filter_shows_no_real_wan_address_or_mac() {
+        let policy: FirewallPolicy = serde_json::from_value(serde_json::json!({
+            "id": "p1", "name": "Vendor session", "description": null, "enabled": true,
+            "index": 1, "action": "Allow", "ip_version": "Both",
+            "source": { "zone_id": null, "filter": {
+                "kind": "ip_address", "match_opposite": false,
+                "addresses": [
+                    { "kind": "address", "value": "8.8.4.4" },
+                    { "kind": "range", "start": "8.8.8.1", "stop": "8.8.8.9" }
+                ],
+                "mac_addresses": ["aa:bb:cc:dd:ee:ff"]
+            }},
+            "destination": { "zone_id": null, "filter": null },
+            "source_summary": null, "destination_summary": null,
+            "protocol_summary": null, "schedule": null, "ipsec_mode": null,
+            "connection_states": [], "logging_enabled": false, "origin": null
+        }))
+        .expect("policy fixture");
+        let sanitizer = Sanitizer::new(&DemoConfig {
+            redact_macs: true,
+            ..test_config()
+        });
+
+        let shown = sanitizer.sanitize_firewall_policy(&policy);
+
+        let filter = serde_json::to_string(&shown.source.filter).expect("filter JSON");
+        for real in ["8.8.4.4", "8.8.8.1", "8.8.8.9", "aa:bb:cc:dd:ee:ff"] {
+            assert!(!filter.contains(real), "{real} survived: {filter}");
+        }
+    }
+
+    #[test]
+    fn a_devices_port_labels_are_redacted_like_names() {
+        use crate::cli::commands::util::fixtures::device;
+
+        let mut switch = (*device("d1", Some("sw-core"), "aa:bb:cc:00:00:01", None)).clone();
+        switch.ports = serde_json::from_value(serde_json::json!([
+            { "index": 1, "name": "Alice's desk", "state": "Up", "speed_mbps": 1000,
+              "max_speed_mbps": 1000, "connector": "Rj45", "poe": null },
+            { "index": 2, "name": "Port 2", "state": "Down", "speed_mbps": null,
+              "max_speed_mbps": 1000, "connector": "Rj45", "poe": null },
+            { "index": 3, "name": null, "state": "Down", "speed_mbps": null,
+              "max_speed_mbps": 1000, "connector": "Rj45", "poe": null }
+        ]))
+        .expect("port fixtures");
+        let sanitizer = Sanitizer::new(&test_config());
+
+        let shown = sanitizer.sanitize_device(&switch);
+
+        let label = shown.ports[0].name.as_deref().expect("a label");
+        assert!(!label.contains("Alice"), "{label}");
+        assert_eq!(
+            label,
+            sanitizer.sanitize_name("Alice's desk"),
+            "the same stand-in the port's profile shows once it loads"
+        );
+        assert_eq!(shown.ports[1].name.as_deref(), Some("Port 2"));
+        assert_eq!(shown.ports[2].name, None);
     }
 
     #[test]
@@ -1245,6 +1369,40 @@ mod tests {
         assert!(
             !s.sanitize_text("NeighborNet is loud")
                 .contains("NeighborNet")
+        );
+    }
+
+    #[test]
+    fn a_json_name_that_is_a_mac_or_wan_address_is_redacted_like_any_other() {
+        let s = Sanitizer::new(&DemoConfig {
+            enabled: true,
+            redact_names: vec!["Alice".into()],
+            redact_macs: true,
+            redact_wan_ips: true,
+            ..DemoConfig::default()
+        });
+        let ap = s.sanitize_mac(&MacAddress::new("aa:bb:cc:00:11:22"));
+        let alice = s.sanitize_name("Alice's Phone");
+        assert_ne!(alice, "Alice's Phone");
+
+        // A roam row for an AP nobody named, and a WiFi detail's uplink.
+        let roam = s.sanitize_json_value(&serde_json::json!({
+            "parameters": {
+                "DEVICE_FROM": { "name": "aa:bb:cc:00:11:22" },
+                "DEVICE_TO": { "name": "Lobby AP" },
+                "CLIENT": { "name": "Alice's Phone" },
+            },
+            "uplink": { "display_name": "AA-BB-CC-00-11-22", "hostname": "8.8.4.4" },
+        }));
+        assert_eq!(roam["parameters"]["DEVICE_FROM"]["name"], ap.as_str());
+        assert_eq!(roam["parameters"]["DEVICE_TO"]["name"], "Lobby AP");
+        assert_eq!(roam["parameters"]["CLIENT"]["name"], alice.as_str());
+        assert_eq!(roam["uplink"]["display_name"], ap.as_str());
+        let drawn = roam.to_string();
+        assert!(!drawn.contains("8.8.4.4"), "{drawn}");
+        assert!(
+            !drawn.to_lowercase().contains("aa:bb:cc:00:11:22"),
+            "{drawn}"
         );
     }
 

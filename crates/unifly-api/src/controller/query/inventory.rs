@@ -8,23 +8,37 @@ impl Controller {
         &self,
         id: &EntityId,
     ) -> Result<WifiBroadcast, CoreError> {
-        // The demo store already holds every broadcast in full.
         #[cfg(feature = "demo")]
-        if self.is_demo() {
-            return self
-                .wifi_broadcasts_snapshot()
-                .iter()
-                .find(|broadcast| &broadcast.id == id)
-                .map(|broadcast| WifiBroadcast::clone(broadcast))
-                .ok_or_else(|| CoreError::NotFound {
-                    entity_type: "wifi broadcast".into(),
-                    identifier: id.to_string(),
-                });
+        if let Some(demo) = self.demo_runtime() {
+            return demo.with(|sim| sim.wifi_detail(id));
         }
         let (client, site_id) = integration_site_context(self, "get_wifi_broadcast_detail").await?;
         let uuid = require_uuid(id)?;
         let detail = client.get_wifi_broadcast(&site_id, &uuid).await?;
         Ok(WifiBroadcast::from(detail))
+    }
+
+    /// Whether the controller's record of an SSID carries `expected` as
+    /// its passphrase: the read-back after a passphrase change. `None`
+    /// when the record shows no passphrase to compare, as for an open or
+    /// enterprise SSID. The passphrase itself is never returned.
+    pub async fn wifi_passphrase_matches(
+        &self,
+        id: &EntityId,
+        expected: &str,
+    ) -> Result<Option<bool>, CoreError> {
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return Ok(demo.with(|sim| sim.wifi_passphrase_matches(id, expected)));
+        }
+        let (client, site_id) = integration_site_context(self, "wifi_passphrase_matches").await?;
+        let uuid = require_uuid(id)?;
+        let detail = client.get_wifi_broadcast(&site_id, &uuid).await?;
+        Ok(detail
+            .security_configuration
+            .get("passphrase")
+            .and_then(serde_json::Value::as_str)
+            .map(|passphrase| passphrase == expected))
     }
 
     pub async fn list_pending_devices(&self) -> Result<Vec<serde_json::Value>, CoreError> {

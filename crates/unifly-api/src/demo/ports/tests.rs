@@ -156,9 +156,14 @@ fn wired_clients_sit_on_access_ports_for_their_network() {
         assert_eq!(profile.mode, PortMode::Access, "{:?}", client.name);
         assert_eq!(profile.link_state, PortState::Up, "{:?}", client.name);
         assert_eq!(profile.native_vlan_id, client.vlan, "{:?}", client.name);
+        let network = sim
+            .fleet
+            .networks
+            .iter()
+            .find(|network| Some(&network.id) == client.network_id.as_ref());
         assert_eq!(
             profile.native_network_id,
-            client.network_id.as_ref().map(ToString::to_string),
+            network.map(session_network_id),
             "{:?}",
             client.name
         );
@@ -367,4 +372,407 @@ async fn demo_controller_answers_port_queries() {
         Err(CoreError::DeviceNotFound { .. })
     ));
     controller.disconnect().await;
+}
+
+#[test]
+fn an_edited_port_keeps_its_label_and_poe_mode() {
+    use crate::controller::PortProfileUpdate;
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let mac = sim.fleet.devices[SWITCH_BASE].mac.clone();
+    let powered = profiles_at(&sim, SWITCH_BASE)
+        .iter()
+        .find(|profile| profile.poe_mode == Some(PoeMode::Auto))
+        .map(|profile| profile.index)
+        .expect("a port supplying PoE");
+
+    let delta = sim
+        .apply_port_update(
+            &mac,
+            powered,
+            &PortProfileUpdate {
+                name: Some("cam-dock".into()),
+                poe_mode: Some(PoeMode::Off),
+                ..PortProfileUpdate::default()
+            },
+            now,
+        )
+        .expect("label and PoE edits are simulated");
+    assert_eq!(delta.devices.len(), 1, "the device list shows the change");
+    assert_eq!(delta.events.len(), 1);
+
+    let after = profiles_at(&sim, SWITCH_BASE);
+    let edited = port(&after, powered);
+    assert_eq!(edited.name.as_deref(), Some("cam-dock"));
+    assert_eq!(edited.poe_mode, Some(PoeMode::Off));
+    let exported = export_ports(&sim.session_device(&mac).expect("device in fleet"), false);
+    assert!(
+        exported
+            .ports
+            .iter()
+            .any(|entry| entry.index == powered && entry.name.as_deref() == Some("cam-dock")),
+        "the edit is an override like any other"
+    );
+
+    sim.apply_port_update(
+        &mac,
+        powered,
+        &PortProfileUpdate {
+            poe_mode: Some(PoeMode::Auto),
+            ..PortProfileUpdate::default()
+        },
+        now,
+    )
+    .expect("PoE back on");
+    let after = profiles_at(&sim, SWITCH_BASE);
+    assert_eq!(port(&after, powered).poe_mode, Some(PoeMode::Auto));
+    assert_eq!(port(&after, powered).name.as_deref(), Some("cam-dock"));
+
+    // The badge reader's port feeds passive 24V, and a mode written to a
+    // port reads back as written instead of collapsing to auto.
+    let passive = profiles_at(&sim, SWITCH_BASE)
+        .iter()
+        .find(|profile| profile.poe_mode == Some(PoeMode::Passive24V))
+        .map(|profile| (profile.index, profile.name.clone()))
+        .expect("a passive 24V port");
+    assert_eq!(passive.1.as_deref(), Some("badge-front"));
+    for mode in [PoeMode::Off, PoeMode::Passive24V, PoeMode::Passthrough] {
+        sim.apply_port_update(
+            &mac,
+            passive.0,
+            &PortProfileUpdate {
+                poe_mode: Some(mode),
+                ..PortProfileUpdate::default()
+            },
+            now,
+        )
+        .expect("PoE mode edits are simulated");
+        let after = profiles_at(&sim, SWITCH_BASE);
+        assert_eq!(port(&after, passive.0).poe_mode, Some(mode));
+    }
+
+    // What the simulation cannot mean is refused, not faked.
+    let vlan = sim.apply_port_update(
+        &mac,
+        powered,
+        &PortProfileUpdate {
+            mode: Some(PortMode::Trunk),
+            ..PortProfileUpdate::default()
+        },
+        now,
+    );
+    assert!(
+        matches!(vlan, Err(CoreError::Unsupported { .. })),
+        "{vlan:?}"
+    );
+    let missing = sim.apply_port_update(
+        &mac,
+        99,
+        &PortProfileUpdate {
+            name: Some("nowhere".into()),
+            ..PortProfileUpdate::default()
+        },
+        now,
+    );
+    assert!(
+        matches!(missing, Err(CoreError::ValidationFailed { .. })),
+        "{missing:?}"
+    );
+}
+
+#[test]
+fn client_records_follow_admin_commands() {
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let find = |sim: &Simulation, mac: &crate::model::MacAddress| {
+        sim.fleet
+            .clients
+            .iter()
+            .find(|client| &client.client.mac == mac)
+            .map(|client| client.client.clone())
+    };
+
+    let dhcp = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| !client.client.use_fixedip)
+        .map(|client| client.client.mac.clone())
+        .expect("a client on DHCP");
+    // An address in the Render subnet, named by the Integration ID the
+    // way `networks list` gives it.
+    let ip = std::net::Ipv4Addr::new(10, 40, 20, 77);
+    let network = sim.fleet.network("render").clone();
+    let session_id = super::session_network_id(&network);
+    assert_ne!(session_id, network.id.to_string());
+    // `rest/user` keys on the networkconf `_id`: the Integration ID
+    // written as is, or an address outside the network, is refused.
+    let mut delta = crate::demo::sim::Delta::default();
+    let raw = sim.reserve_fixed_ip(&dhcp, ip, &network.id.to_string(), now, &mut delta);
+    assert!(
+        matches!(&raw, Err(CoreError::Rejected { message }) if message.contains("InvalidNetworkId")),
+        "{raw:?}"
+    );
+    let outside = sim.reserve_fixed_ip(
+        &dhcp,
+        std::net::Ipv4Addr::new(10, 40, 99, 7),
+        &session_id,
+        now,
+        &mut delta,
+    );
+    assert!(
+        matches!(&outside, Err(CoreError::Rejected { message }) if message.contains("InvalidFixedIP")),
+        "{outside:?}"
+    );
+    assert!(find(&sim, &dhcp).is_some_and(|client| !client.use_fixedip));
+
+    sim.apply_command(
+        Command::SetClientFixedIp {
+            mac: dhcp.clone(),
+            ip,
+            network_id: Some(network.id.clone()),
+        },
+        now,
+    )
+    .expect("set a fixed IP");
+    assert_eq!(
+        find(&sim, &dhcp).and_then(|client| client.fixed_ip),
+        Some(ip)
+    );
+    assert_eq!(sim.reservations.get(&dhcp), Some(&session_id));
+    // Without a network the subnet picks the same record.
+    sim.apply_command(
+        Command::SetClientFixedIp {
+            mac: dhcp.clone(),
+            ip,
+            network_id: None,
+        },
+        now,
+    )
+    .expect("the subnet names the network");
+    assert_eq!(sim.reservations.get(&dhcp), Some(&session_id));
+    sim.apply_command(
+        Command::RemoveClientFixedIp {
+            mac: dhcp.clone(),
+            network_id: None,
+        },
+        now,
+    )
+    .expect("remove it");
+    assert!(find(&sim, &dhcp).is_some_and(|client| !client.use_fixedip));
+
+    // Only a guest has portal access to grant.
+    let staff = sim
+        .fleet
+        .clients
+        .iter()
+        .find(|client| !client.client.is_guest)
+        .map(|client| client.client.id.clone())
+        .expect("a client that is not a guest");
+    let refused = sim.apply_command(Command::UnauthorizeGuest { client_id: staff }, now);
+    assert!(matches!(refused, Err(CoreError::Rejected { .. })));
+
+    let before = sim.fleet.clients.len();
+    let (_, delta) = sim
+        .apply_command(Command::ForgetClient { mac: dhcp.clone() }, now)
+        .expect("forget");
+    assert_eq!(delta.removed, vec![dhcp.clone()]);
+    assert_eq!(sim.fleet.clients.len(), before - 1);
+    assert!(
+        !sim.fleet
+            .away
+            .iter()
+            .any(|client| client.client.mac == dhcp),
+        "a forgotten client does not come back"
+    );
+}
+
+#[test]
+fn an_access_point_can_be_removed_and_adopted_again() {
+    use crate::demo::fleet::{AP_BASE, GATEWAY};
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let ap = sim
+        .fleet
+        .devices
+        .iter()
+        .skip(AP_BASE)
+        .find(|device| device.state == DeviceState::Online)
+        .cloned()
+        .expect("an online access point");
+    let state = |sim: &Simulation| {
+        let index = sim.device_index_by_mac(&ap.mac).expect("the AP");
+        sim.fleet.devices[index].state
+    };
+    let served = |sim: &Simulation| {
+        sim.fleet
+            .clients
+            .iter()
+            .filter(|demo| demo.client.uplink_device_mac.as_ref() == Some(&ap.mac))
+            .count()
+    };
+    assert!(served(&sim) > 0, "the AP serves clients");
+
+    // Adopting an adopted device is refused, as a controller refuses it.
+    let already = sim.apply_command(
+        Command::AdoptDevice {
+            mac: ap.mac.clone(),
+            ignore_device_limit: false,
+        },
+        now,
+    );
+    assert!(
+        matches!(already, Err(CoreError::Rejected { .. })),
+        "{already:?}"
+    );
+
+    let (_, delta) = sim
+        .apply_command(Command::RemoveDevice { id: ap.id.clone() }, now)
+        .expect("remove the AP");
+    assert_eq!(state(&sim), DeviceState::PendingAdoption);
+    assert_eq!(served(&sim), 0, "its clients are gone");
+    assert_ne!(delta.removed.len(), 0, "the store drops them too");
+
+    sim.apply_command(
+        Command::AdoptDevice {
+            mac: ap.mac.clone(),
+            ignore_device_limit: false,
+        },
+        now,
+    )
+    .expect("adopt it again");
+    assert_eq!(state(&sim), DeviceState::Adopting);
+    for _ in 0..20 {
+        sim.step(now);
+    }
+    assert_eq!(state(&sim), DeviceState::Online);
+
+    // The simulation does not model a site without its gateway.
+    let gateway = sim.fleet.devices[GATEWAY].id.clone();
+    let refused = sim.apply_command(Command::RemoveDevice { id: gateway }, now);
+    assert!(
+        matches!(refused, Err(CoreError::Unsupported { .. })),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_blocked_wireless_client_leaves_the_list_and_is_reached_by_mac() {
+    use crate::model::ClientType;
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let now = sim.fleet.anchor;
+    let pick = |sim: &Simulation, kind: ClientType| {
+        sim.fleet
+            .clients
+            .iter()
+            .find(|client| client.client.client_type == kind)
+            .map(|client| client.client.mac.clone())
+            .expect("a client of that kind")
+    };
+    let phone = pick(&sim, ClientType::Wireless);
+    let desk = pick(&sim, ClientType::Wired);
+    let user_blocked = |sim: &Simulation, mac: &crate::model::MacAddress| {
+        sim.users()
+            .iter()
+            .find(|user| user.mac == mac.as_str())
+            .and_then(|user| user.blocked)
+    };
+
+    let (_, delta) = sim
+        .apply_command(Command::BlockClient { mac: phone.clone() }, now)
+        .expect("block the phone");
+    assert_eq!(
+        delta.removed,
+        std::slice::from_ref(&phone),
+        "it drops off its AP"
+    );
+    assert!(sim.client_index_by_mac(&phone).is_none());
+    assert_eq!(user_blocked(&sim, &phone), Some(true));
+
+    // A wired client keeps its link and is only marked.
+    let (_, delta) = sim
+        .apply_command(Command::BlockClient { mac: desk.clone() }, now)
+        .expect("block the desk");
+    assert_eq!(delta.removed.len(), 0);
+    assert!(delta.clients.iter().any(|client| client.blocked));
+    assert_eq!(user_blocked(&sim, &desk), Some(true));
+
+    // The phone is gone from the connected list, so only its MAC finds it.
+    let (_, delta) = sim
+        .apply_command(Command::UnblockClient { mac: phone.clone() }, now)
+        .expect("unblock the phone");
+    assert!(
+        delta
+            .clients
+            .iter()
+            .any(|client| client.mac == phone && !client.blocked)
+    );
+    assert!(sim.client_index_by_mac(&phone).is_some(), "it rejoins");
+    assert_eq!(user_blocked(&sim, &phone), Some(false));
+
+    let stranger = crate::model::MacAddress::new("02:00:00:00:00:99");
+    let unknown = sim.apply_command(Command::UnblockClient { mac: stranger }, now);
+    assert!(
+        matches!(unknown, Err(CoreError::ClientNotFound { .. })),
+        "{unknown:?}"
+    );
+}
+
+#[test]
+fn poe_power_only_returns_where_an_admin_left_it_on() {
+    use crate::controller::PortProfileUpdate;
+    use crate::model::PortState;
+
+    let mut sim = sim(DEFAULT_DEMO_SEED);
+    let mut now = sim.fleet.anchor;
+    let core = sim.fleet.devices[SWITCH_BASE].id.clone();
+    let mac = sim.fleet.devices[SWITCH_BASE].mac.clone();
+    let poe_mode = |mode| PortProfileUpdate {
+        poe_mode: Some(mode),
+        ..PortProfileUpdate::default()
+    };
+    let poe_of = |sim: &Simulation, index: u32| {
+        sim.fleet.devices[SWITCH_BASE]
+            .ports
+            .iter()
+            .find(|port| port.index == index)
+            .and_then(|port| port.poe.clone())
+            .expect("a PoE port")
+    };
+
+    // A linked port that never fed anything gains no load by enabling PoE.
+    let idle = sim.fleet.devices[SWITCH_BASE]
+        .ports
+        .iter()
+        .find(|port| {
+            port.state == PortState::Up && port.poe.as_ref().is_some_and(|poe| !poe.enabled)
+        })
+        .map(|port| port.index)
+        .expect("a linked port with PoE switched off");
+    sim.apply_port_update(&mac, idle, &poe_mode(PoeMode::Auto), now)
+        .expect("PoE on");
+    assert!(poe_of(&sim, idle).enabled);
+    assert_eq!(poe_of(&sim, idle).state, PortState::Down);
+
+    // The dark camera does not come back on a port whose PoE was then
+    // switched off.
+    let (_, camera_port) = OFFLINE_CAMERA;
+    sim.apply_command(
+        Command::PowerCyclePort {
+            device_id: core,
+            port_idx: camera_port,
+        },
+        now,
+    )
+    .expect("power cycle");
+    sim.apply_port_update(&mac, camera_port, &poe_mode(PoeMode::Off), now)
+        .expect("PoE off");
+    for _ in 0..12 {
+        now += chrono::Duration::seconds(1);
+        sim.step(now);
+    }
+    assert!(!poe_of(&sim, camera_port).enabled);
 }

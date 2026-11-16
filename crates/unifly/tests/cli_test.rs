@@ -1980,8 +1980,21 @@ fn test_demo_fleet_ports_export_round_trips_as_jsonc() {
             profile["native_network_id"].as_str(),
             entry.native_network_id.as_deref()
         );
-        assert_eq!(profile["poe_mode"].as_str(), entry.poe.as_deref());
+        // The profile view names passive 24V by its model name and the
+        // export by the token `port-set` takes.
+        let poe = match profile["poe_mode"].as_str() {
+            Some("passive24v") => Some("pasv24"),
+            other => other,
+        };
+        assert_eq!(poe, entry.poe.as_deref());
     }
+    assert!(
+        request
+            .ports
+            .iter()
+            .any(|entry| entry.poe.as_deref() == Some("pasv24")),
+        "the badge reader's passive 24V port is exported as such"
+    );
     let printer = request
         .ports
         .iter()

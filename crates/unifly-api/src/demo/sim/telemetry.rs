@@ -217,10 +217,11 @@ impl Simulation {
             HealthSummary {
                 latency: Some(latency),
                 extra: json!({
-                    "xput_up": 1_941.6,
-                    "xput_down": 2_317.2,
+                    "xput_up": self.speed_test.up_mbps,
+                    "xput_down": self.speed_test.down_mbps,
                     "speedtest_status": "Success",
-                    "speedtest_ping": 6,
+                    "speedtest_ping": self.speed_test.ping_ms,
+                    "speedtest_lastrun": self.speed_test.ran_at.timestamp(),
                 }),
                 ..summary("www", "ok", None, None, (wan_tx, wan_rx))
             },

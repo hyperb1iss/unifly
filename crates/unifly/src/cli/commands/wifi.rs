@@ -154,6 +154,11 @@ fn channel_rows(record: &ChannelAvailability, p: &output::Painter) -> Vec<Channe
     rows
 }
 
+/// A setting the controller may not have reported for this broadcast.
+fn known(value: Option<bool>) -> String {
+    value.map_or_else(|| "-".to_owned(), |value| value.to_string())
+}
+
 fn detail(w: &Arc<WifiBroadcast>) -> String {
     let mut lines = vec![
         format!("ID:         {}", w.id),
@@ -161,10 +166,10 @@ fn detail(w: &Arc<WifiBroadcast>) -> String {
         format!("Enabled:    {}", w.enabled),
         format!("Type:       {:?}", w.broadcast_type),
         format!("Security:   {:?}", w.security),
-        format!("Hidden:     {}", w.hidden),
-        format!("Fast Roam:  {}", w.fast_roaming),
-        format!("Band Steer: {}", w.band_steering),
-        format!("MLO:        {}", w.mlo_enabled),
+        format!("Hidden:     {}", known(w.hidden)),
+        format!("Fast Roam:  {}", known(w.fast_roaming)),
+        format!("Band Steer: {}", known(w.band_steering)),
+        format!("MLO:        {}", known(w.mlo_enabled)),
         format!("Hotspot:    {}", w.hotspot_enabled),
         format!(
             "Network:    {}",

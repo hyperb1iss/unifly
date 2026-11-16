@@ -269,7 +269,9 @@ fn notable_events(fleet: &Fleet, rng: &mut DemoRng) -> Vec<Event> {
     vec![lost, port_down, firmware, upgrade]
 }
 
-/// Neighboring networks heard by our APs, plus one rogue lookalike.
+/// Neighboring networks heard by our APs, plus one rogue lookalike. The
+/// controller lists a neighbor once per AP that hears it, each with the
+/// signal that AP measured, so most appear under several observers.
 fn neighbors(fleet: &Fleet, rng: &mut DemoRng) -> Vec<RogueAp> {
     let observers: Vec<MacAddress> = APS
         .iter()
@@ -291,15 +293,41 @@ fn neighbors(fleet: &Fleet, rng: &mut DemoRng) -> Vec<RogueAp> {
                 continue;
             };
             let signal = -i32::try_from(rng.range(58, 90)).unwrap_or(80);
-            neighbors.push(neighbor(rng, ssid, radio, signal, &observer, false));
+            let heard = neighbor(rng, ssid, radio, signal, &observer, false);
+            let also_heard_by = usize::try_from(rng.range(0, 2)).unwrap_or(0);
+            let others: Vec<RogueAp> = observers
+                .iter()
+                .filter(|other| **other != observer)
+                .take(also_heard_by)
+                .map(|other| heard_again(rng, &heard, other))
+                .collect();
+            neighbors.push(heard);
+            neighbors.extend(others);
         }
     }
 
     let lounge = fleet.devices[AP_BASE + 5].mac.clone();
     let mut rogue = neighbor(rng, "NeonHarbor-Free", "ng", -49, &lounge, true);
     rogue.security = Some("OPEN".into());
+    let also = observers
+        .iter()
+        .find(|other| **other != lounge)
+        .map(|other| heard_again(rng, &rogue, other));
     neighbors.push(rogue);
+    neighbors.extend(also);
     neighbors
+}
+
+/// The same neighbor as a second AP hears it: farther off, so weaker.
+fn heard_again(rng: &mut DemoRng, heard: &RogueAp, observer: &MacAddress) -> RogueAp {
+    let weaker = i32::try_from(rng.range(3, 14)).unwrap_or(6);
+    let signal = heard.signal.map(|signal| signal - weaker);
+    RogueAp {
+        signal,
+        rssi: signal.map(|signal| signal + 96),
+        ap_mac: Some(observer.to_string()),
+        ..heard.clone()
+    }
 }
 
 fn neighbor(

@@ -6,10 +6,11 @@ use ratatui::style::Style;
 use ratatui::widgets::{Cell, Row, Table};
 use unifly_api::model::{AclAction, AclRuleType, NatPolicy};
 
-use super::{enabled_cell, index_label, name_style, row_style};
+use super::{enabled_cell, header_row, name_style, position_label, row_style};
 use crate::tui::screens::firewall::FirewallScreen;
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::detail_grid::NONE;
 
 impl FirewallScreen {
     pub(super) fn render_acl_rules(&self, frame: &mut Frame, area: Rect) {
@@ -20,14 +21,14 @@ impl FirewallScreen {
             .enumerate()
             .map(|(index, rule)| {
                 [
-                    index_label(index == selected_idx, rule.index.map(|i| i.to_string())),
+                    position_label(index == selected_idx, index + 1),
                     rule.name.clone(),
                     acl_type_label(rule.rule_type).to_owned(),
                     format!("{:?}", rule.action),
-                    rule.source_summary.clone().unwrap_or_else(|| "─".into()),
+                    rule.source_summary.clone().unwrap_or_else(|| NONE.into()),
                     rule.destination_summary
                         .clone()
-                        .unwrap_or_else(|| "─".into()),
+                        .unwrap_or_else(|| NONE.into()),
                 ]
             })
             .collect();
@@ -88,13 +89,10 @@ impl FirewallScreen {
             .enumerate()
             .map(|(index, policy)| {
                 [
-                    index_label(
-                        index == selected_idx,
-                        policy.rule_index.map(|i| i.to_string()),
-                    ),
+                    position_label(index == selected_idx, index + 1),
                     policy.name.clone(),
                     format!("{:?}", policy.nat_type),
-                    policy.protocol.clone().unwrap_or_else(|| "─".into()),
+                    policy.protocol.clone().unwrap_or_else(|| NONE.into()),
                     nat_endpoint(policy.dst_address.as_ref(), policy.dst_port.as_ref()),
                     nat_endpoint(
                         policy.translated_address.as_ref(),
@@ -157,26 +155,18 @@ fn nat_row(is_selected: bool, policy: &NatPolicy, cells: [String; 6]) -> Row<'st
     .style(row_style(is_selected))
 }
 
-fn header_row(labels: &[&'static str]) -> Row<'static> {
-    Row::new(
-        labels
-            .iter()
-            .map(|label| Cell::from(*label).style(theme::table_header())),
-    )
-}
-
 /// `address:port` for a NAT match or translation, `*` standing in for a
 /// missing address.
-fn nat_endpoint(address: Option<&String>, port: Option<&String>) -> String {
+pub(super) fn nat_endpoint(address: Option<&String>, port: Option<&String>) -> String {
     match (address, port) {
         (Some(address), Some(port)) => format!("{address}:{port}"),
         (Some(address), None) => address.clone(),
         (None, Some(port)) => format!("*:{port}"),
-        (None, None) => "─".into(),
+        (None, None) => NONE.into(),
     }
 }
 
-fn acl_type_label(rule_type: AclRuleType) -> &'static str {
+pub(super) fn acl_type_label(rule_type: AclRuleType) -> &'static str {
     match rule_type {
         AclRuleType::Ipv4 => "IPv4",
         AclRuleType::Mac => "MAC",

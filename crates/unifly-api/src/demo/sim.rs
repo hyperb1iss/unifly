@@ -13,7 +13,9 @@ use chrono::{DateTime, Utc};
 
 use super::fleet::{AP_BASE, Fleet};
 use super::rng::DemoRng;
-use crate::model::{Client, Device, Event, FirewallPolicy, HealthSummary, MacAddress};
+use crate::model::{
+    Client, Device, Event, FirewallPolicy, HealthSummary, MacAddress, WifiBroadcast,
+};
 use crate::store::RefreshSnapshot;
 
 /// Ticks until the AP that is mid-upgrade at launch comes back.
@@ -27,8 +29,12 @@ pub(crate) struct Delta {
     pub clients: Vec<Client>,
     pub removed: Vec<MacAddress>,
     pub policies: Vec<FirewallPolicy>,
+    pub wifi: Vec<WifiBroadcast>,
     pub events: Vec<Event>,
     pub health: Option<Vec<HealthSummary>>,
+    /// A command changed the configuration (networks, policies, rules):
+    /// the store resyncs from the fleet, so removals land too.
+    pub config_changed: bool,
 }
 
 /// A device transition that completes on a later tick.
@@ -38,6 +44,8 @@ pub(crate) enum Pending {
     Upgrade { device: usize },
     /// A restart finishes.
     Restart { device: usize },
+    /// An adoption finishes and the device comes online.
+    Adopt { device: usize },
     /// The dark camera port comes back after a PoE power cycle.
     CameraRevive,
 }
@@ -66,6 +74,32 @@ impl Burst {
     }
 }
 
+/// What an admin changed on one port.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PortEdit {
+    /// The label the port was given, if any.
+    pub label: Option<String>,
+    /// Whether the port was delivering power when its PoE was turned off,
+    /// so turning it back on powers the same device again and no other.
+    pub was_delivering: bool,
+    /// The PoE mode the port was last set to.
+    pub poe_mode: Option<crate::model::PoeMode>,
+}
+
+/// A finished WAN speed test. A controller reports no event for one: the
+/// result replaces these fields of the `www` health subsystem.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpeedTest {
+    pub(crate) ran_at: DateTime<Utc>,
+    pub(crate) down_mbps: f64,
+    pub(crate) up_mbps: f64,
+    pub(crate) ping_ms: u64,
+}
+
+/// The event type of a firewall block, which history queries leave out
+/// unless asked.
+pub(crate) const FIREWALL_BLOCK: &str = "EVT_GW_FirewallBlock";
+
 pub(crate) struct Simulation {
     pub(crate) fleet: Fleet,
     pub(crate) rng: DemoRng,
@@ -84,12 +118,33 @@ pub(crate) struct Simulation {
     pub(crate) live_roams: Vec<(MacAddress, serde_json::Value)>,
     /// Gateway WAN rates from the latest tick: `(tx, rx)` bytes/s.
     pub(crate) wan: (u64, u64),
+    /// SSIDs renamed during the session, as `(generated name, current
+    /// name)`. Clients join under the generated name, so each tick maps
+    /// them to the current one.
+    pub(crate) ssid_renames: Vec<(String, String)>,
+    /// Passphrases set during the session, by SSID, so a change can be
+    /// read back like any other.
+    pub(crate) wifi_passphrases: std::collections::HashMap<crate::model::EntityId, String>,
+    /// IDs of the alarms an admin archived this session.
+    pub(crate) archived_alarms: std::collections::HashSet<String>,
+    /// The gateway's last WAN speed test, as site health reports it.
+    pub(crate) speed_test: SpeedTest,
+    /// Ports an admin edited during the session, keyed by device index
+    /// and port index.
+    pub(crate) port_edits: std::collections::HashMap<(usize, u32), PortEdit>,
+    /// The networkconf `_id` each fixed IP set this session was written
+    /// under, as `rest/user` keeps it.
+    pub(crate) reservations: std::collections::HashMap<MacAddress, String>,
+    /// Wireless clients an admin blocked. They cannot associate, so they
+    /// are off the connected list until they are unblocked.
+    pub(crate) blocked: Vec<super::fleet::DemoClient>,
     initial_clients: usize,
 }
 
 impl Simulation {
     pub(crate) fn new(fleet: Fleet) -> Self {
         let rng = DemoRng::new(fleet.seed).fork(0x51A1);
+        let fleet_anchor = fleet.anchor;
         let initial_clients = fleet.clients.len();
         let wan = fleet.devices[super::fleet::GATEWAY]
             .stats
@@ -116,6 +171,18 @@ impl Simulation {
             returns: Vec::new(),
             live_roams: Vec::new(),
             wan,
+            ssid_renames: Vec::new(),
+            wifi_passphrases: std::collections::HashMap::new(),
+            archived_alarms: std::collections::HashSet::new(),
+            speed_test: SpeedTest {
+                ran_at: fleet_anchor - chrono::Duration::hours(5),
+                down_mbps: 2_317.2,
+                up_mbps: 1_941.6,
+                ping_ms: 6,
+            },
+            port_edits: std::collections::HashMap::new(),
+            reservations: std::collections::HashMap::new(),
+            blocked: Vec::new(),
             initial_clients,
         }
     }
@@ -128,6 +195,7 @@ impl Simulation {
         self.finish_pending(now, &mut delta);
         self.schedule_happenings(now, &mut delta);
         self.update_clients();
+        self.apply_ssid_renames();
         self.update_wan();
         self.update_devices(now);
 
@@ -154,7 +222,8 @@ impl Simulation {
                 .map(|client| client.client.clone())
                 .collect(),
             networks: fleet.networks.clone(),
-            wifi: fleet.wifi.clone(),
+            // The list summary: the store never holds the detail fields.
+            wifi: fleet.wifi.iter().map(WifiBroadcast::summary).collect(),
             policies: Some(fleet.policies.clone()),
             zones: Some(fleet.zones.clone()),
             acls: Some(fleet.acls.clone()),
@@ -162,7 +231,16 @@ impl Simulation {
             dns: Some(Vec::new()),
             vouchers: Some(Vec::new()),
             sites: vec![fleet.site.clone()],
-            events: Some(fleet.events.clone()),
+            // A refresh lists events without firewall blocks, which are
+            // read only when history is asked for them.
+            events: Some(
+                fleet
+                    .events
+                    .iter()
+                    .filter(|event| event.event_type != FIREWALL_BLOCK)
+                    .cloned()
+                    .collect(),
+            ),
             traffic_matching_lists: Vec::new(),
             firewall_groups: Some(Vec::new()),
         }
@@ -188,6 +266,28 @@ impl Simulation {
             .get(index)
             .and_then(|device| device.name.clone())
             .unwrap_or_default()
+    }
+
+    /// Put every client that joined under a renamed SSID's generated name
+    /// on its current name.
+    pub(crate) fn apply_ssid_renames(&mut self) {
+        if self.ssid_renames.is_empty() {
+            return;
+        }
+        let fleet = &mut self.fleet;
+        for demo in fleet.clients.iter_mut().chain(fleet.away.iter_mut()) {
+            let Some(ssid) = demo
+                .client
+                .wireless
+                .as_mut()
+                .and_then(|wireless| wireless.ssid.as_mut())
+            else {
+                continue;
+            };
+            if let Some((_, current)) = self.ssid_renames.iter().find(|(old, _)| old == ssid) {
+                ssid.clone_from(current);
+            }
+        }
     }
 
     /// Schedule a transition `ticks` from now.

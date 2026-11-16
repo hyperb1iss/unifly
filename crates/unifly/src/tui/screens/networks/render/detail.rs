@@ -1,195 +1,136 @@
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use std::sync::Arc;
+
+use ratatui::style::Style;
 
 use unifly_api::Network;
+use unifly_api::model::{FirewallZone, NetworkManagement, NetworkPurpose};
 
+use crate::tui::screens::networks::state::format_lease_time;
 use crate::tui::theme;
+use crate::tui::widgets::detail_grid::{DetailGrid, NONE};
 
-#[allow(clippy::too_many_lines)]
-pub(super) fn render_detail(frame: &mut Frame, area: Rect, network: &Network) {
-    let block = Block::default()
-        .title(format!(" {} — Detail ", network.name))
-        .title_style(theme::title_style())
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::border_focused());
+/// The zone a network belongs to: the one it names, or the one that lists
+/// it as a member.
+fn zone_name<'a>(network: &Network, zones: &'a [Arc<FirewallZone>]) -> Option<&'a str> {
+    zones
+        .iter()
+        .find(|zone| {
+            network.firewall_zone_id.as_ref() == Some(&zone.id)
+                || zone.network_ids.contains(&network.id)
+        })
+        .map(|zone| zone.name.as_str())
+}
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 3 || inner.width < 20 {
-        return;
+pub(super) fn management_label(management: Option<NetworkManagement>) -> &'static str {
+    match management {
+        Some(NetworkManagement::Gateway) => "Gateway",
+        Some(NetworkManagement::Switch) => "Switch",
+        Some(NetworkManagement::Unmanaged) => "Unmanaged",
+        None => NONE,
     }
+}
 
-    let label = Style::default().fg(theme::text_secondary());
+/// How a network hands out addresses: its own server, a relay to
+/// another, or neither. A relay is not "off": clients still get leases.
+pub(super) fn dhcp_label(network: &Network) -> &'static str {
+    match network.dhcp.as_ref() {
+        None => NONE,
+        Some(dhcp) if dhcp.enabled => "On",
+        Some(dhcp) if !dhcp.relay_servers.is_empty() => "Relay",
+        Some(_) => "Off",
+    }
+}
+
+/// Everything known about a network, as the detail panel's fields.
+pub(super) fn detail_grid(network: &Network, zones: &[Arc<FirewallZone>]) -> DetailGrid {
     let value = Style::default().fg(theme::accent_secondary());
-    let enabled_style = Style::default().fg(theme::success());
-    let disabled_style = Style::default().fg(theme::border_unfocused());
+    let on = Style::default().fg(theme::success());
+    let off = Style::default().fg(theme::text_muted());
+    let switch = |enabled: bool| {
+        if enabled { ("On", on) } else { ("Off", off) }
+    };
+    let or_none = |text: Option<String>| match text {
+        Some(text) => (text, value),
+        None => (NONE.to_owned(), off),
+    };
 
-    let gateway_str = network
-        .gateway_ip
-        .map_or_else(|| "—".into(), |ip| ip.to_string());
-    let subnet_str = network.subnet.as_deref().unwrap_or("—");
-    let vlan_str = network
-        .vlan_id
-        .map_or_else(|| "—".into(), |value| value.to_string());
-    let management_str = network
-        .management
-        .as_ref()
-        .map_or_else(|| "—".into(), |value| format!("{value:?}"));
-
-    let (dhcp_status, dhcp_style) = network.dhcp.as_ref().map_or(("—", label), |dhcp| {
-        if dhcp.enabled {
-            ("Enabled", enabled_style)
-        } else {
-            ("Disabled", disabled_style)
-        }
+    let mut grid = DetailGrid::default();
+    let (status, status_style) = if network.enabled {
+        ("Enabled", on)
+    } else {
+        ("Disabled", Style::default().fg(theme::warning()))
+    };
+    grid.field("Status", status, status_style);
+    let purpose = network.purpose.map(|purpose| match purpose {
+        NetworkPurpose::Corporate => "Corporate",
+        NetworkPurpose::Guest => "Guest",
+        NetworkPurpose::Wan => "WAN",
+        NetworkPurpose::VlanOnly => "VLAN only",
     });
+    let (purpose, style) = or_none(purpose.map(str::to_owned));
+    grid.field("Purpose", purpose, style);
+    let (vlan, style) = or_none(network.vlan_id.map(|vlan| vlan.to_string()));
+    grid.field("VLAN", vlan, style);
+    let (gateway, style) = or_none(network.gateway_ip.map(|ip| ip.to_string()));
+    grid.field("Gateway", gateway, style);
+    let (subnet, style) = or_none(network.subnet.clone());
+    grid.field("Subnet", subnet, style);
+    // After the addresses, so a gateway-managed network does not read
+    // `Type Gateway` right beside the `Gateway` address label.
+    grid.field("Type", management_label(network.management), value);
+    let (zone, style) = or_none(zone_name(network, zones).map(str::to_owned));
+    grid.field("Zone", zone, style);
+    grid.field(
+        "Default",
+        if network.is_default { "Yes" } else { "No" },
+        value,
+    );
 
-    let dhcp_range = network
-        .dhcp
-        .as_ref()
-        .filter(|dhcp| dhcp.enabled)
-        .map(|dhcp| {
-            let start = dhcp
-                .range_start
-                .map_or_else(|| "?".into(), |ip| ip.to_string());
-            let stop = dhcp
-                .range_stop
-                .map_or_else(|| "?".into(), |ip| ip.to_string());
-            format!("{start} — {stop}")
-        });
-
-    let lease_str = network
-        .dhcp
-        .as_ref()
+    let dhcp = network.dhcp.as_ref();
+    let label = dhcp_label(network);
+    grid.field("DHCP", label, if label == "On" { on } else { off });
+    let lease = dhcp
         .and_then(|dhcp| dhcp.lease_time_secs)
-        .map(super::super::state::format_lease_time);
-
-    let dns_str = network
-        .dhcp
-        .as_ref()
-        .filter(|dhcp| !dhcp.dns_servers.is_empty())
-        .map(|dhcp| {
-            dhcp.dns_servers
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
-
-    let bool_span = |value: bool, enabled: &str, disabled: &str| -> Span<'static> {
-        if value {
-            Span::styled(enabled.to_string(), enabled_style)
-        } else {
-            Span::styled(disabled.to_string(), disabled_style)
-        }
-    };
-
-    let ipv6_str = if network.ipv6_enabled {
-        network
-            .ipv6_mode
-            .as_ref()
-            .map_or_else(|| "Enabled".into(), ToString::to_string)
-    } else {
-        "Disabled".into()
-    };
-    let ipv6_style = if network.ipv6_enabled {
-        enabled_style
-    } else {
-        disabled_style
-    };
-
-    let mut lines = vec![
-        Line::from(Span::styled(
-            " Network Config",
-            Style::default()
-                .fg(theme::accent_primary())
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            " ─────────────────────────────────────────",
-            Style::default().fg(theme::border_unfocused()),
-        )),
-        Line::from(vec![
-            Span::styled("  Gateway IP    ", label),
-            Span::styled(gateway_str, value),
-            Span::styled("       VLAN          ", label),
-            Span::styled(vlan_str, value),
-        ]),
-        Line::from(vec![
-            Span::styled("  Subnet        ", label),
-            Span::styled(subnet_str.to_string(), value),
-            Span::styled("       Management    ", label),
-            Span::styled(management_str, value),
-        ]),
-    ];
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " DHCP Server",
-        Style::default()
-            .fg(theme::accent_primary())
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        " ─────────────────────────────────────────",
-        Style::default().fg(theme::border_unfocused()),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("  DHCP          ", label),
-        Span::styled(dhcp_status.to_string(), dhcp_style),
-        if let Some(ref lease) = lease_str {
-            Span::styled(format!("       Lease Time    {lease}"), label)
-        } else {
-            Span::raw("")
-        },
-    ]));
-
-    if let Some(ref range) = dhcp_range {
-        lines.push(Line::from(vec![
-            Span::styled("  Range         ", label),
-            Span::styled(range.clone(), value),
-        ]));
+        .map(format_lease_time);
+    let (lease, style) = or_none(lease);
+    grid.field("Lease", lease, style);
+    if let Some(dhcp) = dhcp.filter(|dhcp| dhcp.enabled) {
+        let bound =
+            |ip: Option<std::net::Ipv4Addr>| ip.map_or_else(|| "?".to_owned(), |ip| ip.to_string());
+        grid.wide(
+            "Range",
+            format!("{} to {}", bound(dhcp.range_start), bound(dhcp.range_stop)),
+            value,
+        );
+    }
+    if let Some(dhcp) = dhcp.filter(|dhcp| !dhcp.enabled && !dhcp.relay_servers.is_empty()) {
+        let servers: Vec<String> = dhcp.relay_servers.iter().map(ToString::to_string).collect();
+        grid.wide("Relay to", servers.join(", "), value);
+    }
+    if let Some(dhcp) = dhcp.filter(|dhcp| !dhcp.dns_servers.is_empty()) {
+        let servers: Vec<String> = dhcp.dns_servers.iter().map(ToString::to_string).collect();
+        grid.wide("DNS", servers.join(", "), value);
     }
 
-    if let Some(ref dns) = dns_str {
-        lines.push(Line::from(vec![
-            Span::styled("  DNS           ", label),
-            Span::styled(dns.clone(), value),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " Features",
-        Style::default()
-            .fg(theme::accent_primary())
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        " ─────────────────────────────────────────",
-        Style::default().fg(theme::border_unfocused()),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("  Internet      ", label),
-        bool_span(network.internet_access_enabled, "Enabled", "Disabled"),
-        Span::styled("       Isolation     ", label),
-        bool_span(network.isolation_enabled, "Enabled", "Disabled"),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  mDNS Fwd      ", label),
-        bool_span(network.mdns_forwarding_enabled, "Enabled", "Disabled"),
-        Span::styled("       IPv6          ", label),
-        Span::styled(ipv6_str, ipv6_style),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  Cellular BU   ", label),
-        bool_span(network.cellular_backup_enabled, "Enabled", "Disabled"),
-    ]));
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    let (label, style) = switch(network.internet_access_enabled);
+    grid.field("Internet", label, style);
+    let (label, style) = switch(network.isolation_enabled);
+    grid.field("Isolation", label, style);
+    let (label, style) = switch(network.mdns_forwarding_enabled);
+    grid.field("mDNS", label, style);
+    let (label, style) = switch(network.cellular_backup_enabled);
+    grid.field("Cellular", label, style);
+    let (ipv6, style) = if network.ipv6_enabled {
+        let mode = network.ipv6_mode.as_ref();
+        (
+            mode.map_or_else(|| "On".to_owned(), ToString::to_string),
+            on,
+        )
+    } else {
+        ("Off".to_owned(), off)
+    };
+    grid.field("IPv6", ipv6, style);
+    let (prefix, style) = or_none(network.ipv6_prefix.clone());
+    grid.field("Prefix", prefix, style);
+    grid
 }

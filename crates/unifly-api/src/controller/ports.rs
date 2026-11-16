@@ -142,6 +142,13 @@ impl Controller {
                     .to_owned(),
             });
         }
+        #[cfg(feature = "demo")]
+        if let Some(demo) = self.demo_runtime() {
+            return self
+                .demo_update_port(demo, device_mac, port_idx_target, update)
+                .await;
+        }
+
         let _write = self.inner.port_writes.acquire(device_mac).await;
         let session = self.inner.session_client.lock().await.clone();
         let session = require_session(session.as_ref())?;

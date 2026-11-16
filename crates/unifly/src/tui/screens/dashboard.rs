@@ -11,16 +11,22 @@ use color_eyre::eyre::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use tokio::sync::mpsc::UnboundedSender;
 
-use unifly_api::{Client, Device, Event, HealthSummary, Network};
+use unifly_api::{Client, Device, HealthSummary, Network};
 
-use crate::tui::action::Action;
+use crate::tui::action::{Access, Action};
 use crate::tui::component::Component;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::screens::events::feed::Feed;
+use crate::tui::screens::link::Link;
+use crate::tui::widgets::click::{Click, Hint, HitMap};
+mod focus;
 mod helpers;
 mod render;
 mod state;
+#[cfg(test)]
+mod tests;
+
+use focus::Panel;
 
 /// How often the live traffic chart records a real sample. The controller
 /// refreshes gateway throughput about once a second (WebSocket `device:sync`)
@@ -33,6 +39,8 @@ mod state;
 pub(super) const LIVE_CHART_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// Samples kept in the ring: a one-minute window at 1 Hz.
 pub(super) const LIVE_CHART_WINDOW_SAMPLES: usize = 60;
+/// Events the Recent Events panel keeps.
+const RECENT_EVENTS: usize = 100;
 pub(super) const BANDWIDTH_TICK_COUNT: usize = 4;
 pub(super) const BANDWIDTH_LABEL_WIDTH: usize = 6;
 pub(super) const BANDWIDTH_GUTTER_WIDTH: u16 = 7;
@@ -55,7 +63,8 @@ pub struct DashboardScreen {
     devices: Arc<Vec<Arc<Device>>>,
     clients: Arc<Vec<Arc<Client>>>,
     networks: Arc<Vec<Arc<Network>>>,
-    events: Vec<Arc<Event>>,
+    /// The newest events, for the Recent Events panel.
+    events: Feed,
     health: Arc<Vec<HealthSummary>>,
     /// Chart data: `(sample_counter, bytes_per_sec)` for the Chart widget.
     bandwidth_tx: Vec<(f64, f64)>,
@@ -72,8 +81,27 @@ pub struct DashboardScreen {
     last_chart_sample_at: Option<Instant>,
     /// Tracks when we last received a data update (for refresh indicator).
     last_data_update: Option<Instant>,
+    /// When a WAN rate last arrived, and the gap between the two before
+    /// it: together they tell a live rate from one that stopped updating.
+    bandwidth_seen_at: Option<Instant>,
+    bandwidth_gap: Option<Duration>,
+    /// The chart stopped sampling because the rate went stale.
+    chart_stalled: bool,
+    link: Link,
+    /// What the controller can reach, once it has said.
+    access: Option<Access>,
+    /// Alarms the controller holds unarchived, once they have been read.
+    active_alarms: Option<usize>,
+    /// The panel keyboard focus is on.
+    focus: Panel,
+    /// The column focus last sat in on a three-panel row.
+    column: usize,
+    /// The data-age label as last drawn, to redraw when it changes.
+    age_drawn: RefCell<String>,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
+    /// Which panel each part of the last frame belongs to.
+    panel_hits: RefCell<HitMap<Panel>>,
 }
 
 impl Default for DashboardScreen {
@@ -89,7 +117,7 @@ impl DashboardScreen {
             devices: Arc::new(Vec::new()),
             clients: Arc::new(Vec::new()),
             networks: Arc::new(Vec::new()),
-            events: Vec::new(),
+            events: Feed::new(RECENT_EVENTS),
             health: Arc::new(Vec::new()),
             bandwidth_tx: Vec::new(),
             bandwidth_rx: Vec::new(),
@@ -102,26 +130,36 @@ impl DashboardScreen {
             chart_rx_y_max: 0.0,
             last_chart_sample_at: None,
             last_data_update: None,
+            bandwidth_seen_at: None,
+            bandwidth_gap: None,
+            chart_stalled: false,
+            link: Link::default(),
+            access: None,
+            active_alarms: None,
+            focus: Panel::default(),
+            column: 0,
+            age_drawn: RefCell::default(),
             hits: RefCell::default(),
+            panel_hits: RefCell::default(),
         }
     }
 }
 
 impl Component for DashboardScreen {
-    fn init(&mut self, _action_tx: UnboundedSender<Action>) -> Result<()> {
-        Ok(())
+    fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        Ok(self.handle_key_input(key))
     }
 
-    fn handle_key_event(&mut self, _key: KeyEvent) -> Result<Option<Action>> {
-        Ok(None)
-    }
-
-    /// A tap on a panel opens the screen with its full story.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
-        Ok(match self.hits.borrow().clicked(mouse) {
-            Some(Click::Action(action)) => Some(action),
-            _ => None,
-        })
+        Ok(self.handle_mouse_input(mouse))
+    }
+
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        Self::help_keys()
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {

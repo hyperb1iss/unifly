@@ -1,33 +1,45 @@
 //! The Policies and Zones tables.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Cell, Row, Table};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use unifly_api::EntityId;
-use unifly_api::model::{FirewallAction, FirewallZone};
+use unifly_api::model::{FirewallAction, FirewallPolicy, FirewallZone};
 
-use super::{enabled_cell, index_label, name_style, row_style};
+use super::{enabled_cell, header_row, name_style, position_label, row_style};
 use crate::tui::screens::firewall::FirewallScreen;
+use crate::tui::screens::firewall::reorder::{Stage, is_fixed};
 use crate::tui::table::{Column, plan_columns};
 use crate::tui::theme;
+use crate::tui::widgets::click::Click;
+use crate::tui::widgets::detail_grid::NONE;
 
-/// Table width from which the Policies table shows each rule's zone pair
-/// (a 96-column terminal, less the screen border). Narrower, the pair
-/// would be cut to a stub, so the column steps aside.
-const ZONES_TABLE: u16 = 94;
+/// The mark on a policy the controller keeps in place: it cannot be moved
+/// or deleted.
+pub(super) const FIXED_MARK: &str = "\u{25A3}";
+
+/// One row of the Policies table as drawn.
+enum Shown {
+    /// The zone pair the policies under it run between.
+    Pair(String),
+    /// A policy, by its row in the table's data.
+    Policy(usize),
+}
 
 /// One policy's table cells as text, measured once for column sizing and
 /// then styled into a row.
 struct PolicyCells {
-    index: String,
+    position: String,
     enabled: bool,
-    zones: String,
-    /// Whether this row opens a new zone pair; later rows of the same pair
-    /// draw their zones dimmed so the groups stand out.
-    group_start: bool,
+    fixed: bool,
+    /// Set on the policy being moved, with whether the move is still only
+    /// on screen.
+    moving: Option<bool>,
     name: String,
     action: FirewallAction,
     protocol: String,
@@ -36,83 +48,137 @@ struct PolicyCells {
 }
 
 impl FirewallScreen {
-    pub(super) fn render_policies(&self, frame: &mut Frame, area: Rect) {
+    /// The Policies table's rows under their zone pairs, each policy
+    /// numbered by its place in its pair.
+    fn policy_rows(&self, view: &[Arc<FirewallPolicy>]) -> (Vec<Shown>, Vec<PolicyCells>) {
         let selected_idx = self.policy_table.selected().unwrap_or(0);
         let zone_names = self.zone_names();
-        let zone =
-            |id: Option<&EntityId>| id.and_then(|id| zone_names.get(id).copied()).unwrap_or("─");
+        let zone = |id: Option<&EntityId>| {
+            id.and_then(|id| zone_names.get(id).copied())
+                .unwrap_or(NONE)
+        };
 
+        let mut shown = Vec::new();
+        let mut cells = Vec::new();
         let mut previous_pair = None;
-        let cells: Vec<PolicyCells> = self
-            .policies
-            .iter()
-            .enumerate()
-            .map(|(index, policy)| {
-                let pair = (
-                    policy.source.zone_id.as_ref(),
-                    policy.destination.zone_id.as_ref(),
-                );
-                let group_start = previous_pair != Some(pair);
+        let mut position = 0;
+        for (index, policy) in view.iter().enumerate() {
+            let pair = (
+                policy.source.zone_id.as_ref(),
+                policy.destination.zone_id.as_ref(),
+            );
+            if previous_pair != Some(pair) {
+                shown.push(Shown::Pair(format!(
+                    "{} \u{2192} {}",
+                    zone(pair.0),
+                    zone(pair.1)
+                )));
                 previous_pair = Some(pair);
-                PolicyCells {
-                    index: index_label(index == selected_idx, policy.index.map(|i| i.to_string())),
-                    enabled: policy.enabled,
-                    zones: format!("{} → {}", zone(pair.0), zone(pair.1)),
-                    group_start,
-                    name: policy.name.clone(),
-                    action: policy.action,
-                    protocol: policy
-                        .protocol_summary
-                        .clone()
-                        .unwrap_or_else(|| "Any".into()),
-                    source: policy.source_summary.clone().unwrap_or_else(|| "─".into()),
-                    destination: policy
-                        .destination_summary
-                        .clone()
-                        .unwrap_or_else(|| "─".into()),
-                }
-            })
-            .collect();
-
-        let show_zones = area.width >= ZONES_TABLE;
-        let mut headers = vec!["#", "On"];
-        let mut columns = vec![
-            Column::fit("#", cells.iter().map(|c| &c.index), 12).tight(),
-            Column::fixed(2).tight(),
-        ];
-        if show_zones {
-            headers.push("Zones");
-            columns.push(Column::fit("Zones", cells.iter().map(|c| &c.zones), 32).shrink_to(12));
+                position = 0;
+            }
+            position += 1;
+            shown.push(Shown::Policy(index));
+            let moving = self
+                .reorder
+                .as_ref()
+                .filter(|reorder| reorder.policy.id == policy.id)
+                .map(|reorder| reorder.stage == Stage::Draft);
+            cells.push(PolicyCells {
+                position: if moving.is_some() {
+                    format!("\u{2195}{position}")
+                } else {
+                    position_label(index == selected_idx, position)
+                },
+                enabled: policy.enabled,
+                fixed: is_fixed(policy),
+                moving,
+                name: policy.name.clone(),
+                action: policy.action,
+                protocol: policy
+                    .protocol_summary
+                    .clone()
+                    .unwrap_or_else(|| "Any".into()),
+                source: policy.source_summary.clone().unwrap_or_else(|| NONE.into()),
+                destination: policy
+                    .destination_summary
+                    .clone()
+                    .unwrap_or_else(|| NONE.into()),
+            });
         }
-        headers.extend(["Name", "Action", "Protocol", "Source", "Destination"]);
-        columns.extend([
+        (shown, cells)
+    }
+
+    pub(super) fn render_policies(&self, frame: &mut Frame, area: Rect) {
+        let selected_idx = self.policy_table.selected().unwrap_or(0);
+        let view = self.policy_view();
+        let (shown, cells) = self.policy_rows(&view);
+
+        let columns = [
+            Column::fit("#", cells.iter().map(|c| &c.position), 6).tight(),
+            Column::fixed(2).tight(),
+            Column::fixed(1).tight(),
             Column::fit("Name", cells.iter().map(|c| &c.name), 40).shrink_to(12),
             Column::fit("Action", cells.iter().map(|c| action_label(c.action)), 6),
             Column::fit("Protocol", cells.iter().map(|c| &c.protocol), 12),
             Column::fit("Source", cells.iter().map(|c| &c.source), 32).shrink_to(8),
             Column::fit("Destination", cells.iter().map(|c| &c.destination), 32).shrink_to(11),
+        ];
+        let widths = plan_columns(&columns, area.width);
+        let header = header_row(&[
+            "#",
+            "On",
+            "",
+            "Name",
+            "Action",
+            "Protocol",
+            "Source",
+            "Destination",
         ]);
-        let header = Row::new(
-            headers
-                .into_iter()
-                .map(|label| Cell::from(label).style(theme::table_header())),
+        let row = |y: u16| Rect {
+            y,
+            height: 1,
+            ..area
+        };
+        frame.render_widget(Table::new([header], widths.clone()), row(area.y));
+
+        // The table scrolls by hand: a zone-pair row is not a policy, so
+        // the cursor never rests on one, and the pair above the selected
+        // policy stays in view with it.
+        let body = usize::from(area.height.saturating_sub(1));
+        let selected_row = shown
+            .iter()
+            .position(|row| matches!(row, Shown::Policy(index) if *index == selected_idx))
+            .unwrap_or(0);
+        let lead = usize::from(
+            selected_row > 0 && matches!(shown.get(selected_row - 1), Some(Shown::Pair(_))),
         );
+        let mut offset = self
+            .policy_offset
+            .get()
+            .min(shown.len().saturating_sub(body));
+        offset = offset.min(selected_row - lead);
+        if body > 0 && selected_row >= offset + body {
+            offset = selected_row + 1 - body;
+        }
+        self.policy_offset.set(offset);
 
-        let rows: Vec<Row> = cells
-            .into_iter()
-            .enumerate()
-            .map(|(index, cells)| policy_row(index == selected_idx, cells, show_zones))
-            .collect();
-
-        let len = rows.len();
-        let table = Table::new(rows, plan_columns(&columns, area.width))
-            .header(header)
-            .row_highlight_style(theme::table_selected());
-
-        let state = self
-            .policy_scroll
-            .render(frame, table, area, &self.policy_table, len);
-        self.hits.borrow_mut().push_table_rows(area, &state, len);
+        let mut cells = cells.into_iter().map(Some).collect::<Vec<_>>();
+        let rows = (area.y.saturating_add(1)..area.bottom()).zip(shown.iter().skip(offset));
+        for (y, shown) in rows {
+            match shown {
+                Shown::Pair(label) => {
+                    frame.render_widget(Paragraph::new(pair_line(label, area.width)), row(y));
+                }
+                Shown::Policy(index) => {
+                    let Some(cells) = cells.get_mut(*index).and_then(Option::take) else {
+                        continue;
+                    };
+                    let line = policy_row(*index == selected_idx, cells);
+                    frame.render_widget(Table::new([line], widths.clone()), row(y));
+                    self.hits.borrow_mut().push(row(y), Click::Row(*index));
+                }
+            }
+        }
     }
 
     pub(super) fn render_zones(&self, frame: &mut Frame, area: Rect) {
@@ -142,11 +208,7 @@ impl FirewallScreen {
             Column::fit("Policies", cells.iter().map(|c| &c[1]), 8),
             Column::fit("Networks", cells.iter().map(|c| &c[2]), 80).shrink_to(10),
         ];
-        let header = Row::new(
-            ["Name", "Policies", "Networks"]
-                .into_iter()
-                .map(|label| Cell::from(label).style(theme::table_header())),
-        );
+        let header = header_row(&["Name", "Policies", "Networks"]);
 
         let rows: Vec<Row> = cells
             .into_iter()
@@ -180,6 +242,35 @@ impl FirewallScreen {
             .collect()
     }
 
+    /// The names of a policy's source and destination zones.
+    pub(super) fn zone_pair_label(&self, policy: &FirewallPolicy) -> String {
+        let names = self.zone_names();
+        let zone = |id: Option<&EntityId>| id.and_then(|id| names.get(id).copied()).unwrap_or(NONE);
+        format!(
+            "{} \u{2192} {}",
+            zone(policy.source.zone_id.as_ref()),
+            zone(policy.destination.zone_id.as_ref())
+        )
+    }
+
+    /// Policies whose source or destination is `zone`: `(from, to)`.
+    pub(super) fn zone_policy_counts(&self, zone: &FirewallZone) -> (usize, usize) {
+        let count = |from: bool| {
+            self.policies
+                .iter()
+                .filter(|policy| {
+                    let endpoint = if from {
+                        &policy.source
+                    } else {
+                        &policy.destination
+                    };
+                    endpoint.zone_id.as_ref() == Some(&zone.id)
+                })
+                .count()
+        };
+        (count(true), count(false))
+    }
+
     /// Policies whose source or destination is `zone`.
     fn zone_policy_count(&self, zone: &FirewallZone) -> usize {
         self.policies
@@ -192,15 +283,34 @@ impl FirewallScreen {
     }
 }
 
+/// The row that names a zone pair, ruled out to the table's width so the
+/// groups read as groups.
+fn pair_line(label: &str, width: u16) -> Line<'static> {
+    let lead = format!("\u{2500}\u{2500} {label} ");
+    let rule = usize::from(width).saturating_sub(Span::raw(lead.as_str()).width());
+    Line::from(vec![
+        Span::styled(
+            lead,
+            Style::default()
+                .fg(theme::text_secondary())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "\u{2500}".repeat(rule),
+            Style::default().fg(theme::border_unfocused()),
+        ),
+    ])
+}
+
 /// The zone's member networks by name; a count when some are unknown.
-fn zone_networks_label(zone: &FirewallZone, names: &HashMap<&EntityId, &str>) -> String {
+pub(super) fn zone_networks_label(zone: &FirewallZone, names: &HashMap<&EntityId, &str>) -> String {
     let resolved: Vec<&str> = zone
         .network_ids
         .iter()
         .filter_map(|id| names.get(id).copied())
         .collect();
     match zone.network_ids.len() {
-        0 => "─".into(),
+        0 => NONE.into(),
         count if resolved.len() < count => {
             format!("{count} network{}", if count == 1 { "" } else { "s" })
         }
@@ -208,7 +318,7 @@ fn zone_networks_label(zone: &FirewallZone, names: &HashMap<&EntityId, &str>) ->
     }
 }
 
-fn action_label(action: FirewallAction) -> &'static str {
+pub(super) fn action_label(action: FirewallAction) -> &'static str {
     match action {
         FirewallAction::Allow => "Allow",
         FirewallAction::Block => "Block",
@@ -216,125 +326,47 @@ fn action_label(action: FirewallAction) -> &'static str {
     }
 }
 
-fn policy_row(is_selected: bool, cells: PolicyCells, show_zones: bool) -> Row<'static> {
-    let action_color = match cells.action {
+pub(super) fn action_color(action: FirewallAction) -> ratatui::style::Color {
+    match action {
         FirewallAction::Allow => theme::success(),
         FirewallAction::Block => theme::error(),
         FirewallAction::Reject => theme::accent_tertiary(),
-    };
-    let zones_color = if cells.group_start {
-        theme::text_secondary()
-    } else {
-        theme::text_muted()
-    };
-
-    let mut row = vec![Cell::from(cells.index), enabled_cell(cells.enabled)];
-    if show_zones {
-        row.push(Cell::from(cells.zones).style(Style::default().fg(zones_color)));
     }
-    row.extend([
-        Cell::from(cells.name).style(name_style(is_selected)),
-        Cell::from(action_label(cells.action)).style(Style::default().fg(action_color)),
+}
+
+fn policy_row(is_selected: bool, cells: PolicyCells) -> Row<'static> {
+    let muted = Style::default().fg(theme::text_muted());
+    // A policy picked up to move stands out; once sent it steps back
+    // until the controller has it.
+    let style = match cells.moving {
+        Some(true) => Style::default()
+            .fg(theme::warning())
+            .add_modifier(Modifier::BOLD),
+        Some(false) => muted,
+        None => row_style(is_selected),
+    };
+    let name = if cells.moving.is_some() {
+        style
+    } else {
+        name_style(is_selected)
+    };
+    let action = if cells.moving == Some(false) {
+        muted
+    } else {
+        Style::default().fg(action_color(cells.action))
+    };
+    Row::new(vec![
+        Cell::from(cells.position),
+        enabled_cell(cells.enabled),
+        Cell::from(if cells.fixed { FIXED_MARK } else { "" }).style(muted),
+        Cell::from(cells.name).style(name),
+        Cell::from(action_label(cells.action)).style(action),
         Cell::from(cells.protocol),
         Cell::from(cells.source),
         Cell::from(cells.destination),
-    ]);
-    Row::new(row).style(row_style(is_selected))
+    ])
+    .style(style)
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    use serde_json::json;
-    use unifly_api::EntityId;
-    use unifly_api::model::{FirewallPolicy, FirewallZone};
-
-    use super::zone_networks_label;
-    use crate::tui::action::Action;
-    use crate::tui::screens::firewall::FirewallScreen;
-    use crate::tui::table::render_lines;
-
-    fn zone(id: &str, name: &str, networks: &[&str]) -> Arc<FirewallZone> {
-        Arc::new(
-            serde_json::from_value(json!({
-                "id": id, "name": name, "network_ids": networks, "origin": null
-            }))
-            .expect("zone fixture should deserialize"),
-        )
-    }
-
-    fn policy(name: &str, source: &str, destination: &str, index: i32) -> Arc<FirewallPolicy> {
-        Arc::new(
-            serde_json::from_value(json!({
-                "id": name, "name": name, "description": null, "enabled": true,
-                "index": index, "action": "Block", "ip_version": "Both",
-                "source": { "zone_id": source, "filter": null },
-                "destination": { "zone_id": destination, "filter": null },
-                "source_summary": null, "destination_summary": null,
-                "protocol_summary": null, "schedule": null, "ipsec_mode": null,
-                "connection_states": [], "logging_enabled": false, "origin": null
-            }))
-            .expect("policy fixture should deserialize"),
-        )
-    }
-
-    fn screen() -> FirewallScreen {
-        let mut screen = FirewallScreen::new();
-        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(vec![
-            zone("ext", "External", &[]),
-            zone("gw", "Gateway", &[]),
-        ])));
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(vec![
-            policy("Drop inbound SSH from outside", "ext", "gw", 10_000),
-            policy("Allow WireGuard handshakes", "ext", "gw", 10_001),
-        ])));
-        screen
-    }
-
-    fn render(width: u16) -> String {
-        let screen = screen();
-        render_lines(width, 8, |frame, area| screen.render_screen(frame, area)).join("\n")
-    }
-
-    #[test]
-    fn policies_show_their_zone_pair_when_there_is_room() {
-        for width in [96, 120] {
-            let text = render(width);
-            for expected in ["External → Gateway", "Drop inbound SSH from outside"] {
-                assert!(text.contains(expected), "missing {expected:?}:\n{text}");
-            }
-        }
-    }
-
-    #[test]
-    fn narrow_policies_drop_the_zone_pair_and_keep_names() {
-        let text = render(80);
-        assert!(
-            !text.contains("External → Gateway"),
-            "zone pair at 80 columns:\n{text}"
-        );
-        assert!(
-            text.contains("Drop inbound SSH from outside"),
-            "name cut at 80 columns:\n{text}"
-        );
-    }
-
-    #[test]
-    fn zone_networks_list_names_or_fall_back_to_a_count() {
-        let studio = EntityId::Legacy("studio".into());
-        let render_net = EntityId::Legacy("render".into());
-        let names: HashMap<&EntityId, &str> =
-            HashMap::from([(&studio, "Studio"), (&render_net, "Render")]);
-
-        let known = zone("int", "Internal", &["studio", "render"]);
-        assert_eq!(zone_networks_label(&known, &names), "Studio, Render");
-
-        let partly_known = zone("iot", "IoT", &["studio", "cameras"]);
-        assert_eq!(zone_networks_label(&partly_known, &names), "2 networks");
-
-        let empty = zone("ext", "External", &[]);
-        assert_eq!(zone_networks_label(&empty, &names), "─");
-    }
-}
+mod tests;

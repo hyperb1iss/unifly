@@ -1,26 +1,19 @@
 //! All possible UI actions. Actions are the sole mechanism for state mutation.
 
-use std::fmt;
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
 use serde_json::Value;
 use unifly_api::model::{
-    AclRule, EventCategory, FirewallPolicy, FirewallZone, NatPolicy, WifiBroadcast,
+    AclRule, Alarm, FirewallPolicy, FirewallZone, NatPolicy, PoeMode, PortProfile, WifiBroadcast,
 };
 use unifly_api::session_models::{ChannelAvailability, RogueAp};
 use unifly_api::{
-    Client, Device, EntityId, Event, MacAddress, Network, Site, UpdateNetworkRequest,
+    Client, CreateNetworkRequest, Device, EntityId, Event, EventHistoryQuery, Network,
+    UpdateNetworkRequest,
 };
 
 use crate::tui::screen::ScreenId;
-
-/// Direction for reorder operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Up,
-    Down,
-}
 
 /// Client type filter for the clients screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,16 +23,19 @@ pub enum ClientTypeFilter {
     Wired,
     Vpn,
     Guest,
+    /// Blocked clients, including the ones that are off the network.
+    Blocked,
 }
 
 impl ClientTypeFilter {
     /// All filters in filter-bar order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::All,
         Self::Wireless,
         Self::Wired,
         Self::Vpn,
         Self::Guest,
+        Self::Blocked,
     ];
 }
 
@@ -48,7 +44,6 @@ impl ClientTypeFilter {
 pub enum DeviceDetailTab {
     #[default]
     Overview,
-    Performance,
     Radios,
     Clients,
     Ports,
@@ -56,13 +51,16 @@ pub enum DeviceDetailTab {
 
 impl DeviceDetailTab {
     /// All tabs in tab-bar order.
-    pub const ALL: [Self; 5] = [
-        Self::Overview,
-        Self::Performance,
-        Self::Radios,
-        Self::Clients,
-        Self::Ports,
-    ];
+    pub const ALL: [Self; 4] = [Self::Overview, Self::Radios, Self::Clients, Self::Ports];
+}
+
+/// One change to a switch port's configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortChange {
+    /// Give the port this label.
+    Rename(String),
+    /// Set how the port supplies PoE.
+    Poe(PoeMode),
 }
 
 /// Firewall view sub-tab.
@@ -91,14 +89,16 @@ pub enum WifiSubTab {
     #[default]
     Overview,
     Clients,
+    Ssids,
     Neighbors,
     Roaming,
 }
 
 impl WifiSubTab {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Overview,
         Self::Clients,
+        Self::Ssids,
         Self::Neighbors,
         Self::Roaming,
     ];
@@ -107,6 +107,7 @@ impl WifiSubTab {
         match self {
             Self::Overview => "Overview",
             Self::Clients => "Clients",
+            Self::Ssids => "SSIDs",
             Self::Neighbors => "Neighbors",
             Self::Roaming => "Roaming",
         }
@@ -240,6 +241,8 @@ impl StatsPeriod {
 /// Historical stats data fetched from the controller.
 #[derive(Debug, Clone, Default)]
 pub struct StatsData {
+    /// The period the series cover.
+    pub period: StatsPeriod,
     /// WAN TX bandwidth: `(epoch_secs, bytes_per_sec)`
     pub bandwidth_tx: Vec<(f64, f64)>,
     /// WAN RX bandwidth: `(epoch_secs, bytes_per_sec)`
@@ -250,26 +253,14 @@ pub struct StatsData {
     pub dpi_apps: Vec<(String, u64)>,
     /// Top DPI categories: `(name, total_bytes)`
     pub dpi_categories: Vec<(String, u64)>,
-}
-
-/// Sort field for table columns.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SortField {
-    Name,
-    Status,
-    Model,
-    Ip,
-    Cpu,
-    Memory,
-    Traffic,
-    Uptime,
-    Signal,
-    Duration,
+    /// Why application or category traffic could not be read.
+    pub dpi_error: Option<String>,
+    /// Whether the DPI totals were read for this snapshot, rather than
+    /// reused from an earlier one.
+    pub dpi_fetched: bool,
 }
 
 /// Notification severity level.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationLevel {
     Info,
@@ -279,14 +270,12 @@ pub enum NotificationLevel {
 }
 
 /// A toast notification.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub message: String,
     pub level: NotificationLevel,
 }
 
-#[allow(dead_code)]
 impl Notification {
     pub fn success(msg: impl Into<String>) -> Self {
         Self {
@@ -308,49 +297,125 @@ impl Notification {
             level: NotificationLevel::Info,
         }
     }
-}
 
-/// Pending confirmation action.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum ConfirmAction {
-    RestartDevice { id: EntityId, name: String },
-    UpgradeDevice { mac: MacAddress, name: String },
-    UnadoptDevice { id: EntityId, name: String },
-    AdoptDevice { mac: String },
-    PowerCyclePort { device_id: EntityId, port_idx: u32 },
-    BlockClient { id: EntityId, name: String },
-    UnblockClient { id: EntityId, name: String },
-    ForgetClient { id: EntityId, name: String },
-    KickClient { id: EntityId, name: String },
-    DeleteFirewallPolicy { id: EntityId, name: String },
-}
-
-impl fmt::Display for ConfirmAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RestartDevice { name, .. } => write!(f, "Restart {name}?"),
-            Self::UpgradeDevice { name, .. } => write!(f, "Upgrade firmware on {name}?"),
-            Self::UnadoptDevice { name, .. } => {
-                write!(f, "Remove {name}? This cannot be undone.")
-            }
-            Self::AdoptDevice { mac } => write!(f, "Adopt device {mac}?"),
-            Self::PowerCyclePort { port_idx, .. } => write!(f, "Power cycle port {port_idx}?"),
-            Self::BlockClient { name, .. } => write!(f, "Block {name}?"),
-            Self::UnblockClient { name, .. } => write!(f, "Unblock {name}?"),
-            Self::KickClient { name, .. } => {
-                write!(f, "Disconnect {name}?")
-            }
-            Self::ForgetClient { name, .. } => {
-                write!(f, "Forget {name}? History will be lost.")
-            }
-            Self::DeleteFirewallPolicy { name, .. } => write!(f, "Delete policy {name}?"),
+    pub fn warning(msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            level: NotificationLevel::Warning,
         }
     }
 }
 
+/// One write to an SSID.
+#[derive(Debug, Clone)]
+pub enum SsidChange {
+    Update(Box<unifly_api::UpdateWifiBroadcastRequest>),
+    Delete,
+}
+
+/// What the connected controller can reach. Screens use it to say why
+/// something is empty instead of drawing a bare table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Access {
+    /// The Integration API (networks, WiFi, firewall, ACL, DNS).
+    pub integration: bool,
+    /// Session HTTP (stats, events, WiFi observability, NAT, ports).
+    pub session: bool,
+    /// The live event WebSocket.
+    pub live_events: bool,
+}
+
+/// The toasts for one command: what shows while it runs, and what
+/// replaces that once the controller has accepted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub pending: String,
+    pub done: String,
+}
+
+impl Notice {
+    pub fn new(pending: impl Into<String>, done: impl Into<String>) -> Self {
+        Self {
+            pending: pending.into(),
+            done: done.into(),
+        }
+    }
+}
+
+/// A one-line question. The answer goes back to the screen that asked as
+/// [`Action::PromptSubmitted`]; the screen remembers what it asked for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptRequest {
+    /// The dialog title, such as `Fixed IP for nas-vault`.
+    pub title: String,
+    /// What to type, shown above the field.
+    pub label: String,
+    /// The value the field starts with.
+    pub initial: String,
+    /// A line of guidance under the field.
+    pub hint: Option<String>,
+    /// Whether the typed value is drawn masked.
+    pub secret: bool,
+}
+
+/// A zone pair's user policies in evaluation order: those before its
+/// system-defined policies, and those after.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PairOrder {
+    pub before: Vec<EntityId>,
+    pub after: Vec<EntityId>,
+}
+
+/// A drafted policy move as the Firewall screen showed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyMove {
+    /// The zone pair's order when the move was applied.
+    pub started: PairOrder,
+    /// The order the draft leaves it in.
+    pub drafted: PairOrder,
+    /// Whether the table showed the pair's system-defined policies.
+    /// Without them it cannot tell the halves apart, and both orders hold
+    /// every policy in `before`.
+    pub split_shown: bool,
+}
+
+/// A yes/no setting of a firewall rule that the Firewall screen flips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleSwitch {
+    PolicyEnabled,
+    PolicyLogging,
+    AclEnabled,
+    NatEnabled,
+}
+
+/// A question the user answers before `action` is dispatched.
+#[derive(Debug, Clone)]
+pub struct ConfirmRequest {
+    /// The question, such as `Restart sw-core?`.
+    pub prompt: String,
+    /// What saying yes costs, on its own line.
+    pub detail: Option<String>,
+    /// Dispatched on yes.
+    pub action: Box<Action>,
+}
+
+impl ConfirmRequest {
+    pub fn new(prompt: impl Into<String>, action: Action) -> Self {
+        Self {
+            prompt: prompt.into(),
+            detail: None,
+            action: Box::new(action),
+        }
+    }
+
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+}
+
 /// Every state transition in the TUI is expressed as an Action.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Action {
     // ── Lifecycle ──────────────────────────────────────────────────
@@ -363,11 +428,17 @@ pub enum Action {
 
     // ── Navigation ────────────────────────────────────────────────
     SwitchScreen(ScreenId),
+    /// Clear the terminal and draw the whole frame again.
+    Repaint,
+    /// Fetch the controller's data now, or retry a failed connection.
+    Refresh,
+    /// Switch to the Devices screen with this device's detail open.
+    ShowDevice(EntityId),
+    /// Switch to the Clients screen with this client's detail open.
+    ShowClient(EntityId),
     /// Press a key as if it were typed, for a tapped key hint.
     PressKey(KeyEvent),
     GoBack,
-    FocusNext,
-    FocusPrev,
 
     // ── Data Events (from unifly-core streams) ─────────────────────
     DevicesUpdated(Arc<Vec<Arc<Device>>>),
@@ -380,7 +451,6 @@ pub enum Action {
     WifiBroadcastsUpdated(Arc<Vec<Arc<WifiBroadcast>>>),
     EventReceived(Arc<Event>),
     HealthUpdated(Arc<Vec<unifly_api::HealthSummary>>),
-    SiteUpdated(Arc<Site>),
     WifiNeighborsUpdated(Arc<Vec<RogueAp>>),
     WifiChannelsUpdated(Arc<Vec<ChannelAvailability>>),
     WifiClientDetailLoaded {
@@ -408,17 +478,16 @@ pub enum Action {
         attempt: u32,
     },
     RetryConnect,
+    /// What the controller can reach, sent once it has connected.
+    AccessUpdated(Access),
+    /// A different controller is about to connect: every screen drops the
+    /// data it holds, so nothing from the old one stays on screen.
+    ControllerChanged,
 
     // ── Device Selection ──────────────────────────────────────────
-    SelectDevice(usize),
-    OpenDeviceDetail(EntityId),
     CloseDetail,
-    DeviceDetailTab(DeviceDetailTab),
 
     // ── Client Selection ──────────────────────────────────────────
-    SelectClient(usize),
-    OpenClientDetail(EntityId),
-    FilterClientType(ClientTypeFilter),
     WifiSubTab(WifiSubTab),
     WifiFocusAp(Option<EntityId>),
     WifiToggleChannelMap,
@@ -426,15 +495,9 @@ pub enum Action {
     WifiBandSelect(WifiBand),
 
     // ── Firewall ──────────────────────────────────────────────────
-    SelectZonePair(EntityId, EntityId),
-    /// Move this policy one step through its zone pair's ordering on the
-    /// controller. It names the policy, not a row index, so refreshes
-    /// queued ahead of the action cannot redirect the move to another one.
-    ReorderPolicy(Arc<FirewallPolicy>, Direction),
     FirewallSubTab(FirewallSubTab),
 
     // ── Network Editing ──────────────────────────────────────────
-    NetworkEdit(EntityId),
     NetworkSave(EntityId, Box<UpdateNetworkRequest>),
     NetworkEditResult(Result<(), String>),
 
@@ -442,8 +505,6 @@ pub enum Action {
     RequestRestart(EntityId),
     RequestLocate(EntityId),
     RequestUpgrade(EntityId),
-    RequestAdopt(String),
-    RequestUnadopt(EntityId),
     RequestPortPowerCycle(EntityId, u32),
 
     // ── Client Commands ───────────────────────────────────────────
@@ -460,7 +521,11 @@ pub enum Action {
     },
 
     // ── Confirm Dialog ────────────────────────────────────────────
-    ShowConfirm(ConfirmAction),
+    ShowConfirm(ConfirmRequest),
+    /// Ask for one line of text.
+    OpenPrompt(PromptRequest),
+    /// The prompt's answer, delivered to the active screen.
+    PromptSubmitted(String),
     ConfirmYes,
     ConfirmNo,
 
@@ -476,49 +541,239 @@ pub enum Action {
 
     // ── Notifications ─────────────────────────────────────────────
     Notify(Notification),
+    /// Dismiss every warning and error toast.
     DismissNotification,
+    /// Dismiss one toast, by its id.
+    DismissToast(u64),
+    /// Show or hide the list of past notifications.
+    ToggleNotices,
+    /// Run a command on the controller, with toasts for its progress.
+    Run {
+        command: Box<unifly_api::Command>,
+        notice: Notice,
+    },
+    /// The controller accepted a locate command: the LED of this device
+    /// is now on or off.
+    LocateSet(EntityId, bool),
+    /// A command or other controller operation finished: its progress
+    /// toast, when it has one, becomes this notification.
+    OpFinished {
+        progress: Option<u64>,
+        notification: Notification,
+    },
 
     // ── Stats ─────────────────────────────────────────────────────
     RequestStats(StatsPeriod),
     StatsUpdated(StatsData),
 
-    // ── Topology ──────────────────────────────────────────────────
-    TopologyPan(i16, i16),
-    TopologyZoom(f64),
-    TopologyFit,
-    TopologyReset,
-
     // ── Events Screen ─────────────────────────────────────────────
+    /// Pause the live event feed, or resume it.
     ToggleEventPause,
-    FilterEventType(Option<String>),
-    FilterEventCategory(Option<EventCategory>),
-
-    // ── Table Operations ──────────────────────────────────────────
-    SortColumn(SortField),
-    ScrollUp,
-    ScrollDown,
-    ScrollToTop,
-    ScrollToBottom,
-    PageUp,
-    PageDown,
-
-    // ── Onboarding ─────────────────────────────────────────────────
-    OnboardingComplete {
-        profile_name: String,
-        config: Box<unifly_api::ControllerConfig>,
-    },
-    OnboardingTestResult(Result<(), String>),
 
     // ── Settings ────────────────────────────────────────────────────
     OpenSettings,
     CloseSettings,
-    SettingsTestResult(Result<(), String>),
-    SettingsApply {
-        profile_name: String,
-        config: Box<unifly_api::ControllerConfig>,
-    },
 
     // ── Donate ───────────────────────────────────────────────────
     OpenDonate,
     SetShowDonate(bool),
+
+    // ── networks-firewall ──
+    /// Create the network the form describes.
+    NetworkCreate(Box<CreateNetworkRequest>),
+    /// Check what uses a network, then ask before deleting it.
+    RequestDeleteNetwork(EntityId),
+    /// The check of what uses a network is back. `confirm` is the
+    /// question to ask, where the user is still on that network with
+    /// nothing else open; anywhere else it would take keys meant for
+    /// something else.
+    NetworkDeleteChecked {
+        id: EntityId,
+        name: String,
+        confirm: Box<ConfirmRequest>,
+    },
+    /// Write this policy's drafted move to the controller. It names the
+    /// policy and the order the draft was made on, so a refresh queued
+    /// ahead of the action cannot redirect the move, and an order that
+    /// changed under the draft is caught before anything is written.
+    MovePolicy {
+        policy: Arc<FirewallPolicy>,
+        plan: Box<PolicyMove>,
+    },
+    /// A policy move ended; `moved` says whether the order changed.
+    PolicyMoveSettled {
+        moved: bool,
+    },
+    /// Flip one switch of a firewall rule and check, once the data has
+    /// been fetched again, that the controller did.
+    SetRuleSwitch {
+        id: EntityId,
+        switch: RuleSwitch,
+        on: bool,
+    },
+    // ── WiFi ──────────────────────────────────────────────────────
+    /// The neighbor scan could not be read; the WiFi screen shows why.
+    WifiNeighborsFailed(String),
+    /// The regulatory channel list could not be read.
+    WifiChannelsFailed(String),
+    /// What a WiFi fetch brought back, tagged with the controller it asked:
+    /// an answer that outlived its controller is dropped.
+    WifiAnswer {
+        generation: u64,
+        answer: Box<Action>,
+    },
+    /// Read one SSID in full: the controller's list leaves most of its
+    /// settings out.
+    RequestWifiBroadcastDetail(EntityId),
+    WifiBroadcastDetailLoaded {
+        id: EntityId,
+        detail: Arc<WifiBroadcast>,
+    },
+    WifiBroadcastDetailFailed {
+        id: EntityId,
+        error: String,
+    },
+    /// Read whether an SSID hides its name, then ask before flipping it.
+    RequestSsidVisibilityToggle(EntityId),
+    /// The record a visibility toggle just read from the controller.
+    WifiSsidVisibilityRead {
+        id: EntityId,
+        detail: Arc<WifiBroadcast>,
+    },
+    /// Open the rename prompt for an SSID, on `typed` when a first answer
+    /// could not be used. The App seeds it from the controller's own name.
+    RequestSsidRename {
+        id: EntityId,
+        typed: Option<String>,
+    },
+    /// Check a new SSID name against the controller's names, then ask
+    /// before renaming.
+    RequestSsidRenameTo {
+        id: EntityId,
+        name: String,
+    },
+    /// Change or delete one SSID, check that it took, and read it again.
+    /// A second write to an SSID waits for the first to end.
+    WifiSsidWrite {
+        id: EntityId,
+        change: SsidChange,
+        notice: Notice,
+    },
+    /// A write to this SSID ended, whether or not it took. `detail` is
+    /// the record read back after it, when that read worked.
+    WifiSsidWriteSettled {
+        id: EntityId,
+        detail: Option<Arc<WifiBroadcast>>,
+    },
+    /// Open a prompt for the SSIDs tab at once, unless a dialog is up: a
+    /// prompt queued behind a dialog would take the keys meant for it.
+    RequestSsidPrompt(PromptRequest),
+    // ── monitor ───────────────────────────────────────────────────
+    /// Fetch events from further back than the feed holds. `id` names the
+    /// request, so its result can be told from one that was cancelled.
+    RequestEventHistory {
+        id: u64,
+        query: EventHistoryQuery,
+    },
+    /// The events a history fetch returned, for the Events screen to merge.
+    EventHistoryLoaded {
+        id: u64,
+        query: EventHistoryQuery,
+        events: Arc<Vec<Arc<Event>>>,
+    },
+    EventHistoryFailed {
+        id: u64,
+        message: String,
+    },
+    /// Stop the history fetch in flight.
+    CancelEventHistory,
+    /// Fetch the controller's alarms.
+    RequestAlarms,
+    AlarmsLoaded(Arc<Vec<Alarm>>),
+    AlarmsFailed(String),
+    /// A stats fetch for this period is under way.
+    StatsLoading(StatsPeriod),
+    /// A stats fetch for this period failed.
+    StatsFailed {
+        period: StatsPeriod,
+        message: String,
+    },
+    /// What a monitor fetch came back with, and the controller generation
+    /// it was asked under. It is acted on only while that controller is
+    /// still the one connected, so a result that outlives a profile switch
+    /// cannot land in the next controller's screens.
+    MonitorFetched {
+        generation: u64,
+        result: Box<Action>,
+    },
+    /// Load a stats period again because the user asked: nothing cached
+    /// stands in for a fresh read.
+    ReloadStats(StatsPeriod),
+    // ── devices-clients ───────────────────────────────────────────
+    /// Adopt the pending device with this ID, after a confirmation.
+    RequestAdoptDevice(EntityId),
+    /// Push a device's configuration to it again, after a confirmation.
+    RequestProvision(EntityId),
+    /// Fetch a device's per-port configuration for the Devices screen.
+    RequestPortProfiles(EntityId),
+    PortProfilesLoaded {
+        device: EntityId,
+        ports: Arc<Vec<PortProfile>>,
+    },
+    PortProfilesFailed {
+        device: EntityId,
+        error: String,
+    },
+    /// Change one port's configuration on the controller.
+    RequestPortUpdate {
+        device: EntityId,
+        port: u32,
+        change: PortChange,
+    },
+    /// Reserve `ip` for a client on the network whose subnet holds it.
+    RequestSetFixedIp {
+        client: EntityId,
+        ip: std::net::Ipv4Addr,
+    },
+    /// Drop a client's reserved address, after a confirmation.
+    RequestRemoveFixedIp(EntityId),
+    /// Fetch the blocked clients that are off the connected list.
+    RequestBlockedClients,
+    BlockedClientsLoaded(Arc<Vec<Arc<Client>>>),
+    /// Why the blocked clients cannot be listed.
+    BlockedClientsFailed(String),
+    // ── setup ────────────────────────────────────────────────────
+    /// A connection test started by the setup wizard or Settings finished.
+    /// Only the test with this generation may act on it.
+    SetupProbeFinished {
+        generation: u64,
+        result: Box<crate::tui::forms::probe::ProbeResult>,
+    },
+    /// The save that follows a passed test finished: the notices to show,
+    /// or why nothing was saved.
+    SetupSaveFinished {
+        generation: u64,
+        result: Result<Vec<String>, String>,
+    },
+    /// Which credentials the keyring holds for a profile a form is showing.
+    SetupKeyringChecked {
+        profile: String,
+        api_key: bool,
+        password: bool,
+    },
+    /// Connect the session with a profile a form has tested and saved.
+    ApplyConnection {
+        profile_name: String,
+        config: Box<unifly_api::ControllerConfig>,
+        notices: Vec<String>,
+        /// The launch flags the connection was tested under, which stay
+        /// in force for the session.
+        flags: crate::config::resolve::ConnectionOverrides,
+    },
+    /// Show another saved profile in Settings.
+    SettingsShowProfile(String),
+    /// Open the setup wizard for a new profile with this name.
+    SetupNewProfile(String),
+    /// Leave a setup wizard that was opened from a running session.
+    SetupCancelled,
 }

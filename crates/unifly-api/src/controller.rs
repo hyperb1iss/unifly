@@ -33,6 +33,8 @@ mod session_queries;
 mod subscriptions;
 mod support;
 
+#[cfg(feature = "demo")]
+pub(crate) use commands::fixed_ip;
 pub use event_history::EventHistoryQuery;
 pub use ports::{ApplyPortsSummary, PortProfileUpdate};
 
@@ -75,6 +77,9 @@ struct ControllerInner {
     /// Created without a receiver; publish with `send_replace`, since
     /// `send` drops the value while nobody is subscribed.
     connection_state: watch::Sender<ConnectionState>,
+    /// Held for the length of a full refresh, so refreshes apply in the
+    /// order they started.
+    refresh_gate: tokio::sync::Mutex<()>,
     event_tx: broadcast::Sender<Arc<Event>>,
     /// Feeds the command processor of the current connection. `None`
     /// whenever no processor is running, so a command fails at once
@@ -97,6 +102,9 @@ struct ControllerInner {
     lifecycle: Mutex<()>,
     /// Warnings accumulated during connect (e.g. Session auth failure in Hybrid mode).
     warnings: Mutex<Vec<String>>,
+    /// Set once a login has sent the configured `totp_token`. A code works
+    /// once, so a later connect on this controller must not send it again.
+    totp_token_spent: std::sync::atomic::AtomicBool,
     /// Synthetic fleet backing a [`Controller::demo`] controller.
     #[cfg(feature = "demo")]
     demo: std::sync::OnceLock<Arc<crate::demo::DemoRuntime>>,
@@ -117,6 +125,7 @@ impl Controller {
                 config,
                 store,
                 connection_state,
+                refresh_gate: tokio::sync::Mutex::new(()),
                 event_tx,
                 command_tx: Mutex::new(None),
                 cancel,
@@ -125,6 +134,7 @@ impl Controller {
                 port_writes: port_writes::PortWrites::default(),
                 integration_client: Mutex::new(None),
                 warnings: Mutex::new(Vec::new()),
+                totp_token_spent: std::sync::atomic::AtomicBool::new(false),
                 site_id: Mutex::new(None),
                 ws_handle: Mutex::new(None),
                 task_handles: Mutex::new(Vec::new()),

@@ -7,6 +7,272 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **The TUI can change the network, not only watch it.** Every screen was
+  reworked and most gained write actions, each confirmed where it is
+  disruptive and reported through one feedback path (below).
+- **Devices**: adopt, provision, remove, and gateway speed test join
+  restart, locate, and upgrade. Devices waiting for adoption are listed
+  beside the adopted ones, so adopt has something to act on. The detail's
+  Ports and Clients tabs have their own cursor, so every row is reachable on
+  a short terminal. A gateway's Clients tab lists every client that reaches
+  it and names the switch or access point each one attaches to. The Ports
+  tab can power cycle a PoE port, turn its
+  PoE off and back on in the mode it had, and rename it. The table filters
+  by type and sorts by column (`s`, `r` to reverse), and the Updates filter
+  counts the devices with firmware waiting.
+- **Clients**: `b` blocks or unblocks by the client's state, `x` kicks a
+  wireless client, `I` sets or removes a fixed IP, `A` authorizes a guest
+  for a number of minutes or revokes one, and `F` forgets the client. A
+  Blocked filter lists the blocked clients, the offline ones the controller
+  remembers included, so they can be unblocked or forgotten.
+- **Networks**: create (`c`) and delete (`D`) alongside edit. The form has
+  cursor editing, takes a paste, validates under the field it is about, and
+  covers the gateway and prefix, the DHCP range and DNS servers, and only
+  the fields the network's kind can take. A save that deletes settings (a
+  DHCP server's range and options, IPv6) or cuts devices off (internet
+  access, isolation) says so and asks first. Delete asks the controller what
+  uses the network and names it in the confirmation. A network that relays
+  DHCP reads `Relay`, and its detail names the servers.
+- **Firewall**: `Enter` opens a detail panel for policies, zones, ACL rules,
+  and NAT rules with the full filters the table cuts. Policies, ACL rules,
+  and NAT rules can be enabled, disabled, and deleted, and a policy's
+  logging toggled. Every switch is checked against the list read back from
+  the controller, so one that was accepted but not applied is an error, not
+  a success. Rules the controller owns (system-defined, or derived from
+  another rule) refuse those keys with the reason; logging is the one switch
+  a system-defined policy takes. Sub-tabs carry counts, and policies are
+  numbered by their place in their zone pair.
+- **WiFi**: a new SSIDs sub-tab lists every broadcast and can enable,
+  disable, hide, rename, change the passphrase of, and delete one. Each of
+  those asks first: `E` before enabling as well as disabling, and `H` after
+  reading the SSID, as `Hide X?` or `Announce X again?`. A new passphrase is
+  typed twice, and `P` is refused on open and enterprise SSIDs and on one
+  that gives each network its own key. A second write to an SSID while one
+  is in flight is refused, and each write is checked against the record read
+  back. The settings the controller's list leaves out (hidden, isolation,
+  steering, fast roaming, MLO) are read per SSID and show as `…` or unknown
+  until then, never as off. The Clients sub-tab gains forget and jumps to
+  the Clients screen, access points can be upgraded and opened on the
+  Devices screen, an explicit AP focus (`Space`) narrows the other sub-tabs
+  to one access point, and the WiFi experience panel shows the client's
+  uplink path.
+- **Events**: a cursor with a detail pane (`Enter`) that jumps to the
+  event's device or client and names the device or client behind an address
+  the message spells out, a category filter (`h`/`l`), search by message
+  text, older history a page at a time from the oldest event shown (`o`,
+  with `Esc` to cancel a load), firewall blocks on demand (`f`), and an
+  Alarms view (`v`) that archives one alarm or all of them. The toolbar
+  says whether events arrive live, by polling, or not at all, and counts the
+  active alarms, the top border says how far back the feed reaches, and the
+  Dashboard title counts the active alarms too.
+- **Topology**: the map opens fitted to the screen, never below 80% so names
+  stay whole, `f` fits and `r` resets to 100%, `[` and `]` walk a device
+  cursor, and `Enter` or a second tap opens the selected device. The legend
+  sits on the map's bottom border.
+- **Dashboard**: arrows and `hjkl` move a focus across the panels, `Enter`
+  opens the focused panel's screen or the gateway, a tapped access point or
+  client row opens it, and `S` runs a WAN speed test whose result shows on
+  the Gateway panel's new `Speed` line. The Networks panel is one headed
+  line per network, and the Gateway panel spells its labels out.
+- **Feedback for every command.** A progress toast appears when a command
+  starts and becomes its result, and the controller's data is fetched again
+  when it lands, so the screens show the change at once. Toasts stack and
+  wrap, `n` opens a history of the last 50, confirmation dialogs size to
+  their text and say what yes costs, and a one-line prompt takes single
+  values such as a fixed IP, a port name, or a passphrase (`Ctrl+t` shows or
+  hides a masked one). A confirmation that arrives late, from a check that
+  ran in the background, never replaces an open dialog or opens over a
+  prompt or the search bar: it is dropped with a notice to press the key
+  again.
+- `F1` opens help everywhere, including over the setup wizard and Settings
+  where `?` types into a field. The overlay lists the active screen's keys
+  for the mode it is in beside the global ones, wraps a long description
+  instead of cutting it, and lists `/` only on screens where search filters.
+- `PgUp`, `PgDn`, `Home`, and `End` work in every list, and `Ctrl+l` redraws
+  the screen.
+- Setup and Settings share one form with a one-time MFA code field, a site
+  picker fed by the controller, editable CA certificate and timeout, and in
+  Settings a profile picker that can start the wizard for a new profile.
+  Both take a paste.
+- The demo fleet simulates the new writes offline: network create, edit, and
+  delete, policy and rule toggles, deletes, and reorders, SSID edits and
+  deletes, alarm archiving, port PoE and rename, guest authorization, fixed
+  IPs, forgetting a client, and removing and adopting an access point.
+- `clients set-ip` and `clients remove-ip` take `--network` as an
+  Integration ID, a session `_id`, or a name, and work on session-only
+  profiles.
+- `devices list` includes devices waiting for adoption on profiles that
+  reach the Integration API.
+
+### Changed
+
+- **`Tab` always switches screens.** It no longer cycles the Clients filter
+  or the WiFi sub-tabs. `h`/`l` and the left and right arrows step sub-tabs,
+  filters, and periods on every screen, in both directions.
+- **Stats periods step with `h`/`l`** (or the arrows) instead of the `h`,
+  `d`, `w`, and `m` keys. `r` still reloads, and re-reads the DPI totals
+  with the period.
+- **Firewall reordering is pick up, move, apply.** `K` or `J` picks the
+  selected policy up and moves it on screen only, `Enter` writes the result
+  as one ordering, and `Esc` puts it back. Each press used to write to the
+  controller. The ordering is written only if the controller still has the
+  order the table showed; otherwise the list is refreshed and nothing is
+  written.
+- Toasts moved from the bottom-right to the top-right corner, under the
+  toolbar row, and no longer replace one another. The newest is always
+  drawn, and a toast that just arrived is never the one evicted.
+- `Ctrl+r` refreshes the data while connected. It still retries the
+  connection while disconnected. Held down it is one refresh, and it does
+  nothing while a form is open.
+- `Esc` closes one thing per press: the screen's detail, then a warning or
+  error toast, then a kept search filter, then the screen, going back once.
+- WiFi AP focus is set with `Space` instead of following the cursor, and
+  each WiFi sub-tab keeps its own sort, search, and panel. `b` on the WiFi
+  Clients sub-tab blocks or unblocks by the client's state.
+- Locate is a toggle: `L` again turns the LED back off. The LED is marked as
+  flashing only once the controller has accepted the command.
+- The setup wizard asks for the auth mode first, skips the address for
+  Cloud, and makes TLS verification an explicit choice, worded as turning
+  certificate checks off. A connection test that passes is what gets saved
+  and applied, and `Esc` asks before dropping unsaved edits. Launch flags
+  such as `--site` and `--insecure` survive a Settings save until the form
+  changes what they cover; `--timeout` and `--no-cache` are never written to
+  a profile. A save keeps the keys the form did not change, such as
+  `api_key_env`, `host_id_env`, and the credentials of auth modes not in
+  use.
+- **One footer replaces the per-screen hint rows.** The status bar shows
+  the connection state, then the actions the selected row or the screen can
+  take, as many as fit, with `/ search`, `^r retry` while disconnected, and
+  `? help` against the right edge. Navigation keys, `^r refresh`,
+  `, settings`, and `q quit` still work and are listed in the help overlay
+  instead. Tabs and filters no longer put the active one in brackets: every
+  tab keeps its width and the active one is bold and underlined. The sort
+  and other view state sit at the right of the toolbar row as a chip that
+  shows its key (`s sort name ↑`), and row counts are in the screen title.
+- The status bar and the help overlay list only the keys that work for the
+  row, sub-tab, and mode on screen, and while a form has the keyboard the
+  status bar shows only `F1 help` and `^c quit`. Empty tables and panels say
+  whether they are waiting, have nothing, or need access this profile lacks,
+  and a key the profile's access cannot serve says so instead of sending a
+  command that fails.
+- `firewall policies patch --enabled` now performs a full update: it fetches
+  the policy and writes it back whole. The controller's PATCH takes only
+  logging and flow reporting, so the old request was accepted and ignored.
+- `networks create` and `networks update` refuse settings the network's kind
+  has no field for (isolation, internet access, mDNS, IPv6) instead of
+  dropping them from the request. An update also refuses more than four DNS
+  servers, a DNS server that is not IPv4, and turning IPv6 on where the
+  network has no IPv6 configuration to keep.
+- `clients block`, `clients unblock`, and `clients kick` go through the
+  session station manager whenever the profile has a session, which reaches
+  a blocked client that is offline. The Integration action is used only
+  without one.
+- `wifi list -o json` and `-o yaml` leave out `hidden`, `client_isolation`,
+  `band_steering`, `mlo_enabled`, and `fast_roaming` when the controller did
+  not report them, where they used to print `false`, and add
+  `preshared_key_count`. `wifi get` prints `-` for a setting the controller
+  did not report. `wifi update --passphrase` on an SSID with per-network
+  keys is a validation error.
+- Network JSON output gains `dhcp.relay_servers`.
+- `unifly-api`: from the second failed periodic refresh in a row, the
+  controller publishes `ConnectionState::Reconnecting` with the count of
+  failures, and any full refresh that succeeds publishes `Connected` again.
+  One failed refresh publishes nothing. The clients stay installed
+  throughout, so `Reconnecting` can now be seen on a connected controller.
+  Full refreshes run one at a time. Events new to a refresh are broadcast
+  oldest first. A failed connect names its underlying cause.
+- **Breaking for `unifly-api` consumers:**
+  - `WifiBroadcast`: `hidden`, `client_isolation`, `band_steering`,
+    `mlo_enabled`, and `fast_roaming` are `Option<bool>`. The controller's
+    list does not carry them, so they are `None` until the broadcast's
+    detail is read. `preshared_key_count` is a new field, and
+    `WifiBroadcast::summary()` and `Controller::wifi_passphrase_matches` are
+    new.
+  - `FirewallPolicyPatch.enabled` is removed. An enable or disable goes
+    through the full policy update.
+  - `IntegrationClient::delete_network` takes a `force` argument.
+  - `Command::SetClientFixedIp.network_id` is `Option<EntityId>`. `None`
+    picks the network whose subnet holds the address.
+  - `EventHistoryQuery` gains `until`, the newest moment the window covers,
+    so struct literals need it or `..Default::default()`.
+  - `DhcpConfig.relay_servers`, `AclRuleResponse.extra`, and
+    `AclRuleCreateUpdate.extra` are added, which breaks struct literals of
+    those types.
+  - `Controller::logout_session()` and `session_cache::cache_dir()` are new.
+  - `ConnectionState::Reconnecting` is published while the controller is
+    connected (above). It reports a link that is failing, not one that is
+    gone: commands still run.
+
+### Fixed
+
+- **Updating an ACL rule or a firewall policy no longer drops the fields the
+  update did not name.** Any ACL rule update, including a plain enable or
+  disable, rewrote the rule without its protocol filter, and the controller
+  reads a missing filter as every protocol: a "block TCP" rule became "block
+  everything". A MAC rule lost its network filter the same way. `firewall
+  policies update --ip-version` dropped the policy's protocol filter, and
+  unset optional fields were written as explicit nulls. Updates now send
+  back everything they fetched.
+- `networks delete --force` reaches the controller. The flag was accepted
+  and dropped, so a network in use could not be deleted.
+- A fixed IP is written under the network's session ID. API-key and Hybrid
+  profiles sent the Integration ID, which the controller's reservation does
+  not use.
+- Guest and blocked state reach clients on API-key and Hybrid profiles, so
+  the guest filter fills and a blocked client can be unblocked.
+- A one-time TOTP code (`--totp`, `UNIFI_TOTP`, `totp_env`, or typed into a
+  form) is sent once per controller and never replayed on a reconnect, where
+  each retry was a failed MFA login. A reconnect asks `totp_command` for a
+  fresh code, or stops at the two-factor challenge.
+- `Ctrl+c` quits from every state. It used to toggle the WiFi channel map
+  and was ignored under the confirm, help, about, and search overlays.
+  `SIGTERM`, `SIGHUP`, `SIGINT`, `SIGQUIT`, and a closed input stream also
+  quit cleanly and restore the terminal.
+- `?` opens help on terminals that report Shift with it, and a `Ctrl` or
+  `Alt` chord no longer acts as its plain letter (`Ctrl+b` opened the block
+  dialog).
+- Pasted text no longer runs as keystrokes. A paste goes to the search bar
+  or the focused field and is dropped anywhere else; before, a paste
+  containing `J` could reorder firewall policies.
+- A link lost after a good connect shows as reconnecting instead of leaving
+  frozen data under a connected status. A single failed refresh does not
+  count as one: the screens keep their data, and commands are still sent.
+- Events land in time order and are no longer doubled by a reconnect or a
+  settings save, and a live event and the copy a later poll lists show as
+  one event.
+- A network save the controller refuses keeps the form open with the draft
+  and the reason. The form used to close before the save was sent.
+- The connection test validates what was typed, not a cached session or
+  `UNIFI_PASSWORD`, fails when a hybrid connect only half worked, and can be
+  cancelled without a late result saving or reconnecting. Failures are
+  explained by kind, including an address that is not a UniFi controller and
+  a refused or missing one-time code.
+- Error text in toasts and failure messages wraps instead of being cut at 55
+  columns.
+- Stats shows loading, error, and no-access states instead of leaving the
+  previous period's charts under the new period. DPI read failures show in
+  their panel instead of as a repeating toast.
+- The WiFi channel map counts every radio of every online access point, so
+  your own APs show on 5 GHz and 6 GHz, marks DFS channels, and counts a
+  neighbor once however many access points hear it. Roam history sorts by
+  timestamp, shows local time, and says on its toolbar when a refresh
+  failed.
+  Client counts that are unknown without a session read as unknown instead
+  of zero.
+- The Dashboard no longer draws a stalled WAN rate as a flat line, and
+  panels with missing data say so instead of showing guesses.
+- A device or client detail stays readable on short and narrow terminals,
+  and names cut to fit a column end in an ellipsis.
+- A jump to a device or client that has left the controller says so instead
+  of switching to a screen that cannot show it.
+- A demo session redacts the addresses and MACs inside firewall policy
+  filters, switch port labels, a MAC or WAN address that stands in for a
+  name, and the controller's address in an error. Settings stays redacted
+  through a failed test, the setup wizard masks its values, and a
+  `totp_command` is shown by its program name only.
+
 ## [0.13.0] - 2026-11-07
 
 ### Added

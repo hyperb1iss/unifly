@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::convert::system_log::{invalid_history, legacy_history_event};
 use crate::model::{EntityId, Event};
@@ -21,10 +21,16 @@ use retained::RetainedEvents;
 /// Bounds and visibility for a newest-first event history query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventHistoryQuery {
+    /// How far back the window reaches from its end.
     pub within_hours: u32,
     pub limit: u32,
     /// Include firewall-block events in addition to the usual operational events.
     pub include_firewall: bool,
+    /// The newest moment the window covers; `None` is now. Passing the
+    /// time of the oldest event already held asks for the ones before it,
+    /// which is how a caller pages past its `limit`. The bound is
+    /// inclusive, so events of that exact instant come back again.
+    pub until: Option<DateTime<Utc>>,
 }
 
 impl Default for EventHistoryQuery {
@@ -33,6 +39,7 @@ impl Default for EventHistoryQuery {
             within_hours: 24,
             limit: 100,
             include_firewall: false,
+            until: None,
         }
     }
 }
@@ -44,12 +51,13 @@ impl Controller {
             return Ok(Vec::new());
         }
         #[cfg(feature = "demo")]
-        if self.demo_runtime().is_some() {
+        if let Some(demo) = self.demo_runtime() {
+            // The simulation's own history, not the store: the store
+            // holds what a refresh lists, which leaves firewall blocks out.
             let mut history = History::new(query);
-            let events = self.events_snapshot();
-            for event in events.iter() {
-                let firewall = event.event_type == "EVT_GW_FirewallBlock";
-                history.push(event.as_ref().clone(), firewall);
+            for event in demo.with(|sim| sim.fleet.events.clone()) {
+                let firewall = event.event_type == crate::demo::sim::FIREWALL_BLOCK;
+                history.push(event, firewall);
             }
             return Ok(history.finish());
         }
@@ -114,7 +122,7 @@ async fn legacy_events(session: &SessionClient, mut history: History) -> Result<
     let mut progress = RawProgress::default();
     loop {
         let page = session
-            .list_events_page(history.query.within_hours, start, PAGE_SIZE)
+            .list_events_page(history.legacy_within_hours, start, PAGE_SIZE)
             .await?;
         let raw_count = u32::try_from(page.len())
             .map_err(|_| invalid_history("legacy event page is too large"))?;
@@ -193,17 +201,34 @@ struct History {
     query: EventHistoryQuery,
     start: i64,
     end: i64,
+    /// Hours from now back to `start`. The legacy endpoint only counts
+    /// back from now, so a window that ends in the past is asked for whole
+    /// and the rows after `end` are dropped as they arrive.
+    legacy_within_hours: u32,
     events: RetainedEvents,
     ids: HashSet<EntityId>,
 }
 
 impl History {
     fn new(query: EventHistoryQuery) -> Self {
-        let end = Utc::now().timestamp_millis();
+        let now = Utc::now().timestamp_millis();
+        let end = query
+            .until
+            .map_or(now, |until| until.timestamp_millis().min(now));
+        let start = end
+            .saturating_sub(i64::from(query.within_hours) * 3_600_000)
+            .max(0);
+        let legacy_within_hours = if query.until.is_none() {
+            query.within_hours
+        } else {
+            u32::try_from((now - start).max(0).unsigned_abs().div_ceil(3_600_000))
+                .unwrap_or(u32::MAX)
+        };
         Self {
             query,
-            start: (end - i64::from(query.within_hours) * 3_600_000).max(0),
+            start,
             end,
+            legacy_within_hours,
             events: RetainedEvents::new(query.limit),
             ids: HashSet::new(),
         }

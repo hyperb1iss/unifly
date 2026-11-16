@@ -110,9 +110,37 @@ impl Controller {
         if self.inner.task_handles.lock().await.is_empty() {
             return Err(CoreError::ControllerDisconnected);
         }
-        let (result, delta) = runtime.with(|sim| sim.apply_command(command, Utc::now()))?;
+        let (result, delta, config) = runtime.with(|sim| {
+            sim.apply_command(command, Utc::now())
+                .map(|(result, delta)| {
+                    let config = delta.config_changed.then(|| sim.config_snapshot());
+                    (result, delta, config)
+                })
+        })?;
+        if let Some(config) = config {
+            self.inner.store.apply_integration_snapshot(config);
+        }
         apply_delta(&self.inner.store, &self.inner.event_tx, delta);
         Ok(result)
+    }
+}
+
+impl Controller {
+    /// Demo `update_device_port()`: apply the edit to the simulation.
+    pub(super) async fn demo_update_port(
+        &self,
+        runtime: &DemoRuntime,
+        device_mac: &crate::model::MacAddress,
+        port_idx: u32,
+        update: &super::PortProfileUpdate,
+    ) -> Result<(), CoreError> {
+        if self.inner.task_handles.lock().await.is_empty() {
+            return Err(CoreError::ControllerDisconnected);
+        }
+        let delta =
+            runtime.with(|sim| sim.apply_port_update(device_mac, port_idx, update, Utc::now()))?;
+        apply_delta(&self.inner.store, &self.inner.event_tx, delta);
+        Ok(())
     }
 }
 
@@ -168,6 +196,15 @@ fn apply_delta(store: &DataStore, events: &broadcast::Sender<Arc<Event>>, delta:
             let key = format!("fwp:{}", policy.id);
             let id = policy.id.clone();
             store.firewall_policies.upsert(key, id, policy);
+        }
+    }
+
+    if !delta.wifi.is_empty() {
+        let _batch = store.wifi_broadcasts.begin_batch();
+        for wifi in delta.wifi {
+            let key = format!("wifi:{}", wifi.id);
+            let id = wifi.id.clone();
+            store.wifi_broadcasts.upsert(key, id, wifi);
         }
     }
 

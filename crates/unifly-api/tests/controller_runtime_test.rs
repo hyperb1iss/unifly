@@ -864,6 +864,123 @@ async fn static_totp_session_does_not_relogin() {
     server.verify().await;
 }
 
+/// A fixed TOTP code works once. A reconnect on the same controller (the
+/// dashboard retrying after a drop) must not post it a second time: the
+/// controller would refuse it on every attempt, each one a failed MFA
+/// login against the account. The second login stops at the challenge.
+#[tokio::test]
+async fn a_reconnect_never_replays_a_fixed_totp_code() {
+    let server = MockServer::start().await;
+    // The code mock accepts exactly one login; the bare login is
+    // challenged twice, once per connect.
+    mock_mfa_legacy_controller(&server, &[("123456", "first")], 2).await;
+
+    let mut config = mfa_config(&server);
+    config.totp_token = Some(secret("123456"));
+    let controller = Controller::new(config);
+    controller.connect_lightweight().await.unwrap();
+
+    let error = controller
+        .connect_lightweight()
+        .await
+        .expect_err("the spent code cannot sign in again");
+    assert!(
+        matches!(error, CoreError::AuthenticationFailed { .. }),
+        "{error:?}"
+    );
+
+    let logins: Vec<serde_json::Value> = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.method == "POST" && request.url.path() == "/api/login")
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    let bare = json!({ "username": "admin", "password": "password" });
+    assert_eq!(logins.len(), 3, "{logins:?}");
+    assert_eq!(logins[0], bare);
+    assert_eq!(logins[1]["ubic_2fa_token"], "123456");
+    assert_eq!(logins[2], bare, "the reconnect sends no code");
+
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+/// Once the fixed code is spent, a reconnect takes its code from the
+/// provider instead of letting the spent one shadow it.
+#[tokio::test]
+async fn a_reconnect_after_a_fixed_code_asks_the_provider() {
+    let server = MockServer::start().await;
+    mock_mfa_legacy_controller(&server, &[("123456", "first"), ("222222", "second")], 2).await;
+
+    let (provider, calls) = sequence_provider(&["222222"]);
+    let mut config = mfa_config(&server);
+    config.totp_token = Some(secret("123456"));
+    config.totp_provider = Some(provider);
+    let controller = Controller::new(config);
+    controller.connect_lightweight().await.unwrap();
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the fixed code serves the first login"
+    );
+
+    controller.connect_lightweight().await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    controller.disconnect().await;
+    server.verify().await;
+}
+
+/// A cookie session that nothing will use again can be ended on request,
+/// ahead of the disconnect that would otherwise leave it to expire.
+#[tokio::test]
+async fn logout_session_ends_the_cookie_session_on_request() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+    assert_eq!(logout_requests(&server).await, 0);
+
+    controller.logout_session().await;
+
+    let logouts: Vec<Request> = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|request| request.url.path() == "/api/logout")
+        .collect();
+    assert_eq!(logouts.len(), 1);
+    assert_eq!(logouts[0].method, "POST");
+    assert!(
+        logouts[0]
+            .headers
+            .get("cookie")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|cookie| cookie.contains("unifly_session=session-cookie")),
+        "the logout names the session it ends"
+    );
+
+    // An API key connection holds no cookie session to end.
+    let server = MockServer::start().await;
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.logout_session().await;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+    );
+}
+
 /// With a provider and no fixed code, the connect login asks it for a code
 /// at the MFA challenge, and the re-login after an expiry asks it again
 /// for a fresh one instead of reusing the first.
@@ -2665,3 +2782,13 @@ mod inventory_refresh;
 
 #[path = "controller_runtime/network11.rs"]
 mod network11;
+
+#[path = "controller_runtime/devices_clients.rs"]
+mod devices_clients;
+#[path = "controller_runtime/round_trip.rs"]
+mod round_trip;
+
+#[path = "controller_runtime/network_writes.rs"]
+mod network_writes;
+#[path = "controller_runtime/wifi.rs"]
+mod wifi_broadcasts;

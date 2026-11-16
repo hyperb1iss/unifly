@@ -1,5 +1,5 @@
 use crate::integration_types;
-use crate::model::common::DataSource;
+use crate::model::common::{DataSource, EntityOrigin};
 use crate::model::entity_id::EntityId;
 use crate::model::firewall::{NatPolicy, NatType};
 
@@ -119,7 +119,18 @@ pub fn nat_policy_from_v2(v: &serde_json::Value) -> Option<NatPolicy> {
             .and_then(|v| v.as_str())
             .map(ToOwned::to_owned),
         rule_index: v.get("rule_index").and_then(serde_json::Value::as_u64),
-        origin: None,
+        // The v2 API marks the rules the controller owns, which it will
+        // not change or delete.
+        origin: v
+            .get("is_predefined")
+            .and_then(serde_json::Value::as_bool)
+            .map(|predefined| {
+                if predefined {
+                    EntityOrigin::SystemDefined
+                } else {
+                    EntityOrigin::UserDefined
+                }
+            }),
         data_source: DataSource::SessionApi,
     })
 }
@@ -129,6 +140,7 @@ mod tests {
     use serde_json::json;
 
     use super::nat_policy_from_v2;
+    use crate::model::common::EntityOrigin;
 
     #[test]
     fn v2_nat_rule_keeps_its_rule_index() {
@@ -144,5 +156,23 @@ mod tests {
 
         let unindexed = nat_policy_from_v2(&json!({"_id": "nat-8"})).expect("should parse");
         assert_eq!(unindexed.rule_index, None);
+    }
+
+    #[test]
+    fn v2_nat_rule_origin_follows_is_predefined() {
+        let origin = |rule: serde_json::Value| {
+            nat_policy_from_v2(&rule)
+                .expect("v2 NAT rule should parse")
+                .origin
+        };
+        assert_eq!(
+            origin(json!({"_id": "nat-1", "is_predefined": true})),
+            Some(EntityOrigin::SystemDefined)
+        );
+        assert_eq!(
+            origin(json!({"_id": "nat-2", "is_predefined": false})),
+            Some(EntityOrigin::UserDefined)
+        );
+        assert_eq!(origin(json!({"_id": "nat-3"})), None);
     }
 }

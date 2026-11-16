@@ -71,10 +71,13 @@ pub(super) async fn fetch(
         }),
     );
 
-    let (sites_res, tml_res) = tokio::join!(
+    let (sites_res, tml_res, pending_res) = tokio::join!(
         integration.paginate_all(50, |off, lim| integration.list_sites(off, lim)),
         integration.paginate_all(page_limit, |off, lim| {
             integration.list_traffic_matching_lists(&site_id, off, lim)
+        }),
+        integration.paginate_all(page_limit, |off, lim| {
+            integration.list_pending_devices(&site_id, off, lim)
         }),
     );
 
@@ -109,7 +112,9 @@ pub(super) async fn fetch(
         device_count = devices.len(),
         "enriching devices with statistics"
     );
-    let devices = fetch_device_statistics(integration, site_id, devices).await;
+    let mut devices = fetch_device_statistics(integration, site_id, devices).await;
+    let pending = keep_on_failure("pending-devices", pending_res);
+    devices.extend(super::pending::devices(pending, &site_id, &devices, store));
 
     Ok(IntegrationRefresh {
         devices,

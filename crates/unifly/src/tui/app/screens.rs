@@ -34,9 +34,6 @@ impl App {
             self.action_tx
                 .send(Action::RequestStats(self.stats_period))?;
         }
-        if target == ScreenId::Wifi {
-            self.action_tx.send(Action::RequestWifiChannels)?;
-        }
 
         Ok(())
     }

@@ -18,24 +18,52 @@
 // - gateway WAN ports have no switch profile, and every other port sits at
 //   controller defaults (native Mgmt, all VLANs) with no override.
 //
-// Network `_id`s are the fleet's network IDs, so they match `networks list`.
+// A network's Session `_id` is not its Integration ID, as on a real
+// controller: the record carries that one as `external_id`.
 
 use serde_json::{Map, Value, json};
 
 use super::catalog::{OFFLINE_CAMERA, WIRED};
 use super::fleet::{Fleet, GATEWAY, SWITCH_BASE, network_index};
 use super::sim::Simulation;
-use crate::model::{DeviceType, MacAddress, Port, PortConnector, PortState};
+use crate::model::{
+    DeviceType, EntityId, MacAddress, Network, NetworkPurpose, PoeMode, Port, PortConnector,
+    PortState,
+};
 
 /// Endpoints whose port the studio pinned to a fixed speed, in Mbps as the
 /// wire spells it. The ops printer's old NIC only holds a 100 Mbps link.
 const PINNED_SPEEDS: [(&str, &str); 1] = [("printer-ops", "100")];
+
+/// Endpoints fed passive 24V instead of negotiated PoE. The front door's
+/// badge reader predates 802.3af.
+const PASSIVE_24V: [&str; 1] = ["badge-front"];
+
+/// A PoE mode as `poe_mode` spells it on the wire.
+fn poe_wire(mode: PoeMode) -> &'static str {
+    match mode {
+        PoeMode::Off => "off",
+        PoeMode::Passive24V => "pasv24",
+        PoeMode::Passthrough => "passthrough",
+        PoeMode::Auto | PoeMode::Other => "auto",
+    }
+}
 
 /// Native network of trunks and unconfigured ports.
 const NATIVE: &str = "mgmt";
 
 /// Label the fleet gives a device's own uplink port.
 const UPLINK: &str = "Uplink";
+
+/// The `rest/networkconf` `_id` of a fleet network: 24 hex digits, the
+/// shape of the controller's own record IDs, and never the Integration
+/// UUID the network lists under.
+pub(crate) fn session_network_id(network: &Network) -> String {
+    match &network.id {
+        EntityId::Uuid(uuid) => uuid.simple().to_string().chars().take(24).collect(),
+        EntityId::Legacy(id) => id.clone(),
+    }
+}
 
 /// VLANs a trunk tags beyond its native network.
 enum Tagged {
@@ -211,8 +239,14 @@ fn config(profile: &Profile, port: &Port, network_ids: &[String]) -> Map<String,
         config.insert("speed".into(), json!(speed));
     }
     if let Some(poe) = &port.poe {
-        let mode = if poe.enabled { "auto" } else { "off" };
-        config.insert("poe_mode".into(), json!(mode));
+        let passive = matches!(profile, Profile::Access { label, .. }
+            if PASSIVE_24V.contains(&label.as_str()));
+        let mode = match (poe.enabled, passive) {
+            (false, _) => PoeMode::Off,
+            (true, true) => PoeMode::Passive24V,
+            (true, false) => PoeMode::Auto,
+        };
+        config.insert("poe_mode".into(), json!(poe_wire(mode)));
     }
     config
 }
@@ -264,17 +298,25 @@ impl Simulation {
         let index = self.device_index_by_mac(mac)?;
         let fleet = &self.fleet;
         let device = &fleet.devices[index];
-        let network_ids: Vec<String> = fleet
-            .networks
-            .iter()
-            .map(|network| network.id.to_string())
-            .collect();
+        let network_ids: Vec<String> = fleet.networks.iter().map(session_network_id).collect();
         let mut table = Vec::with_capacity(device.ports.len());
         let mut overrides = Vec::new();
         for port in &device.ports {
             let profile = profile(fleet, index, port);
-            let config = config(&profile, port, &network_ids);
-            if matches!(profile, Profile::Access { .. } | Profile::Trunk { .. }) {
+            let mut config = config(&profile, port, &network_ids);
+            // A port an admin edited carries an override like a configured
+            // one, under the label it was given.
+            let edit = self.port_edits.get(&(index, port.index));
+            if let Some(label) = edit.and_then(|edit| edit.label.as_ref()) {
+                config.insert("name".into(), json!(label));
+            }
+            if let Some(mode) = edit.and_then(|edit| edit.poe_mode)
+                && port.poe.is_some()
+            {
+                config.insert("poe_mode".into(), json!(poe_wire(mode)));
+            }
+            let configured = matches!(profile, Profile::Access { .. } | Profile::Trunk { .. });
+            if configured || edit.is_some() {
                 let mut entry = config.clone();
                 entry.insert("port_idx".into(), json!(port.index));
                 overrides.push(Value::Object(entry));
@@ -297,10 +339,25 @@ impl Simulation {
             .networks
             .iter()
             .map(|network| {
+                let purpose = match network.purpose {
+                    Some(NetworkPurpose::Guest) => "guest",
+                    _ => "corporate",
+                };
+                // The Session record spells the subnet as the gateway's
+                // address with the prefix length.
+                let ip_subnet = network.gateway_ip.zip(network.subnet.as_deref()).and_then(
+                    |(gateway, subnet)| {
+                        let (_, prefix) = subnet.split_once('/')?;
+                        Some(format!("{gateway}/{prefix}"))
+                    },
+                );
                 json!({
-                    "_id": network.id.to_string(),
+                    "_id": session_network_id(network),
+                    "external_id": network.id.to_string(),
                     "name": network.name,
+                    "purpose": purpose,
                     "vlan": network.vlan_id,
+                    "ip_subnet": ip_subnet,
                 })
             })
             .collect()

@@ -9,6 +9,7 @@ use crate::tui::action::{Action, FirewallSubTab};
 use crate::tui::table::{TableScroll, reselect};
 
 use super::FirewallScreen;
+use super::reorder::{Reorder, Stage, shifted};
 
 impl FirewallScreen {
     pub fn new() -> Self {
@@ -21,14 +22,17 @@ impl FirewallScreen {
             acl_rules: Arc::new(Vec::new()),
             nat_policies: Arc::new(Vec::new()),
             networks: Arc::new(Vec::new()),
+            access: None,
             policy_table: TableState::default(),
             zone_table: TableState::default(),
             acl_table: TableState::default(),
             nat_table: TableState::default(),
-            policy_scroll: TableScroll::default(),
+            policy_offset: std::cell::Cell::new(0),
             zone_scroll: TableScroll::default(),
             acl_scroll: TableScroll::default(),
             nat_scroll: TableScroll::default(),
+            detail_open: false,
+            reorder: None,
             hits: std::cell::RefCell::default(),
         }
     }
@@ -61,23 +65,15 @@ impl FirewallScreen {
     }
 
     pub(super) fn select(&mut self, index: usize) {
-        let len = self.active_len();
-        let clamped = if len == 0 { 0 } else { index.min(len - 1) };
+        let clamped = index.min(self.active_len().saturating_sub(1));
         self.active_table_state().select(Some(clamped));
     }
 
-    #[allow(clippy::cast_sign_loss, clippy::as_conversions)]
     pub(super) fn move_selection(&mut self, delta: isize) {
-        let len = self.active_len();
-        if len == 0 {
+        if self.active_len() == 0 {
             return;
         }
-
-        #[allow(clippy::cast_possible_wrap)]
-        let current = self.selected_index() as isize;
-        #[allow(clippy::cast_possible_wrap)]
-        let next = (current + delta).clamp(0, len as isize - 1);
-        self.select(next as usize);
+        self.select(self.selected_index().saturating_add_signed(delta));
     }
 
     pub(super) fn sub_tab_index(&self) -> usize {
@@ -87,11 +83,19 @@ impl FirewallScreen {
             .unwrap_or_default()
     }
 
+    /// Switch sub-tabs. A picked-up policy goes back where it was: its
+    /// keys only make sense with the Policies table in view.
+    pub(super) fn show_sub_tab(&mut self, tab: FirewallSubTab) {
+        if self.is_drafting() {
+            self.end_reorder();
+        }
+        self.sub_tab = tab;
+    }
+
     pub(super) fn apply_action(&mut self, action: &Action) {
         match action {
             Action::FirewallPoliciesUpdated(policies) => {
-                let ordered = order::firewall_policies(policies, &self.zones);
-                replace_rows(&mut self.policies, &mut self.policy_table, ordered);
+                self.set_policies(order::firewall_policies(policies, &self.zones), true);
             }
             Action::FirewallZonesUpdated(zones) => {
                 let first_zones = self.zones.is_empty();
@@ -107,7 +111,7 @@ impl FirewallScreen {
                 if first_zones {
                     self.policies = Arc::new(regrouped);
                 } else {
-                    replace_rows(&mut self.policies, &mut self.policy_table, regrouped);
+                    self.set_policies(regrouped, false);
                 }
             }
             Action::AclRulesUpdated(rules) => {
@@ -121,29 +125,127 @@ impl FirewallScreen {
             Action::NetworksUpdated(networks) => {
                 self.networks = Arc::clone(networks);
             }
-            Action::FirewallSubTab(tab) => {
-                self.sub_tab = *tab;
+            Action::FirewallSubTab(tab) => self.show_sub_tab(*tab),
+            Action::AccessUpdated(access) => self.access = Some(*access),
+            // Nothing of the old controller may stay on screen, least of
+            // all a move that would be written to the new one.
+            Action::ControllerChanged => {
+                let action_tx = self.action_tx.take();
+                let focused = self.focused;
+                *self = Self::new();
+                self.action_tx = action_tx;
+                self.focused = focused;
+            }
+            Action::PolicyMoveSettled { moved } => {
+                let sent = self
+                    .reorder
+                    .as_mut()
+                    .filter(|reorder| reorder.stage == Stage::Sent);
+                match sent {
+                    // The row holds its place until the refreshed order
+                    // shows it there, so it never jumps back and forth.
+                    Some(reorder) if *moved => reorder.stage = Stage::Landed { ticks: 0 },
+                    Some(_) => self.end_reorder(),
+                    None => {}
+                }
+            }
+            Action::Tick if self.reorder.as_mut().is_some_and(Reorder::tick) => {
+                self.end_reorder();
             }
             _ => {}
         }
     }
 
+    /// The Policies table's rows: the controller's order, with a policy
+    /// being moved shown where the move puts it.
+    pub(super) fn policy_view(&self) -> Vec<Arc<FirewallPolicy>> {
+        match &self.reorder {
+            Some(reorder) => shifted(&self.policies, &reorder.policy.id, reorder.steps).0,
+            None => self.policies.to_vec(),
+        }
+    }
+
     /// The policy on the selected row of the Policies table.
-    pub(super) fn selected_policy(&self) -> Option<&Arc<FirewallPolicy>> {
+    pub(super) fn selected_policy(&self) -> Option<Arc<FirewallPolicy>> {
         let index = self.policy_table.selected().unwrap_or(0);
-        self.policies.get(index)
+        self.policy_view().get(index).cloned()
+    }
+
+    pub(super) fn selected_zone(&self) -> Option<&Arc<FirewallZone>> {
+        self.zones.get(self.zone_table.selected().unwrap_or(0))
+    }
+
+    pub(super) fn selected_acl_rule(&self) -> Option<&Arc<AclRule>> {
+        self.acl_rules.get(self.acl_table.selected().unwrap_or(0))
+    }
+
+    pub(super) fn selected_nat_policy(&self) -> Option<&Arc<NatPolicy>> {
+        self.nat_policies
+            .get(self.nat_table.selected().unwrap_or(0))
+    }
+
+    /// Whether a policy is picked up and waiting for `Enter` or `Esc`.
+    pub(super) fn is_drafting(&self) -> bool {
+        self.reorder
+            .as_ref()
+            .is_some_and(|reorder| reorder.stage == Stage::Draft)
+    }
+
+    /// Put the cursor on the policy `id`, wherever the view has it.
+    pub(super) fn select_policy(&mut self, id: &EntityId) {
+        if let Some(index) = self
+            .policy_view()
+            .iter()
+            .position(|policy| &policy.id == id)
+        {
+            self.policy_table.select(Some(index));
+        }
+    }
+
+    /// Drop the move in progress and show the controller's order again,
+    /// with the cursor still on the policy it was on.
+    pub(super) fn end_reorder(&mut self) {
+        let selected = self.selected_policy().map(|policy| policy.id.clone());
+        self.reorder = None;
+        if let Some(id) = selected {
+            self.select_policy(&id);
+        }
+    }
+
+    /// Store an ordered policy list, keeping the cursor on the policy it
+    /// was on. A landed move lets go when the list is `fresh` from the
+    /// controller: that is the order it was waiting for.
+    fn set_policies(&mut self, ordered: Vec<Arc<FirewallPolicy>>, fresh: bool) {
+        let previous = self.policy_table.selected();
+        let selected = self.selected_policy().map(|policy| policy.id.clone());
+        self.policies = Arc::new(ordered);
+        let keep = self.reorder.as_ref().is_some_and(|reorder| {
+            !(fresh && matches!(reorder.stage, Stage::Landed { .. }))
+                && self
+                    .policies
+                    .iter()
+                    .any(|policy| policy.id == reorder.policy.id)
+        });
+        if !keep {
+            self.reorder = None;
+        }
+        // A draft holds as many steps as the fresh order still allows.
+        if let Some(reorder) = self.reorder.as_mut() {
+            reorder.steps = shifted(&self.policies, &reorder.policy.id, reorder.steps).1;
+        }
+        let view = self.policy_view();
+        let followed = reselect(
+            view.iter().map(|policy| &policy.id),
+            selected.as_ref(),
+            previous,
+        );
+        self.policy_table.select(followed.or(previous));
     }
 }
 
 /// Rows the firewall tables list, identified by their entity ID.
 trait FirewallRow {
     fn row_id(&self) -> &EntityId;
-}
-
-impl FirewallRow for FirewallPolicy {
-    fn row_id(&self) -> &EntityId {
-        &self.id
-    }
 }
 
 impl FirewallRow for FirewallZone {
@@ -185,202 +287,4 @@ fn replace_rows<T: FirewallRow>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use unifly_api::model::{AclRule, FirewallPolicy, FirewallZone};
-
-    fn zoned_policy(
-        name: &str,
-        source: Option<&str>,
-        destination: Option<&str>,
-        index: i32,
-    ) -> Arc<FirewallPolicy> {
-        Arc::new(
-            serde_json::from_value(serde_json::json!({
-                "id": name,
-                "name": name,
-                "description": null,
-                "enabled": true,
-                "index": index,
-                "action": "Allow",
-                "ip_version": "Both",
-                "source": { "zone_id": source, "filter": null },
-                "destination": { "zone_id": destination, "filter": null },
-                "source_summary": "src",
-                "destination_summary": "dst",
-                "protocol_summary": "Any",
-                "schedule": null,
-                "ipsec_mode": null,
-                "connection_states": [],
-                "logging_enabled": false,
-                "origin": null
-            }))
-            .expect("policy fixture should deserialize"),
-        )
-    }
-
-    fn zone(name: &str) -> Arc<FirewallZone> {
-        Arc::new(
-            serde_json::from_value(serde_json::json!({
-                "id": name,
-                "name": name,
-                "network_ids": [],
-                "origin": null
-            }))
-            .expect("zone fixture should deserialize"),
-        )
-    }
-
-    fn acl_rule(name: &str) -> Arc<AclRule> {
-        Arc::new(
-            serde_json::from_value(serde_json::json!({
-                "id": name,
-                "name": name,
-                "enabled": true,
-                "rule_type": "Ipv4",
-                "action": "Allow",
-                "source_summary": "src",
-                "destination_summary": "dst",
-                "origin": null
-            }))
-            .expect("acl fixture should deserialize"),
-        )
-    }
-
-    #[test]
-    fn select_clamps_to_active_tab_length() {
-        let mut screen = FirewallScreen::new();
-        screen.zones = Arc::new(vec![zone("lan"), zone("iot")]);
-        screen.sub_tab = FirewallSubTab::Zones;
-
-        screen.select(99);
-
-        assert_eq!(screen.zone_table.selected(), Some(1));
-        assert_eq!(screen.policy_table.selected(), None);
-    }
-
-    #[test]
-    fn selected_index_tracks_active_tab() {
-        let mut screen = FirewallScreen::new();
-        screen.policy_table.select(Some(2));
-        screen.zone_table.select(Some(1));
-        screen.acl_rules = Arc::new(vec![
-            acl_rule("one"),
-            acl_rule("two"),
-            acl_rule("three"),
-            acl_rule("four"),
-        ]);
-        screen.acl_table.select(Some(3));
-
-        screen.sub_tab = FirewallSubTab::Policies;
-        assert_eq!(screen.selected_index(), 2);
-
-        screen.sub_tab = FirewallSubTab::Zones;
-        assert_eq!(screen.selected_index(), 1);
-
-        screen.sub_tab = FirewallSubTab::AclRules;
-        assert_eq!(screen.selected_index(), 3);
-    }
-
-    fn policy_names(screen: &FirewallScreen) -> Vec<&str> {
-        screen
-            .policies
-            .iter()
-            .map(|policy| policy.name.as_str())
-            .collect()
-    }
-
-    fn zoned_fixture() -> (Vec<Arc<FirewallZone>>, Vec<Arc<FirewallPolicy>>) {
-        let zones = vec![zone("lan"), zone("wan"), zone("iot")];
-        let policies = vec![
-            zoned_policy("wan-lan default", Some("wan"), Some("lan"), i32::MAX),
-            zoned_policy("lan-wan second", Some("lan"), Some("wan"), 10_001),
-            zoned_policy("iot-lan block", Some("iot"), Some("lan"), 10_000),
-            zoned_policy("lan-wan first", Some("lan"), Some("wan"), 10_000),
-            zoned_policy("wan-lan allow", Some("wan"), Some("lan"), 10_000),
-        ];
-        (zones, policies)
-    }
-
-    #[test]
-    fn policies_list_in_evaluation_order_per_zone_pair() {
-        let (zones, policies) = zoned_fixture();
-        let mut screen = FirewallScreen::new();
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
-        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
-
-        assert_eq!(
-            policy_names(&screen),
-            vec![
-                "iot-lan block",
-                "lan-wan first",
-                "lan-wan second",
-                "wan-lan allow",
-                "wan-lan default",
-            ]
-        );
-    }
-
-    #[test]
-    fn policy_selection_follows_the_policy_across_refreshes() {
-        let (zones, mut policies) = zoned_fixture();
-        let mut screen = FirewallScreen::new();
-        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies.clone())));
-        screen.select(2);
-        assert_eq!(policy_names(&screen)[2], "lan-wan second");
-
-        policies.push(zoned_policy(
-            "iot-lan allow",
-            Some("iot"),
-            Some("lan"),
-            9_000,
-        ));
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
-
-        assert_eq!(screen.policy_table.selected(), Some(3));
-        assert_eq!(policy_names(&screen)[3], "lan-wan second");
-    }
-
-    #[test]
-    fn first_zones_regroup_policies_without_moving_the_cursor() {
-        let (zones, policies) = zoned_fixture();
-        let mut screen = FirewallScreen::new();
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
-        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
-
-        assert_eq!(screen.policy_table.selected(), Some(0));
-        assert_eq!(policy_names(&screen)[0], "iot-lan block");
-    }
-
-    #[test]
-    fn j_and_k_ask_to_move_the_selected_policy() {
-        use crossterm::event::{KeyCode, KeyEvent};
-
-        use crate::tui::action::Direction;
-
-        let (zones, policies) = zoned_fixture();
-        let mut screen = FirewallScreen::new();
-        screen.apply_action(&Action::FirewallZonesUpdated(Arc::new(zones)));
-        screen.apply_action(&Action::FirewallPoliciesUpdated(Arc::new(policies)));
-        screen.select(2);
-
-        for (key, expected) in [('K', Direction::Up), ('J', Direction::Down)] {
-            let action = screen.handle_key_input(KeyEvent::from(KeyCode::Char(key)));
-            assert!(
-                matches!(
-                    action,
-                    Some(Action::ReorderPolicy(ref policy, direction))
-                        if policy.name == "lan-wan second" && direction == expected
-                ),
-                "{key}: {action:?}"
-            );
-        }
-        assert_eq!(
-            policy_names(&screen)[2],
-            "lan-wan second",
-            "the keys leave the order to the controller"
-        );
-    }
-}
+mod tests;

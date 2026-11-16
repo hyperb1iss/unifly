@@ -320,6 +320,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn health_keeps_the_speed_test_fields_the_controller_reports() {
+        // `stat/health` reports a finished WAN speed test on `www`; no
+        // event carries it, so these fields are the only place it shows.
+        let health = super::convert_health_summaries(vec![serde_json::json!({
+            "subsystem": "www", "status": "ok", "latency": 11,
+            "xput_up": 41.2, "xput_down": 913.4,
+            "speedtest_status": "Idle", "speedtest_ping": 9,
+            "speedtest_lastrun": 1_763_000_000
+        })]);
+
+        let www = &health[0];
+        assert_eq!(www.subsystem, "www");
+        assert_eq!(www.latency, Some(11.0));
+        for (field, expected) in [
+            ("xput_up", serde_json::json!(41.2)),
+            ("xput_down", serde_json::json!(913.4)),
+            ("speedtest_ping", serde_json::json!(9)),
+            ("speedtest_lastrun", serde_json::json!(1_763_000_000)),
+        ] {
+            assert_eq!(www.extra.get(field), Some(&expected), "{field}");
+        }
+    }
+
     fn default_site() -> SiteResponse {
         site(
             "11111111-1111-1111-1111-111111111111",

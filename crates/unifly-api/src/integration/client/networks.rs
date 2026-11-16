@@ -46,8 +46,18 @@ impl IntegrationClient {
             .await
     }
 
-    pub async fn delete_network(&self, site_id: &Uuid, network_id: &Uuid) -> Result<(), Error> {
-        self.delete(&format!("v1/sites/{site_id}/networks/{network_id}"))
+    /// Delete a network. The controller refuses one that clients,
+    /// devices, or other settings still use unless `force` is set.
+    pub async fn delete_network(
+        &self,
+        site_id: &Uuid,
+        network_id: &Uuid,
+        force: bool,
+    ) -> Result<(), Error> {
+        // `force` defaults to false on the controller, so it is only
+        // named when asked for.
+        let query = if force { "?force=true" } else { "" };
+        self.delete(&format!("v1/sites/{site_id}/networks/{network_id}{query}"))
             .await
     }
 

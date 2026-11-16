@@ -129,13 +129,14 @@ pub const EXPIRY_MARGIN_SECS: u64 = 60;
 
 // ── Internals ──────────────────────────────────────────────────────
 
-/// Resolve the cache directory.
+/// The directory session cache files live in, or `None` when it cannot
+/// be determined. It may not exist yet.
 ///
 /// Unix (including macOS): `$XDG_CACHE_HOME/unifly/` or `~/.cache/unifly/`
 /// Windows: platform-native via `ProjectDirs`
 ///
 /// On macOS, migrates from the old `~/Library/Caches/unifly/` location automatically.
-fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<PathBuf> {
     let dir = platform_cache_dir()?;
     #[cfg(target_os = "macos")]
     migrate_macos_cache(&dir);

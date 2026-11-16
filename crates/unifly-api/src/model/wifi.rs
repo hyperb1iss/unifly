@@ -39,16 +39,27 @@ pub struct WifiBroadcast {
     // Frequencies
     pub frequencies_ghz: Vec<f32>,
 
-    // Features
-    pub hidden: bool,
-    pub client_isolation: bool,
-    pub band_steering: bool,
-    pub mlo_enabled: bool,
-    pub fast_roaming: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Features. The controller's list summary leaves these out, so each is
+    // `None` until the broadcast's detail has been read: unknown, not off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_isolation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band_steering: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlo_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_roaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel2g_locked_to6: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtim_period2g_locked_to3: Option<bool>,
+
+    /// How many networks have a preshared key of their own on this SSID.
+    /// Above zero the SSID has no single passphrase to change.
+    #[serde(default)]
+    pub preshared_key_count: usize,
 
     // Hotspot
     pub hotspot_enabled: bool,
@@ -58,4 +69,22 @@ pub struct WifiBroadcast {
     #[serde(skip)]
     #[allow(dead_code)]
     pub(crate) source: DataSource,
+}
+
+impl WifiBroadcast {
+    /// This broadcast as the controller's list returns it: without the
+    /// fields only its detail carries.
+    #[must_use]
+    pub fn summary(&self) -> Self {
+        Self {
+            hidden: None,
+            client_isolation: None,
+            band_steering: None,
+            mlo_enabled: None,
+            fast_roaming: None,
+            channel2g_locked_to6: None,
+            dtim_period2g_locked_to3: None,
+            ..self.clone()
+        }
+    }
 }

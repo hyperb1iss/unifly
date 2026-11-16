@@ -85,6 +85,14 @@ pub(in super::super) fn apply_ipv4_update(
         });
     }
 
+    if let Some(servers) = update
+        .dhcp
+        .as_ref()
+        .and_then(|dhcp| dhcp.dns_servers.as_deref())
+    {
+        validate_dns_servers(servers)?;
+    }
+
     if let Some(dhcp) = update.dhcp.as_ref()
         && (dhcp.range_start.is_some() || dhcp.range_stop.is_some())
     {
@@ -145,19 +153,54 @@ pub(in super::super) fn apply_ipv4_update(
     if let Some(servers) = update
         .dhcp
         .as_ref()
-        .and_then(|dhcp| dhcp.dns_servers.as_ref())
-        && let Some(dhcp) = extra
-            .get_mut("ipv4Configuration")
-            .and_then(|ipv4| ipv4.get_mut("dhcpConfiguration"))
-            .and_then(Value::as_object_mut)
+        .and_then(|dhcp| dhcp.dns_servers.as_deref())
     {
+        apply_dns_servers(extra, servers);
+    }
+
+    Ok(())
+}
+
+/// Set the DNS servers the DHCP server hands out. The API takes one to
+/// four, or no key at all for the servers it picks itself: an empty list
+/// is not a way to say so.
+fn apply_dns_servers(extra: &mut HashMap<String, Value>, servers: &[String]) {
+    let Some(dhcp) = extra
+        .get_mut("ipv4Configuration")
+        .and_then(|ipv4| ipv4.get_mut("dhcpConfiguration"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    if servers.is_empty() {
+        dhcp.remove("dnsServerIpAddressesOverride");
+    } else {
         dhcp.insert(
             "dnsServerIpAddressesOverride".into(),
             serde_json::json!(servers),
         );
     }
+}
 
-    Ok(())
+/// A DHCP server hands out up to four DNS servers, by IPv4 address.
+pub(in super::super) fn validate_dns_servers(servers: &[String]) -> Result<(), CoreError> {
+    if servers.len() > 4 {
+        return Err(CoreError::ValidationFailed {
+            message: format!(
+                "a DHCP server takes at most 4 DNS servers, got {}",
+                servers.len()
+            ),
+        });
+    }
+    match servers
+        .iter()
+        .find(|server| server.parse::<Ipv4Addr>().is_err())
+    {
+        Some(server) => Err(CoreError::ValidationFailed {
+            message: format!("DNS server '{server}' is not an IPv4 address"),
+        }),
+        None => Ok(()),
+    }
 }
 
 fn apply_dhcp_range(
@@ -364,6 +407,18 @@ pub(in super::super) fn build_create_wifi_broadcast_payload(
         enabled: req.enabled,
         body,
     })
+}
+
+/// Whether an SSID authenticates with a preshared key per network instead
+/// of one passphrase.
+pub(in super::super) fn wifi_uses_preshared_keys(
+    existing: &crate::integration_types::WifiBroadcastDetailsResponse,
+) -> bool {
+    existing
+        .security_configuration
+        .get("presharedKeys")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|keys| !keys.is_empty())
 }
 
 pub(in super::super) fn build_update_wifi_broadcast_payload(

@@ -1,79 +1,95 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
+use unifly_api::Event;
 use unifly_api::model::EventSeverity;
 
+use crate::tui::screens::events::render::clip;
 use crate::tui::theme;
 
 use super::super::DashboardScreen;
+use super::super::focus::Panel;
+use super::muted_line;
+
+/// One event as a row: time, a dot in its severity, and its message cut
+/// to `width` columns.
+fn event_spans(event: &Event, width: usize) -> Vec<Span<'static>> {
+    let time = event
+        .timestamp
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string();
+    let (dot, text) = match event.severity {
+        EventSeverity::Error | EventSeverity::Critical => (theme::error(), theme::error()),
+        EventSeverity::Warning => (theme::warning(), theme::warning()),
+        EventSeverity::Info => (theme::success(), theme::accent_secondary()),
+        _ => (theme::success(), theme::text_secondary()),
+    };
+    vec![
+        Span::styled(time, Style::default().fg(theme::warning())),
+        Span::styled(" ● ", Style::default().fg(dot)),
+        Span::styled(clip(&event.message, width), Style::default().fg(text)),
+    ]
+}
 
 impl DashboardScreen {
-    /// Compact Recent Events - single column, most recent first.
-    #[allow(clippy::cast_possible_truncation)]
+    /// What the events panel says with nothing to list.
+    fn no_events(&self) -> &'static str {
+        if self.access.is_some_and(|access| !access.session) {
+            "Events need a controller session"
+        } else {
+            self.empty_text("No events yet")
+        }
+    }
+
+    /// Recent Events: one event per row, newest first.
     pub(super) fn render_recent_events(
         &self,
         frame: &mut ratatui::Frame,
         area: ratatui::layout::Rect,
     ) {
-        let event_count = self.events.len();
-        let title = Line::from(vec![Span::styled(" Recent Events ", theme::title_style())]);
-        let footer = if event_count > 0 {
-            Line::from(vec![Span::styled(
-                format!(" ↓ {event_count} event log "),
-                Style::default().fg(theme::border_unfocused()),
-            )])
-        } else {
-            Line::from("")
-        };
-
-        let block = Block::default()
-            .title(title)
-            .title_bottom(footer)
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme::border_default());
-
+        let block = self.panel_block(Panel::Events, "Recent Events");
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let max_rows = usize::from(inner.height);
-        let msg_width = usize::from(inner.width.saturating_sub(10));
-
-        let mut lines = Vec::new();
-        if self.events.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " No events",
-                Style::default().fg(theme::border_unfocused()),
-            )));
-        } else {
-            for evt in self.events.iter().rev().take(max_rows) {
-                let time_str = evt
-                    .timestamp
-                    .with_timezone(&chrono::Local)
-                    .format("%H:%M")
-                    .to_string();
-                let severity_color = match evt.severity {
-                    EventSeverity::Error | EventSeverity::Critical => theme::error(),
-                    EventSeverity::Warning => theme::warning(),
-                    EventSeverity::Info => theme::accent_secondary(),
-                    _ => theme::text_secondary(),
-                };
-                let dot_color = match evt.severity {
-                    EventSeverity::Error | EventSeverity::Critical => theme::error(),
-                    EventSeverity::Warning => theme::warning(),
-                    _ => theme::success(),
-                };
-                let msg: String = evt.message.chars().take(msg_width).collect();
-                lines.push(Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(time_str, Style::default().fg(theme::warning())),
-                    Span::styled(" ● ", Style::default().fg(dot_color)),
-                    Span::styled(msg, Style::default().fg(severity_color)),
-                ]));
-            }
+        let width = usize::from(inner.width.saturating_sub(10));
+        let mut lines: Vec<Line> = self
+            .events
+            .events()
+            .iter()
+            .rev()
+            .take(usize::from(inner.height))
+            .map(|event| {
+                let mut spans = vec![Span::raw(" ")];
+                spans.extend(event_spans(event, width));
+                Line::from(spans)
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(muted_line(self.no_events()));
         }
 
         frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// The events panel on a short terminal: the newest event on one
+    /// line, with no frame around it.
+    pub(super) fn render_latest_event(
+        &self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+    ) {
+        let label = self.panel_title(Panel::Events, "Latest");
+        let width = usize::from(area.width).saturating_sub(label.width() + 9);
+        let mut spans = vec![label];
+        match self.events.events().back() {
+            Some(event) => spans.extend(event_spans(event, width)),
+            None => spans.push(Span::styled(
+                self.no_events(),
+                Style::default().fg(theme::border_unfocused()),
+            )),
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::tui::action::Action;
 use crate::tui::widgets::hyperchart::axis;
@@ -10,6 +10,15 @@ use super::{
     BandwidthSample, DashboardScreen, LIVE_CHART_SAMPLE_INTERVAL, LIVE_CHART_WINDOW_SAMPLES,
     MIN_BANDWIDTH_SCALE,
 };
+
+/// Arrivals closer together than this are one refresh reporting twice.
+const SAME_REFRESH: Duration = Duration::from_millis(500);
+/// How long a rate stays live before two refreshes have set the pace.
+const STALE_DEFAULT: Duration = Duration::from_secs(45);
+/// A rate is live for at least this long, however fast refreshes come.
+const STALE_FLOOR: Duration = Duration::from_secs(15);
+/// A rate is stale after this long, however slowly refreshes come.
+const STALE_CEILING: Duration = Duration::from_mins(3);
 
 impl DashboardScreen {
     /// Format the data age as a human-readable string for the title bar.
@@ -27,6 +36,12 @@ impl DashboardScreen {
             }
             None => "no data".into(),
         }
+    }
+
+    /// Whether the data-age label would read differently than it was last
+    /// drawn, so a quiet dashboard still counts its age up.
+    fn age_label_changed(&self) -> bool {
+        *self.age_drawn.borrow() != self.refresh_age_str()
     }
 
     /// Record a bandwidth sample into the chart data ring buffer.
@@ -103,6 +118,54 @@ impl DashboardScreen {
         }
     }
 
+    /// Record that a WAN rate arrived at `now`. Two sources report in the
+    /// same refresh, so arrivals a moment apart count as one.
+    fn note_bandwidth(&mut self, now: Instant) {
+        if let Some(seen) = self.bandwidth_seen_at {
+            let gap = now.duration_since(seen);
+            if gap >= SAME_REFRESH {
+                self.bandwidth_gap = Some(gap);
+            }
+        }
+        self.bandwidth_seen_at = Some(now);
+    }
+
+    /// How long ago the WAN rate last arrived, once that is long enough
+    /// that it no longer describes the link: three refreshes at the pace
+    /// they have been arriving, or at once when the controller is gone.
+    /// One failed refresh is neither: the rate it would have brought is
+    /// simply late, and the age limit catches it if more follow.
+    pub(super) fn bandwidth_stale_for(&self, now: Instant) -> Option<Duration> {
+        let age = now.duration_since(self.bandwidth_seen_at?);
+        let limit = self.bandwidth_gap.map_or(STALE_DEFAULT, |gap| {
+            (gap * 3).clamp(STALE_FLOOR, STALE_CEILING)
+        });
+        (!self.link.reachable() || age > limit).then_some(age)
+    }
+
+    /// What the chart's title says in place of a stale rate: that the
+    /// controller is gone, or how long the rate has been missing.
+    pub(super) fn stale_rate_text(&self, age: Duration) -> String {
+        if let Some(waiting) = self.link.waiting() {
+            return waiting.to_lowercase();
+        }
+        match age.as_secs() {
+            secs if secs < 60 => format!("no rate for {secs}s"),
+            secs => format!(
+                "no rate for {}",
+                crate::tui::widgets::bytes_fmt::fmt_uptime(secs)
+            ),
+        }
+    }
+
+    /// The WAN rate right now, or `None` when the last one is stale.
+    pub(super) fn live_bandwidth(&self, now: Instant) -> Option<(u64, u64)> {
+        if self.bandwidth_stale_for(now).is_some() {
+            return None;
+        }
+        self.current_bandwidth()
+    }
+
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     pub(super) fn sample_bandwidth_if_due(&mut self, now: Instant) -> Option<bool> {
         if self.last_chart_sample_at.is_some_and(|last_sample_at| {
@@ -111,7 +174,18 @@ impl DashboardScreen {
             return None;
         }
 
-        let (tx_bps, rx_bps) = self.current_bandwidth()?;
+        // A stale rate is not sampled: repeating it would draw a flat
+        // line that reads as a measurement.
+        let Some((tx_bps, rx_bps)) = self.live_bandwidth(now) else {
+            self.chart_stalled |= !self.bandwidth_tx.is_empty();
+            return None;
+        };
+        // What the chart held is from before the gap, so it starts over
+        // rather than joining the two with a line across the outage.
+        if std::mem::take(&mut self.chart_stalled) {
+            self.bandwidth_tx.clear();
+            self.bandwidth_rx.clear();
+        }
         let peak_changed = self.push_bandwidth_sample(tx_bps, rx_bps);
         self.last_chart_sample_at = Some(now);
         Some(peak_changed)
@@ -146,12 +220,14 @@ impl DashboardScreen {
                 // Sample regardless of focus so the history stays continuous;
                 // redraw on every tick while focused so the chart scrolls
                 // smoothly between the once-a-second samples.
-                let sampled = self.sample_bandwidth_if_due(Instant::now());
+                let now = Instant::now();
+                let sampled = self.sample_bandwidth_if_due(now);
                 if self.focused {
                     if sampled == Some(true) {
                         return Some(Action::ChartPeak);
                     }
-                    if sampled.is_some() || !self.bandwidth_tx.is_empty() {
+                    let live = !self.bandwidth_tx.is_empty() && !self.chart_stalled;
+                    if sampled.is_some() || live || self.age_label_changed() {
                         return Some(Action::Invalidate);
                     }
                 }
@@ -174,6 +250,9 @@ impl DashboardScreen {
                                 captured_at: now,
                             })
                     });
+                if self.device_bandwidth.is_some() {
+                    self.note_bandwidth(now);
+                }
                 if let Some((tx_bps, rx_bps)) = self.current_bandwidth()
                     && self.update_peaks(tx_bps, rx_bps)
                     && self.focused
@@ -188,10 +267,24 @@ impl DashboardScreen {
                 self.networks = Arc::clone(networks);
             }
             Action::EventReceived(event) => {
-                self.events.push(Arc::clone(event));
-                if self.events.len() > 100 {
-                    self.events.remove(0);
-                }
+                self.events.insert(Arc::clone(event));
+            }
+            Action::AccessUpdated(access) => self.access = Some(*access),
+            Action::AlarmsLoaded(alarms) => {
+                self.active_alarms = Some(alarms.iter().filter(|alarm| !alarm.archived).count());
+            }
+            Action::AlarmsFailed(_) => self.active_alarms = None,
+            Action::Connecting
+            | Action::Connected
+            | Action::Reconnecting { .. }
+            | Action::Disconnected(_) => self.link.follow(action),
+            Action::ControllerChanged => {
+                *self = Self {
+                    focused: self.focused,
+                    focus: self.focus,
+                    column: self.column,
+                    ..Self::new()
+                };
             }
             Action::HealthUpdated(health) => {
                 self.health = Arc::clone(health);
@@ -201,11 +294,15 @@ impl DashboardScreen {
                     .health
                     .iter()
                     .find(|health| health.subsystem == "wan")
+                    .filter(|wan| wan.tx_bytes_r.is_some() || wan.rx_bytes_r.is_some())
                     .map(|wan| BandwidthSample {
                         tx_bps: wan.tx_bytes_r.unwrap_or(0),
                         rx_bps: wan.rx_bytes_r.unwrap_or(0),
                         captured_at: now,
                     });
+                if self.health_bandwidth.is_some() {
+                    self.note_bandwidth(now);
+                }
                 if let Some((tx_bps, rx_bps)) = self.current_bandwidth()
                     && self.update_peaks(tx_bps, rx_bps)
                     && self.focused
@@ -225,6 +322,53 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn a_replayed_backlog_leaves_one_copy_of_each_recent_event() {
+        use crate::tui::screens::events::feed::tests::event;
+        use crate::tui::table::render_lines;
+
+        let mut screen = DashboardScreen::new();
+        // Twice over, and newest first, as a reconnect and a refresh
+        // batch deliver them.
+        for _ in 0..2 {
+            for minute in (0..4).rev() {
+                screen.apply_action(&Action::EventReceived(event(minute)));
+            }
+        }
+
+        assert_eq!(screen.events.len(), 4);
+        let rows = render_lines(140, 60, |frame, area| screen.render_dashboard(frame, area));
+        let shown: Vec<_> = rows
+            .iter()
+            .filter(|row| row.contains(" connected"))
+            .collect();
+        assert_eq!(shown.len(), 4, "{shown:?}");
+        assert!(shown[0].contains("client-03"), "newest first: {shown:?}");
+        assert!(shown[3].contains("client-00"), "{shown:?}");
+    }
+
+    #[test]
+    fn switching_controllers_drops_everything_the_old_one_reported() {
+        use crate::tui::screens::events::feed::tests::event;
+
+        let mut screen = DashboardScreen::new();
+        screen.focused = true;
+        screen.apply_action(&Action::EventReceived(event(1)));
+        screen.push_bandwidth_sample(10_000, 20_000);
+        screen.health_bandwidth = Some(BandwidthSample {
+            tx_bps: 1,
+            rx_bps: 2,
+            captured_at: Instant::now(),
+        });
+
+        screen.apply_action(&Action::ControllerChanged);
+
+        assert!(screen.events.is_empty());
+        assert!(screen.bandwidth_tx.is_empty() && screen.health_bandwidth.is_none());
+        assert_eq!(screen.peak_rx, 0);
+        assert!(screen.focused, "focus is the app's, not the controller's");
+    }
 
     #[test]
     fn current_bandwidth_prefers_most_recent_sample() {

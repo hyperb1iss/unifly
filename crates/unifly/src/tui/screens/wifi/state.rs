@@ -1,47 +1,23 @@
-use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use ratatui::widgets::TableState;
-use serde_json::Value;
+use unifly_api::model::WifiBroadcast;
 use unifly_api::session_models::RogueAp;
-use unifly_api::{Client, ClientType, Device, DeviceType, EntityId};
+use unifly_api::{Client, ClientType, Device, DeviceType, EntityId, MacAddress};
 
-use super::WifiScreen;
+use super::{FocusedAp, OverviewPanel, RoamTarget, WifiScreen};
 use crate::cli::commands::util::order;
-use crate::tui::action::{Action, Notification, WifiBand, WifiSortField, WifiSubTab};
+use crate::tui::action::{Action, WifiBand, WifiSortField, WifiSubTab};
 use crate::tui::table::{TableScroll, reselect};
-
-pub(super) const NEIGHBOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-pub(super) const CHANNEL_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
-pub(super) const CLIENT_DETAIL_RETRY_INTERVAL: Duration = Duration::from_secs(15);
-pub(super) const ROAM_HISTORY_RETRY_INTERVAL: Duration = Duration::from_secs(15);
-
-#[derive(Clone, Default)]
-pub(super) struct ChannelOccupancy {
-    pub channel: i32,
-    pub your_count: usize,
-    pub neighbor_count: usize,
-    pub signal: Option<i32>,
-    pub conflict: bool,
-}
 
 /// Identities of the selected table rows, see [`WifiScreen::selected_rows`].
 pub(super) struct SelectedRows {
     ap: Option<EntityId>,
     client: Option<EntityId>,
+    ssid: Option<EntityId>,
     neighbor: Option<String>,
-}
-
-#[derive(Clone)]
-pub(super) struct ParsedRoamRow {
-    pub timestamp: String,
-    pub event: String,
-    pub from_ap: String,
-    pub to_ap: String,
-    pub signal: String,
-    pub band: String,
 }
 
 impl WifiScreen {
@@ -49,51 +25,149 @@ impl WifiScreen {
         Self {
             focused: false,
             action_tx: None,
+            access: None,
             devices: Arc::new(Vec::new()),
             clients: Arc::new(Vec::new()),
+            ssids: Arc::new(Vec::new()),
+            loaded: super::Loaded::default(),
+            network_names: HashMap::new(),
+            ap_names: HashMap::new(),
             ap_clients: super::client_index::ApClients::default(),
             ap_table_state: TableState::default(),
             client_table_state: TableState::default(),
+            ssid_table_state: TableState::default(),
             neighbor_table_state: TableState::default(),
             roam_table_state: TableState::default(),
             ap_scroll: TableScroll::default(),
             client_scroll: TableScroll::default(),
+            ssid_scroll: TableScroll::default(),
             neighbor_scroll: TableScroll::default(),
             roam_scroll: TableScroll::default(),
             sub_tab: WifiSubTab::default(),
             hits: std::cell::RefCell::default(),
-            sort_field: WifiSortField::default(),
+            ap_sort: WifiSortField::Health,
+            client_sort: WifiSortField::Health,
+            neighbor_sort: WifiSortField::Signal,
             selected_band: WifiBand::default(),
-            detail_open: false,
-            channel_map_open: false,
-            search_query: String::new(),
-            focused_ap_id: None,
-            focused_client_id: None,
+            overview_panel: OverviewPanel::None,
+            client_detail_open: false,
+            ssid_detail_open: false,
+            ap_query: String::new(),
+            client_query: String::new(),
+            ssid_query: String::new(),
+            neighbor_query: String::new(),
+            focused_ap: None,
+            roam_target: None,
             neighbors: Arc::new(Vec::new()),
+            neighbors_loaded_at: None,
+            neighbors_error: None,
             channels: Arc::new(Vec::new()),
-            client_detail_ip: None,
-            client_detail_pending_ip: None,
+            channels_error: None,
             client_detail: None,
-            client_detail_failure: None,
+            client_detail_pending_ip: None,
+            client_detail_failures: HashMap::new(),
+            client_cursor_moved_at: None,
             roam_history_mac: None,
             roam_history_pending_mac: None,
-            roam_history: Arc::new(Vec::new()),
-            roam_history_failure: None,
+            roam_rows: Vec::new(),
+            roam_failures: HashMap::new(),
             last_neighbors_request_at: None,
             last_channels_request_at: None,
+            ssid_prompt: None,
+            ssid_details: super::ssid_detail::SsidDetails::default(),
         }
+    }
+
+    /// Forget everything that came from the controller. The sub-tab, sort
+    /// orders, and band are the user's and stay.
+    fn reset(&mut self) {
+        let fresh = Self::new();
+        *self = Self {
+            focused: self.focused,
+            action_tx: self.action_tx.take(),
+            sub_tab: self.sub_tab,
+            ap_sort: self.ap_sort,
+            client_sort: self.client_sort,
+            neighbor_sort: self.neighbor_sort,
+            selected_band: self.selected_band,
+            ..fresh
+        };
     }
 
     pub(super) fn apply_action(&mut self, action: &Action) -> Option<Action> {
         match action {
             Action::Tick => return self.tick_request(),
+            Action::AccessUpdated(access) => {
+                self.access = Some(*access);
+                if self.focused {
+                    self.mark_refresh_due();
+                }
+            }
+            Action::ControllerChanged => self.reset(),
+            Action::WifiSubTab(sub_tab) => self.enter_sub_tab(*sub_tab),
+            Action::WifiFocusAp(focused) => {
+                let selected = self.selected_rows();
+                self.focused_ap = focused.as_ref().and_then(|id| self.focus_for(id));
+                self.follow_rows(&selected);
+            }
+            Action::WifiToggleChannelMap => {
+                self.overview_panel = if self.overview_panel == OverviewPanel::Channels {
+                    OverviewPanel::None
+                } else {
+                    OverviewPanel::Channels
+                };
+            }
+            Action::WifiSortColumn(sort_field) => {
+                let selected = self.selected_rows();
+                match self.sub_tab {
+                    WifiSubTab::Overview => self.ap_sort = *sort_field,
+                    WifiSubTab::Clients => self.client_sort = *sort_field,
+                    WifiSubTab::Neighbors => self.neighbor_sort = *sort_field,
+                    WifiSubTab::Ssids | WifiSubTab::Roaming => {}
+                }
+                self.follow_rows(&selected);
+            }
+            Action::WifiBandSelect(band) => {
+                self.selected_band = *band;
+                self.sync_selections();
+            }
+            Action::SearchInput(query) => {
+                if let Some(active) = self.active_query_mut() {
+                    active.clone_from(query);
+                    // A filter that just changed starts from its best match.
+                    self.select_first();
+                }
+            }
+            Action::CloseSearch => {
+                // Clearing a filter stays on the row it found.
+                let selected = self.selected_rows();
+                if let Some(active) = self.active_query_mut() {
+                    active.clear();
+                }
+                self.follow_rows(&selected);
+            }
+            Action::PromptSubmitted(text) => return self.ssid_prompt_submitted(text),
+            data => self.apply_data(data),
+        }
+
+        None
+    }
+
+    /// Take in what the controller sent: entity snapshots and the answers
+    /// to this screen's own fetches.
+    fn apply_data(&mut self, action: &Action) {
+        match action {
             Action::DevicesUpdated(devices) => {
                 let selected = self.selected_rows();
                 self.devices = Arc::new(order::devices(devices));
+                self.loaded.devices = true;
+                self.ap_names = self
+                    .devices
+                    .iter()
+                    .map(|device| (device.mac.clone(), display_device_name(device)))
+                    .collect();
+                self.refresh_focused_ap();
                 self.follow_rows(&selected);
-                self.sync_ap_selection();
-                self.sync_client_selection();
-                self.sync_neighbor_selection();
             }
             Action::ClientsUpdated(clients) => {
                 // Client health reorders the AP table too, so the AP
@@ -101,309 +175,225 @@ impl WifiScreen {
                 // including the first; restart and locate act on it.
                 let selected = self.selected_rows();
                 self.clients = Arc::new(order::clients(clients));
+                self.loaded.clients = true;
                 self.ap_clients = super::client_index::ApClients::new(&self.clients);
                 self.follow_rows(&selected);
-                self.sync_client_selection();
+            }
+            Action::NetworksUpdated(networks) => {
+                self.network_names = networks
+                    .iter()
+                    .map(|network| (network.id.clone(), network.name.clone()))
+                    .collect();
+            }
+            Action::WifiBroadcastsUpdated(ssids) => {
+                let selected = self.selected_rows();
+                let mut sorted: Vec<Arc<WifiBroadcast>> = ssids.to_vec();
+                sorted.sort_by_cached_key(|ssid| (ssid.name.to_lowercase(), ssid.id.to_string()));
+                self.ssids = Arc::new(sorted);
+                self.loaded.ssids = true;
+                self.ssid_details.follow(&self.ssids);
+                self.follow_rows(&selected);
+            }
+            Action::WifiBroadcastDetailLoaded { id, detail } => {
+                self.ssid_detail_loaded(id, detail);
+            }
+            Action::WifiBroadcastDetailFailed { id, error } => {
+                self.ssid_detail_failed(id, error);
+            }
+            Action::WifiSsidWriteSettled { id, detail } => {
+                self.ssid_write_settled(id, detail.as_ref());
             }
             Action::WifiNeighborsUpdated(neighbors) => {
                 let selected = self.selected_rows();
                 self.neighbors = Arc::clone(neighbors);
+                self.neighbors_loaded_at = Some(std::time::Instant::now());
+                self.neighbors_error = None;
                 self.follow_rows(&selected);
-                self.sync_neighbor_selection();
+            }
+            Action::WifiNeighborsFailed(error) => {
+                self.neighbors_error = Some(error.clone());
             }
             Action::WifiChannelsUpdated(channels) => {
                 self.channels = Arc::clone(channels);
+                self.channels_error = None;
+            }
+            Action::WifiChannelsFailed(error) => {
+                self.channels_error = Some(error.clone());
             }
             Action::WifiClientDetailLoaded { ip, data } => self.client_detail_loaded(ip, data),
-            Action::WifiClientDetailFailed { ip, error } => {
-                return self.client_detail_failed(ip, error);
-            }
+            Action::WifiClientDetailFailed { ip, error } => self.client_detail_failed(ip, error),
             Action::WifiRoamHistoryLoaded { mac, events } => self.roam_history_loaded(mac, events),
-            Action::WifiRoamHistoryFailed { mac, error } => {
-                return self.roam_history_failed(mac, error);
-            }
-            Action::WifiSubTab(sub_tab) => {
-                self.sub_tab = *sub_tab;
-                if !matches!(self.sub_tab, WifiSubTab::Overview | WifiSubTab::Clients) {
-                    self.detail_open = false;
-                }
-                if self.sub_tab == WifiSubTab::Roaming {
-                    self.focus_client_from_selection();
-                }
-            }
-            Action::WifiFocusAp(focused) => {
-                self.focused_ap_id.clone_from(focused);
-                self.sync_client_selection();
-                self.sync_neighbor_selection();
-            }
-            Action::WifiToggleChannelMap => {
-                self.channel_map_open = !self.channel_map_open;
-            }
-            Action::WifiSortColumn(sort_field) => {
-                let selected = self.selected_rows();
-                self.sort_field = *sort_field;
-                self.follow_rows(&selected);
-                self.sync_ap_selection();
-                self.sync_client_selection();
-                self.sync_neighbor_selection();
-            }
-            Action::WifiBandSelect(band) => {
-                self.selected_band = *band;
-                self.sync_neighbor_selection();
-            }
-            Action::SearchInput(query) => {
-                self.search_query.clone_from(query);
-                self.sync_ap_selection();
-                self.sync_client_selection();
-                self.sync_neighbor_selection();
-            }
-            Action::CloseSearch => {
-                self.search_query.clear();
-                self.sync_ap_selection();
-                self.sync_client_selection();
-                self.sync_neighbor_selection();
-            }
-            Action::CloseDetail => {
-                self.detail_open = false;
-            }
+            Action::WifiRoamHistoryFailed { mac, error } => self.roam_history_failed(mac, error),
             _ => {}
         }
-
-        None
     }
 
-    pub(super) fn mark_refresh_due(&mut self) {
-        let now = Instant::now();
-        self.last_neighbors_request_at = now.checked_sub(NEIGHBOR_REFRESH_INTERVAL);
-        self.last_channels_request_at = now.checked_sub(CHANNEL_REFRESH_INTERVAL);
+    /// Switch to `sub_tab`. The Roaming tab shows the client selected on
+    /// the Clients tab; with none selected it keeps the client it had.
+    pub(super) fn enter_sub_tab(&mut self, sub_tab: WifiSubTab) {
+        self.sub_tab = sub_tab;
+        if sub_tab == WifiSubTab::Roaming {
+            self.target_selected_client();
+        }
+        self.mark_refresh_due();
     }
 
-    fn tick_request(&mut self) -> Option<Action> {
-        if !self.focused {
-            return None;
-        }
-
-        let now = Instant::now();
-
-        if matches!(self.sub_tab, WifiSubTab::Overview | WifiSubTab::Neighbors)
-            && self
-                .last_neighbors_request_at
-                .is_none_or(|last| now.duration_since(last) >= NEIGHBOR_REFRESH_INTERVAL)
-        {
-            self.last_neighbors_request_at = Some(now);
-            return Some(Action::RequestWifiNeighbors(Some(300)));
-        }
-
-        if self.channel_map_open
-            && self
-                .last_channels_request_at
-                .is_none_or(|last| now.duration_since(last) >= CHANNEL_REFRESH_INTERVAL)
-        {
-            self.last_channels_request_at = Some(now);
-            return Some(Action::RequestWifiChannels);
-        }
-
-        if self.sub_tab == WifiSubTab::Clients
-            && self.detail_open
-            && let Some(ip) = self.selected_client_ip()
-            && self.client_detail_ip.as_deref() != Some(ip.as_str())
-            && self.client_detail_pending_ip.as_deref() != Some(ip.as_str())
-            && !self
-                .client_detail_failure
-                .as_ref()
-                .is_some_and(|(failed, at)| {
-                    failed == &ip && now.duration_since(*at) < CLIENT_DETAIL_RETRY_INTERVAL
-                })
-        {
-            return Some(self.request_client_detail(ip));
-        }
-
-        if self.sub_tab == WifiSubTab::Roaming
-            && let Some(mac) = self.focused_client_mac()
-            && self.roam_history_mac.as_deref() != Some(mac.as_str())
-            && self.roam_history_pending_mac.as_deref() != Some(mac.as_str())
-            && !self
-                .roam_history_failure
-                .as_ref()
-                .is_some_and(|(failed, at)| {
-                    failed == &mac && now.duration_since(*at) < ROAM_HISTORY_RETRY_INTERVAL
-                })
-        {
-            return Some(self.request_roam_history(mac));
-        }
-
-        None
-    }
-
-    /// Fetch the WiFi detail of the client at `ip`, marking it in flight.
-    pub(super) fn request_client_detail(&mut self, ip: String) -> Action {
-        self.client_detail_pending_ip = Some(ip.clone());
-        Action::RequestWifiClientDetail(ip)
-    }
-
-    /// A response can land after the selection moved on; it settles only
-    /// its own request.
-    fn client_detail_loaded(&mut self, ip: &String, data: &Arc<Value>) {
-        if self.client_detail_pending_ip.as_ref() == Some(ip) {
-            self.client_detail_pending_ip = None;
-        }
-        if self.failed_client_detail() == Some(ip) {
-            self.client_detail_failure = None;
-        }
-        self.client_detail_ip = Some(ip.clone());
-        self.client_detail = Some(Arc::clone(data));
-    }
-
-    /// Retries of a client that keeps failing stay quiet: only its first
-    /// failure raises a toast.
-    fn client_detail_failed(&mut self, ip: &String, error: &str) -> Option<Action> {
-        if self.client_detail_pending_ip.as_ref() == Some(ip) {
-            self.client_detail_pending_ip = None;
-        }
-        let repeated = self.failed_client_detail() == Some(ip);
-        self.client_detail_failure = Some((ip.clone(), Instant::now()));
-        (!repeated).then(|| Action::Notify(Notification::error(error)))
-    }
-
-    /// The focus may have moved on while the fetch ran, and the history
-    /// shown always belongs to the focused client, so a response for
-    /// another client only settles its own request.
-    fn roam_history_loaded(&mut self, mac: &String, events: &Arc<Vec<Value>>) {
-        if self.roam_history_pending_mac.as_ref() == Some(mac) {
-            self.roam_history_pending_mac = None;
-        }
-        if self.focused_client_mac().as_ref() != Some(mac) {
+    /// Point the Roaming tab at the client selected on the Clients tab.
+    pub(super) fn target_selected_client(&mut self) {
+        let Some(target) = self.selected_client().map(|client| RoamTarget {
+            mac: client.mac.to_string(),
+            label: display_client_name(client),
+        }) else {
             return;
-        }
-        if self.failed_roam_history() == Some(mac) {
-            self.roam_history_failure = None;
-        }
-        self.roam_history_mac = Some(mac.clone());
-        self.roam_history = Arc::clone(events);
-        self.sync_roam_selection();
-    }
-
-    /// Like a client detail failure: retried later, toasted once.
-    fn roam_history_failed(&mut self, mac: &String, error: &str) -> Option<Action> {
-        if self.roam_history_pending_mac.as_ref() == Some(mac) {
-            self.roam_history_pending_mac = None;
-        }
-        let repeated = self.failed_roam_history() == Some(mac);
-        self.roam_history_failure = Some((mac.clone(), Instant::now()));
-        (!repeated).then(|| Action::Notify(Notification::error(error)))
-    }
-
-    /// Fetch the roam history of the client with `mac`, marking it in
-    /// flight.
-    pub(super) fn request_roam_history(&mut self, mac: String) -> Action {
-        self.roam_history_pending_mac = Some(mac.clone());
-        Action::RequestWifiRoamHistory {
-            mac,
-            limit: Some(100),
+        };
+        if self.roam_target.as_ref() != Some(&target) {
+            if self.roam_target.as_ref().map(|old| &old.mac) != Some(&target.mac) {
+                self.roam_rows.clear();
+                self.roam_history_mac = None;
+                self.roam_table_state.select(None);
+            }
+            self.roam_target = Some(target);
         }
     }
 
-    /// The MAC of the client whose roam history fetch failed last.
-    pub(super) fn failed_roam_history(&self) -> Option<&String> {
-        self.roam_history_failure.as_ref().map(|(mac, _)| mac)
+    /// The search filter of the active sub-tab, or `None` on Roaming,
+    /// whose history search does not filter.
+    pub(super) fn active_query(&self) -> Option<&str> {
+        match self.sub_tab {
+            WifiSubTab::Overview => Some(&self.ap_query),
+            WifiSubTab::Clients => Some(&self.client_query),
+            WifiSubTab::Ssids => Some(&self.ssid_query),
+            WifiSubTab::Neighbors => Some(&self.neighbor_query),
+            WifiSubTab::Roaming => None,
+        }
     }
 
-    /// The IP of the client whose detail fetch failed last.
-    pub(super) fn failed_client_detail(&self) -> Option<&String> {
-        self.client_detail_failure.as_ref().map(|(ip, _)| ip)
+    fn active_query_mut(&mut self) -> Option<&mut String> {
+        match self.sub_tab {
+            WifiSubTab::Overview => Some(&mut self.ap_query),
+            WifiSubTab::Clients => Some(&mut self.client_query),
+            WifiSubTab::Ssids => Some(&mut self.ssid_query),
+            WifiSubTab::Neighbors => Some(&mut self.neighbor_query),
+            WifiSubTab::Roaming => None,
+        }
     }
 
-    pub(super) fn ap_devices(&self) -> Vec<&Arc<Device>> {
-        let mut aps: Vec<_> = self
-            .devices
+    /// Whether the controller is known to have no session access, which
+    /// every observability read here needs.
+    pub(super) fn session_missing(&self) -> bool {
+        self.access.is_some_and(|access| !access.session)
+    }
+
+    /// Whether the controller is known to have no Integration access,
+    /// which the SSID list and its writes need.
+    pub(super) fn integration_missing(&self) -> bool {
+        self.access.is_some_and(|access| !access.integration)
+    }
+
+    /// Every access point on the site, in name order.
+    pub(super) fn all_aps(&self) -> impl Iterator<Item = &Arc<Device>> {
+        self.devices
             .iter()
             .filter(|device| device.device_type == DeviceType::AccessPoint)
-            .filter(|device| self.matches_ap_query(device))
+    }
+
+    /// The AP table's rows: the access points the filter keeps, sorted.
+    pub(super) fn ap_devices(&self) -> Vec<&Arc<Device>> {
+        let query = self.ap_query.to_lowercase();
+        let mut aps: Vec<_> = self
+            .all_aps()
+            .filter(|device| query.is_empty() || ap_matches(device, &query))
             .collect();
 
-        // `self.devices` is already in name order and the sort is stable, so
-        // ties (and the Name sort) keep that order.
-        aps.sort_by_cached_key(|ap| match self.sort_field {
-            WifiSortField::Health => (Reverse(self.ap_health(ap)), Reverse(0), 0),
-            WifiSortField::Clients => (Reverse(None), Reverse(self.ap_clients(ap).len()), 0),
-            WifiSortField::Channel => (
-                Reverse(None),
-                Reverse(0),
-                self.ap_channel_profile(ap)
-                    .map_or(0, |(channel, _)| channel),
-            ),
-            _ => (Reverse(None), Reverse(0), 0),
-        });
+        // `self.devices` is already in name order and the sorts are stable,
+        // so ties (and the Name sort) keep that order.
+        match self.ap_sort {
+            WifiSortField::Health => aps.sort_by_cached_key(|ap| Reverse(self.ap_health(ap))),
+            WifiSortField::Clients => {
+                aps.sort_by_cached_key(|ap| Reverse(self.ap_clients(ap).len()));
+            }
+            WifiSortField::Channel => aps.sort_by_cached_key(|ap| {
+                let channel = self.ap_channel_profile(ap).map(|(channel, _)| channel);
+                (channel.is_none(), channel)
+            }),
+            _ => {}
+        }
 
         aps
     }
 
+    /// The client table's rows: wireless clients on the focused AP that
+    /// the filter keeps, sorted.
     pub(super) fn wireless_clients(&self) -> Vec<&Arc<Client>> {
+        let query = self.client_query.to_lowercase();
+        let focus = self.focused_ap.as_ref().map(|focused| &focused.mac);
         let mut clients: Vec<_> = self
             .clients
             .iter()
             .filter(|client| client.client_type == ClientType::Wireless)
             .filter(|client| client.wireless.is_some())
-            .filter(|client| self.client_matches_focused_ap(client))
-            .filter(|client| self.matches_client_query(client))
+            .filter(|client| focus.is_none_or(|mac| client_on_ap(client, mac)))
+            .filter(|client| query.is_empty() || client_matches(client, &query))
             .collect();
 
-        // `self.clients` is already in name order and the sort is stable, so
-        // ties (and the Name sort) keep that order.
-        clients.sort_by(|left, right| match self.sort_field {
-            WifiSortField::Health => right
-                .wireless
-                .as_ref()
-                .and_then(|wireless| wireless.satisfaction)
-                .cmp(
-                    &left
-                        .wireless
-                        .as_ref()
-                        .and_then(|wireless| wireless.satisfaction),
-                ),
-            WifiSortField::Signal => right
-                .wireless
-                .as_ref()
-                .and_then(|wireless| wireless.signal_dbm)
-                .cmp(
-                    &left
-                        .wireless
-                        .as_ref()
-                        .and_then(|wireless| wireless.signal_dbm),
-                ),
-            _ => Ordering::Equal,
-        });
+        // `self.clients` is already in name order and the sorts are stable,
+        // so ties (and the Name sort) keep that order.
+        match self.client_sort {
+            WifiSortField::Health => clients.sort_by_key(|client| {
+                Reverse(client.wireless.as_ref().and_then(|w| w.satisfaction))
+            }),
+            WifiSortField::Signal => clients
+                .sort_by_key(|client| Reverse(client.wireless.as_ref().and_then(|w| w.signal_dbm))),
+            _ => {}
+        }
 
         clients
     }
 
+    /// The SSID table's rows: the broadcasts the filter keeps, by name.
+    pub(super) fn visible_ssids(&self) -> Vec<&Arc<WifiBroadcast>> {
+        let query = self.ssid_query.to_lowercase();
+        self.ssids
+            .iter()
+            .filter(|ssid| query.is_empty() || ssid.name.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    /// The neighbor table's rows: neighbors on the selected band, seen by
+    /// the focused AP, that the filter keeps, sorted.
     pub(super) fn visible_neighbors(&self) -> Vec<&RogueAp> {
+        let query = self.neighbor_query.to_lowercase();
         let mut neighbors: Vec<_> = self
             .neighbors
             .iter()
-            .filter(|neighbor| self.neighbor_matches_focused_ap(neighbor))
-            .filter(|neighbor| self.neighbor_matches_selected_band(neighbor))
-            .filter(|neighbor| self.matches_neighbor_query(neighbor))
+            .filter(|neighbor| self.neighbor_seen_by_focus(neighbor))
+            .filter(|neighbor| {
+                band_from_neighbor(neighbor).is_none_or(|band| band == self.selected_band)
+            })
+            .filter(|neighbor| query.is_empty() || neighbor_matches(neighbor, &query))
             .collect();
 
-        neighbors.sort_by(|left, right| match self.sort_field {
-            WifiSortField::Channel => left
-                .channel
-                .unwrap_or_default()
-                .cmp(&right.channel.unwrap_or_default())
-                .then_with(|| display_neighbor_name(left).cmp(&display_neighbor_name(right))),
-            WifiSortField::Security => left
-                .security
-                .as_deref()
-                .unwrap_or("")
-                .cmp(right.security.as_deref().unwrap_or(""))
-                .then_with(|| display_neighbor_name(left).cmp(&display_neighbor_name(right))),
-            _ => right
-                .signal
-                .or(right.rssi)
-                .cmp(&left.signal.or(left.rssi))
-                .then_with(|| display_neighbor_name(left).cmp(&display_neighbor_name(right))),
-        });
+        // Hidden networks have no name to sort by and follow the named.
+        let name = |neighbor: &RogueAp| {
+            let essid = neighbor.essid.as_deref().filter(|essid| !essid.is_empty());
+            (
+                essid.is_none(),
+                essid.unwrap_or(&neighbor.bssid).to_lowercase(),
+            )
+        };
+        match self.neighbor_sort {
+            WifiSortField::Channel => neighbors.sort_by_cached_key(|neighbor| {
+                (neighbor.channel.unwrap_or(i32::MAX), name(neighbor))
+            }),
+            WifiSortField::Security => neighbors.sort_by_cached_key(|neighbor| {
+                let security = neighbor.security.as_deref().unwrap_or("").to_lowercase();
+                (security.is_empty(), security, name(neighbor))
+            }),
+            WifiSortField::Name => neighbors.sort_by_cached_key(|neighbor| name(neighbor)),
+            _ => neighbors.sort_by_cached_key(|neighbor| {
+                (Reverse(neighbor.signal.or(neighbor.rssi)), name(neighbor))
+            }),
+        }
 
         neighbors
     }
@@ -420,27 +410,33 @@ impl WifiScreen {
         clients.get(index).copied()
     }
 
-    pub(super) fn selected_neighbor(&self) -> Option<&RogueAp> {
+    pub(super) fn selected_ssid(&self) -> Option<&Arc<WifiBroadcast>> {
+        let ssids = self.visible_ssids();
+        let index = self.ssid_table_state.selected().unwrap_or(0);
+        ssids.get(index).copied()
+    }
+
+    fn selected_neighbor(&self) -> Option<&RogueAp> {
         let neighbors = self.visible_neighbors();
         let index = self.neighbor_table_state.selected().unwrap_or(0);
         neighbors.get(index).copied()
     }
 
-    /// Identities of the rows selected in the AP, client, and neighbor
-    /// tables, taken before their rows change.
+    /// Identities of the rows selected in each table, taken before their
+    /// rows change.
     pub(super) fn selected_rows(&self) -> SelectedRows {
         SelectedRows {
             ap: self.selected_ap().map(|device| device.id.clone()),
             client: self.selected_client().map(|client| client.id.clone()),
-            neighbor: self
-                .selected_neighbor()
-                .map(|neighbor| neighbor.bssid.clone()),
+            ssid: self.selected_ssid().map(|ssid| ssid.id.clone()),
+            neighbor: self.selected_neighbor().map(neighbor_key),
         }
     }
 
     /// Point each table back at the rows captured by `selected_rows`, so a
-    /// refresh or re-sort keeps the cursor on the same AP, client, and
-    /// neighbor.
+    /// refresh, re-sort, or filter change keeps the cursor on the same AP,
+    /// client, SSID, and neighbor. A row that left gives its place to the
+    /// row now at its index.
     pub(super) fn follow_rows(&mut self, selected: &SelectedRows) {
         let ap = reselect(
             self.ap_devices().into_iter().map(|device| &device.id),
@@ -452,16 +448,46 @@ impl WifiScreen {
             selected.client.as_ref(),
             self.client_table_state.selected(),
         );
+        let ssid = reselect(
+            self.visible_ssids().into_iter().map(|ssid| &ssid.id),
+            selected.ssid.as_ref(),
+            self.ssid_table_state.selected(),
+        );
+        let neighbor_keys: Vec<String> = self
+            .visible_neighbors()
+            .into_iter()
+            .map(neighbor_key)
+            .collect();
         let neighbor = reselect(
-            self.visible_neighbors()
-                .into_iter()
-                .map(|neighbor| neighbor.bssid.as_str()),
-            selected.neighbor.as_deref(),
+            neighbor_keys.iter(),
+            selected.neighbor.as_ref(),
             self.neighbor_table_state.selected(),
         );
         self.ap_table_state.select(ap);
         self.client_table_state.select(client);
+        self.ssid_table_state.select(ssid);
         self.neighbor_table_state.select(neighbor);
+    }
+
+    /// Clamp every table's cursor to its rows.
+    pub(super) fn sync_selections(&mut self) {
+        let lens = [
+            self.ap_devices().len(),
+            self.wireless_clients().len(),
+            self.visible_ssids().len(),
+            self.visible_neighbors().len(),
+            self.roam_rows.len(),
+        ];
+        let states = [
+            &mut self.ap_table_state,
+            &mut self.client_table_state,
+            &mut self.ssid_table_state,
+            &mut self.neighbor_table_state,
+            &mut self.roam_table_state,
+        ];
+        for (state, len) in states.into_iter().zip(lens) {
+            sync_selection(state, len);
+        }
     }
 
     pub(super) fn selected_client_ip(&self) -> Option<String> {
@@ -469,22 +495,23 @@ impl WifiScreen {
             .and_then(|client| client.ip.map(|ip| ip.to_string()))
     }
 
-    pub(super) fn focused_ap_label(&self) -> Option<String> {
-        self.focused_ap().map(|device| display_device_name(device))
+    /// The focus on the device `id`, when it is still an access point.
+    fn focus_for(&self, id: &EntityId) -> Option<FocusedAp> {
+        self.all_aps()
+            .find(|device| &device.id == id)
+            .map(|device| FocusedAp {
+                id: device.id.clone(),
+                mac: device.mac.clone(),
+                label: display_device_name(device),
+            })
     }
 
-    pub(super) fn focused_client_label(&self) -> Option<String> {
-        self.clients
-            .iter()
-            .find(|client| Some(&client.id) == self.focused_client_id.as_ref())
-            .map(|client| display_client_name(client))
-    }
-
-    pub(super) fn focused_client_mac(&self) -> Option<String> {
-        self.clients
-            .iter()
-            .find(|client| Some(&client.id) == self.focused_client_id.as_ref())
-            .map(|client| client.mac.to_string())
+    /// Keep the focus on its AP across a device refresh, and drop it only
+    /// when that AP has left the site.
+    fn refresh_focused_ap(&mut self) {
+        if let Some(focused) = &self.focused_ap {
+            self.focused_ap = self.focus_for(&focused.id);
+        }
     }
 
     pub(super) fn ap_clients(&self, ap: &Device) -> &[Arc<Client>] {
@@ -492,318 +519,125 @@ impl WifiScreen {
     }
 
     pub(super) fn ap_health(&self, ap: &Device) -> Option<u8> {
-        let satisfaction: Vec<u32> = self
+        let (sum, count) = self
             .ap_clients(ap)
             .iter()
             .filter_map(|client| client.wireless.as_ref()?.satisfaction)
-            .map(u32::from)
-            .collect();
-
-        if satisfaction.is_empty() {
-            return None;
-        }
-
-        let count = u32::try_from(satisfaction.len()).unwrap_or(1);
-        u8::try_from(satisfaction.iter().sum::<u32>() / count).ok()
+            .fold((0u32, 0u32), |(sum, count), score| {
+                (sum + u32::from(score), count + 1)
+            });
+        (count > 0)
+            .then(|| u8::try_from(sum / count).ok())
+            .flatten()
     }
 
     pub(super) fn ap_signal(&self, ap: &Device) -> Option<i32> {
-        let signals: Vec<i32> = self
+        let (sum, count) = self
             .ap_clients(ap)
             .iter()
             .filter_map(|client| client.wireless.as_ref()?.signal_dbm)
-            .collect();
-
-        if signals.is_empty() {
-            return None;
-        }
-
-        let count = i32::try_from(signals.len()).unwrap_or(1);
-        Some(signals.iter().sum::<i32>() / count)
+            .fold((0i32, 0i32), |(sum, count), dbm| (sum + dbm, count + 1));
+        (count > 0).then(|| sum / count)
     }
 
+    /// The name of the AP `client` is on, or a dash.
     pub(super) fn client_ap_name(&self, client: &Client) -> String {
-        let ap = self.devices.iter().find(|device| {
-            client
-                .uplink_device_mac
-                .as_ref()
-                .is_some_and(|mac| mac == &device.mac)
-                || client
-                    .wireless
-                    .as_ref()
-                    .and_then(|wireless| wireless.bssid.as_ref())
-                    .is_some_and(|bssid| bssid == &device.mac)
-        });
-
-        ap.map_or_else(|| "─".to_string(), |device| display_device_name(device))
-    }
-
-    pub(super) fn channel_band_slice(&self) -> Vec<i32> {
-        let mut channels = match self.selected_band {
-            WifiBand::TwoGhz => self
-                .channels
-                .first()
-                .and_then(|entry| entry.channels_ng.clone())
-                .unwrap_or_else(|| vec![1, 6, 11]),
-            WifiBand::FiveGhz => self
-                .channels
-                .first()
-                .and_then(|entry| entry.channels_na.clone())
-                .unwrap_or_default(),
-            WifiBand::SixGhz => self
-                .channels
-                .first()
-                .and_then(|entry| entry.channels_6e.clone())
-                .unwrap_or_default(),
-        };
-
-        if self.selected_band != WifiBand::TwoGhz {
-            let mut active = BTreeSet::new();
-            for device in self.ap_devices() {
-                if let Some((channel, band)) = self.ap_channel_profile(device)
-                    && band == self.selected_band
-                    && let Ok(channel) = i32::try_from(channel)
-                {
-                    active.insert(channel);
-                }
-            }
-            for neighbor in self
-                .neighbors
-                .iter()
-                .filter(|neighbor| self.neighbor_matches_focused_ap(neighbor))
-            {
-                if band_from_neighbor(neighbor) == Some(self.selected_band)
-                    && let Some(channel) = neighbor.channel
-                {
-                    active.insert(channel);
-                }
-            }
-            if !active.is_empty() {
-                channels.retain(|channel| active.contains(channel));
-                if channels.is_empty() {
-                    channels = active.into_iter().collect();
-                }
-            }
-        }
-
-        channels
-    }
-
-    pub(super) fn channel_occupancy(&self) -> Vec<ChannelOccupancy> {
-        self.channel_band_slice()
-            .into_iter()
-            .map(|channel| {
-                let your_count = self
-                    .ap_devices()
-                    .iter()
-                    .filter_map(|device| self.ap_channel_profile(device))
-                    .filter(|(ap_channel, band)| {
-                        *band == self.selected_band
-                            && i32::try_from(*ap_channel).ok() == Some(channel)
-                    })
-                    .count();
-                let neighbor_count = self
-                    .neighbors
-                    .iter()
-                    .filter(|neighbor| self.neighbor_matches_focused_ap(neighbor))
-                    .filter(|neighbor| band_from_neighbor(neighbor) == Some(self.selected_band))
-                    .filter(|neighbor| neighbor.channel == Some(channel))
-                    .count();
-                let signal = self
-                    .neighbors
-                    .iter()
-                    .filter(|neighbor| self.neighbor_matches_focused_ap(neighbor))
-                    .filter(|neighbor| band_from_neighbor(neighbor) == Some(self.selected_band))
-                    .filter(|neighbor| neighbor.channel == Some(channel))
-                    .filter_map(|neighbor| neighbor.signal.or(neighbor.rssi))
-                    .max();
-
-                ChannelOccupancy {
-                    channel,
-                    your_count,
-                    neighbor_count,
-                    signal,
-                    conflict: your_count > 0 && neighbor_count > 0,
-                }
-            })
-            .collect()
-    }
-
-    pub(super) fn parsed_roam_rows(&self) -> Vec<ParsedRoamRow> {
-        let mut rows: Vec<_> = self.roam_history.iter().map(parse_roam_row).collect();
-        rows.sort_by(|left, right| compare_timestamp(&right.timestamp, &left.timestamp));
-        rows
-    }
-
-    fn focused_ap(&self) -> Option<&Arc<Device>> {
-        self.devices
-            .iter()
-            .find(|device| Some(&device.id) == self.focused_ap_id.as_ref())
-    }
-
-    fn matches_ap_query(&self, device: &Device) -> bool {
-        if self.search_query.is_empty() {
-            return true;
-        }
-
-        let query = self.search_query.to_ascii_lowercase();
-        display_device_name(device)
-            .to_ascii_lowercase()
-            .contains(&query)
-            || device.mac.to_string().contains(&query)
-            || device
-                .radios
-                .iter()
-                .filter_map(|radio| radio.channel)
-                .any(|channel| channel.to_string().contains(&query))
-    }
-
-    fn matches_client_query(&self, client: &Client) -> bool {
-        if self.search_query.is_empty() {
-            return true;
-        }
-
-        let query = self.search_query.to_ascii_lowercase();
-        display_client_name(client)
-            .to_ascii_lowercase()
-            .contains(&query)
-            || client
-                .ip
-                .map(|ip| ip.to_string())
-                .unwrap_or_default()
-                .contains(&query)
-            || client.mac.to_string().contains(&query)
-    }
-
-    fn matches_neighbor_query(&self, neighbor: &RogueAp) -> bool {
-        if self.search_query.is_empty() {
-            return true;
-        }
-
-        let query = self.search_query.to_ascii_lowercase();
-        display_neighbor_name(neighbor)
-            .to_ascii_lowercase()
-            .contains(&query)
-            || neighbor.bssid.to_ascii_lowercase().contains(&query)
-            || neighbor
-                .channel
-                .is_some_and(|channel| channel.to_string().contains(&query))
-    }
-
-    fn client_matches_focused_ap(&self, client: &Client) -> bool {
-        let Some(focused) = self.focused_ap() else {
-            return true;
-        };
-
+        let bssid = client
+            .wireless
+            .as_ref()
+            .and_then(|wireless| wireless.bssid.as_ref());
         client
             .uplink_device_mac
             .as_ref()
-            .is_some_and(|mac| mac == &focused.mac)
-            || client
+            .into_iter()
+            .chain(bssid)
+            .find_map(|mac| self.ap_names.get(mac))
+            .cloned()
+            .unwrap_or_else(|| "─".to_string())
+    }
+
+    /// How many wireless clients are on the SSID named `name`, or `None`
+    /// without the session that says which SSID a client is on.
+    pub(super) fn ssid_client_count(&self, name: &str) -> Option<usize> {
+        if self.session_missing() {
+            return None;
+        }
+        let on_ssid = |client: &&Arc<Client>| {
+            client
                 .wireless
                 .as_ref()
-                .and_then(|wireless| wireless.bssid.as_ref())
-                .is_some_and(|bssid| bssid == &focused.mac)
-    }
-
-    fn neighbor_matches_focused_ap(&self, neighbor: &RogueAp) -> bool {
-        let Some(focused) = self.focused_ap() else {
-            return true;
+                .and_then(|wireless| wireless.ssid.as_deref())
+                == Some(name)
         };
-        neighbor.ap_mac.as_deref() == Some(focused.mac.as_str())
+        Some(self.clients.iter().filter(on_ssid).count())
     }
 
-    fn neighbor_matches_selected_band(&self, neighbor: &RogueAp) -> bool {
-        band_from_neighbor(neighbor).is_none_or(|band| band == self.selected_band)
-    }
-
-    pub(super) fn ap_channel_profile(&self, ap: &Device) -> Option<(u32, WifiBand)> {
-        if let Some((channel, band)) = ap
-            .radios
-            .iter()
-            .filter_map(|radio| {
-                radio
-                    .channel
-                    .map(|channel| (channel, band_from_frequency(radio.frequency_ghz)))
-            })
-            .min_by_key(|(channel, _)| *channel)
-        {
-            return Some((channel, band));
+    /// How many clients are on `ap`, or `None` without the session that
+    /// says which AP a client is on.
+    pub(super) fn ap_client_count(&self, ap: &Device) -> Option<usize> {
+        if self.session_missing() {
+            return ap
+                .client_count
+                .and_then(|count| usize::try_from(count).ok());
         }
-
-        let mut counts = BTreeMap::new();
-        for client in self.ap_clients(ap) {
-            let Some(wireless) = client.wireless.as_ref() else {
-                continue;
-            };
-            let Some(channel) = wireless.channel else {
-                continue;
-            };
-            let band = wireless
-                .frequency_ghz
-                .map_or_else(|| band_from_channel(channel), band_from_frequency);
-            let key = (channel, band_index(band));
-            counts
-                .entry(key)
-                .and_modify(|count| *count += 1usize)
-                .or_insert(1usize);
-        }
-
-        counts
-            .into_iter()
-            .max_by(|(left_key, left_count), (right_key, right_count)| {
-                left_count
-                    .cmp(right_count)
-                    .then_with(|| right_key.0.cmp(&left_key.0))
-            })
-            .map(|((channel, band), _)| (channel, band_from_index(band)))
+        Some(self.ap_clients(ap).len())
     }
 
-    pub(super) fn sync_ap_selection(&mut self) {
-        let len = self.ap_devices().len();
-        sync_selection(&mut self.ap_table_state, len);
-        if self
-            .focused_ap_id
-            .as_ref()
-            .is_some_and(|focused| !self.ap_devices().iter().any(|device| &device.id == focused))
-        {
-            self.focused_ap_id = None;
+    /// Whether `neighbor` was seen by the focused AP, or no AP is focused.
+    pub(super) fn neighbor_seen_by_focus(&self, neighbor: &RogueAp) -> bool {
+        self.focused_ap.as_ref().is_none_or(|focused| {
+            neighbor
+                .ap_mac
+                .as_deref()
+                .is_some_and(|mac| mac.eq_ignore_ascii_case(focused.mac.as_str()))
+        })
+    }
+
+    /// The name of the AP that saw `neighbor`, or a dash.
+    pub(super) fn neighbor_observer(&self, neighbor: &RogueAp) -> String {
+        neighbor
+            .ap_mac
+            .as_deref()
+            .and_then(|mac| self.ap_names.get(&MacAddress::new(mac)))
+            .cloned()
+            .unwrap_or_else(|| "─".to_string())
+    }
+
+    pub(super) fn select_first(&mut self) {
+        if self.active_len() > 0 {
+            self.select_row(0);
         }
     }
 
-    pub(super) fn sync_client_selection(&mut self) {
-        let len = self.wireless_clients().len();
-        sync_selection(&mut self.client_table_state, len);
-        if self.focused_client_id.as_ref().is_some_and(|focused| {
-            !self
-                .wireless_clients()
-                .iter()
-                .any(|client| &client.id == focused)
-        }) {
-            self.focused_client_id = None;
-            self.roam_history = Arc::new(Vec::new());
-            self.roam_history_mac = None;
-            self.roam_history_pending_mac = None;
+    /// Rows in the active sub-tab's table.
+    pub(super) fn active_len(&self) -> usize {
+        match self.sub_tab {
+            WifiSubTab::Overview => self.ap_devices().len(),
+            WifiSubTab::Clients => self.wireless_clients().len(),
+            WifiSubTab::Ssids => self.visible_ssids().len(),
+            WifiSubTab::Neighbors => self.visible_neighbors().len(),
+            WifiSubTab::Roaming => self.roam_rows.len(),
         }
     }
 
-    pub(super) fn sync_neighbor_selection(&mut self) {
-        let len = self.visible_neighbors().len();
-        sync_selection(&mut self.neighbor_table_state, len);
+    pub(super) fn active_table_state(&mut self) -> &mut TableState {
+        match self.sub_tab {
+            WifiSubTab::Overview => &mut self.ap_table_state,
+            WifiSubTab::Clients => &mut self.client_table_state,
+            WifiSubTab::Ssids => &mut self.ssid_table_state,
+            WifiSubTab::Neighbors => &mut self.neighbor_table_state,
+            WifiSubTab::Roaming => &mut self.roam_table_state,
+        }
     }
 
-    pub(super) fn sync_roam_selection(&mut self) {
-        let len = self.roam_history.len();
-        sync_selection(&mut self.roam_table_state, len);
-    }
-
-    pub(super) fn focus_client_from_selection(&mut self) {
-        let selected = self.selected_client().map(|client| client.id.clone());
-        if selected != self.focused_client_id {
-            self.focused_client_id = selected;
-            self.roam_history = Arc::new(Vec::new());
-            self.roam_history_mac = None;
-            self.roam_history_pending_mac = None;
+    /// Move the active table's cursor to `index`.
+    pub(super) fn select_row(&mut self, index: usize) {
+        if self.active_table_state().selected() == Some(index) {
+            return;
+        }
+        self.active_table_state().select(Some(index));
+        if self.sub_tab == WifiSubTab::Clients {
+            self.client_cursor_moved_at = Some(std::time::Instant::now());
         }
     }
 }
@@ -816,6 +650,60 @@ fn sync_selection(table_state: &mut TableState, len: usize) {
 
     let next = table_state.selected().unwrap_or(0).min(len - 1);
     table_state.select(Some(next));
+}
+
+/// A neighbor row's identity. The controller lists a neighbor once per AP
+/// that hears it, so the BSSID alone would name several rows.
+fn neighbor_key(neighbor: &RogueAp) -> String {
+    format!(
+        "{}@{}",
+        neighbor.bssid,
+        neighbor.ap_mac.as_deref().unwrap_or_default()
+    )
+}
+
+fn client_on_ap(client: &Client, ap: &MacAddress) -> bool {
+    client.uplink_device_mac.as_ref() == Some(ap)
+        || client
+            .wireless
+            .as_ref()
+            .and_then(|wireless| wireless.bssid.as_ref())
+            == Some(ap)
+}
+
+/// Whether an AP matches a lowercased search `query`.
+fn ap_matches(device: &Device, query: &str) -> bool {
+    display_device_name(device).to_lowercase().contains(query)
+        || device.mac.as_str().contains(query)
+        || device
+            .radios
+            .iter()
+            .filter_map(|radio| radio.channel)
+            .any(|channel| channel.to_string() == query)
+}
+
+/// Whether a client matches a lowercased search `query`.
+fn client_matches(client: &Client, query: &str) -> bool {
+    display_client_name(client).to_lowercase().contains(query)
+        || client.ip.is_some_and(|ip| ip.to_string().contains(query))
+        || client.mac.as_str().contains(query)
+        || client
+            .wireless
+            .as_ref()
+            .and_then(|wireless| wireless.ssid.as_deref())
+            .is_some_and(|ssid| ssid.to_lowercase().contains(query))
+}
+
+/// Whether a neighbor matches a lowercased search `query`.
+fn neighbor_matches(neighbor: &RogueAp, query: &str) -> bool {
+    neighbor
+        .essid
+        .as_deref()
+        .is_some_and(|essid| essid.to_lowercase().contains(query))
+        || neighbor.bssid.to_lowercase().contains(query)
+        || neighbor
+            .channel
+            .is_some_and(|channel| channel.to_string() == query)
 }
 
 pub(super) fn display_device_name(device: &Device) -> String {
@@ -833,12 +721,9 @@ pub(super) fn display_client_name(client: &Client) -> String {
         .unwrap_or_else(|| client.mac.to_string())
 }
 
-pub(super) fn display_neighbor_name(neighbor: &RogueAp) -> String {
-    neighbor
-        .essid
-        .clone()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| neighbor.bssid.clone())
+/// A neighbor's network name, or `None` when it hides its SSID.
+pub(super) fn neighbor_name(neighbor: &RogueAp) -> Option<&str> {
+    neighbor.essid.as_deref().filter(|essid| !essid.is_empty())
 }
 
 pub(super) fn band_from_frequency(frequency_ghz: f32) -> WifiBand {
@@ -881,118 +766,3 @@ pub(super) fn band_from_neighbor(neighbor: &RogueAp) -> Option<WifiBand> {
         },
     )
 }
-
-pub(super) fn parse_roam_row(event: &Value) -> ParsedRoamRow {
-    let timestamp_value = event
-        .get("timestamp")
-        .or_else(|| event.get("time"))
-        .and_then(Value::as_i64);
-    let timestamp = timestamp_value.map_or_else(|| "─".to_string(), format_timestamp);
-    let parameters = event.get("parameters").unwrap_or(event);
-
-    ParsedRoamRow {
-        timestamp,
-        event: json_string(event, &["event_type", "event"])
-            .unwrap_or_else(|| "unknown".to_string()),
-        from_ap: nested_parameter(parameters, &["DEVICE_FROM", "from_ap"])
-            .unwrap_or_else(|| "─".to_string()),
-        to_ap: nested_parameter(parameters, &["DEVICE_TO", "to_ap", "ap_mac"])
-            .unwrap_or_else(|| "─".to_string()),
-        signal: nested_parameter(parameters, &["SIGNAL_STRENGTH", "signal"])
-            .map_or_else(|| "─".to_string(), |value| format!("{value} dBm")),
-        band: nested_parameter(parameters, &["RADIO_BAND", "band"])
-            .unwrap_or_else(|| "─".to_string()),
-    }
-}
-
-pub(super) fn json_string(value: &Value, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        if let Some(found) = value.get(key) {
-            if let Some(text) = found.as_str() {
-                return Some(text.to_string());
-            }
-            if let Some(number) = found.as_i64() {
-                return Some(number.to_string());
-            }
-            if let Some(number) = found.as_u64() {
-                return Some(number.to_string());
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn json_i32(value: &Value, keys: &[&str]) -> Option<i32> {
-    for key in keys {
-        if let Some(found) = value.get(key).and_then(Value::as_i64)
-            && let Ok(found) = i32::try_from(found)
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-pub(super) fn json_u64(value: &Value, keys: &[&str]) -> Option<u64> {
-    for key in keys {
-        if let Some(found) = value.get(key).and_then(Value::as_u64) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn nested_parameter(value: &Value, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        let Some(found) = value.get(key) else {
-            continue;
-        };
-        if let Some(name) = found.get("name").and_then(Value::as_str) {
-            return Some(name.to_string());
-        }
-        if let Some(name) = found.as_str() {
-            return Some(name.to_string());
-        }
-        if let Some(number) = found.as_i64() {
-            return Some(number.to_string());
-        }
-    }
-    None
-}
-
-fn band_index(band: WifiBand) -> u8 {
-    match band {
-        WifiBand::TwoGhz => 0,
-        WifiBand::FiveGhz => 1,
-        WifiBand::SixGhz => 2,
-    }
-}
-
-fn band_from_index(index: u8) -> WifiBand {
-    match index {
-        1 => WifiBand::FiveGhz,
-        2 => WifiBand::SixGhz,
-        _ => WifiBand::TwoGhz,
-    }
-}
-
-fn format_timestamp(timestamp: i64) -> String {
-    if timestamp > 1_000_000_000_000 {
-        chrono::DateTime::from_timestamp_millis(timestamp).map_or_else(
-            || timestamp.to_string(),
-            |value| value.format("%H:%M:%S").to_string(),
-        )
-    } else {
-        chrono::DateTime::from_timestamp(timestamp, 0).map_or_else(
-            || timestamp.to_string(),
-            |value| value.format("%H:%M:%S").to_string(),
-        )
-    }
-}
-
-fn compare_timestamp(left: &str, right: &str) -> Ordering {
-    left.cmp(right)
-}
-
-#[cfg(test)]
-mod tests;

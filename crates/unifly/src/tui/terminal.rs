@@ -8,7 +8,7 @@ use std::io::{Stdout, Write, stdout};
 use color_eyre::eyre::Result;
 use crossterm::{
     ExecutableCommand, QueueableCommand, cursor,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     terminal::{
         self, BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen,
         LeaveAlternateScreen,
@@ -36,12 +36,16 @@ impl Tui {
         terminal::enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(EnableMouseCapture)?;
+        // Pasted text arrives as one event, not as a burst of key presses
+        // that would run as shortcuts.
+        stdout().execute(EnableBracketedPaste)?;
         stdout().execute(cursor::Hide)?;
         self.terminal.clear()?;
         Ok(())
     }
 
-    /// Exit TUI mode: restore terminal to its original state.
+    /// Exit TUI mode: restore terminal to its original state. Safe to call
+    /// more than once.
     #[allow(clippy::unused_self)]
     pub fn exit(&mut self) {
         // Kitty keeps images per screen, so free the chart images while the
@@ -54,10 +58,7 @@ impl Tui {
         }
 
         // Best-effort restoration — don't bail on partial failures
-        let _ = stdout().execute(cursor::Show);
-        let _ = stdout().execute(DisableMouseCapture);
-        let _ = stdout().execute(LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        restore();
     }
 
     /// Draw a frame using the provided render closure.
@@ -113,6 +114,16 @@ impl Tui {
     }
 }
 
+/// Best-effort restoration of the terminal: partial failures are ignored
+/// so the rest still runs.
+fn restore() {
+    let _ = stdout().execute(cursor::Show);
+    let _ = stdout().execute(DisableBracketedPaste);
+    let _ = stdout().execute(DisableMouseCapture);
+    let _ = stdout().execute(LeaveAlternateScreen);
+    let _ = terminal::disable_raw_mode();
+}
+
 fn sync_updates_enabled() -> bool {
     sync_updates_enabled_with(|key| std::env::var_os(key).is_some())
 }
@@ -145,11 +156,7 @@ pub fn install_hooks() -> Result<()> {
     // Panic hook: restore terminal, then print the panic
     let panic_hook = panic_hook.into_panic_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // Best-effort terminal restoration
-        let _ = stdout().execute(cursor::Show);
-        let _ = stdout().execute(DisableMouseCapture);
-        let _ = stdout().execute(LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        restore();
 
         // Now print the panic with full context
         panic_hook(info);

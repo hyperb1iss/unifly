@@ -2,69 +2,143 @@
 //! controller.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{self, AtomicBool};
 
 use tracing::warn;
 
 use unifly_api::integration_types::FirewallPolicyOrdering;
 use unifly_api::model::FirewallPolicy;
-use unifly_api::{Command, ConnectionState, Controller, CoreError, EntityId};
+use unifly_api::{Command, Controller, CoreError, EntityId};
 
 use super::App;
-use crate::tui::action::{Action, Direction, Notification, NotificationLevel};
+use super::networks_firewall::{accepts_writes, refresh_after_write};
+use crate::tui::action::{Action, Notification, NotificationLevel, PairOrder, PolicyMove};
 
-/// Where one step through a zone pair's ordering leaves a policy.
+fn pair_order(ordering: &FirewallPolicyOrdering) -> PairOrder {
+    let ids = |ids: &[_]| ids.iter().map(|id| EntityId::Uuid(*id)).collect();
+    PairOrder {
+        before: ids(&ordering.before_system_defined),
+        after: ids(&ordering.after_system_defined),
+    }
+}
+
+fn flat(order: &PairOrder) -> impl Iterator<Item = &EntityId> {
+    order.before.iter().chain(&order.after)
+}
+
+/// Whether two orders hold the same policies, in any order.
+fn same_members(a: &PairOrder, b: &PairOrder) -> bool {
+    let sorted = |order: &PairOrder| {
+        let mut ids: Vec<String> = flat(order).map(ToString::to_string).collect();
+        ids.sort_unstable();
+        ids
+    };
+    sorted(a) == sorted(b)
+}
+
+/// What a drafted move comes to on the controller's own ordering.
 #[derive(Debug, PartialEq, Eq)]
-enum Step {
-    /// The pair's new ordering, both halves in full, and whether the
-    /// step crossed the system-defined block between them.
-    Moved {
-        before_system: Vec<EntityId>,
-        after_system: Vec<EntityId>,
-        crossed: bool,
-    },
-    /// The policy is already first or last in its zone pair.
-    AtEdge,
+enum Planned {
+    /// The ordering to write.
+    Write(PairOrder),
+    /// The controller already has the drafted order.
+    Unchanged,
+    /// The controller's order is not the one the draft was made on.
+    Stale,
     /// The controller keeps the policy in a fixed place: it is in neither
     /// half of the ordering, as with system-defined policies.
     Fixed,
 }
 
-/// Move `id` one step `direction` through `ordering`.
+/// Turn the move the table showed into the ordering to write, given the
+/// ordering the controller has now.
 ///
-/// The controller orders a zone pair's user policies in two halves around
-/// its system-defined policies, which sit between them as one block that
-/// never moves. A step past the block crosses all of it, so `J` and `K`
-/// can still bring a policy to any place it can hold.
-fn step(ordering: &FirewallPolicyOrdering, id: &EntityId, direction: Direction) -> Step {
-    let half = |ids: &[_]| {
-        ids.iter()
-            .map(|id| Some(EntityId::Uuid(*id)))
-            .collect::<Vec<_>>()
+/// The user moved a policy through the order on screen, so that order is
+/// what has to be true of the controller before the drafted one is
+/// written. Replaying key presses on whatever the controller holds would
+/// put the policy somewhere the user never saw.
+fn planned(fetched: &PairOrder, id: &EntityId, plan: &PolicyMove) -> Planned {
+    if !flat(fetched).any(|other| other == id) {
+        return Planned::Fixed;
+    }
+    if !same_members(&plan.started, &plan.drafted) {
+        return Planned::Stale;
+    }
+    let target = if plan.split_shown {
+        if *fetched != plan.started {
+            return Planned::Stale;
+        }
+        plan.drafted.clone()
+    } else {
+        if !flat(fetched).eq(flat(&plan.started)) {
+            return Planned::Stale;
+        }
+        let drafted: Vec<EntityId> = flat(&plan.drafted).cloned().collect();
+        match resplit(fetched, id, &drafted) {
+            Some(order) => order,
+            None => return Planned::Stale,
+        }
     };
-    let mut slots: Vec<Option<EntityId>> = half(&ordering.before_system_defined);
-    slots.push(None);
-    slots.extend(half(&ordering.after_system_defined));
+    if target == *fetched {
+        Planned::Unchanged
+    } else {
+        Planned::Write(target)
+    }
+}
 
-    let Some(index) = slots.iter().position(|slot| slot.as_ref() == Some(id)) else {
-        return Step::Fixed;
+/// Split `drafted`, a zone pair's whole order after `id` moved, into the
+/// controller's two halves, for a pair whose system-defined policies the
+/// table did not show.
+///
+/// Every other policy stays in the half it is in. The moved one joins
+/// the half of the policies it landed between, and keeps its own where
+/// it landed on the boundary: with nothing evaluated between the halves
+/// that is the same order either way, and the smaller change.
+fn resplit(fetched: &PairOrder, id: &EntityId, drafted: &[EntityId]) -> Option<PairOrder> {
+    let in_before = |other: &EntityId| fetched.before.contains(other);
+    let at = drafted.iter().position(|other| other == id)?;
+    let above = drafted[..at].last().map(in_before);
+    let below = drafted.get(at + 1).map(in_before);
+    let to_before = match (above != Some(false), below != Some(true)) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) => in_before(id),
+        (false, false) => return None,
     };
-    let target = match direction {
-        Direction::Up => index.checked_sub(1),
-        Direction::Down => Some(index + 1).filter(|next| *next < slots.len()),
-    };
-    let Some(target) = target else {
-        return Step::AtEdge;
-    };
-    let crossed = slots.get(target).is_some_and(Option::is_none);
-    slots.swap(index, target);
+    let mut order = PairOrder::default();
+    for other in drafted {
+        let before = if other == id {
+            to_before
+        } else {
+            in_before(other)
+        };
+        if before {
+            order.before.push(other.clone());
+        } else {
+            order.after.push(other.clone());
+        }
+    }
+    Some(order)
+}
 
-    let mut halves = slots
-        .split(Option::is_none)
-        .map(|half| half.iter().flatten().cloned().collect::<Vec<_>>());
-    Step::Moved {
-        before_system: halves.next().unwrap_or_default(),
-        after_system: halves.next().unwrap_or_default(),
+/// How far a move takes a policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Moved {
+    up: bool,
+    /// Places moved; the system-defined policies count as one.
+    places: usize,
+    /// Whether it crossed the system-defined policies.
+    crossed: bool,
+}
+
+/// The move of `id` that turns `from` into `to`.
+fn describe(from: &PairOrder, to: &PairOrder, id: &EntityId) -> Moved {
+    let place = |order: &PairOrder| flat(order).position(|other| other == id).unwrap_or(0);
+    let (was, now) = (place(from), place(to));
+    let crossed = from.before.contains(id) != to.before.contains(id);
+    Moved {
+        up: now < was || (now == was && to.before.contains(id)),
+        places: now.abs_diff(was) + usize::from(crossed),
         crossed,
     }
 }
@@ -76,110 +150,138 @@ enum MoveFailure {
     Write(CoreError),
 }
 
-/// Read the zone pair's ordering from the controller, move the policy one
-/// step, and write the new ordering back.
+/// How a move that did not fail ended.
+enum Outcome {
+    Moved,
+    Unchanged,
+    Stale,
+    Fixed,
+}
+
+/// Read the zone pair's ordering from the controller and, where it is
+/// still the one the draft was made on, write the drafted order once.
 async fn move_policy(
     controller: &Controller,
     zone_pair: (EntityId, EntityId),
     id: &EntityId,
-    direction: Direction,
-) -> Result<Step, MoveFailure> {
-    let ordering = controller
+    plan: &PolicyMove,
+) -> Result<Outcome, MoveFailure> {
+    let fetched = controller
         .get_firewall_policy_ordering(&zone_pair.0, &zone_pair.1)
         .await
         .map_err(MoveFailure::Read)?;
-    let step = step(&ordering, id, direction);
-    if let Step::Moved {
-        before_system,
-        after_system,
-        ..
-    } = &step
-    {
-        controller
-            .execute(Command::ReorderFirewallPolicies {
-                zone_pair,
-                before_system_ids: before_system.clone(),
-                after_system_ids: after_system.clone(),
-            })
-            .await
-            .map_err(MoveFailure::Write)?;
-    }
-    Ok(step)
+    let fetched = pair_order(&fetched);
+    let order = match planned(&fetched, id, plan) {
+        Planned::Write(order) => order,
+        Planned::Unchanged => return Ok(Outcome::Unchanged),
+        Planned::Stale => return Ok(Outcome::Stale),
+        Planned::Fixed => return Ok(Outcome::Fixed),
+    };
+    controller
+        .execute(Command::ReorderFirewallPolicies {
+            zone_pair,
+            before_system_ids: order.before,
+            after_system_ids: order.after,
+        })
+        .await
+        .map_err(MoveFailure::Write)?;
+    Ok(Outcome::Moved)
 }
 
-/// Fetch the controller's data now rather than at the next periodic
-/// refresh, so the table shows the order the controller has.
-async fn refresh(controller: &Controller) -> bool {
-    match controller.full_refresh().await {
-        Ok(()) => true,
-        Err(error) => {
-            warn!(%error, "refresh after a policy move failed");
-            false
+/// What a move that changed the order says.
+fn moved_message(name: &str, moved: Moved) -> String {
+    let (label, side) = if moved.up {
+        ("up", "above")
+    } else {
+        ("down", "below")
+    };
+    match (moved.places, moved.crossed) {
+        (1, true) => format!("Moved {name} {side} the system-defined policies"),
+        (1, false) => format!("Moved {name} {label}"),
+        (places, true) => {
+            format!("Moved {name} {label} {places} places, past the system-defined policies")
         }
+        (places, false) => format!("Moved {name} {label} {places} places"),
     }
 }
 
-/// Run one move and say how it went.
+/// Run one move and say how it went, and whether the order changed.
+/// `moved` is the move as the table showed it, which is how it is told.
 async fn run_move(
     controller: Controller,
     zone_pair: (EntityId, EntityId),
     id: EntityId,
     name: String,
-    direction: Direction,
-) -> Notification {
-    let (label, edge, side) = match direction {
-        Direction::Up => ("up", "first", "above"),
-        Direction::Down => ("down", "last", "below"),
-    };
-    match move_policy(&controller, zone_pair, &id, direction).await {
-        Ok(Step::Moved { crossed, .. }) => {
-            let moved = if crossed {
-                format!("Moved {name} {side} the system-defined policies")
-            } else {
-                format!("Moved {name} {label}")
-            };
-            if refresh(&controller).await {
-                Notification::success(moved)
+    plan: PolicyMove,
+) -> (Notification, bool) {
+    let moved = describe(&plan.started, &plan.drafted, &id);
+    match move_policy(&controller, zone_pair, &id, &plan).await {
+        Ok(Outcome::Moved) => {
+            let message = moved_message(&name, moved);
+            let notification = if refresh_after_write(&controller).await {
+                Notification::success(message)
             } else {
                 Notification {
-                    message: format!("{moved}; the list shows it after the next refresh"),
+                    message: format!("{message}; the list shows it after the next refresh"),
                     level: NotificationLevel::Warning,
                 }
-            }
+            };
+            (notification, true)
         }
-        Ok(Step::AtEdge) => {
-            Notification::info(format!("{name} is already {edge} in its zone pair"))
-        }
-        Ok(Step::Fixed) => {
-            Notification::info(format!("{name} keeps a fixed place in its zone pair"))
+        Ok(Outcome::Fixed) => (
+            Notification::info(format!("{name} keeps a fixed place in its zone pair")),
+            false,
+        ),
+        Ok(Outcome::Unchanged) => (
+            Notification::info(format!("The controller already has {name} there")),
+            false,
+        ),
+        // The table was behind the controller. Nothing was written; the
+        // refresh puts the real order on screen to move through.
+        Ok(Outcome::Stale) => {
+            let refreshed = refresh_after_write(&controller).await;
+            let next = if refreshed {
+                "The list is up to date now"
+            } else {
+                "Refresh the list"
+            };
+            (
+                Notification::warning(format!(
+                    "The policy order on the controller is not the one shown, so {name} \
+                     was not moved. {next}: move it again."
+                )),
+                false,
+            )
         }
         // A connection lost mid-move is named as such: a refresh could
         // not run, and the next connect's refresh shows the real order.
-        Err(MoveFailure::Read(error) | MoveFailure::Write(error)) if !is_connected(&controller) => {
+        Err(MoveFailure::Read(error) | MoveFailure::Write(error))
+            if !accepts_writes(&controller) =>
+        {
             warn!(%error, "policy move failed with the connection down");
-            Notification::error(format!(
-                "Could not move {name}: the controller is not connected"
-            ))
+            (
+                Notification::error(format!(
+                    "Could not move {name}: the controller is not connected"
+                )),
+                false,
+            )
         }
         Err(MoveFailure::Read(error)) => {
             warn!(%error, "policy move failed");
-            Notification::error(format!("Could not move {name}: {error}"))
+            (
+                Notification::error(format!("Could not move {name}: {error}")),
+                false,
+            )
         }
         Err(MoveFailure::Write(error)) => {
             warn!(%error, "policy move failed");
-            refresh(&controller).await;
-            Notification::error(format!("Could not move {name}: {error}"))
+            refresh_after_write(&controller).await;
+            (
+                Notification::error(format!("Could not move {name}: {error}")),
+                false,
+            )
         }
     }
-}
-
-/// Whether the controller has a live connection. Commands fail at once
-/// without one, and the reads a move starts with fail as unsupported.
-fn is_connected(controller: &Controller) -> bool {
-    matches!(
-        *controller.connection_state().borrow(),
-        ConnectionState::Connected
-    )
 }
 
 /// Marks a policy move in flight until dropped, so even a move that
@@ -188,529 +290,79 @@ struct MoveInFlight(Arc<AtomicBool>);
 
 impl Drop for MoveInFlight {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.store(false, atomic::Ordering::Release);
     }
 }
 
 impl App {
-    /// Move `policy` one step through its zone pair's ordering on the
-    /// controller. The Policies table only ever shows the controller's
-    /// order: a move that lands refreshes the data, and one that fails
-    /// says why and refreshes too if its write may have landed.
+    /// Write a policy's drafted move to the controller. The Firewall
+    /// screen has already shown the move; this makes it real, or says why
+    /// not.
     ///
-    /// Each step is computed from the controller's current order, so the
-    /// next one cannot be right until this one lands. Presses while a move
-    /// is in flight are dropped with a note, not queued.
-    pub(super) fn reorder_policy(&self, policy: &Arc<FirewallPolicy>, direction: Direction) {
-        let notify = |notification| {
-            let _ = self.action_tx.send(Action::Notify(notification));
+    /// The controller's ordering is read first and has to be the one the
+    /// draft was made on. The drafted order is then written as one
+    /// ordering, under a progress toast that stays until the move has
+    /// landed and the data has been fetched again. The screen hears the
+    /// end as [`Action::PolicyMoveSettled`].
+    pub(super) fn move_firewall_policy(&mut self, policy: &Arc<FirewallPolicy>, plan: &PolicyMove) {
+        let name = self.shown_name(&policy.name);
+        let refusal = match self.controller.clone() {
+            None => Err("Not connected".to_owned()),
+            Some(controller) => match (
+                policy.source.zone_id.clone(),
+                policy.destination.zone_id.clone(),
+            ) {
+                (Some(source), Some(destination)) if accepts_writes(&controller) => {
+                    Ok((controller, (source, destination)))
+                }
+                (Some(_), Some(_)) => Err(format!("Not connected, so {name} stays where it is")),
+                _ => Err(format!(
+                    "{name} has no zone pair, so it has no order to change"
+                )),
+            },
         };
-        let Some(controller) = self.controller.clone() else {
-            notify(Notification::error("Not connected"));
-            return;
+        let settle = |moved| Action::PolicyMoveSettled { moved };
+        let (controller, zone_pair) = match refusal {
+            Ok(ready) => ready,
+            Err(reason) => {
+                self.show_notification(Notification::error(reason));
+                let _ = self.action_tx.send(settle(false));
+                return;
+            }
         };
-        let name = policy.name.clone();
-        let (Some(source), Some(destination)) = (
-            policy.source.zone_id.clone(),
-            policy.destination.zone_id.clone(),
-        ) else {
-            notify(Notification::error(format!(
-                "{name} has no zone pair, so it has no order to change"
-            )));
-            return;
-        };
-        if !is_connected(&controller) {
-            notify(Notification::error(format!(
-                "Not connected, so {name} stays where it is"
-            )));
-            return;
-        }
-        if self.policy_move.swap(true, Ordering::AcqRel) {
-            notify(Notification::info("A policy move is still in progress"));
+        if self.policy_move.swap(true, atomic::Ordering::AcqRel) {
+            self.show_notification(Notification::info("A policy move is still in progress"));
+            // This move will not run, so its row goes back; the one in
+            // flight reports for itself.
+            let _ = self.action_tx.send(settle(false));
             return;
         }
 
         let in_flight = MoveInFlight(Arc::clone(&self.policy_move));
-        let label = match direction {
-            Direction::Up => "up",
-            Direction::Down => "down",
+        let drafted = describe(&plan.started, &plan.drafted, &policy.id);
+        let label = if drafted.up { "up" } else { "down" };
+        let pending = if drafted.places <= 1 {
+            format!("Moving {name} {label}\u{2026}")
+        } else {
+            format!("Moving {name} {label} {} places\u{2026}", drafted.places)
         };
-        notify(Notification::info(format!("Moving {name} {label}\u{2026}")));
+        let progress = Some(self.begin_progress(&pending));
         let id = policy.id.clone();
+        let plan = plan.clone();
         let tx = self.action_tx.clone();
         tokio::spawn(async move {
-            let notification =
-                run_move(controller, (source, destination), id, name, direction).await;
+            let (notification, moved) = run_move(controller, zone_pair, id, name, plan).await;
             // Free the keys before the toast, so a press that answers it
             // is taken.
             drop(in_flight);
-            let _ = tx.send(Action::Notify(notification));
+            let _ = tx.send(settle(moved));
+            let _ = tx.send(Action::OpFinished {
+                progress,
+                notification,
+            });
         });
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use serde_json::json;
-    use uuid::Uuid;
-    use wiremock::matchers::{body_json, method, path, query_param};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    use super::*;
-
-    fn uuid(n: u128) -> Uuid {
-        Uuid::from_u128(n)
-    }
-
-    fn id(n: u128) -> EntityId {
-        EntityId::Uuid(uuid(n))
-    }
-
-    /// A zone pair's ordering: user policies 1-3 before the system block,
-    /// 4-5 after it.
-    fn ordering() -> FirewallPolicyOrdering {
-        FirewallPolicyOrdering {
-            before_system_defined: vec![uuid(1), uuid(2), uuid(3)],
-            after_system_defined: vec![uuid(4), uuid(5)],
-        }
-    }
-
-    fn moved(before: &[u128], after: &[u128], crossed: bool) -> Step {
-        Step::Moved {
-            before_system: before.iter().copied().map(id).collect(),
-            after_system: after.iter().copied().map(id).collect(),
-            crossed,
-        }
-    }
-
-    #[test]
-    fn a_step_swaps_a_policy_with_its_neighbour() {
-        assert_eq!(
-            step(&ordering(), &id(2), Direction::Up),
-            moved(&[2, 1, 3], &[4, 5], false)
-        );
-        assert_eq!(
-            step(&ordering(), &id(4), Direction::Down),
-            moved(&[1, 2, 3], &[5, 4], false)
-        );
-    }
-
-    #[test]
-    fn a_step_past_the_system_block_crosses_all_of_it() {
-        assert_eq!(
-            step(&ordering(), &id(3), Direction::Down),
-            moved(&[1, 2], &[3, 4, 5], true)
-        );
-        assert_eq!(
-            step(&ordering(), &id(4), Direction::Up),
-            moved(&[1, 2, 3, 4], &[5], true)
-        );
-    }
-
-    #[test]
-    fn the_ends_and_fixed_policies_stay_put() {
-        assert_eq!(step(&ordering(), &id(1), Direction::Up), Step::AtEdge);
-        assert_eq!(step(&ordering(), &id(5), Direction::Down), Step::AtEdge);
-        assert_eq!(step(&ordering(), &id(9), Direction::Up), Step::Fixed);
-    }
-
-    const SITE: &str = "550e8400-e29b-41d4-a716-446655440000";
-    const SOURCE_ZONE: u128 = 0x10;
-    const DESTINATION_ZONE: u128 = 0x20;
-
-    fn policy(n: u128, zones: Option<(u128, u128)>) -> Arc<FirewallPolicy> {
-        let zone = |zone: Option<u128>| zone.map(|zone| uuid(zone).to_string());
-        Arc::new(
-            serde_json::from_value(json!({
-                "id": uuid(n).to_string(),
-                "name": format!("policy-{n}"),
-                "description": null,
-                "enabled": true,
-                "index": 10_000,
-                "action": "Allow",
-                "ip_version": "Both",
-                "source": { "zone_id": zone(zones.map(|pair| pair.0)), "filter": null },
-                "destination": { "zone_id": zone(zones.map(|pair| pair.1)), "filter": null },
-                "source_summary": null,
-                "destination_summary": null,
-                "protocol_summary": null,
-                "schedule": null,
-                "ipsec_mode": null,
-                "connection_states": [],
-                "logging_enabled": false,
-                "origin": "UserDefined"
-            }))
-            .expect("policy fixture should deserialize"),
-        )
-    }
-
-    /// An API-key controller on `server`, connected without loading data.
-    async fn controller(server: &MockServer) -> Controller {
-        for (route, status) in [("/api/auth/login", 401), ("/api/login", 404)] {
-            Mock::given(method("GET"))
-                .and(path(route))
-                .respond_with(ResponseTemplate::new(status))
-                .mount(server)
-                .await;
-        }
-        Mock::given(method("GET"))
-            .and(path("/proxy/network/integration/v1/sites"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "offset": 0, "limit": 50, "count": 1, "totalCount": 1,
-                "data": [{ "id": SITE, "internalReference": "default", "name": "Default" }],
-            })))
-            .mount(server)
-            .await;
-
-        let config = unifly_api::ControllerConfig {
-            url: server.uri().parse().expect("mock server URL"),
-            auth: unifly_api::AuthCredentials::ApiKey("test-key".to_owned().into()),
-            site: "default".into(),
-            tls: unifly_api::TlsVerification::DangerAcceptInvalid,
-            timeout: Duration::from_secs(5),
-            refresh_interval_secs: 0,
-            websocket_enabled: false,
-            ..unifly_api::ControllerConfig::default()
-        };
-        let controller = Controller::new(config);
-        controller
-            .connect_lightweight()
-            .await
-            .expect("mock controller connects");
-        controller
-    }
-
-    /// Empty pages for the collections a refresh cannot do without, so a
-    /// refresh after a move succeeds.
-    async fn mount_refresh(server: &MockServer) {
-        for collection in [
-            "devices",
-            "clients",
-            "networks",
-            "wifi/broadcasts",
-            "traffic-matching-lists",
-        ] {
-            Mock::given(method("GET"))
-                .and(path(format!(
-                    "/proxy/network/integration/v1/sites/{SITE}/{collection}"
-                )))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "offset": 0, "limit": 200, "count": 0, "totalCount": 0, "data": [],
-                })))
-                .mount(server)
-                .await;
-        }
-    }
-
-    /// Serve the zone pair's ordering as policies 1-3 before the system
-    /// block and 4 after it, and accept exactly one write of `moved`, the
-    /// two halves after the move.
-    async fn mount_ordering(server: &MockServer, moved: (&[u128], &[u128])) {
-        let zone_query = |mock: wiremock::MockBuilder| {
-            mock.and(query_param(
-                "sourceFirewallZoneId",
-                uuid(SOURCE_ZONE).to_string(),
-            ))
-            .and(query_param(
-                "destinationFirewallZoneId",
-                uuid(DESTINATION_ZONE).to_string(),
-            ))
-        };
-        zone_query(Mock::given(method("GET")).and(path(ordering_route())))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ordering_body(&[1, 2, 3], &[4])))
-            .mount(server)
-            .await;
-        zone_query(Mock::given(method("PUT")).and(path(ordering_route())))
-            .and(body_json(ordering_body(moved.0, moved.1)))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ordering_body(moved.0, moved.1)))
-            .expect(1)
-            .mount(server)
-            .await;
-    }
-
-    /// Policy 2 one step down, from 1-3 before the system block.
-    const TWO_DOWN: (&[u128], &[u128]) = (&[1, 3, 2], &[4]);
-
-    fn move_down() -> Action {
-        Action::ReorderPolicy(
-            policy(2, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Down,
-        )
-    }
-
-    fn ordering_route() -> String {
-        format!("/proxy/network/integration/v1/sites/{SITE}/firewall/policies/ordering")
-    }
-
-    fn ordering_body(before: &[u128], after: &[u128]) -> serde_json::Value {
-        let ids =
-            |ids: &[u128]| -> Vec<String> { ids.iter().map(|n| uuid(*n).to_string()).collect() };
-        json!({ "orderedFirewallPolicyIds": {
-            "beforeSystemDefined": ids(before),
-            "afterSystemDefined": ids(after),
-        }})
-    }
-
-    /// The toast a finished move leaves, past the one it showed on
-    /// starting.
-    async fn outcome(app: &mut App) -> Notification {
-        loop {
-            let notification = next_notification(app).await;
-            if !notification.message.starts_with("Moving ") {
-                return notification;
-            }
-        }
-    }
-
-    async fn next_notification(app: &mut App) -> Notification {
-        loop {
-            let action = tokio::time::timeout(Duration::from_secs(10), app.action_rx.recv())
-                .await
-                .expect("the reorder reports back")
-                .expect("the action channel stays open");
-            if let Action::Notify(notification) = action {
-                return notification;
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn a_reorder_writes_the_moved_order_to_the_controller() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        mount_ordering(&server, TWO_DOWN).await;
-        mount_refresh(&server).await;
-
-        let mut app = App::new(Some(controller), None, false, true);
-        app.process_action(&move_down()).expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Success);
-        assert_eq!(notification.message, "Moved policy-2 down");
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn a_move_the_table_cannot_show_yet_says_so() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        mount_ordering(&server, TWO_DOWN).await;
-
-        let mut app = App::new(Some(controller), None, false, true);
-        app.process_action(&move_down()).expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Warning);
-        assert_eq!(
-            notification.message,
-            "Moved policy-2 down; the list shows it after the next refresh"
-        );
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn a_move_shows_at_once_and_holds_further_presses_until_it_lands() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        mount_ordering(&server, TWO_DOWN).await;
-        mount_refresh(&server).await;
-        let mut app = App::new(Some(controller), None, false, true);
-
-        app.process_action(&move_down()).expect("first press");
-        app.process_action(&move_down()).expect("second press");
-
-        let started = next_notification(&mut app).await;
-        assert_eq!(started.message, "Moving policy-2 down\u{2026}");
-        let held = next_notification(&mut app).await;
-        assert_eq!(held.message, "A policy move is still in progress");
-        let landed = next_notification(&mut app).await;
-        assert_eq!(landed.message, "Moved policy-2 down");
-        server.verify().await;
-        assert!(
-            !app.policy_move.load(std::sync::atomic::Ordering::Acquire),
-            "a landed move takes presses again"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_step_across_the_system_block_says_so() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        mount_ordering(&server, (&[1, 2], &[3, 4])).await;
-        mount_refresh(&server).await;
-        let mut app = App::new(Some(controller), None, false, true);
-
-        app.process_action(&Action::ReorderPolicy(
-            policy(3, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Down,
-        ))
-        .expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(
-            notification.message,
-            "Moved policy-3 below the system-defined policies"
-        );
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn a_failed_write_still_refreshes_the_table() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        Mock::given(method("GET"))
-            .and(path(ordering_route()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ordering_body(&[1, 2, 3], &[4])))
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .and(path(ordering_route()))
-            .respond_with(ResponseTemplate::new(504))
-            .mount(&server)
-            .await;
-        // The write may have landed before it failed, so the table asks
-        // the controller again.
-        Mock::given(method("GET"))
-            .and(path(format!(
-                "/proxy/network/integration/v1/sites/{SITE}/devices"
-            )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "offset": 0, "limit": 200, "count": 0, "totalCount": 0, "data": [],
-            })))
-            .expect(1..)
-            .mount(&server)
-            .await;
-        let mut app = App::new(Some(controller), None, false, true);
-
-        app.process_action(&move_down()).expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn a_move_while_disconnected_is_refused_up_front() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        controller.disconnect().await;
-        let mut app = App::new(Some(controller), None, false, true);
-
-        app.process_action(&move_down()).expect("reorder handling");
-
-        let notification = next_notification(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        assert_eq!(
-            notification.message,
-            "Not connected, so policy-2 stays where it is"
-        );
-        assert!(!app.policy_move.load(Ordering::Acquire));
-    }
-
-    #[tokio::test]
-    async fn a_connection_lost_mid_move_says_so() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        Mock::given(method("GET"))
-            .and(path(ordering_route()))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(ordering_body(&[1, 2, 3], &[4]))
-                    .set_delay(Duration::from_millis(300)),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .and(path(ordering_route()))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-        let mut app = App::new(Some(controller.clone()), None, false, true);
-
-        app.process_action(&move_down()).expect("reorder handling");
-        // The order is read on a connection that drops before the write.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        controller.disconnect().await;
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        assert_eq!(
-            notification.message,
-            "Could not move policy-2: the controller is not connected"
-        );
-        assert!(!app.policy_move.load(Ordering::Acquire));
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn a_rejected_reorder_says_so() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        Mock::given(method("GET"))
-            .and(path(ordering_route()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ordering_body(&[1, 2, 3], &[4])))
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .and(path(ordering_route()))
-            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-                "statusCode": 400, "statusName": "BAD_REQUEST",
-                "message": "ordering does not match the zone pair",
-            })))
-            .mount(&server)
-            .await;
-
-        let mut app = App::new(Some(controller), None, false, true);
-        app.process_action(&Action::ReorderPolicy(
-            policy(2, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Up,
-        ))
-        .expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        assert!(
-            notification.message.starts_with("Could not move policy-2"),
-            "{}",
-            notification.message
-        );
-    }
-
-    #[tokio::test]
-    async fn the_demo_fleet_refuses_a_move() {
-        let demo = Controller::demo(unifly_api::DemoFleetOptions::default());
-        demo.connect().await.expect("demo fleet connects");
-        let mut app = App::new(Some(demo), None, false, true);
-
-        app.process_action(&Action::ReorderPolicy(
-            policy(2, Some((SOURCE_ZONE, DESTINATION_ZONE))),
-            Direction::Up,
-        ))
-        .expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        assert!(
-            notification.message.contains("Integration API"),
-            "{}",
-            notification.message
-        );
-    }
-
-    #[tokio::test]
-    async fn a_policy_without_a_zone_pair_is_refused_up_front() {
-        let server = MockServer::start().await;
-        let controller = controller(&server).await;
-        let mut app = App::new(Some(controller), None, false, true);
-
-        app.process_action(&Action::ReorderPolicy(policy(2, None), Direction::Up))
-            .expect("reorder handling");
-
-        let notification = outcome(&mut app).await;
-        assert_eq!(notification.level, NotificationLevel::Error);
-        assert!(notification.message.contains("no zone pair"));
-    }
-}
+pub(super) mod tests;

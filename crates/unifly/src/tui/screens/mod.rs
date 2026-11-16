@@ -5,6 +5,7 @@ pub mod dashboard;
 pub mod devices;
 pub mod events;
 pub mod firewall;
+mod link;
 pub mod networks;
 pub mod onboarding;
 pub mod settings;

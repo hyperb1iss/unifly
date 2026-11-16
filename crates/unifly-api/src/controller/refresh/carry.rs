@@ -9,8 +9,10 @@ use crate::model::{Client, Device, MacAddress};
 /// The carried fields are exactly the ones `merge` fills from the session:
 /// hostname, network name, traffic counters, wireless info, uplink MAC, and
 /// switch port from the session clients fetch, plus DHCP reservation data from the
-/// session users fetch. Integration's client conversion never sets them,
-/// and a field the fresh record does set is never overwritten. Link fields
+/// session users fetch. Guest state follows the clients fetch and blocked
+/// state the users fetch, which lists every blocked client. Integration's
+/// client conversion sets none of them but the guest state, and a field
+/// the fresh record does set is never overwritten. Link fields
 /// (wireless info, uplink MAC, switch port) are carried only while the
 /// Integration connection type is unchanged, because a client that moved
 /// between wired and wireless no longer has the old uplink.
@@ -40,10 +42,17 @@ pub(super) fn session_client_fields(
                 );
                 fill(&mut client.switch_port, previous.switch_port.as_ref());
             }
+            if !client.is_guest && previous.is_guest {
+                client.is_guest = true;
+                client.guest_auth.clone_from(&previous.guest_auth);
+            }
         }
-        if session_users_failed && !client.use_fixedip && client.fixed_ip.is_none() {
-            client.use_fixedip = previous.use_fixedip;
-            client.fixed_ip = previous.fixed_ip;
+        if session_users_failed {
+            if !client.use_fixedip && client.fixed_ip.is_none() {
+                client.use_fixedip = previous.use_fixedip;
+                client.fixed_ip = previous.fixed_ip;
+            }
+            client.blocked |= previous.blocked;
         }
     }
 }
@@ -145,6 +154,16 @@ mod tests {
         stored.uplink_device_mac = session.uplink_device_mac;
         stored.use_fixedip = true;
         stored.fixed_ip = Some("10.0.0.50".parse().unwrap());
+        stored.is_guest = true;
+        stored.guest_auth = Some(crate::model::GuestAuth {
+            authorized: true,
+            method: None,
+            expires_at: None,
+            tx_bytes: None,
+            rx_bytes: None,
+            elapsed_minutes: None,
+        });
+        stored.blocked = true;
         Arc::new(stored)
     }
 
@@ -187,11 +206,19 @@ mod tests {
             client.uplink_device_mac,
             Some(MacAddress::new("11:22:33:44:55:66"))
         );
+        assert!(client.is_guest);
+        assert!(
+            client
+                .guest_auth
+                .as_ref()
+                .is_some_and(|auth| auth.authorized)
+        );
         assert!(
             !client.use_fixedip,
             "users fetch succeeded; nothing to carry"
         );
         assert_eq!(client.fixed_ip, None);
+        assert!(!client.blocked, "the users fetch lists blocked clients");
     }
 
     #[test]
@@ -204,7 +231,9 @@ mod tests {
         let client = &clients[0];
         assert!(client.use_fixedip);
         assert_eq!(client.fixed_ip, Some("10.0.0.50".parse().unwrap()));
+        assert!(client.blocked);
         assert_eq!(client.hostname, None, "clients fetch succeeded");
+        assert!(!client.is_guest, "clients fetch succeeded");
     }
 
     #[test]

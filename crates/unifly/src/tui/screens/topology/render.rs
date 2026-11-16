@@ -1,36 +1,57 @@
 use std::collections::HashMap;
 
+use std::fmt::Write as _;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine, Rectangle};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use unifly_api::DeviceType;
+use unifly_api::{DeviceState, DeviceType};
 
-use super::TopologyScreen;
-use super::layout::{LinkKind, MARGIN, TopoEdge, TopoNode, cell_width, fit_cells, layout};
+use super::layout::{LinkKind, TopoEdge, TopoNode, cell_width, fit_cells};
+use super::state::Scene;
+use super::{Camera, TopologyScreen};
 use crate::tui::theme;
-use crate::tui::widgets::click::{self, Hint};
+use crate::tui::widgets::click::{self, Click, Hint};
+
+/// Legend entries, most useful first: they are added while they fit, so a
+/// narrow terminal drops the tail rather than clipping one. Device state
+/// leads because nothing on the map spells it out, where a mesh link and
+/// a wired port carry their own labels.
+fn legend() -> [(&'static str, Color, &'static str); 5] {
+    [
+        ("\u{25A0} ", theme::error(), "down"),
+        ("\u{25A0} ", theme::warning(), "busy"),
+        ("\u{2500} ", theme::accent_secondary(), "wired"),
+        ("\u{254C} ", theme::info(), "mesh"),
+        ("\u{2504} ", theme::border_unfocused(), "uplink unknown"),
+    ]
+}
+
+/// A device state as the title names it.
+fn state_label(state: DeviceState) -> &'static str {
+    match state {
+        DeviceState::Online => "online",
+        DeviceState::Offline => "offline",
+        DeviceState::PendingAdoption => "pending adoption",
+        DeviceState::Updating => "updating",
+        DeviceState::GettingReady => "getting ready",
+        DeviceState::Adopting => "adopting",
+        DeviceState::Deleting => "being removed",
+        DeviceState::ConnectionInterrupted => "connection interrupted",
+        DeviceState::Isolated => "isolated",
+        _ => "state unknown",
+    }
+}
 
 impl TopologyScreen {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions
-    )]
     pub(super) fn render_screen(&self, frame: &mut Frame, area: Rect) {
         self.hits.borrow_mut().clear();
-        let zoom_pct = (self.zoom * 100.0) as u32;
-        let title = format!(
-            " Topology  ·  Zoom: {zoom_pct}%  Pan: {:.0},{:.0} ",
-            self.pan_x, self.pan_y
-        );
         let block = Block::default()
-            .title(title)
-            .title_style(theme::title_style())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if self.focused {
@@ -38,44 +59,16 @@ impl TopologyScreen {
             } else {
                 theme::border_default()
             });
+        let content_area = block.inner(area);
+        self.canvas.set(content_area);
 
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let content_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: inner.height.saturating_sub(1),
-        };
-        let hints_area = Rect {
-            x: inner.x,
-            y: inner.y + inner.height.saturating_sub(1),
-            width: inner.width,
-            height: 1,
-        };
-
-        // The layout works in cells (y down), and at 100% zoom one unit is
-        // always one cell, so every label lands whole inside its box (a
-        // canvas maps a span of n - 1 units onto n cells). A tree that fits
-        // is centered; one that does not is anchored at its top-left corner
-        // and panned rather than squeezed until labels collide.
-        let columns = f64::from(content_area.width.max(2));
-        let rows = f64::from(content_area.height.max(2));
-        let tree = layout(&self.devices, columns);
-        let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
-        let x_span = (columns - 1.0) / self.zoom;
-        let y_span = (rows - 1.0) / self.zoom;
-        let anchor = |lo: f64, hi: f64, span: f64| {
-            if hi - lo + 2.0 * MARGIN <= span {
-                f64::midpoint(lo, hi) - span / 2.0
-            } else {
-                lo - MARGIN
-            }
-        };
-        let left = (anchor(x_lo, x_hi, x_span) + self.pan_x).floor();
-        let top = (anchor(y_lo, y_hi, y_span) - self.pan_y).floor();
-
+        // The layout works in cells (y down). At 100% zoom one unit is one
+        // cell, so every label lands whole inside its box (a canvas maps a
+        // span of n - 1 units onto n cells).
+        let scene = self.scene(content_area);
+        let (x_span, y_span) = scene.spans();
+        let (left, top) = scene.origin();
+        let (left, top) = (left.floor(), top.floor());
         let viewport = Viewport {
             left,
             top,
@@ -84,6 +77,37 @@ impl TopologyScreen {
             width: content_area.width,
             height: content_area.height,
         };
+
+        let mut block = block
+            .title(self.title(&scene, &viewport))
+            .title_style(theme::title_style());
+        // The legend rides the bottom border: it explains the map, so it
+        // sits on the map's frame, where it can never cover a device.
+        if !scene.tree.nodes.is_empty() {
+            block = block.title_bottom(legend_line(area.width.saturating_sub(2)));
+        }
+        frame.render_widget(block, area);
+
+        let tree = &scene.tree;
+        if tree.nodes.is_empty() {
+            let message = self.link.waiting().unwrap_or("No devices on this site yet");
+            let row = Rect {
+                y: content_area.y + content_area.height / 2,
+                height: content_area.height.min(1),
+                ..content_area
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    message,
+                    Style::default().fg(theme::text_muted()),
+                ))
+                .alignment(Alignment::Center),
+                row,
+            );
+            return;
+        }
+
+        let selected = self.selected_index();
         let canvas = Canvas::default()
             .x_bounds([left, left + x_span])
             .y_bounds([-(top + y_span), -top])
@@ -96,8 +120,8 @@ impl TopologyScreen {
                         .unwrap_or_else(|| edge_style(&tree.nodes, edge));
                     draw_edge(ctx, &tree.nodes, edge, trunk);
                 }
-                for node in &tree.nodes {
-                    draw_node(ctx, node);
+                for (index, node) in tree.nodes.iter().enumerate() {
+                    draw_node(ctx, node, selected == Some(index), scene.zoom);
                 }
             });
 
@@ -111,32 +135,131 @@ impl TopologyScreen {
                 &viewport,
             );
         }
-        for node in &tree.nodes {
-            draw_node_labels(frame.buffer_mut(), content_area, node, &viewport);
+        let mut hits = self.hits.borrow_mut();
+        for (index, node) in tree.nodes.iter().enumerate() {
+            draw_node_labels(
+                frame.buffer_mut(),
+                content_area,
+                node,
+                &viewport,
+                selected == Some(index),
+            );
+            hits.push(viewport.node_cells(content_area, node), Click::Row(index));
         }
+    }
 
-        let mut bar = click::key_hints(&[
-            Hint::info("←→↑↓", "pan"),
-            Hint::button("+", "zoom in", click::char_key('+')),
-            Hint::button("-", "zoom out", click::char_key('-')),
-            Hint::button("f", "fit", click::char_key('f')),
-            Hint::button("r", "reset", click::char_key('r')),
-        ]);
-        for (symbol, color, label) in [
-            ("─ ", theme::accent_secondary(), "wired"),
-            ("╌ ", theme::info(), "mesh"),
-            ("┄ ", theme::border_unfocused(), "uplink unknown"),
-        ] {
-            bar.push_gap(Span::raw("  "));
-            bar.push_gap(Span::styled(symbol, Style::default().fg(color)));
-            bar.push_gap(Span::styled(label, theme::key_hint()));
+    /// The title: how many devices, the zoom and whether it is the fitted
+    /// one, the device under the cursor, and which way more of the tree
+    /// lies when it runs off the canvas.
+    fn title(&self, scene: &Scene, viewport: &Viewport) -> String {
+        let mut title = format!(" Topology ({})", scene.tree.nodes.len());
+        if scene.tree.nodes.is_empty() {
+            title.push(' ');
+            return title;
         }
-        let line = bar.draw(hints_area, &mut self.hits.borrow_mut());
-        frame.render_widget(Paragraph::new(line), hints_area);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::as_conversions
+        )]
+        let percent = (scene.zoom * 100.0).round() as u32;
+        let _ = write!(title, "  \u{00B7}  {percent}%");
+        if self.camera == Camera::Fit {
+            title.push_str(" fit");
+        }
+        if let Some(node) = self
+            .selected_index()
+            .and_then(|at| scene.tree.nodes.get(at))
+        {
+            let _ = write!(title, "  \u{00B7}  \u{25B8} {}", node.label);
+            if !node.ip.is_empty() {
+                let _ = write!(title, " {}", node.ip);
+            }
+            let _ = write!(title, " {}", state_label(node.state));
+        }
+        let [x_lo, x_hi, y_lo, y_hi] = scene.tree.bounds;
+        let more: String = [
+            (x_lo < viewport.left, '\u{2190}'),
+            (y_lo < viewport.top, '\u{2191}'),
+            (y_hi > viewport.top + viewport.y_span, '\u{2193}'),
+            (x_hi > viewport.left + viewport.x_span, '\u{2192}'),
+        ]
+        .into_iter()
+        .filter_map(|(beyond, arrow)| beyond.then_some(arrow))
+        .collect();
+        if !more.is_empty() {
+            let _ = write!(title, "  \u{00B7}  more {more}");
+        }
+        title.push(' ');
+        title
+    }
+
+    /// What the status bar offers: the device cursor and what `Enter`
+    /// does with it, then the zoom. Panning is navigation and lives in the
+    /// help overlay.
+    pub(super) fn status_hints(&self) -> Vec<(u8, Hint)> {
+        if self.devices.is_empty() {
+            return Vec::new();
+        }
+        // With no cursor yet, `Enter` puts it on the first device.
+        let enter = if self.selected.is_some() {
+            "open"
+        } else {
+            "select"
+        };
+        let mut hints = vec![
+            (
+                0,
+                Hint::button("Enter", enter, crossterm::event::KeyCode::Enter),
+            ),
+            // The cursor wraps, so on a narrow bar one way round is
+            // enough and the zoom keeps both of its keys.
+            (3, Hint::button("[", "prev", click::char_key('['))),
+            (1, Hint::button("]", "next", click::char_key(']'))),
+            (2, Hint::button("+", "zoom in", click::char_key('+'))),
+            (2, Hint::button("-", "zoom out", click::char_key('-'))),
+            (4, Hint::button("r", "100%", click::char_key('r'))),
+        ];
+        // A fitted map has nothing to fit.
+        if self.camera != Camera::Fit {
+            hints.push((4, Hint::button("f", "fit", click::char_key('f'))));
+        }
+        hints
     }
 }
 
+/// The legend for a bottom border with `width` columns between its
+/// corners: as many whole entries as fit.
+fn legend_line(width: u16) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    let mut used = 1;
+    for (index, (symbol, color, label)) in legend().into_iter().enumerate() {
+        let gap = if index == 0 { "" } else { "  " };
+        let entry = [
+            Span::raw(gap),
+            Span::styled(symbol, Style::default().fg(color)),
+            Span::styled(label, theme::key_hint()),
+        ];
+        let entry_width: usize = entry.iter().map(Span::width).sum();
+        // One more column closes the legend off from the border.
+        if used + entry_width + 1 > usize::from(width) {
+            break;
+        }
+        used += entry_width;
+        spans.extend(entry);
+    }
+    if spans.len() == 1 {
+        return Line::default();
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
 fn node_color(node: &TopoNode) -> Color {
+    // A device that is updating or adopting is busy, not broken.
+    if node.state.is_transitional() {
+        return theme::warning();
+    }
     if !node.state.is_online() {
         return theme::error();
     }
@@ -170,6 +293,26 @@ impl Viewport {
             .floor()
     }
 
+    /// The cells of `area` that `node`'s box covers, borders included.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::as_conversions
+    )]
+    fn node_cells(&self, area: Rect, node: &TopoNode) -> Rect {
+        let clamp = |value: f64, limit: u16| value.clamp(0.0, f64::from(limit)) as u16;
+        let left = clamp(self.border_column(node.x), self.width);
+        let right = clamp(self.border_column(node.x + node.width) + 1.0, self.width);
+        let top = clamp(self.border_row(node.y), self.height);
+        let bottom = clamp(self.border_row(node.bottom()) + 1.0, self.height);
+        Rect {
+            x: area.x + left,
+            y: area.y + top,
+            width: right.saturating_sub(left),
+            height: bottom.saturating_sub(top),
+        }
+    }
+
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -198,7 +341,9 @@ fn up(y: f64) -> f64 {
     -y
 }
 
-fn draw_node(ctx: &mut Context<'_>, node: &TopoNode) {
+/// Draw a device box. The selected one gets a second outline one braille
+/// dot outside its border, in the cursor color.
+fn draw_node(ctx: &mut Context<'_>, node: &TopoNode, selected: bool, zoom: f64) {
     let color = node_color(node);
     ctx.draw(&Rectangle {
         x: node.x,
@@ -207,9 +352,26 @@ fn draw_node(ctx: &mut Context<'_>, node: &TopoNode) {
         height: node.height,
         color,
     });
+    if selected {
+        // A cell is two dots wide and four tall.
+        let (dx, dy) = (0.5 / zoom, 0.25 / zoom);
+        ctx.draw(&Rectangle {
+            x: node.x - dx,
+            y: up(node.bottom()) - dy,
+            width: node.width + 2.0 * dx,
+            height: node.height + 2.0 * dy,
+            color: theme::text_primary(),
+        });
+    }
 }
 
-fn draw_node_labels(buffer: &mut Buffer, area: Rect, node: &TopoNode, viewport: &Viewport) {
+fn draw_node_labels(
+    buffer: &mut Buffer,
+    area: Rect,
+    node: &TopoNode,
+    viewport: &Viewport,
+    selected: bool,
+) {
     let color = node_color(node);
     let column = viewport.border_column(node.x) + 1.0;
     let row = viewport.border_row(node.y) + 1.0;
@@ -231,7 +393,14 @@ fn draw_node_labels(buffer: &mut Buffer, area: Rect, node: &TopoNode, viewport: 
         area,
         column,
         row,
-        &Span::styled(fit_cells(&node.label, inner), Style::default().fg(color)),
+        &Span::styled(
+            fit_cells(&node.label, inner),
+            if selected {
+                theme::table_selected()
+            } else {
+                Style::default().fg(color)
+            },
+        ),
     );
     if !node.ip.is_empty() && cell_width(&node.ip) <= inner && row + 1.0 < bottom {
         viewport.print(
@@ -257,17 +426,13 @@ const GUESS_DOTS: Option<(f64, f64)> = Some((0.5, 0.9));
 
 /// How one child's own drop is drawn: its state and link kind.
 fn edge_style(nodes: &[TopoNode], edge: &TopoEdge) -> LinkStyle {
-    let online = nodes
-        .get(edge.child)
-        .is_some_and(|child| child.state.is_online());
     match edge.kind {
-        LinkKind::Wired if online => (
+        LinkKind::Wired => (
             nodes
                 .get(edge.child)
                 .map_or_else(theme::text_secondary, node_color),
             None,
         ),
-        LinkKind::Wired => (theme::error(), None),
         LinkKind::Wireless => (theme::info(), MESH_DASH),
         LinkKind::Inferred => (theme::border_unfocused(), GUESS_DOTS),
     }
@@ -478,7 +643,7 @@ mod tests {
                         Canvas::default()
                             .x_bounds([0.0, 79.0 / zoom])
                             .y_bounds([-29.0 / zoom, 0.0])
-                            .paint(|context| draw_node(context, &border)),
+                            .paint(|context| draw_node(context, &border, false, zoom)),
                         frame.area(),
                     );
                 })
@@ -490,11 +655,11 @@ mod tests {
                         Canvas::default()
                             .x_bounds([0.0, 79.0 / zoom])
                             .y_bounds([-29.0 / zoom, 0.0])
-                            .paint(|context| draw_node(context, &node)),
+                            .paint(|context| draw_node(context, &node, false, 1.0)),
                         frame.area(),
                     );
                     let area = frame.area();
-                    draw_node_labels(frame.buffer_mut(), area, &node, &viewport);
+                    draw_node_labels(frame.buffer_mut(), area, &node, &viewport, false);
                 })
                 .expect("render");
             let buffer = terminal.backend().buffer();
@@ -561,10 +726,10 @@ mod tests {
                         Canvas::default()
                             .x_bounds([-2.0, -2.0 + viewport.x_span])
                             .y_bounds([-(-2.0 + viewport.y_span), 2.0])
-                            .paint(|context| draw_node(context, &node)),
+                            .paint(|context| draw_node(context, &node, false, 1.0)),
                         area,
                     );
-                    draw_node_labels(frame.buffer_mut(), area, &node, &viewport);
+                    draw_node_labels(frame.buffer_mut(), area, &node, &viewport, false);
                 })
                 .expect("render");
             assert_eq!(terminal.backend().buffer()[expected].symbol(), "B");
@@ -600,7 +765,7 @@ mod tests {
                 node.x = 23.0;
             }
             let mut buffer = Buffer::empty(area);
-            draw_node_labels(&mut buffer, area, &node, &viewport);
+            draw_node_labels(&mut buffer, area, &node, &viewport, false);
             assert!(
                 !buffer
                     .content
@@ -644,6 +809,227 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         draw_edge_label(&mut buffer, area, &[node], &edge, &viewport);
         assert!(buffer.content.iter().all(|cell| cell.symbol() == " "));
+    }
+
+    fn node_in(state: unifly_api::DeviceState) -> super::TopoNode {
+        super::TopoNode {
+            label: "AP".into(),
+            ip: String::new(),
+            device_type: unifly_api::DeviceType::AccessPoint,
+            state,
+            traffic_bytes_per_sec: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 8.0,
+            height: 3.0,
+        }
+    }
+
+    #[test]
+    fn a_device_that_is_updating_is_drawn_busy_not_broken() {
+        use unifly_api::DeviceState;
+
+        use crate::tui::theme;
+
+        for state in [
+            DeviceState::Updating,
+            DeviceState::Adopting,
+            DeviceState::GettingReady,
+            DeviceState::PendingAdoption,
+        ] {
+            assert_eq!(
+                super::node_color(&node_in(state)),
+                theme::warning(),
+                "{state:?}"
+            );
+        }
+        assert_eq!(
+            super::node_color(&node_in(DeviceState::Offline)),
+            theme::error()
+        );
+        assert_eq!(
+            super::node_color(&node_in(DeviceState::Online)),
+            theme::accent_primary()
+        );
+    }
+
+    fn draw(screen: &super::TopologyScreen, width: u16, height: u16) -> Vec<String> {
+        crate::tui::table::render_lines(width, height, |frame, area| {
+            screen.render_screen(frame, area);
+        })
+    }
+
+    #[test]
+    fn an_empty_map_says_why_it_is_empty() {
+        use crate::tui::action::Action;
+
+        let mut screen = super::TopologyScreen::new();
+        assert!(draw(&screen, 80, 20).join("\n").contains("Connecting"));
+
+        screen.apply_action(&Action::Connected);
+        let text = draw(&screen, 80, 20).join("\n");
+        assert!(text.contains("No devices on this site yet"), "{text}");
+
+        screen.apply_action(&Action::Disconnected("gone".into()));
+        assert!(draw(&screen, 80, 20).join("\n").contains("Not connected"));
+    }
+
+    #[test]
+    fn the_legend_rides_the_bottom_border_and_drops_entries_whole() {
+        use crate::tui::screens::topology::state::tests::screen_with;
+
+        let screen = screen_with(3);
+        let border = |width| {
+            let rows = draw(&screen, width, 20);
+            rows[rows.len() - 1].clone()
+        };
+
+        let wide = border(100);
+        assert!(
+            wide.starts_with(
+                "\u{2570} \u{25A0} down  \u{25A0} busy  \u{2500} wired  \u{254C} mesh"
+            ),
+            "{wide}"
+        );
+        assert!(wide.contains("uplink unknown \u{2500}"), "{wide}");
+
+        let narrow = border(30);
+        assert!(narrow.contains("wired \u{2500}"), "{narrow}");
+        assert!(
+            !narrow.contains("mes") && !narrow.contains("upl"),
+            "a whole entry ends the legend: {narrow}"
+        );
+
+        let empty = draw(&super::TopologyScreen::new(), 100, 20);
+        assert!(
+            !empty[empty.len() - 1].contains("wired"),
+            "nothing to explain yet: {}",
+            empty[empty.len() - 1]
+        );
+    }
+
+    #[test]
+    fn the_map_takes_every_row_inside_the_border() {
+        use ratatui::layout::Rect;
+
+        use crate::tui::screens::topology::state::tests::screen_with;
+
+        let screen = screen_with(3);
+        let text = draw(&screen, 100, 20).join("\n");
+        assert_eq!(screen.canvas.get(), Rect::new(1, 1, 98, 18));
+        for key in ["Enter open", "zoom in", "f fit", "hjkl"] {
+            assert!(!text.contains(key), "a hint row of its own:\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_status_bar_offers_the_cursor_and_the_zoom() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        use crate::tui::screens::topology::state::tests::screen_with;
+        use crate::tui::widgets::click::hint_text;
+
+        assert!(super::TopologyScreen::new().status_hints().is_empty());
+
+        let mut screen = screen_with(3);
+        draw(&screen, 100, 30);
+        // A fitted map offers no fit, and Enter has no device to open.
+        assert_eq!(
+            hint_text(&screen.status_hints()),
+            "Enter select  [ prev  ] next  + zoom in  - zoom out  r 100%"
+        );
+
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char(']')));
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('+')));
+        assert_eq!(
+            hint_text(&screen.status_hints()),
+            "Enter open  [ prev  ] next  + zoom in  - zoom out  r 100%  f fit"
+        );
+
+        // A narrow bar keeps both zoom keys and one way round the cursor.
+        let narrow = crate::tui::widgets::click::fit_hints(screen.status_hints(), 44);
+        let narrow: Vec<(u8, _)> = narrow.into_iter().map(|hint| (0, hint)).collect();
+        assert_eq!(
+            hint_text(&narrow),
+            "Enter open  ] next  + zoom in  - zoom out"
+        );
+    }
+
+    #[test]
+    fn the_title_points_at_what_runs_off_the_canvas() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        use crate::tui::screens::topology::state::tests::screen_with;
+
+        let small = &draw(&screen_with(3), 100, 30)[0];
+        assert!(!small.contains("more"), "nothing is hidden: {small}");
+
+        // A tree too tall for a fit that keeps names whole says where the
+        // rest is, and only there.
+        let mut screen = screen_with(40);
+        let fitted = &draw(&screen, 100, 30)[0];
+        assert!(
+            fitted.contains("fit") && fitted.contains("more \u{2193}"),
+            "{fitted}"
+        );
+        for arrow in ['\u{2190}', '\u{2191}', '\u{2192}'] {
+            assert!(!fitted.contains(arrow), "{fitted}");
+        }
+
+        screen.handle_key_input(KeyEvent::from(KeyCode::Char('r')));
+        let title = &draw(&screen, 100, 30)[0];
+        assert!(
+            title.contains("more") && title.contains('\u{2193}'),
+            "{title}"
+        );
+        assert!(
+            !title.contains('\u{2191}'),
+            "nothing is above the top: {title}"
+        );
+    }
+
+    /// The demo fleet's devices, as the Topology screen receives them.
+    async fn demo_devices() -> std::sync::Arc<Vec<std::sync::Arc<unifly_api::Device>>> {
+        let demo = unifly_api::Controller::demo(unifly_api::DemoFleetOptions::default());
+        demo.connect().await.expect("demo fleet connects");
+        let devices = demo.devices_snapshot();
+        demo.disconnect().await;
+        devices
+    }
+
+    #[tokio::test]
+    async fn the_fitted_demo_fleet_draws_every_name_whole_at_common_sizes() {
+        use crate::tui::action::Action;
+        use crate::tui::screens::topology::TopologyScreen;
+
+        let devices = demo_devices().await;
+        let mut screen = TopologyScreen::new();
+        screen.apply_action(&Action::Connected);
+        screen.apply_action(&Action::DevicesUpdated(devices));
+
+        // The screen's area on 80x24, 100x30, and 120x34 terminals.
+        for (width, height) in [(80, 22), (100, 28), (120, 32)] {
+            let rows = draw(&screen, width, height);
+            let text = rows.join("\n");
+            let scene = screen.last_scene();
+            assert!(scene.zoom >= 0.8, "{width}x{height}: {}", scene.zoom);
+            let mut whole = 0;
+            for (index, node) in scene.tree.nodes.iter().enumerate() {
+                if !scene.shows(index) {
+                    continue;
+                }
+                whole += 1;
+                assert!(
+                    text.contains(&node.label),
+                    "{} is cut at {width}x{height}:\n{text}",
+                    node.label
+                );
+            }
+            assert!(whole >= 3, "{width}x{height} shows {whole} boxes:\n{text}");
+            // What is not on screen is pointed at, never drawn as a stub.
+            let hidden = whole < scene.tree.nodes.len();
+            assert_eq!(rows[0].contains("more"), hidden, "{}", rows[0]);
+        }
     }
 
     #[test]

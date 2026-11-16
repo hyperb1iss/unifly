@@ -41,6 +41,13 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
 
     let _log_guard = setup_tracing(global.verbose, &args.log_file);
 
+    // A launch that was killed mid-setup may have left a test's session
+    // cookie behind. Nothing is parked by this process yet. The demo fleet
+    // stays away from stored credentials altogether.
+    if !global.demo_fleet {
+        forms::parked::sweep_at_launch();
+    }
+
     // A config that fails to load is reported, not taken for a first run:
     // the setup wizard would only refuse to save over it.
     let mut load_error = None;
@@ -77,7 +84,10 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     );
 
     let cfg = loaded_config.as_ref();
-    let resolved = build_controller_from_config(global, cfg).await;
+    let (resolved, setup_reason) = match build_controller_from_config(global, cfg).await {
+        Ok(controller) => (Some(controller), None),
+        Err(reason) => (None, reason),
+    };
     let (controller, demo_fleet) = demo_fleet::select_controller(global, || resolved);
 
     // The demo fleet is fictional already; sanitizing it would only scramble it.
@@ -87,8 +97,15 @@ pub async fn launch(global: &GlobalOpts, args: TuiArgs) -> Result<()> {
     let effects_enabled = resolve_effects_enabled(global, cfg);
     let show_donate = cfg.is_none_or(|c| c.defaults.show_donate);
 
+    // Recorded before the screens are built: the setup wizard and Settings
+    // read the session's profile and launch flags when they open.
     let session_profile = session_profile_name(global, cfg);
-    screens::settings::set_session_profile(&session_profile);
+    forms::session::begin(forms::session::Session {
+        profile: Some(session_profile.clone()),
+        overrides: config::resolve::ConnectionOverrides::from_flags(global),
+        launch_totp: global.totp.clone().map(secrecy::SecretString::from),
+        setup_reason,
+    });
     let mut app = app::App::new(controller, sanitizer, effects_enabled, show_donate)
         .with_setup_profile(&session_profile, cfg);
     app.run().await?;
@@ -154,23 +171,25 @@ fn setup_tracing(verbosity: u8, log_file: &std::path::Path) -> WorkerGuard {
     guard
 }
 
-/// Build the dashboard with the same profile selection and overrides as the CLI.
+/// Build the dashboard with the same profile selection and overrides as the
+/// CLI. When there is no controller to build, the error says why, for the
+/// setup wizard to show; the demo fleet needs no reason.
 async fn build_controller_from_config(
     global: &GlobalOpts,
     cfg: Option<&config::Config>,
-) -> Option<Controller> {
+) -> Result<Controller, Option<String>> {
     if global.demo_fleet {
-        return None;
+        return Err(None);
     }
     let defaults = config::Config::default();
     let cfg = cfg.unwrap_or(&defaults);
     let result =
         config::resolve::resolve_startup(cfg, global, config::ConnectionUsage::Interactive).await;
     match result {
-        Ok(config) => Some(Controller::new(config)),
+        Ok(config) => Ok(Controller::new(config)),
         Err(error) => {
             tracing::warn!(%error, "failed to resolve controller configuration");
-            None
+            Err(Some(error.to_string()))
         }
     }
 }
@@ -269,7 +288,7 @@ mod tests {
         cfg.profiles.get_mut("default").expect("profile").host_id = None;
         let flags = global(&["unifly", "tui", "--demo-fleet"]);
         let resolved = super::build_controller_from_config(&flags, Some(&cfg)).await;
-        let (controller, fleet) = super::demo_fleet::select_controller(&flags, || resolved);
+        let (controller, fleet) = super::demo_fleet::select_controller(&flags, || resolved.ok());
         assert!(fleet);
         assert!(controller.expect("synthetic controller").is_demo());
         server.verify().await;

@@ -1,16 +1,22 @@
 //! Application core — event loop, screen management, action dispatch.
 
 mod commands;
+mod devices_clients;
 mod dispatch;
 mod firewall;
 mod lifecycle;
+mod monitor;
 mod navigation;
+mod networks_firewall;
+mod notify;
 mod render;
+mod rule_switch;
 mod screens;
+mod setup;
 mod stats;
 mod wifi;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,7 +28,7 @@ use tracing::info;
 use unifly_api::Controller;
 
 use crate::sanitizer::Sanitizer;
-use crate::tui::action::{Action, ConfirmAction, Notification, StatsPeriod};
+use crate::tui::action::{Access, Action, ConfirmRequest, PromptRequest, StatsPeriod};
 use crate::tui::component::Component;
 use crate::tui::effects::EffectStack;
 use crate::tui::event::{Event, EventReader};
@@ -30,6 +36,7 @@ use crate::tui::screen::ScreenId;
 use crate::tui::screens::create_screens;
 use crate::tui::terminal::Tui;
 use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::line_input::LineInput;
 
 /// Connection status as seen by the TUI.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -64,8 +71,10 @@ pub struct App {
     about_visible: bool,
     /// Search overlay visibility.
     search_active: bool,
-    /// Current search query.
-    search_query: String,
+    /// The search bar's text and cursor.
+    search_input: LineInput,
+    /// Notification history overlay visibility.
+    notices_visible: bool,
     /// Terminal size for responsive layout.
     terminal_size: (u16, u16),
     /// What the last frame's app chrome (tab bar, status bar, overlays)
@@ -85,9 +94,25 @@ pub struct App {
     /// bridge lifetimes never overlap on the same controller.
     bridge_handle: Option<tokio::task::JoinHandle<()>>,
     /// Pending confirmation dialog (blocks other input while active).
-    pending_confirm: Option<ConfirmAction>,
-    /// Active notification toast with display timestamp.
-    notification: Option<(Notification, Instant)>,
+    pending_confirm: Option<ConfirmRequest>,
+    /// Open one-line prompt and the text typed into it.
+    prompt: Option<(PromptRequest, LineInput)>,
+    /// Whether the open prompt's masked value is being shown for now.
+    prompt_revealed: bool,
+    /// Toasts on screen and the history of everything shown.
+    notices: notify::Notices,
+    /// Devices whose locate LED this session switched on.
+    locating: HashSet<unifly_api::EntityId>,
+    /// What the connected controller can reach.
+    access: Access,
+    /// Blocked clients that are off the connected list, as the controller
+    /// reports them. The store does not hold them, so commands on one
+    /// resolve its name and MAC here.
+    blocked_clients: Arc<Vec<Arc<unifly_api::Client>>>,
+    /// Set when the next frame must clear the terminal first.
+    repaint: bool,
+    /// Set while a refresh the user asked for is running.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
     /// Generation counter for stats requests — prevents stale responses from
     /// overwriting fresh data when the user rapidly switches periods.
     stats_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -108,6 +133,10 @@ pub struct App {
     needs_redraw: bool,
     /// Set while a firewall policy move is in flight.
     policy_move: Arc<std::sync::atomic::AtomicBool>,
+    /// In-flight work and caches for the monitoring screens.
+    monitor: monitor::MonitorState,
+    /// What the WiFi screen's controller work is fenced by.
+    wifi: wifi::WifiState,
 }
 
 impl App {
@@ -145,7 +174,8 @@ impl App {
             help_visible: false,
             about_visible: false,
             search_active: false,
-            search_query: String::new(),
+            search_input: LineInput::default(),
+            notices_visible: false,
             terminal_size: (0, 0),
             hits: HitMap::default(),
             action_tx,
@@ -155,7 +185,14 @@ impl App {
             data_cancel: CancellationToken::new(),
             bridge_handle: None,
             pending_confirm: None,
-            notification: None,
+            prompt: None,
+            prompt_revealed: false,
+            notices: notify::Notices::default(),
+            locating: HashSet::new(),
+            access: Access::default(),
+            blocked_clients: Arc::default(),
+            repaint: false,
+            refreshing: Arc::default(),
             stats_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_stats_fetch: None,
             stats_period: StatsPeriod::default(),
@@ -165,6 +202,8 @@ impl App {
             last_frame: Instant::now(),
             needs_redraw: true,
             policy_move: Arc::default(),
+            monitor: monitor::MonitorState::default(),
+            wifi: wifi::WifiState::default(),
         }
     }
 
@@ -180,7 +219,8 @@ impl App {
         use crate::tui::screens::onboarding::OnboardingScreen;
 
         if let Some(setup) = self.screens.get_mut(&ScreenId::Setup) {
-            let screen = match cfg.and_then(|cfg| Some((cfg.profiles.get(profile_name)?, cfg))) {
+            let mut screen = match cfg.and_then(|cfg| Some((cfg.profiles.get(profile_name)?, cfg)))
+            {
                 Some((existing, cfg)) => OnboardingScreen::for_existing_profile(
                     profile_name,
                     existing,
@@ -189,6 +229,11 @@ impl App {
                 ),
                 None => OnboardingScreen::for_profile(profile_name),
             };
+            if self.sanitizer.is_some() {
+                // The session is redacting what it shows, and the wizard
+                // holds the controller's real address, user, and site.
+                screen.hide_values();
+            }
             *setup = Box::new(screen);
         }
         self
@@ -251,6 +296,14 @@ impl App {
                         self.action_tx.send(action)?;
                     }
                 }
+                Event::Paste(text) => {
+                    if let Some(action) = self.handle_paste(&text) {
+                        self.action_tx.send(action)?;
+                    }
+                }
+                Event::Quit => {
+                    self.action_tx.send(Action::Quit)?;
+                }
                 Event::Resize(w, h) => {
                     self.action_tx.send(Action::Resize(w, h))?;
                 }
@@ -272,6 +325,9 @@ impl App {
                 if let Action::Render = action
                     && self.should_draw()
                 {
+                    if std::mem::take(&mut self.repaint) {
+                        tui.terminal.clear()?;
+                    }
                     tui.draw(|frame| self.render(frame))?;
                     self.needs_redraw = false;
                 }
@@ -280,6 +336,12 @@ impl App {
 
         self.data_cancel.cancel();
         events.stop();
+        // Leave the terminal first, then give the bridge a moment to log a
+        // session out before the runtime goes away under it.
+        tui.exit();
+        if let Some(bridge) = self.bridge_handle.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), bridge).await;
+        }
         info!("TUI event loop ended");
         Ok(())
     }

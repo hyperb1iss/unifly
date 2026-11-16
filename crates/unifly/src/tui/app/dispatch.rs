@@ -4,26 +4,27 @@ use std::time::Duration;
 use color_eyre::eyre::Result;
 
 use super::{App, ConnectionStatus};
-use crate::tui::action::{Action, NotificationLevel};
+use crate::tui::action::{Action, Notification};
 use crate::tui::screen::ScreenId;
-
-fn notification_ttl(level: NotificationLevel) -> Duration {
-    match level {
-        NotificationLevel::Info | NotificationLevel::Success => Duration::from_secs(3),
-        NotificationLevel::Warning => Duration::from_secs(8),
-        NotificationLevel::Error => Duration::from_secs(10),
-    }
-}
 
 impl App {
     /// Process a single action — update app state and propagate to components.
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub(super) fn process_action(&mut self, action: &Action) -> Result<()> {
         let invalidates = action_invalidates(action);
-        if self.handle_command_action(action)? {
+        if self.handle_monitor_action(action)?
+            || self.handle_command_action(action)?
+            || self.handle_networks_firewall_action(action)?
+            || self.handle_devices_clients_action(action)?
+            || self.handle_setup_action(action)?
+        {
             if invalidates {
                 self.needs_redraw = true;
             }
+            return Ok(());
+        }
+        if self.handle_wifi_action(action)? {
+            self.needs_redraw |= invalidates;
             return Ok(());
         }
 
@@ -41,12 +42,30 @@ impl App {
                 }
             }
             Action::GoBack => {
+                // Going back does not arm another "back", or Esc would
+                // bounce between the same two screens.
                 if let Some(prev) = self.previous_screen.take() {
-                    self.action_tx.send(Action::SwitchScreen(prev))?;
+                    self.switch_screen(prev)?;
+                    self.previous_screen = None;
                 }
             }
+            Action::OpenPrompt(request) => {
+                let input =
+                    crate::tui::widgets::line_input::LineInput::new(request.initial.clone());
+                self.prompt = Some((request.clone(), input));
+                self.prompt_revealed = false;
+            }
+            Action::Repaint => {
+                self.repaint = true;
+            }
+            Action::Refresh => self.refresh_now(),
+            Action::ShowDevice(_) => self.show_entity(ScreenId::Devices, action)?,
+            Action::ShowClient(_) => self.show_entity(ScreenId::Clients, action)?,
             Action::ToggleHelp => {
                 self.help_visible = !self.help_visible;
+            }
+            Action::ToggleNotices => {
+                self.notices_visible = !self.notices_visible;
             }
             Action::ToggleAbout => {
                 self.about_visible = !self.about_visible;
@@ -59,7 +78,7 @@ impl App {
             }
             Action::CloseSearch => {
                 self.search_active = false;
-                self.search_query.clear();
+                self.search_input.clear();
                 self.forward_to_screen(self.active_screen, action)?;
             }
             Action::Connecting => {
@@ -76,7 +95,7 @@ impl App {
                 // Auto-reconnect resends this action after every failed
                 // attempt; only toast when the failure reason is news.
                 if self.connection_error.as_ref() != Some(reason) {
-                    self.show_notification(crate::tui::action::Notification::error(format!(
+                    self.show_notification(Notification::error(format!(
                         "connection failed: {reason}"
                     )));
                 }
@@ -101,14 +120,12 @@ impl App {
             Action::Tick => {
                 self.forward_to_all_screens(action)?;
 
-                if let Some((notification, created)) = &self.notification
-                    && created.elapsed() > notification_ttl(notification.level)
-                {
-                    self.notification = None;
+                if self.notices.expire() {
                     self.needs_redraw = true;
                 }
 
                 if self.active_screen == ScreenId::Stats
+                    && !self.stats_blocked()
                     && let Some(last) = self.last_stats_fetch
                     && last.elapsed() > Duration::from_mins(1)
                 {
@@ -125,7 +142,6 @@ impl App {
             | Action::WifiBroadcastsUpdated(_)
             | Action::EventReceived(_)
             | Action::HealthUpdated(_)
-            | Action::SiteUpdated(_)
             | Action::WifiNeighborsUpdated(_)
             | Action::WifiChannelsUpdated(_)
             | Action::WifiClientDetailLoaded { .. }
@@ -136,28 +152,16 @@ impl App {
             | Action::NetworkEditResult(_) => {
                 self.forward_to_all_screens(action)?;
             }
-            Action::RequestWifiNeighbors(within_secs) => {
-                self.fetch_wifi_neighbors(*within_secs);
+            Action::ControllerChanged => {
+                self.locating.clear();
+                self.forward_to_all_screens(action)?;
             }
-            Action::RequestWifiChannels => {
-                self.fetch_wifi_channels();
-            }
-            Action::RequestWifiClientDetail(ip) => {
-                self.fetch_wifi_client_detail(ip);
-            }
-            Action::RequestWifiRoamHistory { mac, limit } => {
-                self.fetch_wifi_roam_history(mac, *limit);
+            Action::AccessUpdated(access) => {
+                self.access = *access;
+                self.forward_to_all_screens(action)?;
             }
             Action::RequestStats(period) => {
-                self.stats_period = *period;
-                self.last_stats_fetch = Some(std::time::Instant::now());
-                self.fetch_stats(*period);
-            }
-            Action::OnboardingComplete { config, .. } => {
-                self.handle_onboarding_complete(config)?;
-            }
-            Action::OnboardingTestResult(_) => {
-                self.forward_to_screen(ScreenId::Setup, action)?;
+                self.request_stats(*period)?;
             }
             Action::OpenSettings => {
                 self.open_settings()?;
@@ -165,17 +169,14 @@ impl App {
             Action::CloseSettings => {
                 self.close_settings();
             }
-            Action::SettingsTestResult(_) => {
-                self.forward_to_screen(ScreenId::Settings, action)?;
-            }
-            Action::SettingsApply { config, .. } => {
-                self.apply_settings(config)?;
-            }
             Action::Notify(notification) => {
                 self.show_notification(notification.clone());
             }
             Action::DismissNotification => {
-                self.notification = None;
+                self.notices.dismiss_sticky();
+            }
+            Action::DismissToast(id) => {
+                self.notices.dismiss(*id);
             }
             Action::OpenDonate => {
                 open_url("https://github.com/sponsors/hyperb1iss");
@@ -193,6 +194,63 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+impl App {
+    /// Fetch the controller's data now. While disconnected this retries
+    /// the connection instead.
+    fn refresh_now(&mut self) {
+        if self.connection_status == ConnectionStatus::Disconnected {
+            self.retry_connect();
+            return;
+        }
+        let Some(controller) = self.controller.clone() else {
+            return;
+        };
+        // A held Ctrl+r is one refresh, not a queue of them.
+        if self
+            .refreshing
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let refreshing = std::sync::Arc::clone(&self.refreshing);
+        self.spawn_op("Refreshing\u{2026}", async move {
+            let result = controller.full_refresh().await;
+            refreshing.store(false, std::sync::atomic::Ordering::SeqCst);
+            match result {
+                Ok(()) => Notification::success("Data refreshed"),
+                Err(error) => Notification::error(format!("Refresh failed: {error}")),
+            }
+        });
+        if self.active_screen == ScreenId::Stats {
+            let _ = self.action_tx.send(Action::RequestStats(self.stats_period));
+        }
+    }
+
+    /// Switch to `screen` and hand it the entity to open. An entity that
+    /// has left since the key was pressed is reported from where the user
+    /// already is, with no jump to a screen that cannot show it.
+    fn show_entity(&mut self, screen: ScreenId, action: &Action) -> Result<()> {
+        let missing = self.controller.as_ref().and_then(|controller| {
+            let store = controller.store();
+            match action {
+                Action::ShowDevice(id) if store.device_by_id(id).is_none() => {
+                    Some(self.resolve_device_name(id))
+                }
+                Action::ShowClient(id) if store.client_by_id(id).is_none() => {
+                    Some(self.resolve_client_name(id))
+                }
+                _ => None,
+            }
+        });
+        if let Some(name) = missing {
+            self.report_gone(&name);
+            return Ok(());
+        }
+        self.switch_screen(screen)?;
+        self.forward_to_screen(screen, action)
     }
 }
 

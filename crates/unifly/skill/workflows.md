@@ -127,7 +127,8 @@ after-system IDs. An empty string is not a valid policy UUID; do not use
 `--set ''` to clear a half. Moving policies back to their original half
 removes them from the opposite half. Re-fetch and compare both arrays
 after the writes. For enabled/logging changes alone, prefer the narrow
-`firewall policies patch` command over a full policy update.
+`firewall policies patch` command over a full policy update, and read the
+policy back after an `--enabled` change to confirm it took.
 
 ## Trace a client's connectivity
 

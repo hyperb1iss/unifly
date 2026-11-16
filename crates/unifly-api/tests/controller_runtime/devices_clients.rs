@@ -1,0 +1,528 @@
+//! What the device and client commands send to a controller, and what
+//! the refresh reads back about clients and pending devices.
+
+use super::*;
+
+use unifly_api::{Command, EntityId};
+
+const CLIENT_MAC: &str = "aa:bb:cc:dd:ee:ff";
+/// The Integration ID of the Studio network, as `networks list` gives it.
+const STUDIO_UUID: &str = "6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0a11";
+/// The same network's `rest/networkconf` `_id`.
+const STUDIO_SESSION_ID: &str = "5f1a00000000000000000001";
+const GUEST_SESSION_ID: &str = "5f1a00000000000000000002";
+
+fn network_conf() -> serde_json::Value {
+    legacy_envelope(&json!([
+        {"_id": "5f1a000000000000000000ff", "name": "Internet", "purpose": "wan"},
+        {"_id": STUDIO_SESSION_ID, "name": "Studio", "purpose": "corporate",
+            "ip_subnet": "10.0.0.1/24", "external_id": STUDIO_UUID},
+        {"_id": GUEST_SESSION_ID, "name": "Guest", "purpose": "guest",
+            "ip_subnet": "10.0.60.1/23"},
+    ]))
+}
+
+/// Mount a Session GET that answers ahead of the connect defaults.
+async fn mount_get(server: &MockServer, route: &str, body: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+/// Accept `verb` on `route`, answering an empty envelope.
+async fn mount_write(server: &MockServer, verb: &str, route: &str) {
+    Mock::given(method(verb))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_legacy_envelope()))
+        .mount(server)
+        .await;
+}
+
+/// The JSON bodies of every `verb` request whose path ends in `suffix`.
+async fn bodies(server: &MockServer, verb: &str, suffix: &str) -> Vec<serde_json::Value> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method.as_str() == verb && request.url.path().ends_with(suffix))
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect()
+}
+
+async fn api_key_controller(server: &MockServer) -> Controller {
+    let controller = Controller::new(base_config(
+        Url::parse(&server.uri()).unwrap(),
+        AuthCredentials::ApiKey(secret("the-key")),
+        LEGACY_SITE_NAME,
+        false,
+    ));
+    controller.connect().await.unwrap();
+    controller
+}
+
+fn set_fixed_ip(ip: [u8; 4], network: Option<&str>) -> Command {
+    Command::SetClientFixedIp {
+        mac: MacAddress::new(CLIENT_MAC),
+        ip: ip.into(),
+        network_id: network.map(EntityId::from),
+    }
+}
+
+#[tokio::test]
+async fn a_fixed_ip_is_written_under_the_session_network_id() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let api = "/proxy/network/api/s/default";
+    mount_get(&server, &format!("{api}/rest/networkconf"), network_conf()).await;
+    // The client is known, with a name and a note the reservation must
+    // leave alone, and a stale reservation on another network.
+    mount_get(
+        &server,
+        &format!("{api}/rest/user"),
+        legacy_envelope(&json!([{
+            "_id": "user-1", "mac": CLIENT_MAC, "name": "Office Laptop",
+            "note": "front desk", "use_fixedip": true, "fixed_ip": "10.0.60.9",
+            "network_id": GUEST_SESSION_ID,
+        }])),
+    )
+    .await;
+    mount_write(&server, "PUT", &format!("{api}/rest/user/user-1")).await;
+    let controller = api_key_controller(&server).await;
+
+    // Named by the Integration ID: the body carries the networkconf
+    // `_id`, and only the three reservation fields, so the controller
+    // keeps the rest of the record.
+    controller
+        .execute(set_fixed_ip([10, 0, 0, 60], Some(STUDIO_UUID)))
+        .await
+        .unwrap();
+    let expected = json!({
+        "use_fixedip": true, "fixed_ip": "10.0.0.60", "network_id": STUDIO_SESSION_ID,
+    });
+    assert_eq!(
+        bodies(&server, "PUT", "/rest/user/user-1").await,
+        std::slice::from_ref(&expected)
+    );
+
+    // With no network named, the subnet holding the address picks it.
+    controller
+        .execute(set_fixed_ip([10, 0, 0, 60], None))
+        .await
+        .unwrap();
+    assert_eq!(
+        bodies(&server, "PUT", "/rest/user/user-1").await,
+        [expected.clone(), expected]
+    );
+
+    // An Integration ID no record carries is refused, never written.
+    let unknown = controller
+        .execute(set_fixed_ip(
+            [10, 0, 0, 60],
+            Some("6f1c1f4e-9a1c-4c55-9f0e-2b8f6f9c0aff"),
+        ))
+        .await;
+    assert!(
+        matches!(unknown, Err(CoreError::NetworkNotFound { .. })),
+        "{unknown:?}"
+    );
+    let stray = controller.execute(set_fixed_ip([192, 0, 2, 9], None)).await;
+    assert!(
+        matches!(&stray, Err(CoreError::ValidationFailed { message })
+            if message.contains("not inside any network's subnet")),
+        "{stray:?}"
+    );
+    assert_eq!(bodies(&server, "PUT", "/rest/user/user-1").await.len(), 2);
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn an_unchanged_reservation_is_not_written_again() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let api = "/proxy/network/api/s/default";
+    mount_get(&server, &format!("{api}/rest/networkconf"), network_conf()).await;
+    mount_get(
+        &server,
+        &format!("{api}/rest/user"),
+        legacy_envelope(&json!([{
+            "_id": "user-1", "mac": CLIENT_MAC, "use_fixedip": true,
+            "fixed_ip": "10.0.0.60", "network_id": STUDIO_SESSION_ID,
+        }])),
+    )
+    .await;
+    mount_write(&server, "PUT", &format!("{api}/rest/user/user-1")).await;
+    let controller = api_key_controller(&server).await;
+
+    controller
+        .execute(set_fixed_ip([10, 0, 0, 60], None))
+        .await
+        .unwrap();
+    assert_eq!(bodies(&server, "PUT", "/rest/user/user-1").await.len(), 0);
+
+    // Another address on the same network is a change.
+    controller
+        .execute(set_fixed_ip([10, 0, 0, 61], None))
+        .await
+        .unwrap();
+    assert_eq!(bodies(&server, "PUT", "/rest/user/user-1").await.len(), 1);
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_session_only_profile_reserves_by_subnet_and_creates_the_user() {
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    mount_get(&server, "/api/s/default/rest/networkconf", network_conf()).await;
+    mount_get(&server, "/api/s/default/rest/user", empty_legacy_envelope()).await;
+    mount_write(&server, "POST", "/api/s/default/rest/user").await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+    assert!(
+        controller.networks_snapshot().is_empty(),
+        "a Session-only store lists no networks to pick from"
+    );
+
+    controller
+        .execute(set_fixed_ip([10, 0, 61, 20], None))
+        .await
+        .unwrap();
+    // A network can also be named the way the controller's UI shows it.
+    controller
+        .execute(set_fixed_ip([10, 0, 0, 20], Some("studio")))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        bodies(&server, "POST", "/rest/user").await,
+        [
+            json!({"mac": CLIENT_MAC, "use_fixedip": true, "fixed_ip": "10.0.61.20",
+                "network_id": GUEST_SESSION_ID}),
+            json!({"mac": CLIENT_MAC, "use_fixedip": true, "fixed_ip": "10.0.0.20",
+                "network_id": STUDIO_SESSION_ID}),
+        ]
+    );
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn removing_a_fixed_ip_on_a_named_network_matches_its_session_id() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let api = "/proxy/network/api/s/default";
+    mount_get(&server, &format!("{api}/rest/networkconf"), network_conf()).await;
+    mount_get(
+        &server,
+        &format!("{api}/rest/user"),
+        legacy_envelope(&json!([{
+            "_id": "user-1", "mac": CLIENT_MAC, "use_fixedip": true,
+            "fixed_ip": "10.0.0.60", "network_id": STUDIO_SESSION_ID,
+        }])),
+    )
+    .await;
+    mount_write(&server, "PUT", &format!("{api}/rest/user/user-1")).await;
+    let controller = api_key_controller(&server).await;
+
+    controller
+        .execute(Command::RemoveClientFixedIp {
+            mac: MacAddress::new(CLIENT_MAC),
+            network_id: Some(EntityId::from(STUDIO_UUID)),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        bodies(&server, "PUT", "/rest/user/user-1").await,
+        [json!({"use_fixedip": false})]
+    );
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn guest_and_blocked_state_reach_clients_on_an_api_key_profile() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let api = "/proxy/network/api/s/default";
+    let client = |id: &str, name: &str, mac: &str, ip: &str, access: serde_json::Value| {
+        json!({"id": id, "name": name, "type": "WIRELESS", "ipAddress": ip,
+            "macAddress": mac, "access": access})
+    };
+    mount_get(
+        &server,
+        &integration_route("clients"),
+        json!({"offset": 0, "limit": 200, "count": 3, "totalCount": 3, "data": [
+            // Integration says guest, not yet through the portal.
+            client("c56a4180-65aa-42ec-a945-5fd21dec0001", "Visitor phone",
+                "aa:bb:cc:00:00:01", "10.0.60.21", json!({"type": "GUEST", "authorized": false})),
+            // Integration reports nothing; only the station list knows.
+            client("c56a4180-65aa-42ec-a945-5fd21dec0002", "Lobby tablet",
+                "aa:bb:cc:00:00:02", "10.0.60.22", json!({})),
+            client("c56a4180-65aa-42ec-a945-5fd21dec0003", "Kiosk",
+                "aa:bb:cc:00:00:03", "10.0.0.23", json!({"type": "DEFAULT"})),
+        ]}),
+    )
+    .await;
+    // Station addresses differ from Integration's on purpose: the MAC is
+    // what ties the two lists together.
+    mount_get(
+        &server,
+        &format!("{api}/stat/sta"),
+        legacy_envelope(&json!([
+            {"_id": "sta-1", "mac": "AA:BB:CC:00:00:01", "ip": "10.0.60.91",
+                "is_guest": true, "authorized": true},
+            {"_id": "sta-2", "mac": "aa:bb:cc:00:00:02", "ip": "10.0.60.92",
+                "is_guest": true, "authorized": false},
+            {"_id": "sta-3", "mac": "aa:bb:cc:00:00:03", "ip": "10.0.0.93"},
+        ])),
+    )
+    .await;
+    mount_get(
+        &server,
+        &format!("{api}/rest/user"),
+        legacy_envelope(&json!([
+            {"_id": "user-3", "mac": "aa:bb:cc:00:00:03", "blocked": true},
+        ])),
+    )
+    .await;
+    let controller = api_key_controller(&server).await;
+    let stored = |mac: &str| {
+        controller
+            .store()
+            .client_by_mac(&MacAddress::new(mac))
+            .expect("client present")
+    };
+    let authorized = |mac: &str| stored(mac).guest_auth.as_ref().map(|auth| auth.authorized);
+
+    assert!(stored("aa:bb:cc:00:00:01").is_guest);
+    assert_eq!(
+        authorized("aa:bb:cc:00:00:01"),
+        Some(true),
+        "the station list is where an authorization lands"
+    );
+    assert!(stored("aa:bb:cc:00:00:02").is_guest);
+    assert_eq!(authorized("aa:bb:cc:00:00:02"), Some(false));
+    let kiosk = stored("aa:bb:cc:00:00:03");
+    assert!(!kiosk.is_guest && kiosk.guest_auth.is_none());
+    assert!(kiosk.blocked, "the user record says it is blocked");
+    assert!(!stored("aa:bb:cc:00:00:01").blocked);
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn block_unblock_and_kick_go_to_the_station_manager_by_mac() {
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    mount_write(&server, "POST", "/proxy/network/api/s/default/cmd/stamgr").await;
+    let controller = api_key_controller(&server).await;
+    // A blocked client is off the connected list, so the store has no
+    // record of this MAC and no Integration ID to act on.
+    let gone = MacAddress::new("aa:bb:cc:00:00:99");
+    assert!(controller.store().client_by_mac(&gone).is_none());
+
+    controller
+        .execute(Command::UnblockClient { mac: gone.clone() })
+        .await
+        .unwrap();
+    controller
+        .execute(Command::BlockClient {
+            mac: MacAddress::new(CLIENT_MAC),
+        })
+        .await
+        .unwrap();
+    controller
+        .execute(Command::KickClient {
+            mac: MacAddress::new(CLIENT_MAC),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        bodies(&server, "POST", "/cmd/stamgr").await,
+        [
+            json!({"cmd": "unblock-sta", "mac": "aa:bb:cc:00:00:99"}),
+            json!({"cmd": "block-sta", "mac": CLIENT_MAC}),
+            json!({"cmd": "kick-sta", "mac": CLIENT_MAC}),
+        ]
+    );
+    let integration_actions = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path().ends_with("/actions"))
+        .count();
+    assert_eq!(
+        integration_actions, 0,
+        "the Integration API documents no block or reconnect action"
+    );
+
+    controller.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_poe_mode_is_written_into_its_port_and_every_other_override_survives() {
+    use unifly_api::PortProfileUpdate;
+    use unifly_api::model::PoeMode;
+
+    let server = MockServer::start().await;
+    mock_legacy_connect(&server, legacy_site_envelope()).await;
+    let camera = json!({"port_idx": 1, "name": "cam-lobby", "poe_mode": "auto",
+        "op_mode": "switch", "native_networkconf_id": "net-cameras",
+        "tagged_vlan_mgmt": "block_all", "autoneg": true});
+    // The badge reader's port was turned off; everything else about it,
+    // including a field this client does not model, has to come back.
+    let badge = json!({"port_idx": 2, "name": "badge-front", "poe_mode": "off",
+        "op_mode": "switch", "native_networkconf_id": "net-iot",
+        "tagged_vlan_mgmt": "block_all", "autoneg": false, "speed": 100,
+        "storm_ctrl_bcast_enabled": true});
+    Mock::given(method("POST"))
+        .and(path("/api/s/default/stat/device"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(legacy_envelope(&json!([{
+                "_id": "dev-1", "mac": SWITCH_MAC, "type": "usw",
+                "port_table": [{"port_idx": 1}, {"port_idx": 2}, {"port_idx": 3}],
+                "port_overrides": [camera, badge],
+            }]))),
+        )
+        .mount(&server)
+        .await;
+    mount_write(&server, "PUT", "/api/s/default/rest/device/dev-1").await;
+    let controller = legacy_controller(&server);
+    controller.connect().await.unwrap();
+
+    controller
+        .update_device_port(
+            &MacAddress::new(SWITCH_MAC),
+            2,
+            &PortProfileUpdate {
+                poe_mode: Some(PoeMode::Passive24V),
+                ..PortProfileUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut restored = badge.clone();
+    restored["poe_mode"] = json!("pasv24");
+    assert_eq!(
+        bodies(&server, "PUT", "/rest/device/dev-1").await,
+        [json!({"port_overrides": [camera, restored]})]
+    );
+
+    controller.disconnect().await;
+}
+
+const PENDING_ROUTE: &str = "/proxy/network/integration/v1/pending-devices";
+const PENDING_MAC: &str = "94:2a:6f:26:c6:ca";
+
+fn pending_row(mac: &str, sites: &[&str]) -> serde_json::Value {
+    json!({"macAddress": mac, "ipAddress": "10.0.0.77", "model": "U7 Pro",
+        "state": "PENDING_ADOPTION", "supported": true, "firmwareVersion": "8.0.26",
+        "firmwareUpdatable": false, "features": ["accessPoint"],
+        "adoptionTargetSiteIds": sites})
+}
+
+fn page(rows: &[serde_json::Value]) -> serde_json::Value {
+    json!({"offset": 0, "limit": 200, "count": rows.len(), "totalCount": rows.len(),
+        "data": rows})
+}
+
+#[tokio::test]
+async fn pending_devices_join_the_snapshot_and_adopt_sends_the_spec_body() {
+    use unifly_api::model::{DeviceState, DeviceType};
+
+    let server = MockServer::start().await;
+    mock_api_key_with_legacy(&server).await;
+    let adopted = json!({
+        "id": "9b2f6c1e-7a3d-4c5b-8e9f-0a1b2c3d4e5f", "macAddress": SWITCH_MAC,
+        "ipAddress": "10.0.0.2", "name": "Core Switch", "model": "USW-24",
+        "state": "ONLINE", "supported": true, "firmwareUpdatable": false,
+        "features": [], "interfaces": {},
+    });
+    mount_get(
+        &server,
+        &integration_route("devices"),
+        page(std::slice::from_ref(&adopted)),
+    )
+    .await;
+    let phase = mount_switchable_routes(
+        &server,
+        vec![(
+            PENDING_ROUTE.to_owned(),
+            page(&[
+                pending_row(PENDING_MAC, &[API_KEY_SITE_ID]),
+                // Waiting for another site: not this site's to adopt.
+                pending_row(
+                    "94:2a:6f:00:00:02",
+                    &["11111111-2222-3333-4444-555555555555"],
+                ),
+                // Mid-adoption a device is in both lists; it shows once.
+                pending_row(SWITCH_MAC, &[API_KEY_SITE_ID]),
+            ]),
+            page(&[]),
+        )],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path(integration_route("devices")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(adopted))
+        .mount(&server)
+        .await;
+    let controller = api_key_controller(&server).await;
+
+    let waiting = |when: &str| {
+        let devices = controller.devices_snapshot();
+        assert_eq!(devices.len(), 2, "{when}: {devices:?}");
+        let pending = controller
+            .store()
+            .device_by_mac(&MacAddress::new(PENDING_MAC))
+            .unwrap_or_else(|| panic!("{when}: the pending device is listed"));
+        assert_eq!(pending.state, DeviceState::PendingAdoption, "{when}");
+        assert_eq!(pending.id, EntityId::from(format!("pending:{PENDING_MAC}")));
+        assert_eq!(pending.name.as_deref(), Some("U7 Pro"));
+        assert_eq!(pending.device_type, DeviceType::AccessPoint);
+        assert_eq!(pending.ip, "10.0.0.77".parse().ok());
+        let switch = controller
+            .store()
+            .device_by_mac(&MacAddress::new(SWITCH_MAC))
+            .expect("the adopted switch");
+        assert_eq!(switch.state, DeviceState::Online, "{when}");
+    };
+    waiting("after connect");
+
+    // One failed fetch does not make the waiting device vanish.
+    set_phase(&phase, RoutePhase::Failing(500));
+    controller.full_refresh().await.unwrap();
+    waiting("after the pending fetch failed");
+
+    controller
+        .execute(Command::AdoptDevice {
+            mac: MacAddress::new(PENDING_MAC),
+            ignore_device_limit: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        bodies(&server, "POST", &integration_route("devices")).await,
+        [json!({"macAddress": PENDING_MAC, "ignoreDeviceLimit": false})]
+    );
+
+    // Once the controller stops listing it as pending, it is gone.
+    set_phase(&phase, RoutePhase::Empty);
+    controller.full_refresh().await.unwrap();
+    assert!(
+        controller
+            .store()
+            .device_by_mac(&MacAddress::new(PENDING_MAC))
+            .is_none()
+    );
+
+    controller.disconnect().await;
+}

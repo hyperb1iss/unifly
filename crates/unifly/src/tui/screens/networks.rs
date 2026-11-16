@@ -1,4 +1,5 @@
-//! Networks screen - network table with inline detail expansion and editing overlay.
+//! Networks screen: the network table with a detail panel, and a form for
+//! editing a network or creating one.
 
 mod edit;
 mod input;
@@ -16,21 +17,26 @@ use ratatui::widgets::TableState;
 use tokio::sync::mpsc::UnboundedSender;
 
 use unifly_api::Network;
+use unifly_api::model::FirewallZone;
 
-use crate::tui::action::Action;
-use crate::tui::component::Component;
+use crate::tui::action::{Access, Action};
+use crate::tui::component::{Component, LIST_HELP};
 use crate::tui::table::TableScroll;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
-use self::state::NetworkEditState;
+use self::edit::NetworkForm;
 
 pub struct NetworksScreen {
     focused: bool,
     networks: Arc<Vec<Arc<Network>>>,
+    /// Firewall zones, for the detail's zone name.
+    zones: Arc<Vec<Arc<FirewallZone>>>,
+    /// What the controller can reach, once it has connected.
+    access: Option<Access>,
     table_state: TableState,
     table_scroll: TableScroll,
     detail_open: bool,
-    edit_state: Option<NetworkEditState>,
+    form: Option<NetworkForm>,
     /// What the last frame drew where, for clicks.
     hits: RefCell<HitMap<Click>>,
     action_tx: Option<UnboundedSender<Action>>,
@@ -56,7 +62,16 @@ impl Component for NetworksScreen {
         Ok(self.handle_mouse_input(mouse))
     }
 
+    fn handle_paste(&mut self, text: &str) -> Option<Action> {
+        let form = self.form.as_mut().filter(|form| !form.saving)?;
+        form.paste(text);
+        None
+    }
+
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
+        if let Action::NetworkDeleteChecked { id, name, confirm } = action {
+            return Ok(Some(self.answer_delete_check(id, name, confirm)));
+        }
         self.apply_action(action);
         Ok(None)
     }
@@ -66,7 +81,35 @@ impl Component for NetworksScreen {
     }
 
     fn captures_input(&self) -> bool {
-        self.edit_state.is_some()
+        self.form.is_some()
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
+    }
+
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        if self.form.is_some() {
+            return vec![
+                ("Tab \u{2193}", "Next field"),
+                ("Shift+Tab \u{2191}", "Previous field"),
+                ("Space", "Flip an on/off field"),
+                ("\u{2190}/\u{2192}", "Move in the text"),
+                ("Home/End", "Start / end of the text"),
+                ("^w  ^u", "Delete word / to start"),
+                ("Enter", "Save"),
+                ("Esc", "Close without saving"),
+            ];
+        }
+        let mut keys = LIST_HELP.to_vec();
+        keys.extend([
+            ("Enter", "Show / hide the detail"),
+            ("Esc", "Hide the detail"),
+            ("e", "Edit the network"),
+            ("c", "Create a network"),
+            ("D", "Delete the network"),
+        ]);
+        keys
     }
 
     fn focused(&self) -> bool {

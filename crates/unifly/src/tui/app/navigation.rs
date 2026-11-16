@@ -1,10 +1,35 @@
 use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
-use super::{App, ConnectionStatus};
+use super::App;
 use crate::tui::action::{Action, Notification};
 use crate::tui::screen::ScreenId;
 use crate::tui::widgets::click::Click;
+use crate::tui::widgets::line_input::Edit;
+
+/// Whether a key is a Ctrl or Alt chord. AltGr reports as both and types
+/// an ordinary character, so it is not one.
+fn is_chord(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) != key.modifiers.contains(KeyModifiers::ALT)
+}
+
+fn is_ctrl(key: KeyEvent, ch: char) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && key.code == KeyCode::Char(ch)
+}
+
+/// The key a list already answers for a paging key: screens bind the vim
+/// keys, so PgUp, PgDn, Home, and End reach them as those.
+fn list_alias(key: KeyEvent) -> KeyEvent {
+    match key.code {
+        KeyCode::PageDown => KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        KeyCode::PageUp => KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        KeyCode::Home => KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        KeyCode::End => KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE),
+        _ => key,
+    }
+}
 
 impl App {
     /// Map a key event to an action. Global keys are handled here;
@@ -12,15 +37,25 @@ impl App {
     pub(super) fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         self.needs_redraw = true;
 
-        if let Some(action) = self.handle_special_screen_key_event(key)? {
-            return Ok(Some(action));
+        // Raw mode leaves no SIGINT, so Ctrl+C has to quit from every state,
+        // ahead of any overlay, field, or screen that would read a plain `c`.
+        if is_ctrl(key, 'c') {
+            return Ok(Some(Action::Quit));
+        }
+        if is_ctrl(key, 'l') {
+            return Ok(Some(Action::Repaint));
         }
 
-        if self.active_screen == ScreenId::Setup || self.active_screen == ScreenId::Settings {
-            return Ok(None);
+        // F1 is help where `?` cannot be: a form would type it.
+        let modal = self.pending_confirm.is_some() || self.prompt.is_some();
+        if key.code == KeyCode::F(1) && !modal {
+            return Ok(Some(Action::ToggleHelp));
         }
 
         if self.pending_confirm.is_some() {
+            if is_chord(key) {
+                return Ok(None);
+            }
             return Ok(match key.code {
                 KeyCode::Char('y' | 'Y') => Some(Action::ConfirmYes),
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Action::ConfirmNo),
@@ -28,20 +63,46 @@ impl App {
             });
         }
 
-        if self.search_active {
-            return Ok(self.handle_search_key_event(key));
+        if self.prompt.is_some() {
+            return Ok(self.handle_prompt_key_event(key));
         }
 
         if self.help_visible {
             return Ok(match key.code {
-                KeyCode::Esc | KeyCode::Char('?') => Some(Action::ToggleHelp),
+                KeyCode::Esc | KeyCode::Char('?' | 'q') if !is_chord(key) => {
+                    Some(Action::ToggleHelp)
+                }
                 _ => None,
             });
         }
 
-        if self.about_visible {
+        if self.notices_visible {
             return Ok(match key.code {
-                KeyCode::Esc | KeyCode::Char('a') => Some(Action::ToggleAbout),
+                KeyCode::Esc | KeyCode::Char('n' | 'q') if !is_chord(key) => {
+                    Some(Action::ToggleNotices)
+                }
+                _ => None,
+            });
+        }
+
+        // Setup and Settings take every remaining key: no global shortcut
+        // may fire while their fields have the keyboard. The dialogs and
+        // overlays above come first, so a question one of them asks can
+        // be answered.
+        if self.fills_frame() {
+            return self.forward_key_to_active_screen(key);
+        }
+
+        if self.search_active {
+            return self.handle_search_key_event(key);
+        }
+
+        if self.about_visible {
+            if is_chord(key) {
+                return Ok(None);
+            }
+            return Ok(match key.code {
+                KeyCode::Esc | KeyCode::Char('a' | 'q') => Some(Action::ToggleAbout),
                 KeyCode::Char('d') => Some(Action::OpenDonate),
                 KeyCode::Char('g') => {
                     super::dispatch::open_url("https://github.com/hyperb1iss/unifly");
@@ -51,32 +112,56 @@ impl App {
             });
         }
 
-        // Intercepted ahead of screen forwarding: screen key handlers match
-        // on the bare key code and would swallow Ctrl+r as a plain 'r'.
-        if key.modifiers == KeyModifiers::CONTROL
-            && key.code == KeyCode::Char('r')
-            && self.connection_status == ConnectionStatus::Disconnected
-        {
-            return Ok(Some(Action::RetryConnect));
-        }
-
         // Read before forwarding: a key that closes the form (Esc) must not
         // go on to a global shortcut either.
         let typing = self.active_screen_captures_input();
-        if let Ok(Some(action)) = self.forward_key_to_active_screen(key) {
+        // A refresh under a form could swap the record being edited.
+        if is_ctrl(key, 'r') && !typing {
+            return Ok(Some(Action::Refresh));
+        }
+        // A chord is never a screen's plain letter: Ctrl+b must not block a
+        // client because `b` does. A form reads its own editing chords, and
+        // the lists page on Ctrl+d and Ctrl+u.
+        let paging = is_ctrl(key, 'd') || is_ctrl(key, 'u');
+        if (typing || paging || !is_chord(key))
+            && let Ok(Some(action)) = self.forward_key_to_active_screen(key)
+        {
             return Ok(Some(action));
         }
 
-        let quit = key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c');
-        if typing && !quit {
+        if typing {
             return Ok(None);
         }
 
-        if let Some(action) = self.handle_global_key_event(key) {
-            return Ok(Some(action));
-        }
+        Ok(self.handle_global_key_event(key))
+    }
 
-        Ok(None)
+    /// Route pasted text to whatever is taking typed input. Anywhere else
+    /// it is dropped: a paste must never run as a burst of shortcut keys.
+    pub(super) fn handle_paste(&mut self, text: &str) -> Option<Action> {
+        self.needs_redraw = true;
+        if self.pending_confirm.is_some() {
+            return None;
+        }
+        if let Some((_, input)) = &mut self.prompt {
+            input.paste(text, |_| true);
+            return None;
+        }
+        if self.search_active {
+            return self
+                .search_input
+                .paste(text, |_| true)
+                .consumed()
+                .then(|| Action::SearchInput(self.search_input.text().to_owned()));
+        }
+        if self.help_visible || self.about_visible || self.notices_visible {
+            return None;
+        }
+        let screen = self.screens.get_mut(&self.active_screen)?;
+        if !screen.captures_input() {
+            return None;
+        }
+        screen.handle_paste(text)
     }
 
     /// Handle mouse events: the App's own targets first, then the active
@@ -100,9 +185,11 @@ impl App {
 
         // Overlays hold wheel turns and drags too, as they do for keys.
         if self.pending_confirm.is_some()
+            || self.prompt.is_some()
             || self.search_active
             || self.help_visible
             || self.about_visible
+            || self.notices_visible
         {
             return Ok(None);
         }
@@ -125,10 +212,10 @@ impl App {
         match query {
             Some(query) => {
                 self.search_active = true;
-                self.search_query = query;
+                self.search_input.set(query);
             }
             None => self.show_notification(Notification::info(
-                "Search filters the Devices, Clients, and WiFi lists",
+                "Search filters the Devices, Clients, Events, and WiFi lists",
             )),
         }
     }
@@ -140,6 +227,14 @@ impl App {
             .is_some_and(|screen| screen.search_query().is_some())
     }
 
+    /// The filter the active screen is keeping, when it has one.
+    fn active_filter(&self) -> Option<&str> {
+        self.screens
+            .get(&self.active_screen)
+            .and_then(|screen| screen.search_query())
+            .filter(|query| !query.is_empty())
+    }
+
     /// Whether the active screen is taking typed input, such as a form.
     pub(super) fn active_screen_captures_input(&self) -> bool {
         self.screens
@@ -147,65 +242,110 @@ impl App {
             .is_some_and(|screen| screen.captures_input())
     }
 
-    fn handle_special_screen_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
-        if self.active_screen == ScreenId::Setup || self.active_screen == ScreenId::Settings {
-            if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
-                return Ok(Some(Action::Quit));
-            }
-
-            if let Some(screen) = self.screens.get_mut(&self.active_screen) {
-                return screen.handle_key_event(key);
-            }
-        }
-
-        Ok(None)
-    }
-
-    fn handle_search_key_event(&mut self, key: KeyEvent) -> Option<Action> {
+    /// Keys while a prompt is open: Enter hands its text to the active
+    /// screen, Esc drops it, and everything else edits the line.
+    fn handle_prompt_key_event(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Esc => {
-                self.search_query.clear();
-                Some(Action::CloseSearch)
+                self.prompt = None;
+                None
             }
-            KeyCode::Enter => Some(Action::SearchSubmit),
-            KeyCode::Backspace => {
-                self.search_query.pop();
-                Some(Action::SearchInput(self.search_query.clone()))
+            // A secret is taken exactly as typed: a passphrase may begin
+            // or end with a space.
+            KeyCode::Enter => self.prompt.take().map(|(request, input)| {
+                let text = if request.secret {
+                    input.text()
+                } else {
+                    input.text().trim()
+                };
+                Action::PromptSubmitted(text.to_owned())
+            }),
+            // A masked value typed blind can lock a network out: Ctrl+T
+            // shows it, and hides it again.
+            KeyCode::Char('t') if is_ctrl(key, 't') => {
+                if self
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|(request, _)| request.secret)
+                {
+                    self.prompt_revealed = !self.prompt_revealed;
+                }
+                None
             }
-            KeyCode::Char(c) => {
-                self.search_query.push(c);
-                Some(Action::SearchInput(self.search_query.clone()))
+            _ => {
+                if let Some((_, input)) = &mut self.prompt {
+                    input.handle_key(key);
+                }
+                None
             }
-            _ => None,
+        }
+    }
+
+    fn handle_search_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        match key.code {
+            KeyCode::Esc => {
+                self.search_input.clear();
+                return Ok(Some(Action::CloseSearch));
+            }
+            KeyCode::Enter => return Ok(Some(Action::SearchSubmit)),
+            // The filtered list stays movable while the bar is open.
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                return self.forward_key_to_active_screen(key);
+            }
+            _ => {}
+        }
+        Ok(match self.search_input.handle_key(key) {
+            Edit::Changed => Some(Action::SearchInput(self.search_input.text().to_owned())),
+            Edit::Moved | Edit::Ignored => None,
+        })
+    }
+
+    /// What `Esc` does once the screen has nothing of its own to close: it
+    /// dismisses a warning or error toast, then clears a kept search
+    /// filter, then goes back a screen.
+    fn escape_action(&self) -> Action {
+        if self.has_sticky_notification() {
+            Action::DismissNotification
+        } else if self.active_filter().is_some() {
+            Action::CloseSearch
+        } else {
+            Action::GoBack
         }
     }
 
     fn handle_global_key_event(&self, key: KeyEvent) -> Option<Action> {
-        match (key.modifiers, key.code) {
-            (KeyModifiers::CONTROL, KeyCode::Char('c'))
-            | (KeyModifiers::NONE, KeyCode::Char('q')) => Some(Action::Quit),
-            (KeyModifiers::NONE, KeyCode::Char('?')) => Some(Action::ToggleHelp),
-            (KeyModifiers::NONE, KeyCode::Char('a')) => Some(Action::ToggleAbout),
-            (KeyModifiers::NONE, KeyCode::Char('/')) => Some(Action::OpenSearch),
-            (KeyModifiers::NONE, KeyCode::Char(',')) => Some(Action::OpenSettings),
-            (KeyModifiers::NONE, KeyCode::Char(c @ '1'..='9')) => {
+        // Terminals differ on whether Shift is reported with a shifted
+        // character (`?` on Windows, digits on AZERTY), so only the key
+        // itself is matched.
+        if is_chord(key) {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Char('?') => Some(Action::ToggleHelp),
+            KeyCode::Char('a') => Some(Action::ToggleAbout),
+            KeyCode::Char('n') => Some(Action::ToggleNotices),
+            KeyCode::Char('/') => Some(Action::OpenSearch),
+            KeyCode::Char(',') => Some(Action::OpenSettings),
+            KeyCode::Char(c @ '1'..='9') => {
                 #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
                 let n = c.to_digit(10).unwrap_or(0) as u8;
                 ScreenId::from_number(n).map(Action::SwitchScreen)
             }
-            (KeyModifiers::NONE, KeyCode::Tab) => {
-                Some(Action::SwitchScreen(self.active_screen.next()))
-            }
-            (KeyModifiers::SHIFT, KeyCode::BackTab) => {
-                Some(Action::SwitchScreen(self.active_screen.prev()))
-            }
-            (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::GoBack),
+            KeyCode::Tab => Some(Action::SwitchScreen(self.active_screen.next())),
+            KeyCode::BackTab => Some(Action::SwitchScreen(self.active_screen.prev())),
+            KeyCode::Esc => Some(self.escape_action()),
             _ => None,
         }
     }
 
     fn forward_key_to_active_screen(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         if let Some(screen) = self.screens.get_mut(&self.active_screen) {
+            let key = if screen.captures_input() {
+                key
+            } else {
+                list_alias(key)
+            };
             return screen.handle_key_event(key);
         }
 
@@ -404,17 +544,23 @@ mod tests {
         let rows = render(&mut app, 120);
 
         let action = app
-            .handle_mouse_event(click_label(&rows, "pause/resume", "pause/resume"))
+            .handle_mouse_event(click_label(&rows, "v alarms", "alarms"))
             .expect("click handling");
         let Some(Action::PressKey(key)) = action else {
             panic!("expected a key press, got {action:?}");
         };
-        assert_eq!(key, crate::tui::widgets::click::char_key(' '));
+        assert_eq!(key, crate::tui::widgets::click::char_key('v'));
 
+        // The screen takes the key as if it had been typed: `v` opens
+        // its alarms view.
         app.process_action(&Action::PressKey(key))
             .expect("key press handling");
         let queued = app.action_rx.try_recv().expect("the press dispatches");
-        assert!(matches!(queued, Action::ToggleEventPause), "{queued:?}");
+        assert!(matches!(queued, Action::Invalidate), "{queued:?}");
+        assert!(render(&mut app, 120)[0].contains("Alarms (0)"));
+        app.process_action(&Action::PressKey(key))
+            .expect("key press handling");
+        app.action_rx.try_recv().expect("the press dispatches");
 
         // A pressed key the screen leaves alone reaches the global keys:
         // Events leaves `?` to the App, which opens help.
@@ -438,12 +584,12 @@ mod tests {
         app.help_visible = true;
         let rows = draw(&mut app);
         assert!(
-            app.handle_mouse_event(click_label(&rows, "Navigation", "Navigation"))
+            app.handle_mouse_event(click_label(&rows, "Everywhere", "Everywhere"))
                 .expect("click")
                 .is_none(),
             "a tap inside the overlay does nothing"
         );
-        let action = tap(&mut app, "to close", "Esc or ? to close");
+        let action = tap(&mut app, "to close", "Esc to close");
         assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
         app.help_visible = false;
 
@@ -454,10 +600,10 @@ mod tests {
         assert!(matches!(action, Some(Action::ToggleAbout)), "{action:?}");
         app.about_visible = false;
 
-        app.pending_confirm = Some(crate::tui::action::ConfirmAction::RestartDevice {
-            id: unifly_api::EntityId::Legacy("device-1".into()),
-            name: "sw-core".into(),
-        });
+        app.pending_confirm = Some(crate::tui::action::ConfirmRequest::new(
+            "Restart sw-core?",
+            Action::Refresh,
+        ));
         let action = tap(&mut app, "confirm", "confirm");
         assert!(matches!(action, Some(Action::ConfirmYes)), "{action:?}");
         let action = tap(&mut app, "6 Topo", "2 Devices");
@@ -468,15 +614,40 @@ mod tests {
     }
 
     #[test]
+    fn the_sponsor_button_leaves_a_narrow_status_bar_to_the_actions() {
+        let mut app = dashboard_app();
+        app.process_action(&Action::DevicesUpdated(std::sync::Arc::new(vec![device(
+            "01", "sw-alpha",
+        )])))
+        .expect("devices update");
+        app.switch_screen(ScreenId::Devices).expect("switch");
+        let status =
+            |app: &mut App, width: u16| render(app, width).last().cloned().unwrap_or_default();
+
+        // With room for everything, the button keeps the corner.
+        let wide = status(&mut app, 120);
+        assert!(
+            wide.contains("Enter detail") && wide.contains("Sponsor"),
+            "{wide}"
+        );
+
+        // A narrow bar is the actions' and the help key's.
+        let narrow = status(&mut app, 64);
+        assert!(narrow.contains("Enter detail"), "{narrow}");
+        assert!(!narrow.contains("Sponsor"), "{narrow}");
+        assert!(narrow.contains("? help"), "{narrow}");
+    }
+
+    #[test]
     fn the_status_bar_and_toasts_take_taps() {
         let mut app = dashboard_app();
         let rows = render(&mut app, 120);
         let action = app
-            .handle_mouse_event(click_label(&rows, "settings", "help"))
+            .handle_mouse_event(click_label(&rows, "? help", "help"))
             .expect("click");
         assert!(matches!(action, Some(Action::ToggleHelp)), "{action:?}");
         let action = app
-            .handle_mouse_event(click_label(&rows, "settings", "Sponsor"))
+            .handle_mouse_event(click_label(&rows, "? help", "Sponsor"))
             .expect("click");
         assert!(matches!(action, Some(Action::OpenDonate)), "{action:?}");
 
@@ -488,13 +659,13 @@ mod tests {
             .handle_mouse_event(click_label(&rows, "restart requested", "restart"))
             .expect("click");
         assert!(
-            matches!(action, Some(Action::DismissNotification)),
+            matches!(action, Some(Action::DismissToast(_))),
             "{action:?}"
         );
 
-        app.notification = None;
+        app.notices.dismiss_sticky();
         app.search_active = true;
-        app.search_query = "ap".into();
+        app.search_input.set("ap");
         let rows = render(&mut app, 120);
         let action = app
             .handle_mouse_event(click_label(&rows, "Enter done", "clear"))
@@ -557,9 +728,17 @@ mod tests {
             .expect("edit");
         let rows = render(&mut app, 120);
 
+        // The bar offers only the keys a form leaves working.
+        let bar = rows.last().cloned().unwrap_or_default();
+        assert!(bar.contains("F1 help") && bar.contains("^c quit"), "{bar}");
+        assert!(
+            !bar.contains("settings") && !bar.contains("refresh"),
+            "{bar}"
+        );
+
         for (marker, label) in [
-            ("settings", "quit"),
-            ("settings", "help"),
+            ("F1 help", "quit"),
+            ("F1 help", "help"),
             ("6 Topo", "2 Devices"),
         ] {
             let action = app
@@ -623,7 +802,7 @@ mod tests {
         // Reopening search picks up the filter in place, ready to refine.
         press(&mut app, KeyCode::Char('/'));
         assert!(app.search_active);
-        assert_eq!(app.search_query, "alp");
+        assert_eq!(app.search_input.text(), "alp");
 
         press(&mut app, KeyCode::Esc);
         assert!(!app.search_active);
@@ -633,7 +812,7 @@ mod tests {
             "{rows}"
         );
         press(&mut app, KeyCode::Char('/'));
-        assert_eq!(app.search_query, "", "Esc cleared the filter");
+        assert_eq!(app.search_input.text(), "", "Esc cleared the filter");
     }
 
     #[test]
@@ -644,7 +823,7 @@ mod tests {
 
         press(&mut app, KeyCode::Char('/'));
         assert!(!app.search_active, "search opened on the Dashboard");
-        assert!(app.notification.is_some(), "the refusal says why");
+        assert!(app.notices.latest().is_some(), "the refusal says why");
 
         for screen in [ScreenId::Devices, ScreenId::Clients, ScreenId::Wifi] {
             app.switch_screen(screen).expect("switch");
@@ -653,16 +832,328 @@ mod tests {
     }
 
     #[test]
-    fn the_help_overlay_lists_only_keys_that_work_everywhere() {
+    fn the_help_overlay_fits_a_24_row_terminal_whole() {
         let mut app = dashboard_app();
         app.help_visible = true;
-        let text = render_lines(120, 34, |frame, _| app.render(frame)).join("\n");
+        let text = render_lines(80, 24, |frame, _| app.render(frame)).join("\n");
 
-        for screen_key in ["Sort column", "Filter"] {
-            assert!(!text.contains(screen_key), "{screen_key}:\n{text}");
+        for needed in [
+            "Dashboard screen",
+            "Everywhere",
+            "Notifications",
+            "Refresh now, or retry",
+            "Select text",
+            "Esc to close",
+        ] {
+            assert!(text.contains(needed), "{needed}:\n{text}");
         }
-        assert!(text.contains("Search lists"), "{text}");
-        assert!(text.contains("own keys"), "{text}");
+    }
+
+    #[test]
+    fn the_help_overlay_lists_search_only_where_it_filters_and_wraps_long_rows() {
+        let mut app = dashboard_app();
+        app.help_visible = true;
+        let text = render_lines(80, 24, |frame, _| app.render(frame)).join("\n");
+        assert!(!text.contains("Search the list"), "{text}");
+
+        app.active_screen = ScreenId::Devices;
+        let text = render_lines(80, 24, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Search the list"), "{text}");
+
+        // A description longer than its column continues on the next row.
+        let lines = super::super::render::help_column_text(
+            &[("x", "Archive the selected alarm and reload the list")],
+            38,
+        );
+        assert_eq!(
+            lines,
+            [
+                "  x           Archive the selected",
+                "              alarm and reload the",
+                "              list"
+            ]
+        );
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_every_state() {
+        let ctrl_c = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let quits = |app: &mut App, state: &str| {
+            let action = app.handle_key_event(ctrl_c).expect("key");
+            assert!(matches!(action, Some(Action::Quit)), "{state}: {action:?}");
+        };
+
+        let mut app = dashboard_app();
+        // WiFi Overview binds a plain `c`.
+        app.active_screen = ScreenId::Wifi;
+        quits(&mut app, "WiFi overview");
+        app.search_active = true;
+        quits(&mut app, "search");
+        assert_eq!(app.search_input.text(), "", "nothing was typed");
+        app.search_active = false;
+        app.help_visible = true;
+        quits(&mut app, "help");
+        app.help_visible = false;
+        app.about_visible = true;
+        quits(&mut app, "about");
+        app.about_visible = false;
+        app.pending_confirm = Some(crate::tui::action::ConfirmRequest::new(
+            "Restart sw-core?",
+            Action::Refresh,
+        ));
+        quits(&mut app, "confirm");
+    }
+
+    #[test]
+    fn shifted_keys_work_whether_or_not_the_terminal_reports_shift() {
+        for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+            let mut app = dashboard_app();
+            let action = app
+                .handle_key_event(key(KeyCode::Char('?'), modifiers))
+                .expect("key");
+            assert!(matches!(action, Some(Action::ToggleHelp)), "{modifiers:?}");
+            let action = app
+                .handle_key_event(key(KeyCode::Char('2'), modifiers))
+                .expect("key");
+            assert!(
+                matches!(action, Some(Action::SwitchScreen(ScreenId::Devices))),
+                "{modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chord_never_acts_as_its_plain_letter() {
+        // `b` blocks a client and `x` kicks one; their chords must not.
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Clients;
+        for (ch, modifiers) in [
+            ('b', KeyModifiers::CONTROL),
+            ('x', KeyModifiers::CONTROL),
+            ('q', KeyModifiers::ALT),
+            ('a', KeyModifiers::CONTROL),
+        ] {
+            let action = app
+                .handle_key_event(key(KeyCode::Char(ch), modifiers))
+                .expect("key");
+            assert!(action.is_none(), "{modifiers:?}+{ch}: {action:?}");
+        }
+        assert!(app.running);
+
+        // A confirmation is not answered by a chord either.
+        app.pending_confirm = Some(crate::tui::action::ConfirmRequest::new(
+            "Restart sw-core?",
+            Action::Refresh,
+        ));
+        let action = app
+            .handle_key_event(key(KeyCode::Char('y'), KeyModifiers::CONTROL))
+            .expect("key");
+        assert!(action.is_none(), "{action:?}");
+    }
+
+    #[test]
+    fn a_paste_types_into_search_and_is_dropped_elsewhere() {
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Firewall;
+        // `J` and `K` reorder policies; a paste must never press them.
+        assert!(app.handle_paste("JKR\ny").is_none());
+        assert!(app.action_rx.try_recv().is_err());
+
+        app.active_screen = ScreenId::Devices;
+        app.search_active = true;
+        let action = app.handle_paste("sw-\ncore\r");
+        assert!(
+            matches!(action, Some(Action::SearchInput(ref query)) if query == "sw-core"),
+            "{action:?}"
+        );
+        assert!(app.search_active, "a pasted newline does not submit");
+    }
+
+    #[test]
+    fn the_search_bar_edits_at_a_cursor() {
+        let mut app = dashboard_app();
+        app.active_screen = ScreenId::Devices;
+        app.search_active = true;
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('c'),
+            KeyCode::Left,
+            KeyCode::Char('b'),
+        ] {
+            app.handle_key_event(key(code, KeyModifiers::NONE))
+                .expect("key");
+        }
+        assert_eq!(app.search_input.text(), "abc");
+        let action = app
+            .handle_key_event(key(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .expect("key");
+        assert!(
+            matches!(action, Some(Action::SearchInput(ref query)) if query == "c"),
+            "{action:?}"
+        );
+    }
+
+    #[test]
+    fn esc_dismisses_an_error_then_clears_the_filter_then_goes_back_once() {
+        let mut app = dashboard_app();
+        app.process_action(&Action::DevicesUpdated(std::sync::Arc::new(vec![device(
+            "01", "sw-alpha",
+        )])))
+        .expect("devices");
+        app.switch_screen(ScreenId::Devices).expect("switch");
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Enter);
+        app.show_notification(Notification::error("the controller said no"));
+
+        let esc = |app: &mut App| {
+            app.handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+                .expect("key")
+        };
+        let first = esc(&mut app);
+        assert!(
+            matches!(first, Some(Action::DismissNotification)),
+            "{first:?}"
+        );
+        app.process_action(&Action::DismissNotification)
+            .expect("dismiss");
+        let second = esc(&mut app);
+        assert!(matches!(second, Some(Action::CloseSearch)), "{second:?}");
+        app.process_action(&Action::CloseSearch).expect("clear");
+        let third = esc(&mut app);
+        assert!(matches!(third, Some(Action::GoBack)), "{third:?}");
+        app.process_action(&Action::GoBack).expect("back");
+        assert_eq!(app.active_screen, ScreenId::Dashboard);
+
+        // Back does not arm another back: Esc would bounce otherwise.
+        app.process_action(&Action::GoBack).expect("back again");
+        assert_eq!(app.active_screen, ScreenId::Dashboard);
+    }
+
+    #[test]
+    fn a_prompt_takes_typed_and_pasted_text_and_hands_it_to_the_screen() {
+        let mut app = dashboard_app();
+        app.process_action(&Action::OpenPrompt(crate::tui::action::PromptRequest {
+            title: "Fixed IP for nas-vault".into(),
+            label: "IPv4 address".into(),
+            initial: "10.40.20.".into(),
+            ..Default::default()
+        }))
+        .expect("open");
+        let rows = render(&mut app, 100);
+        let text = rows.join("\n");
+        assert!(text.contains("Fixed IP for nas-vault"), "{text}");
+        assert!(text.contains("10.40.20."), "{text}");
+
+        // `q` types; it does not quit. A paste goes into the field.
+        let typed = app
+            .handle_key_event(key(KeyCode::Char('q'), KeyModifiers::NONE))
+            .expect("key");
+        assert!(typed.is_none());
+        app.handle_key_event(key(KeyCode::Backspace, KeyModifiers::NONE))
+            .expect("key");
+        assert!(app.handle_paste("5\n").is_none());
+        let submitted = app
+            .handle_key_event(key(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("key");
+        assert!(
+            matches!(submitted, Some(Action::PromptSubmitted(ref text)) if text == "10.40.20.5"),
+            "{submitted:?}"
+        );
+        assert!(app.prompt.is_none());
+
+        // A secret is masked until Ctrl+T shows it.
+        app.process_action(&Action::OpenPrompt(crate::tui::action::PromptRequest {
+            title: "Passphrase for Guest".into(),
+            initial: "hunter22".into(),
+            secret: true,
+            ..Default::default()
+        }))
+        .expect("open");
+        let masked = render(&mut app, 100).join("\n");
+        assert!(!masked.contains("hunter22"), "{masked}");
+        assert!(masked.contains("^t show"), "{masked}");
+        app.handle_key_event(key(KeyCode::Char('t'), KeyModifiers::CONTROL))
+            .expect("key");
+        let shown = render(&mut app, 100).join("\n");
+        assert!(shown.contains("hunter22"), "{shown}");
+        app.handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("key");
+
+        // A secret keeps the spaces around it; anything else is trimmed.
+        for (secret, expected) in [(true, " pass phrase "), (false, "pass phrase")] {
+            app.process_action(&Action::OpenPrompt(crate::tui::action::PromptRequest {
+                initial: " pass phrase ".into(),
+                secret,
+                ..Default::default()
+            }))
+            .expect("open");
+            let submitted = app
+                .handle_key_event(key(KeyCode::Enter, KeyModifiers::NONE))
+                .expect("key");
+            assert!(
+                matches!(submitted, Some(Action::PromptSubmitted(ref text)) if text == expected),
+                "secret {secret}: {submitted:?}"
+            );
+        }
+
+        app.process_action(&Action::OpenPrompt(
+            crate::tui::action::PromptRequest::default(),
+        ))
+        .expect("open");
+        let cancelled = app
+            .handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("key");
+        assert!(cancelled.is_none() && app.prompt.is_none());
+    }
+
+    #[test]
+    fn dialogs_and_f1_help_work_over_the_setup_wizard() {
+        // With no controller the app opens on the wizard, which otherwise
+        // takes every key for its fields.
+        let mut app = App::new(None, None, false, true);
+        assert_eq!(app.active_screen, ScreenId::Setup);
+
+        let help = app
+            .handle_key_event(key(KeyCode::F(1), KeyModifiers::NONE))
+            .expect("key");
+        assert!(matches!(help, Some(Action::ToggleHelp)), "{help:?}");
+        app.process_action(&Action::ToggleHelp).expect("open help");
+        let text = render_lines(100, 30, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Keyboard Shortcuts"), "{text}");
+        assert!(text.contains("Setup screen"), "{text}");
+        assert!(!text.contains("Jump to screen"), "{text}");
+        let close = app
+            .handle_key_event(key(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("key");
+        assert!(matches!(close, Some(Action::ToggleHelp)), "{close:?}");
+        app.process_action(&Action::ToggleHelp).expect("close help");
+
+        // A question asked over the wizard is drawn and can be answered.
+        app.pending_confirm = Some(crate::tui::action::ConfirmRequest::new(
+            "Discard your changes?",
+            Action::Refresh,
+        ));
+        let text = render_lines(100, 30, |frame, _| app.render(frame)).join("\n");
+        assert!(text.contains("Discard your changes?"), "{text}");
+        let yes = app
+            .handle_key_event(key(KeyCode::Char('y'), KeyModifiers::NONE))
+            .expect("key");
+        assert!(matches!(yes, Some(Action::ConfirmYes)), "{yes:?}");
+    }
+
+    #[test]
+    fn paging_keys_reach_lists_as_their_vim_keys() {
+        let page_down = list_alias(key(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(page_down, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let end = list_alias(key(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(end.code, KeyCode::Char('G'));
+        let plain = key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(list_alias(plain), plain);
     }
 
     #[test]
@@ -675,13 +1166,13 @@ mod tests {
             .handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))
             .expect("search key handling should succeed");
         assert!(matches!(action, Some(Action::SearchInput(ref q)) if q == "u"));
-        assert_eq!(app.search_query, "u");
+        assert_eq!(app.search_input.text(), "u");
 
         let action = app
             .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .expect("search close should succeed");
         assert!(matches!(action, Some(Action::CloseSearch)));
-        assert_eq!(app.search_query, "");
+        assert_eq!(app.search_input.text(), "");
     }
 
     #[test]

@@ -68,13 +68,21 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Place every root side by side, returning the link routes.
+    /// Place every root, returning the link routes. Roots sit side by side
+    /// and wrap into rows like any other siblings: a site with no gateway
+    /// has every device with an unknown uplink as a root.
     pub(super) fn place_forest(&mut self, roots: &[usize]) -> HashMap<usize, (f64, f64)> {
-        let mut x = 0.0;
         for root in roots {
-            let size = self.measure(*root);
-            self.place(*root, x, 0.0);
-            x += size.width + SIBLING_GAP;
+            self.measure(*root);
+        }
+        let mut top = 0.0;
+        for row in self.pack_within(roots, self.limit) {
+            let mut x = 0.0;
+            for root in &row {
+                self.place(*root, x, top);
+                x += self.size(*root).width + SIBLING_GAP;
+            }
+            top += self.row_height(&row) + ROW_GAP;
         }
         std::mem::take(&mut self.routes)
     }
@@ -133,11 +141,17 @@ impl<'a> Placer<'a> {
     }
 
     /// Split children into rows no wider than the limit, keeping order.
+    /// Wrapped rows give up the trunk's columns on their left.
     fn pack(&self, kids: &[usize]) -> Vec<Vec<usize>> {
         if self.row_width(kids) <= self.limit {
             return vec![kids.to_vec()];
         }
-        let limit = self.limit - TRUNK;
+        self.pack_within(kids, self.limit - TRUNK)
+    }
+
+    /// Split `kids` into rows no wider than `limit`, keeping order. A kid
+    /// wider than the limit gets a row to itself.
+    fn pack_within(&self, kids: &[usize], limit: f64) -> Vec<Vec<usize>> {
         let mut rows: Vec<Vec<usize>> = Vec::new();
         let mut current: Vec<usize> = Vec::new();
         let mut width = 0.0;

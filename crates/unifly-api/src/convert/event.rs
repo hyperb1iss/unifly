@@ -132,8 +132,17 @@ impl From<UnifiEvent> for Event {
             Some(EntityId::Legacy(e.site_id))
         };
 
+        // The frame carries the same `_id` the event has when it is polled,
+        // which is what lets the two deliveries be told as one event.
+        let id = e
+            .extra
+            .get("_id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+            .map(EntityId::from);
+
         Event {
-            id: None,
+            id,
             timestamp: parse_datetime(e.datetime.as_ref()).unwrap_or_else(Utc::now),
             category,
             severity,
@@ -161,6 +170,38 @@ mod tests {
         .expect("alarm");
         let event = Event::from(alarm);
         assert_eq!(event.ssid.as_deref(), Some("OfficeWiFi"));
+    }
+
+    #[test]
+    fn a_live_frame_keeps_the_id_its_polled_copy_has() {
+        let frame = serde_json::json!({
+            "_id": "66f0c0ffee0000000000abcd",
+            "key": "EVT_WU_Connected",
+            "subsystem": "wlan",
+            "site_id": "site1",
+            "datetime": "2026-11-13T10:00:00Z",
+            "msg": "User[aa:bb:cc:dd:ee:01] has connected to AP[aa:bb:cc:dd:ee:ff]",
+            "user": "aa:bb:cc:dd:ee:01",
+            "ap": "aa:bb:cc:dd:ee:ff"
+        });
+        let live = Event::from(serde_json::from_value::<UnifiEvent>(frame.clone()).expect("frame"));
+        let polled = crate::convert::system_log::legacy_history_event(
+            serde_json::from_value::<SessionEvent>(frame).expect("polled"),
+        )
+        .expect("polled event");
+
+        assert_eq!(live.id, Some(EntityId::from("66f0c0ffee0000000000abcd")));
+        assert_eq!(live.id, polled.id);
+        assert_eq!(live.timestamp, polled.timestamp);
+    }
+
+    #[test]
+    fn a_live_frame_without_an_id_stays_without_one() {
+        let frame = serde_json::json!({
+            "key": "EVT_WU_Connected", "subsystem": "wlan", "site_id": "site1", "_id": ""
+        });
+        let live = Event::from(serde_json::from_value::<UnifiEvent>(frame).expect("frame"));
+        assert_eq!(live.id, None);
     }
 
     #[test]

@@ -324,16 +324,165 @@ fn commands_simulate_or_refuse() {
     .expect("upgrade works in demo mode");
 
     let error = sim
-        .apply_command(
-            Command::DeleteNetwork {
-                id: sim.fleet.networks[1].id.clone(),
-                force: false,
-            },
-            now,
-        )
-        .expect_err("CRUD is refused");
+        .apply_command(Command::CreateBackup, now)
+        .expect_err("site admin is refused");
     assert!(matches!(error, CoreError::Unsupported { .. }));
     assert!(error.to_string().contains("demo mode"), "{error}");
+}
+
+#[test]
+fn a_speed_test_reports_through_site_health_and_not_as_an_event() {
+    let mut sim = Simulation::new(fleet());
+    let lastrun = |sim: &Simulation| {
+        sim.health()
+            .iter()
+            .find(|health| health.subsystem == "www")
+            .and_then(|www| www.extra.get("speedtest_lastrun"))
+            .and_then(serde_json::Value::as_i64)
+            .expect("the www subsystem reports the last run")
+    };
+    let before = lastrun(&sim);
+    assert!(before < anchor().timestamp(), "an earlier test stands");
+
+    let now = anchor() + chrono::Duration::minutes(3);
+    let (_, delta) = sim
+        .apply_command(Command::SpeedtestDevice, now)
+        .expect("a speed test works in demo mode");
+
+    assert!(delta.events.is_empty(), "a controller sends no event");
+    assert_eq!(lastrun(&sim), now.timestamp());
+    let www = sim
+        .health()
+        .into_iter()
+        .find(|health| health.subsystem == "www")
+        .expect("www");
+    for rate in ["xput_down", "xput_up"] {
+        let mbps = www.extra.get(rate).and_then(serde_json::Value::as_f64);
+        assert!(mbps.is_some_and(|mbps| mbps > 0.0), "{rate}: {mbps:?}");
+    }
+}
+
+#[test]
+fn the_list_is_summary_shaped_and_the_detail_fills_it_in() {
+    let sim = Simulation::new(fleet());
+    let listed = sim.refresh_snapshot().wifi;
+    assert_eq!(listed.len(), sim.fleet.wifi.len());
+    for summary in &listed {
+        assert_eq!(summary.hidden, None, "{}", summary.name);
+        assert_eq!(summary.client_isolation, None);
+        assert_eq!(summary.fast_roaming, None);
+        let detail = sim.wifi_detail(&summary.id).expect("detail");
+        assert!(detail.hidden.is_some(), "{}", detail.name);
+        assert_eq!(detail.name, summary.name);
+    }
+    assert!(
+        listed
+            .iter()
+            .filter_map(|summary| sim.wifi_detail(&summary.id).ok())
+            .any(|detail| detail.hidden == Some(true)),
+        "one SSID hides its name, which only its detail says"
+    );
+}
+
+#[test]
+fn deleting_an_ssid_removes_it_from_the_list_and_the_detail() {
+    let mut sim = Simulation::new(fleet());
+    let doomed = sim.fleet.wifi[1].clone();
+    let before = sim.fleet.wifi.len();
+
+    let (_, delta) = sim
+        .apply_command(
+            Command::DeleteWifiBroadcast {
+                id: doomed.id.clone(),
+                force: false,
+            },
+            anchor(),
+        )
+        .expect("an SSID can be deleted in demo mode");
+
+    assert!(delta.config_changed, "the store is synced again");
+    assert_eq!(delta.events.len(), 1);
+    let listed = sim.refresh_snapshot().wifi;
+    assert_eq!(listed.len(), before - 1);
+    assert!(listed.iter().all(|wifi| wifi.id != doomed.id));
+    assert!(matches!(
+        sim.wifi_detail(&doomed.id),
+        Err(CoreError::NotFound { .. })
+    ));
+    let again = sim.apply_command(
+        Command::DeleteWifiBroadcast {
+            id: doomed.id,
+            force: false,
+        },
+        anchor(),
+    );
+    assert!(matches!(again, Err(CoreError::NotFound { .. })));
+}
+
+#[test]
+fn a_passphrase_set_in_the_session_reads_back_and_one_never_set_does_not() {
+    let mut sim = Simulation::new(fleet());
+    let ssid = sim
+        .fleet
+        .wifi
+        .iter()
+        .find(|wifi| wifi.preshared_key_count == 0)
+        .cloned()
+        .expect("an SSID with one passphrase");
+    assert_eq!(sim.wifi_passphrase_matches(&ssid.id, "anything"), None);
+
+    sim.apply_command(
+        Command::UpdateWifiBroadcast {
+            id: ssid.id.clone(),
+            update: crate::command::UpdateWifiBroadcastRequest {
+                passphrase: Some("correct horse".into()),
+                ..Default::default()
+            },
+        },
+        anchor(),
+    )
+    .expect("a passphrase change works in demo mode");
+    assert_eq!(
+        sim.wifi_passphrase_matches(&ssid.id, "correct horse"),
+        Some(true)
+    );
+    assert_eq!(
+        sim.wifi_passphrase_matches(&ssid.id, "correct hrose"),
+        Some(false)
+    );
+}
+
+#[test]
+fn a_passphrase_is_refused_for_the_ssid_with_per_network_keys() {
+    let mut sim = Simulation::new(fleet());
+    let keyed = sim
+        .fleet
+        .wifi
+        .iter()
+        .find(|wifi| wifi.preshared_key_count > 0)
+        .cloned()
+        .expect("one SSID uses per-network keys");
+    assert_eq!(
+        keyed.summary().preshared_key_count,
+        keyed.preshared_key_count,
+        "the list names the keyed networks too"
+    );
+
+    let refused = sim.apply_command(
+        Command::UpdateWifiBroadcast {
+            id: keyed.id.clone(),
+            update: crate::command::UpdateWifiBroadcastRequest {
+                passphrase: Some("one for everyone".into()),
+                ..Default::default()
+            },
+        },
+        anchor(),
+    );
+    assert!(
+        matches!(&refused, Err(CoreError::ValidationFailed { message })
+            if message.contains(&keyed.name)),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -429,6 +578,42 @@ fn queries_match_the_fleet() {
             .is_some_and(|mac| observers.contains(mac))
     }));
     assert_ne!(sim.dpi_applications().len(), 0);
+}
+
+#[test]
+fn a_neighbor_is_listed_once_for_each_access_point_that_hears_it() {
+    let sim = Simulation::new(fleet());
+    let mut heard_by: std::collections::HashMap<&str, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for neighbor in &sim.fleet.neighbors {
+        let observer = neighbor.ap_mac.as_deref().expect("an observer");
+        assert!(
+            heard_by
+                .entry(neighbor.bssid.as_str())
+                .or_default()
+                .insert(observer),
+            "{} is listed twice for one AP",
+            neighbor.bssid
+        );
+    }
+    assert!(
+        heard_by.values().any(|observers| observers.len() > 1),
+        "some neighbor is in range of more than one AP"
+    );
+    assert!(
+        heard_by.len() < sim.fleet.neighbors.len(),
+        "rows outnumber the neighbors themselves"
+    );
+    for (bssid, _) in heard_by.iter().filter(|(_, aps)| aps.len() > 1) {
+        let channels: HashSet<_> = sim
+            .fleet
+            .neighbors
+            .iter()
+            .filter(|neighbor| neighbor.bssid == *bssid)
+            .map(|neighbor| neighbor.channel)
+            .collect();
+        assert_eq!(channels.len(), 1, "{bssid} sits on one channel");
+    }
 }
 
 #[tokio::test]
@@ -620,4 +805,99 @@ fn history_series_do_not_depend_on_launch_time() {
     assert_ne!(early_rows.len(), 0);
     assert_eq!(early_rows, late_rows, "same seed, same chart shapes");
     assert_ne!(early_times, late_times, "timestamps still track the clock");
+}
+
+fn ssid_clients(sim: &Simulation, ssid: &str) -> usize {
+    sim.fleet
+        .clients
+        .iter()
+        .filter_map(|demo| demo.client.wireless.as_ref())
+        .filter(|wireless| wireless.ssid.as_deref() == Some(ssid))
+        .count()
+}
+
+#[test]
+fn ssid_edits_change_the_broadcast_and_a_rename_carries_its_clients() {
+    use crate::command::UpdateWifiBroadcastRequest;
+
+    let mut sim = Simulation::new(fleet());
+    let now = anchor();
+    let ssid = sim.fleet.wifi[0].clone();
+    let joined = ssid_clients(&sim, &ssid.name);
+    assert_ne!(joined, 0, "the fleet has clients on its first SSID");
+    let edit = |sim: &mut Simulation, update: UpdateWifiBroadcastRequest| {
+        let (_, delta) = sim
+            .apply_command(
+                Command::UpdateWifiBroadcast {
+                    id: ssid.id.clone(),
+                    update,
+                },
+                now,
+            )
+            .expect("SSID edits work in demo mode");
+        delta
+    };
+
+    let delta = edit(
+        &mut sim,
+        UpdateWifiBroadcastRequest {
+            enabled: Some(false),
+            hide_ssid: Some(true),
+            ..Default::default()
+        },
+    );
+    assert!(!delta.wifi[0].enabled);
+    assert_eq!(
+        delta.wifi[0].hidden, None,
+        "the list summary has no visibility"
+    );
+    assert_eq!(sim.fleet.wifi[0].hidden, Some(true));
+    assert_eq!(delta.events.len(), 1);
+
+    for name in ["Harbor Crew", "Harbor Staff"] {
+        let delta = edit(
+            &mut sim,
+            UpdateWifiBroadcastRequest {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(delta.wifi[0].name, name);
+        assert_eq!(ssid_clients(&sim, name), joined, "clients follow {name}");
+    }
+    assert_eq!(ssid_clients(&sim, &ssid.name), 0);
+
+    // Clients that associate later still land on the current name.
+    for second in 1..=120 {
+        sim.step(now + Duration::seconds(second));
+    }
+    assert_eq!(ssid_clients(&sim, &ssid.name), 0);
+    assert_ne!(ssid_clients(&sim, "Harbor Staff"), 0);
+}
+
+#[tokio::test]
+async fn an_ssid_edit_reaches_the_store() {
+    let controller = Controller::demo(DemoFleetOptions::default());
+    controller.connect().await.expect("demo connect");
+    let ssid = controller.wifi_broadcasts_snapshot()[0].clone();
+    assert!(ssid.enabled);
+
+    controller
+        .execute(Command::UpdateWifiBroadcast {
+            id: ssid.id.clone(),
+            update: crate::command::UpdateWifiBroadcastRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("SSID edit");
+
+    let stored = controller.wifi_broadcasts_snapshot();
+    let after = stored
+        .iter()
+        .find(|stored| stored.id == ssid.id)
+        .expect("the SSID is still listed");
+    assert!(!after.enabled);
+    controller.disconnect().await;
 }

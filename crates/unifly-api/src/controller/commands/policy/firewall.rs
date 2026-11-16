@@ -55,116 +55,7 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         Command::UpdateFirewallPolicy { id, update } => {
             let (ic, sid) = require_integration(integration, site_id, "UpdateFirewallPolicy")?;
             let uuid = require_uuid(&id)?;
-            let existing = ic.get_firewall_policy(&sid, &uuid).await?;
-
-            let source = if let Some(ref spec) = update.source_filter {
-                let zone_id = existing
-                    .source
-                    .as_ref()
-                    .and_then(|s| s.zone_id)
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                build_endpoint_json(&zone_id, Some(spec))?
-            } else {
-                existing_endpoint_json(&existing.source, "source")?
-            };
-
-            let destination = if let Some(ref spec) = update.destination_filter {
-                let zone_id = existing
-                    .destination
-                    .as_ref()
-                    .and_then(|d| d.zone_id)
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                build_endpoint_json(&zone_id, Some(spec))?
-            } else {
-                existing_endpoint_json(&existing.destination, "destination")?
-            };
-
-            // Always reconstruct the action payload so that legacy `DROP`
-            // values from older unifly versions are normalized to `BLOCK`
-            // even when the caller did not touch the action field. Echoing
-            // back `existing.action` verbatim would re-send `DROP`, which
-            // the integration API rejects.
-            let action_type: String = if let Some(action) = update.action {
-                match action {
-                    FirewallAction::Allow => "ALLOW",
-                    FirewallAction::Block => "BLOCK",
-                    FirewallAction::Reject => "REJECT",
-                }
-                .to_owned()
-            } else {
-                // Refuse to default to ALLOW if the controller's stored
-                // action shape is unrecognizable. A silent fallback would
-                // promote a Block/Reject policy to Allow on any field-only
-                // update, which is a security-relevant mutation.
-                let existing_type = existing
-                    .action
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| CoreError::ValidationFailed {
-                        message: "existing firewall policy has no recognizable action type; specify --action explicitly".into(),
-                    })?;
-                if existing_type == "DROP" {
-                    "BLOCK".to_owned()
-                } else {
-                    existing_type.to_owned()
-                }
-            };
-
-            let action = if action_type == "ALLOW" {
-                let allow_return = update.allow_return_traffic.unwrap_or_else(|| {
-                    existing
-                        .action
-                        .get("allowReturnTraffic")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false)
-                });
-                serde_json::json!({ "type": action_type, "allowReturnTraffic": allow_return })
-            } else {
-                serde_json::json!({ "type": action_type })
-            };
-
-            let ip_protocol_scope = if let Some(ref version) = update.ip_version {
-                serde_json::json!({ "ipVersion": version })
-            } else {
-                existing
-                    .ip_protocol_scope
-                    .unwrap_or_else(|| serde_json::json!({ "ipVersion": "IPV4_AND_IPV6" }))
-            };
-
-            let connection_state_filter = update.connection_states.or_else(|| {
-                existing
-                    .extra
-                    .get("connectionStateFilter")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                            .collect::<Vec<_>>()
-                    })
-            });
-
-            let payload = crate::integration_types::FirewallPolicyCreateUpdate {
-                name: update.name.unwrap_or(existing.name),
-                description: update.description.or(existing.description),
-                enabled: update.enabled.unwrap_or(existing.enabled),
-                action,
-                source,
-                destination,
-                ip_protocol_scope,
-                logging_enabled: update.logging_enabled.unwrap_or(existing.logging_enabled),
-                report_flow_enabled: update.report_flow_enabled.or(existing.report_flow_enabled),
-                ipsec_filter: existing
-                    .extra
-                    .get("ipsecFilter")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-                schedule: existing.extra.get("schedule").cloned(),
-                connection_state_filter,
-            };
-
-            ic.update_firewall_policy(&sid, &uuid, &payload).await?;
+            update_policy(ic, &sid, &uuid, update).await?;
             Ok(CommandResult::Ok)
         }
         Command::DeleteFirewallPolicy { id } => {
@@ -181,12 +72,24 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         } => {
             let (ic, sid) = require_integration(integration, site_id, "PatchFirewallPolicy")?;
             let uuid = require_uuid(&id)?;
-            let body = crate::integration_types::FirewallPolicyPatch {
-                enabled,
-                logging_enabled: logging,
-                report_flow_enabled,
-            };
-            ic.patch_firewall_policy(&sid, &uuid, &body).await?;
+            // The controller's PATCH takes logging and flow reporting
+            // only. Sent there, `enabled` is at best ignored, so a change
+            // to it replaces the policy with itself instead.
+            if enabled.is_some() {
+                let update = crate::command::UpdateFirewallPolicyRequest {
+                    enabled,
+                    logging_enabled: logging,
+                    report_flow_enabled,
+                    ..Default::default()
+                };
+                update_policy(ic, &sid, &uuid, update).await?;
+            } else {
+                let body = crate::integration_types::FirewallPolicyPatch {
+                    logging_enabled: logging,
+                    report_flow_enabled,
+                };
+                ic.patch_firewall_policy(&sid, &uuid, &body).await?;
+            }
             Ok(CommandResult::Ok)
         }
         Command::ReorderFirewallPolicies {
@@ -245,6 +148,135 @@ pub(super) async fn route(ctx: &CommandContext, cmd: Command) -> Result<CommandR
         }
         _ => unreachable!("firewall::route received non-firewall command"),
     }
+}
+
+/// Replace a firewall policy with itself plus `update`: the PUT takes the
+/// whole policy, so every field the request does not name goes back as the
+/// controller returned it.
+async fn update_policy(
+    ic: &crate::integration::IntegrationClient,
+    sid: &uuid::Uuid,
+    uuid: &uuid::Uuid,
+    update: crate::command::UpdateFirewallPolicyRequest,
+) -> Result<(), CoreError> {
+    let existing = ic.get_firewall_policy(sid, uuid).await?;
+
+    let source = if let Some(ref spec) = update.source_filter {
+        let zone_id = existing
+            .source
+            .as_ref()
+            .and_then(|s| s.zone_id)
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        build_endpoint_json(&zone_id, Some(spec))?
+    } else {
+        existing_endpoint_json(&existing.source, "source")?
+    };
+
+    let destination = if let Some(ref spec) = update.destination_filter {
+        let zone_id = existing
+            .destination
+            .as_ref()
+            .and_then(|d| d.zone_id)
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        build_endpoint_json(&zone_id, Some(spec))?
+    } else {
+        existing_endpoint_json(&existing.destination, "destination")?
+    };
+
+    // Always reconstruct the action payload so that legacy `DROP`
+    // values from older unifly versions are normalized to `BLOCK`
+    // even when the caller did not touch the action field. Echoing
+    // back `existing.action` verbatim would re-send `DROP`, which
+    // the integration API rejects.
+    let action_type: String = if let Some(action) = update.action {
+        match action {
+            FirewallAction::Allow => "ALLOW",
+            FirewallAction::Block => "BLOCK",
+            FirewallAction::Reject => "REJECT",
+        }
+        .to_owned()
+    } else {
+        // Refuse to default to ALLOW if the controller's stored
+        // action shape is unrecognizable. A silent fallback would
+        // promote a Block/Reject policy to Allow on any field-only
+        // update, which is a security-relevant mutation.
+        let existing_type = existing
+            .action
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ValidationFailed {
+                message: "existing firewall policy has no recognizable action type; specify --action explicitly".into(),
+            })?;
+        if existing_type == "DROP" {
+            "BLOCK".to_owned()
+        } else {
+            existing_type.to_owned()
+        }
+    };
+
+    let action = if action_type == "ALLOW" {
+        let allow_return = update.allow_return_traffic.unwrap_or_else(|| {
+            existing
+                .action
+                .get("allowReturnTraffic")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        });
+        serde_json::json!({ "type": action_type, "allowReturnTraffic": allow_return })
+    } else {
+        serde_json::json!({ "type": action_type })
+    };
+
+    // A new IP version is set on the scope as fetched. The scope also
+    // carries the policy's protocol filter, and replacing it whole would
+    // widen a single-protocol policy to every protocol.
+    let mut ip_protocol_scope = existing
+        .ip_protocol_scope
+        .unwrap_or_else(|| serde_json::json!({ "ipVersion": "IPV4_AND_IPV6" }));
+    if let Some(ref version) = update.ip_version {
+        match ip_protocol_scope.as_object_mut() {
+            Some(scope) => {
+                scope.insert("ipVersion".into(), serde_json::json!(version));
+            }
+            None => ip_protocol_scope = serde_json::json!({ "ipVersion": version }),
+        }
+    }
+
+    let connection_state_filter = update.connection_states.or_else(|| {
+        existing
+            .extra
+            .get("connectionStateFilter")
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>()
+            })
+    });
+
+    let payload = crate::integration_types::FirewallPolicyCreateUpdate {
+        name: update.name.unwrap_or(existing.name),
+        description: update.description.or(existing.description),
+        enabled: update.enabled.unwrap_or(existing.enabled),
+        action,
+        source,
+        destination,
+        ip_protocol_scope,
+        logging_enabled: update.logging_enabled.unwrap_or(existing.logging_enabled),
+        report_flow_enabled: update.report_flow_enabled.or(existing.report_flow_enabled),
+        ipsec_filter: existing
+            .extra
+            .get("ipsecFilter")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        schedule: existing.extra.get("schedule").cloned(),
+        connection_state_filter,
+    };
+
+    ic.update_firewall_policy(sid, uuid, &payload).await?;
+    Ok(())
 }
 
 /// Reads remain forward-compatible, but an unknown tagged filter has already

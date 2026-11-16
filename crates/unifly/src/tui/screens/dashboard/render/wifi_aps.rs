@@ -1,156 +1,140 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use unifly_api::DeviceType;
+use unifly_api::{Device, DeviceType};
 
+use crate::tui::action::Action;
+use crate::tui::screens::events::render::clip;
 use crate::tui::theme;
+use crate::tui::widgets::click::{self, Click};
 
 use super::super::DashboardScreen;
+use super::super::focus::Panel;
+use super::muted_line;
+
+/// Widest an access point's name is drawn.
+const NAME_MAX: usize = 16;
+
+/// How a column of channels is written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChannelForm {
+    /// Band and channel: `2G:1 5G:36`.
+    Labelled,
+    /// Channels alone, low band first: `1/36`.
+    Bare,
+}
+
+/// An access point's channels in `form`.
+fn channels(ap: &Device, form: ChannelForm) -> String {
+    let radios = ap.radios.iter().map(|radio| {
+        let band = if radio.frequency_ghz >= 5.9 {
+            "6G"
+        } else if radio.frequency_ghz >= 4.9 {
+            "5G"
+        } else {
+            "2G"
+        };
+        let channel = radio
+            .channel
+            .map_or_else(|| "─".into(), |channel| channel.to_string());
+        (band, channel)
+    });
+    match form {
+        ChannelForm::Labelled => radios
+            .map(|(band, channel)| format!("{band}:{channel}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        ChannelForm::Bare => radios
+            .map(|(_, channel)| channel)
+            .collect::<Vec<_>>()
+            .join("/"),
+    }
+}
+
+/// The fullest form in which every one of `aps` fits `width` whole, so
+/// the column reads one way and no value is cut partway. `None` when not
+/// even the bare channels fit.
+fn channel_form(aps: &[&std::sync::Arc<Device>], width: usize) -> Option<ChannelForm> {
+    [ChannelForm::Labelled, ChannelForm::Bare]
+        .into_iter()
+        .find(|form| aps.iter().all(|ap| channels(ap, *form).len() <= width))
+}
 
 impl DashboardScreen {
-    /// WiFi / APs panel - tabular layout with header, aligned columns.
-    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
-    pub(super) fn render_wifi_aps(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-        let block = Block::default()
-            .title(Span::styled(" WiFi / APs ", theme::title_style()))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme::border_default());
+    /// Mean WiFi experience of the clients on `ap`, when any report one.
+    fn experience(&self, ap: &Device) -> Option<u32> {
+        let scores: Vec<u32> = self
+            .clients
+            .iter()
+            .filter(|c| {
+                c.uplink_device_mac.as_ref() == Some(&ap.mac)
+                    || c.wireless
+                        .as_ref()
+                        .and_then(|wl| wl.bssid.as_ref())
+                        .is_some_and(|bssid| *bssid == ap.mac)
+            })
+            .filter_map(|c| c.wireless.as_ref()?.satisfaction)
+            .map(u32::from)
+            .collect();
+        let count = u32::try_from(scores.len())
+            .ok()
+            .filter(|count| *count > 0)?;
+        Some(scores.iter().sum::<u32>() / count)
+    }
 
+    /// WiFi / APs panel - tabular layout with header, aligned columns.
+    pub(super) fn render_wifi_aps(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let block = self.panel_block(Panel::Wifi, "WiFi / APs");
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let aps: Vec<_> = self
+        let mut aps: Vec<_> = self
             .devices
             .iter()
             .filter(|d| d.device_type == DeviceType::AccessPoint)
             .collect();
-
         if aps.is_empty() {
-            frame.render_widget(
-                Paragraph::new("  No APs").style(Style::default().fg(theme::border_unfocused())),
-                inner,
-            );
+            let line = muted_line(self.empty_text("No access points"));
+            frame.render_widget(Paragraph::new(line), inner);
             return;
         }
+        aps.sort_by_key(|ap| std::cmp::Reverse(ap.client_count.unwrap_or(0)));
 
         let max_rows = usize::from(inner.height);
         let w = usize::from(inner.width);
-        let mut lines = Vec::new();
+        let (cli_col, exp_col) = (4_usize, 5_usize);
+        // The name column is as wide as the longest name, so the channel
+        // column gets every cell the names do not need.
+        let longest = aps
+            .iter()
+            .map(|ap| Span::raw(ap.name.as_deref().unwrap_or("AP")).width())
+            .max()
+            .unwrap_or(2);
+        let remaining = w.saturating_sub(1 + cli_col + exp_col);
+        let name_width = longest.clamp(2, NAME_MAX).min(remaining.max(2));
+        let chan_width = remaining.saturating_sub(name_width + 1);
+        let shown = &aps[..aps.len().min(max_rows.saturating_sub(1))];
+        let form = (aps.iter().any(|ap| !ap.radios.is_empty()))
+            .then(|| channel_form(shown, chan_width))
+            .flatten();
 
-        let has_radios = aps.iter().any(|ap| !ap.radios.is_empty());
-        let cli_col = 4_usize;
-        let exp_col = 5_usize;
-        let fixed_cols = 1 + cli_col + exp_col;
-        let remaining = w.saturating_sub(fixed_cols);
-
-        let (name_width, chan_width) = if has_radios {
-            let nw = remaining.saturating_sub(1).clamp(6, 16);
-            let cw = remaining.saturating_sub(nw + 1);
-            (nw, cw)
-        } else {
-            (remaining.clamp(6, 24), 0)
-        };
-
+        let header = Style::default()
+            .fg(theme::border_unfocused())
+            .add_modifier(Modifier::BOLD);
         let mut hdr = vec![
-            Span::styled(
-                format!(" {:<name_width$}", "AP"),
-                Style::default()
-                    .fg(theme::border_unfocused())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:>cli_col$}", "Cli"),
-                Style::default()
-                    .fg(theme::border_unfocused())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:>exp_col$}", "Exp"),
-                Style::default()
-                    .fg(theme::border_unfocused())
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(format!(" {:<name_width$}", "AP"), header),
+            Span::styled(format!("{:>cli_col$}", "Cli"), header),
+            Span::styled(format!("{:>exp_col$}", "Exp"), header),
         ];
-        if chan_width >= 4 {
-            hdr.push(Span::styled(
-                format!(" {:<chan_width$}", "Chan"),
-                Style::default()
-                    .fg(theme::border_unfocused())
-                    .add_modifier(Modifier::BOLD),
-            ));
+        if form.is_some() {
+            hdr.push(Span::styled(" Chan", header));
         }
-        lines.push(Line::from(hdr));
+        let mut lines = vec![Line::from(hdr)];
 
-        let mut aps_sorted: Vec<_> = aps.iter().collect();
-        aps_sorted.sort_by(|a, b| {
-            b.client_count
-                .unwrap_or(0)
-                .cmp(&a.client_count.unwrap_or(0))
-        });
-
-        for ap in &aps_sorted {
-            if lines.len() >= max_rows {
-                break;
-            }
-
-            let ap_name: String = ap
-                .name
-                .as_deref()
-                .unwrap_or("AP")
-                .chars()
-                .take(name_width)
-                .collect();
+        for ap in shown {
+            let ap_name = clip(ap.name.as_deref().unwrap_or("AP"), name_width);
             let cli = ap.client_count.unwrap_or(0);
-
-            let channels: Vec<String> = ap
-                .radios
-                .iter()
-                .map(|r| {
-                    let ch = r.channel.map_or_else(|| "─".into(), |c| c.to_string());
-                    if r.frequency_ghz >= 5.9 {
-                        format!("6G:{ch}")
-                    } else if r.frequency_ghz >= 4.9 {
-                        format!("5G:{ch}")
-                    } else {
-                        format!("2G:{ch}")
-                    }
-                })
-                .collect();
-            let ch_str: String = channels.join(" ").chars().take(chan_width).collect();
-
-            let satisfaction: Vec<u8> = self
-                .clients
-                .iter()
-                .filter(|c| {
-                    c.uplink_device_mac.as_ref() == Some(&ap.mac)
-                        || c.wireless
-                            .as_ref()
-                            .and_then(|wl| wl.bssid.as_ref())
-                            .is_some_and(|bssid| *bssid == ap.mac)
-                })
-                .filter_map(|c| c.wireless.as_ref()?.satisfaction)
-                .collect();
-            let avg_exp = if satisfaction.is_empty() {
-                None
-            } else {
-                Some(
-                    satisfaction.iter().map(|s| u32::from(*s)).sum::<u32>()
-                        / u32::try_from(satisfaction.len()).unwrap_or(1),
-                )
-            };
-
-            let exp_color = |e: u32| -> ratatui::style::Color {
-                if e >= 80 {
-                    theme::success()
-                } else if e >= 50 {
-                    theme::warning()
-                } else {
-                    theme::error()
-                }
-            };
-
             let mut spans = vec![
                 Span::styled(
                     format!(" {ap_name:<name_width$}"),
@@ -163,27 +147,37 @@ impl DashboardScreen {
                     Style::default().fg(theme::warning()),
                 ),
             ];
-
-            if let Some(exp) = avg_exp {
-                spans.push(Span::styled(
-                    format!("{exp:>4}%"),
-                    Style::default().fg(exp_color(exp)),
-                ));
-            } else {
-                spans.push(Span::styled(
+            match self.experience(ap) {
+                Some(exp) => {
+                    let color = if exp >= 80 {
+                        theme::success()
+                    } else if exp >= 50 {
+                        theme::warning()
+                    } else {
+                        theme::error()
+                    };
+                    spans.push(Span::styled(
+                        format!("{exp:>4}%"),
+                        Style::default().fg(color),
+                    ));
+                }
+                None => spans.push(Span::styled(
                     format!("{:>exp_col$}", "─"),
                     Style::default().fg(theme::border_unfocused()),
-                ));
+                )),
             }
-
-            if chan_width >= 4 {
+            if let Some(form) = form {
                 spans.push(Span::styled(
-                    format!(" {ch_str}"),
+                    format!(" {}", channels(ap, form)),
                     Style::default().fg(theme::border_unfocused()),
                 ));
             }
 
             lines.push(Line::from(spans));
+            self.hits.borrow_mut().push(
+                click::paragraph_row(inner, lines.len() - 1),
+                Click::Action(Action::ShowDevice(ap.id.clone())),
+            );
         }
 
         frame.render_widget(Paragraph::new(lines), inner);

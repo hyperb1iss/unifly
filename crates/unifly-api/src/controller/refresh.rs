@@ -1,23 +1,26 @@
-use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::core_error::CoreError;
 use crate::model::Event;
-use crate::store::{DataStore, RefreshSnapshot, event_storage_key};
+use crate::store::RefreshSnapshot;
 
 use super::Controller;
 
 mod carry;
+mod client_state;
+mod events;
 mod integration;
 mod merge;
 mod optional;
+mod pending;
+mod periodic;
 mod poll;
 mod session;
 
+use events::unseen_events;
+pub(super) use periodic::refresh_task;
 pub(super) use poll::stats_poll_task;
 
 #[derive(Clone, Copy)]
@@ -32,8 +35,22 @@ impl Controller {
     /// Pulls devices, clients, and events from the controller APIs, converts
     /// them to domain types, and applies them to the store. Events are
     /// broadcast through the event channel after snapshot application.
+    ///
+    /// The demo fleet applies every change to the store as it happens and
+    /// has nothing to fetch from, so its store is always current.
     pub async fn full_refresh(&self) -> Result<(), CoreError> {
-        self.refresh_with_scope(RefreshScope::All).await
+        #[cfg(feature = "demo")]
+        if self.demo_runtime().is_some() {
+            return Ok(());
+        }
+        // One refresh at a time: a snapshot fetched before a write must
+        // not be applied after the one fetched to show that write.
+        let _one_at_a_time = self.inner.refresh_gate.lock().await;
+        let result = self.refresh_with_scope(RefreshScope::All).await;
+        if result.is_ok() {
+            self.note_refresh_succeeded();
+        }
+        result
     }
 
     pub(super) async fn refresh_with_scope(&self, scope: RefreshScope) -> Result<(), CoreError> {
@@ -160,47 +177,4 @@ impl Controller {
             let _ = self.inner.event_tx.send(Arc::new(event));
         }
     }
-}
-
-/// Periodically refresh data from the controller.
-pub(super) async fn refresh_task(
-    controller: Controller,
-    interval_secs: u64,
-    cancel: CancellationToken,
-) {
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval.tick().await;
-
-    loop {
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => break,
-            _ = interval.tick() => {
-                tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => break,
-                    result = controller.full_refresh() => {
-                        if let Err(error) = result {
-                            warn!(error = %error, "periodic refresh failed");
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn unseen_events(store: &DataStore, events: &[Event]) -> Vec<Event> {
-    let mut seen: HashSet<String> = store
-        .events_snapshot()
-        .iter()
-        .map(|event| event_storage_key(event))
-        .collect();
-
-    events
-        .iter()
-        .filter(|event| seen.insert(event_storage_key(event)))
-        .cloned()
-        .collect()
 }

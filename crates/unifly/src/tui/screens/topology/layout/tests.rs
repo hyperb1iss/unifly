@@ -503,3 +503,97 @@ fn shared_trunks_keep_one_style_per_parent() {
     let ap_a = trunks[&index(&layout, "ap-a")];
     assert_eq!(ap_a.1, MESH_DASH);
 }
+
+#[test]
+fn a_site_with_no_gateway_wraps_its_roots_instead_of_running_off_the_canvas() {
+    // Access points behind a third-party router: no uplink, no gateway.
+    let devices: Vec<Arc<Device>> = (0..9)
+        .map(|index| {
+            device(
+                &format!("ap-floor-{index}"),
+                &format!("00:00:00:00:02:{index:02}"),
+                "AccessPoint",
+                None,
+                None,
+            )
+        })
+        .collect();
+
+    let layout = layout(&devices, 80.0);
+
+    assert!(layout.edges.is_empty(), "nothing links two roots");
+    let [x_lo, x_hi, _, _] = layout.bounds;
+    assert!(x_hi - x_lo <= 80.0, "roots span {} columns", x_hi - x_lo);
+    let rows: std::collections::BTreeSet<i64> = layout
+        .nodes
+        .iter()
+        .map(|node| {
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let row = node.y as i64;
+            row
+        })
+        .collect();
+    assert!(rows.len() > 1, "nine roots take more than one row");
+    for (index, left) in layout.nodes.iter().enumerate() {
+        for right in &layout.nodes[index + 1..] {
+            let apart = left.x + left.width <= right.x
+                || right.x + right.width <= left.x
+                || left.bottom() < right.y
+                || right.bottom() < left.y;
+            assert!(apart, "{} overlaps {}", left.label, right.label);
+        }
+    }
+}
+
+#[test]
+fn a_fitted_layout_shows_every_device_and_keeps_labels_whole_near_full_size() {
+    let mut devices = vec![device("gw", "00:00:00:00:00:01", "Gateway", None, None)];
+    for index in 0..60 {
+        devices.push(device(
+            &format!("ap-{index:02}"),
+            &format!("00:00:00:00:03:{index:02}"),
+            "AccessPoint",
+            Some("00:00:00:00:00:01"),
+            None,
+        ));
+    }
+
+    let plain = {
+        let natural = super::layout(&devices, 100.0);
+        natural.nodes[index(&natural, "ap-00")].width
+    };
+
+    // Sixty access points fit no zoom that keeps a name whole. The fit
+    // stops at the smallest one that does: the tree still wraps to the
+    // canvas width and runs off the bottom, with every box wide enough.
+    let (tree, zoom, _) = super::fitted(&devices, 100.0, 30.0);
+    assert!((zoom - 0.8).abs() < f64::EPSILON, "{zoom}");
+    let [x_lo, x_hi, y_lo, y_hi] = tree.bounds;
+    assert!(x_hi - x_lo + 2.0 * super::MARGIN <= 99.0 / zoom);
+    assert!(y_hi - y_lo + 2.0 * super::MARGIN > 29.0 / zoom);
+    for node in &tree.nodes {
+        assert!(
+            node.width * zoom >= plain.min(super::place::box_width(&node.label, &node.ip)),
+            "{} is {} wide at {zoom}",
+            node.label,
+            node.width
+        );
+    }
+
+    // A slightly zoomed-out fit widens its boxes to keep labels whole.
+    let (tree, zoom, _) = super::fitted(&devices[..25], 100.0, 30.0);
+    assert!(
+        (0.8..1.0).contains(&zoom),
+        "the fixture should fit near 90%: {zoom}"
+    );
+    let wide = tree.nodes[index(&tree, "ap-00")].width;
+    assert!(
+        wide * zoom >= plain,
+        "{wide} at {zoom} for a label needing {plain}"
+    );
+
+    // A fleet that fits is laid out at full size.
+    let (small, zoom, _) = super::fitted(&devices[..4], 100.0, 30.0);
+    assert!((zoom - 1.0).abs() < f64::EPSILON);
+    assert!((small.nodes[1].width - plain).abs() < f64::EPSILON);
+}

@@ -63,24 +63,6 @@ pub(super) fn parse_ipv6_from_value(value: &serde_json::Value) -> Option<String>
     }
 }
 
-pub(super) fn truncate_text(value: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    if value.chars().count() <= max_chars {
-        return value.to_owned();
-    }
-    if max_chars == 1 {
-        return "…".into();
-    }
-    let mut out = String::new();
-    for ch in value.chars().take(max_chars.saturating_sub(1)) {
-        out.push(ch);
-    }
-    out.push('…');
-    out
-}
-
 pub(super) fn fmt_rate_compact(bytes_per_sec: u64) -> String {
     let bits = bytes_per_sec.saturating_mul(8);
     let with_decimal = |value: u64, unit: u64, suffix: &str| -> String {
@@ -109,11 +91,6 @@ mod tests {
             parse_ipv6_from_text("wan=fe80::1, backup=2001:db8::2"),
             Some("fe80::1".into())
         );
-    }
-
-    #[test]
-    fn truncates_on_character_boundaries() {
-        assert_eq!(truncate_text("gw-αβγ", 4), "gw-…");
     }
 
     #[test]

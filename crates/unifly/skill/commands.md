@@ -161,12 +161,22 @@ commands require Integration. WiFi neighbors/channels are Session exceptions.
 Network VLAN values are 1 through 4009. Network DNS flags are repeatable.
 Use network refs before deleting to inspect dependencies. Network and WiFi
 delete expose `--force`; inspect its help before bypassing reference checks.
+A network delete sends `--force` to the controller, which refuses to delete
+a network still in use without it.
 Gateway- and switch-managed network creation require an IPv4 host/prefix
 via `--ipv4-host` (or `subnet` in a file), even with DHCP disabled.
 Switch-managed creation also requires the owning Integration switch UUID
 via `--device-id` (or `device_id` in a file).
 Gateway and switch DHCP creation require both valid IPv4 range bounds;
 unmanaged VLANs reject DHCP and IPv4 settings.
+Settings a network's kind has no field for are refused before anything is
+sent: isolation on an unmanaged network, and internet access, mDNS
+forwarding, and IPv6 on anything but a gateway-managed one.
+`ipv6_enabled: false` removes the network's whole IPv6 configuration;
+`true` is refused unless the network already has one, because unifly cannot
+supply the prefix source and address assignment it needs.
+`dhcp.dns_servers` takes one to four IPv4 addresses; an empty list removes
+the override so the gateway's own servers are used.
 DHCP updates accept `dhcp.range_start` and `dhcp.range_stop` in file payloads.
 An omitted bound preserves the active server's value. Turning DHCP off clears
 the server configuration, so enabling it again requires both bounds together
@@ -180,9 +190,11 @@ RADIUS settings and other fields absent from inline flags. Network 11 controls
 and WAN inventory are available through their Integration reference commands.
 Use `--network native` for the native network or a UUID for a specific network.
 
-Firewall policy patch changes enabled, logging, or flow reporting without the
-full update path. The `--report-flow true|false` flag also works for create
-and update. New allow policies and block-to-allow updates do not create a mirrored return policy unless
+Firewall policy patch changes logging or flow reporting without the full
+update path. The controller's PATCH has no `enabled` field, so
+`patch --enabled true|false` fetches the policy and writes it back whole with
+only that changed, which system-defined policies refuse. The
+`--report-flow true|false` flag also works for create and update. New allow policies and block-to-allow updates do not create a mirrored return policy unless
 `--allow-return-traffic true` is explicit.
 Reorder reads two lists for a source/destination zone pair:
 `beforeSystemDefined` and `afterSystemDefined`. A set replaces only the

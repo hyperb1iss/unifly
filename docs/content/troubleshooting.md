@@ -261,7 +261,7 @@ UNIFI_TOTP=$(op read "op://Vault/UniFi/one-time password?attribute=otp") unifly 
 
 - **`events watch --types`** takes category names (`Device`, `Client`, `Network`), not `EVT_*` glob patterns
 - **`nat policies update`** uses `--name` or `--description` (mutually exclusive) for the display label
-- **`firewall policies patch`** is the fast path for toggling `enabled`/`logging`. Use it instead of `update` when only those fields change
+- **`firewall policies patch`** is the partial-update path for `logging` and flow reporting, the only fields the controller's PATCH takes. `patch --enabled` works too, but as a full update: unifly fetches the policy and writes it back whole
 - **`networks refs <id>`** checks what depends on a network before you delete it. No equivalent exists for other entities yet
 - **`admin revoke`** takes a positional admin ID, not a `--email` flag
 - **Create commands print the created entity on stdout** in the requested format, so `create -o json | jq -r .id` captures the new ID directly (the human confirmation goes to stderr). `sites create` is the exception: the controller returns no record

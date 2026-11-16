@@ -166,8 +166,12 @@ impl SessionClient {
 
     /// Set a fixed IP (DHCP reservation) for a client.
     ///
+    /// `network_id` is the `rest/networkconf` `_id` of the network the
+    /// address belongs to, never an Integration UUID.
+    ///
     /// Looks up the client in `rest/user` by MAC. If already known, PUTs an
-    /// update; otherwise POSTs a new user entry.
+    /// update; otherwise POSTs a new user entry. A client that already
+    /// holds this reservation is left alone.
     pub async fn set_client_fixed_ip(
         &self,
         mac: &str,
@@ -183,7 +187,13 @@ impl SessionClient {
             .find(|u| u.mac.to_lowercase() == normalized_mac);
 
         if let Some(user) = existing {
-            // Update existing user entry
+            if user.use_fixedip == Some(true)
+                && user.fixed_ip.as_deref() == Some(ip)
+                && user.network_id.as_deref() == Some(network_id)
+            {
+                debug!(mac, "client already holds this reservation");
+                return Ok(());
+            }
             let url = self.site_url(&format!("rest/user/{}", user.id));
             let _: Vec<serde_json::Value> = self
                 .put(
@@ -196,7 +206,6 @@ impl SessionClient {
                 )
                 .await?;
         } else {
-            // Create new user entry
             let url = self.site_url("rest/user");
             let _: Vec<serde_json::Value> = self
                 .post(

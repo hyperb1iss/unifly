@@ -6,6 +6,14 @@ use ratatui::{Frame, layout::Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tui::action::Action;
+use crate::tui::widgets::click::Hint;
+
+/// The keys every list in the app takes, for a screen's [`Component::help`].
+pub const LIST_HELP: &[(&str, &str)] = &[
+    ("j/k \u{2191}/\u{2193}", "Move up / down"),
+    ("g/G", "Top / bottom"),
+    ("PgUp/PgDn", "Page up / down"),
+];
 
 /// Every UI element implements Component.
 ///
@@ -27,6 +35,11 @@ pub trait Component: Send {
         Ok(None)
     }
 
+    /// Take pasted text. Only called while the component captures input.
+    fn handle_paste(&mut self, _text: &str) -> Option<Action> {
+        None
+    }
+
     /// Process a dispatched action. May return a follow-up action.
     fn update(&mut self, _action: &Action) -> Result<Option<Action>> {
         Ok(None)
@@ -46,6 +59,21 @@ pub trait Component: Send {
     /// filters nothing here. Search only opens where it filters.
     fn search_query(&self) -> Option<&str> {
         None
+    }
+
+    /// Every key this component takes in its current mode, for the help
+    /// overlay: `(keys, what they do)`. A list screen starts from
+    /// [`LIST_HELP`].
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
+
+    /// What the selection or the screen can do right now, for the status
+    /// bar: the actions, not the navigation every list shares, which lives
+    /// in [`Component::help`]. Each hint carries a rank, and the highest
+    /// ranks are dropped first on a narrow terminal.
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        Vec::new()
     }
 
     /// Whether this component currently holds input focus.

@@ -1,37 +1,29 @@
-use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::layout::Rect;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use unifly_api::Client;
+use unifly_api::model::WirelessInfo;
 
+use crate::tui::screens::clients::ClientsScreen;
+use crate::tui::screens::clients::view::{client_name, type_label};
+use crate::tui::screens::devices::grid::{self, Field};
 use crate::tui::theme;
 use crate::tui::widgets::bytes_fmt;
-use crate::tui::widgets::click::{self, Click, Hint, HitMap};
 
-#[allow(clippy::too_many_lines, clippy::as_conversions)]
 pub(super) fn render_detail(
+    screen: &ClientsScreen,
     frame: &mut Frame,
     area: Rect,
     client: &Client,
-    hits: &mut HitMap<Click>,
 ) {
-    let name = client
-        .name
-        .as_deref()
-        .or(client.hostname.as_deref())
-        .unwrap_or("Unknown");
-    let ip = client
-        .ip
-        .map_or_else(|| "─".into(), |client_ip| client_ip.to_string());
-    let mac = client.mac.to_string();
-    let type_str = format!("{:?}", client.client_type);
-
-    let title = format!(" {name}  ·  {type_str}  ·  {ip}  ·  {mac} ");
+    let kind = if client.is_guest {
+        format!("{} guest", type_label(client.client_type))
+    } else {
+        type_label(client.client_type).to_owned()
+    };
     let block = Block::default()
-        .title(title)
+        .title(format!(" {}  ·  {kind} ", client_name(client)))
         .title_style(theme::title_style())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -40,118 +32,153 @@ pub(super) fn render_detail(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let network = client
-        .network_id
-        .as_ref()
-        .map_or_else(|| "─".into(), std::string::ToString::to_string);
-    let signal = client
-        .wireless
-        .as_ref()
-        .and_then(|wireless| wireless.signal_dbm)
-        .map_or_else(|| "─".into(), |dbm| format!("{dbm} dBm"));
-    let channel = client
-        .wireless
-        .as_ref()
-        .and_then(|wireless| wireless.channel)
-        .map_or_else(|| "─".into(), |channel| channel.to_string());
-    let ssid = client
-        .wireless
-        .as_ref()
-        .and_then(|wireless| wireless.ssid.as_deref())
-        .unwrap_or("─");
-    let tx = client
-        .tx_bytes
-        .map_or_else(|| "─".into(), bytes_fmt::fmt_bytes_short);
-    let rx = client
-        .rx_bytes
-        .map_or_else(|| "─".into(), bytes_fmt::fmt_bytes_short);
-    let duration = client.connected_at.map_or_else(
-        || "─".into(),
-        |ts| {
-            let dur = chrono::Utc::now().signed_duration_since(ts);
-            #[allow(clippy::cast_sign_loss)]
-            let secs = dur.num_seconds().max(0) as u64;
-            bytes_fmt::fmt_uptime(secs)
-        },
+    let fields = fields(screen, client);
+    frame.render_widget(
+        Paragraph::new(grid::lines(&fields, inner.width, inner.height)),
+        inner,
     );
-    let guest = if client.is_guest { "yes" } else { "no" };
-    let blocked = if client.blocked { "yes" } else { "no" };
+}
 
-    let detail_layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+/// Rows the detail wants in a screen `width` columns wide with `room`
+/// rows to give it: one per line of the grid it draws in that room, and
+/// its border.
+pub(super) fn detail_height(screen: &ClientsScreen, client: &Client, width: u16, room: u16) -> u16 {
+    let fields = fields(screen, client).len();
+    grid::rows_within(fields, width.saturating_sub(2), room.saturating_sub(2)).saturating_add(2)
+}
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  Network        ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(network, Style::default().fg(theme::accent_secondary())),
-            Span::styled(
-                "       SSID         ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(ssid, Style::default().fg(theme::accent_secondary())),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Signal         ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(&signal, Style::default().fg(theme::accent_secondary())),
-            Span::styled(
-                "       Channel      ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(&channel, Style::default().fg(theme::accent_secondary())),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  TX             ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(&tx, Style::default().fg(theme::accent_tertiary())),
-            Span::styled(
-                "       RX           ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(&rx, Style::default().fg(theme::accent_tertiary())),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Duration       ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(&duration, Style::default().fg(theme::accent_secondary())),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Guest          ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(guest, Style::default().fg(theme::text_secondary())),
-            Span::styled(
-                "       Blocked      ",
-                Style::default().fg(theme::text_secondary()),
-            ),
-            Span::styled(
-                blocked,
-                Style::default().fg(if client.blocked {
-                    theme::error()
-                } else {
-                    theme::text_secondary()
-                }),
-            ),
-        ]),
+/// Everything the detail says about `client`, most useful first.
+fn fields(screen: &ClientsScreen, client: &Client) -> Vec<Field> {
+    let mut fields = vec![
+        Field::optional("IP", client.ip.map(|ip| ip.to_string())).color(theme::accent_tertiary()),
+        Field::new("MAC", client.mac.to_string()).color(theme::accent_tertiary()),
+        Field::optional("Network", network(screen, client)),
+        Field::optional("Uplink", screen.links.uplink_label(client)),
+        Field::optional("Connected", client.connected_at.map(connected_for)),
+        Field::optional("Since", client.connected_at.map(grid::local_time)),
+        fixed_ip(client),
     ];
-    frame.render_widget(Paragraph::new(lines), detail_layout[0]);
+    if let Some(hostname) = client.hostname.as_deref()
+        && client.name.as_deref().is_some_and(|name| name != hostname)
+    {
+        fields.push(Field::new("Hostname", hostname));
+    }
+    if let Some(wireless) = &client.wireless {
+        fields.extend(wireless_fields(wireless));
+    }
+    let pair = |tx: Option<String>, rx: Option<String>| match (tx, rx) {
+        (None, None) => None,
+        (tx, rx) => {
+            let dash = || grid::DASH.to_owned();
+            Some(format!(
+                "{} / {}",
+                tx.unwrap_or_else(dash),
+                rx.unwrap_or_else(dash)
+            ))
+        }
+    };
+    fields.push(Field::optional(
+        "Data TX/RX",
+        pair(
+            client.tx_bytes.map(bytes_fmt::fmt_bytes_short),
+            client.rx_bytes.map(bytes_fmt::fmt_bytes_short),
+        ),
+    ));
+    if let Some(bandwidth) = &client.bandwidth {
+        fields.push(Field::optional(
+            "Rate TX/RX",
+            pair(
+                Some(bytes_fmt::fmt_rate(bandwidth.tx_bytes_per_sec)),
+                Some(bytes_fmt::fmt_rate(bandwidth.rx_bytes_per_sec)),
+            ),
+        ));
+    }
+    if let Some(system) = system(client) {
+        fields.push(Field::new("System", system));
+    }
+    if client.is_guest {
+        fields.push(guest(client));
+    }
+    fields.push(if client.blocked {
+        Field::new("Blocked", "yes, cannot connect").color(theme::error())
+    } else {
+        Field::new("Blocked", "no").color(theme::text_secondary())
+    });
+    fields
+}
 
-    let bar = click::key_hints(&[
-        Hint::button("b", "block", click::char_key('b')),
-        Hint::button("B", "unblock", click::char_key('B')),
-        Hint::button("x", "kick", click::char_key('x')),
-        Hint::button("Esc", "back", KeyCode::Esc),
-    ]);
-    let line = bar.draw(detail_layout[1], hits);
-    frame.render_widget(Paragraph::new(line), detail_layout[1]);
+/// The client's network by name, with its VLAN when both are known.
+fn network(screen: &ClientsScreen, client: &Client) -> Option<String> {
+    let name = screen.links.network_label(client)?;
+    Some(match client.vlan {
+        Some(vlan) if !name.starts_with("VLAN ") => format!("{name} (VLAN {vlan})"),
+        _ => name,
+    })
+}
+
+/// How long the client has been connected.
+fn connected_for(since: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = chrono::Utc::now()
+        .signed_duration_since(since)
+        .num_seconds()
+        .max(0);
+    bytes_fmt::fmt_uptime(u64::try_from(secs).unwrap_or_default())
+}
+
+fn fixed_ip(client: &Client) -> Field {
+    match (client.use_fixedip, client.fixed_ip) {
+        (true, Some(ip)) => Field::new("Fixed IP", ip.to_string()),
+        (true, None) => Field::new("Fixed IP", "yes"),
+        (false, _) => Field::new("Fixed IP", "no, from DHCP").color(theme::text_secondary()),
+    }
+}
+
+fn wireless_fields(wireless: &WirelessInfo) -> Vec<Field> {
+    let channel = wireless
+        .channel
+        .map(|channel| match wireless.frequency_ghz {
+            Some(ghz) => format!("{channel} ({ghz} GHz)"),
+            None => channel.to_string(),
+        });
+    let mbps = |kbps: Option<u64>| {
+        kbps.map_or_else(|| grid::DASH.to_owned(), |kbps| (kbps / 1000).to_string())
+    };
+    let rates = match (wireless.tx_rate_kbps, wireless.rx_rate_kbps) {
+        (None, None) => None,
+        (tx, rx) => Some(format!("{} / {} Mbps", mbps(tx), mbps(rx))),
+    };
+    let signal = wireless.signal_dbm.map(|dbm| match wireless.noise_dbm {
+        Some(noise) => format!("{dbm} dBm (noise {noise})"),
+        None => format!("{dbm} dBm"),
+    });
+    vec![
+        Field::optional("SSID", wireless.ssid.clone()),
+        Field::optional("Signal", signal),
+        Field::optional("Channel", channel),
+        Field::optional("Link TX/RX", rates),
+        Field::optional(
+            "Experience",
+            wireless.satisfaction.map(|score| format!("{score}%")),
+        ),
+    ]
+}
+
+/// The operating system and device class the controller fingerprinted.
+fn system(client: &Client) -> Option<String> {
+    match (client.os_name.as_deref(), client.device_class.as_deref()) {
+        (Some(os), Some(class)) => Some(format!("{os}, {class}")),
+        (Some(one), None) | (None, Some(one)) => Some(one.to_owned()),
+        (None, None) => None,
+    }
+}
+
+/// Where a guest stands with the portal.
+fn guest(client: &Client) -> Field {
+    let Some(auth) = client.guest_auth.as_ref().filter(|auth| auth.authorized) else {
+        return Field::new("Guest", "not authorized").color(theme::warning());
+    };
+    match auth.expires_at {
+        Some(expires) => Field::new("Guest", format!("until {}", grid::local_time(expires))),
+        None => Field::new("Guest", "authorized"),
+    }
 }

@@ -333,11 +333,20 @@ crates/unifly/src/tui/
   component.rs / screen.rs   # traits
   data_bridge.rs             # Controller streams -> App state
   app.rs / app/              # top-level App state + run loop
+    navigation.rs            #  key, paste, and mouse routing
+    render.rs                #  chrome, overlays, GLOBAL_KEYS / FORM_KEYS
+    notify.rs                #  toasts and the notification history
+    commands.rs              #  confirm, run_command, spawn_op
+    dispatch.rs              #  App-level action handling
+    <area>.rs                #  per-area command and fetch handling
   screens/                   # 11 screens (Dashboard, Devices, Clients,
                              #  Networks, Firewall, Topology, Events, Stats,
                              #  Wifi, Onboarding, Settings)
-  widgets/                   # shared custom widgets
-  forms/                     # editable form overlays (Networks, Settings)
+  widgets/                   # shared widgets: click (hit map, key hints),
+                             #  line_input, wrap, detail_grid, sub_tabs,
+                             #  toolbar
+  forms/                     # profile draft, connection test, and field
+                             #  widgets shared by Onboarding and Settings
 ```
 
 `mod.rs::launch()` sets up file-based tracing (stderr is unavailable in alt
@@ -352,6 +361,87 @@ that maps opaline tokens to unifly-specific color accessors (e.g.
 `data_bridge.rs` subscribes to `EntityStream<T>` channels from the
 Controller's DataStore and pushes updates into App state. Screens read
 from App state during render. No direct Controller access from screens.
+
+**Key routing** lives in `app/navigation.rs::handle_key_event`, in this
+order: `Ctrl+c` (quit) and `Ctrl+l` (repaint) from every state; `F1`
+help; an open confirm dialog; an open prompt; the help and notification
+overlays; Setup and Settings, which take every remaining key; the
+search bar; the About overlay; `Ctrl+r` (not while the screen captures
+input, since a refresh could swap the record a form is editing); the
+active screen; and last the global keys (`handle_global_key_event`). A
+screen sees a key before the globals do, so a key it returns `None` for
+falls through to them.
+
+Each screen implements `Component` (`component.rs`):
+
+- `help()` returns `(keys, description)` for the mode on screen and
+  feeds the help overlay, beside `GLOBAL_KEYS` (or `FORM_KEYS` while a
+  form has the keyboard: Setup, Settings, the Networks form). The `/`
+  row is dropped where `search_query()` is `None`. List screens start
+  from `LIST_HELP`.
+- `captures_input()` is true while a field has the keyboard. Keys then
+  reach the screen raw and never go on to the global shortcuts, and
+  `handle_paste()` receives pasted text.
+- `search_query()` returns `Some` where `/` filters something; search
+  only opens there.
+- `hints()` returns ranked `click::Hint`s, `(rank, hint)`, for what the
+  selected row or the screen can do right now. Rank 0 matters most, and
+  the highest ranks are dropped first on a narrow terminal.
+
+**One footer.** A screen does not draw a hint row. The status bar
+(`render_status_bar` in `app/render.rs`) draws the active screen's
+`hints()` after the connection state, as many as fit, and keeps the
+app-wide buttons from `status_hints` (`/ search`, `^r retry`, `? help`)
+against the right edge. A hint with a key is a button that sends
+`Action::PressKey`, so a tap goes through the same key path. Navigation
+keys every list shares (`j/k`, `h/l`, `g/G`, paging) belong in `help()`
+only, never in `hints()`. Keep `help()`, `hints()`, and the key handler
+in step: all three cover only what works for the row, sub-tab, and mode
+on screen. While the screen captures input the status bar shows only
+`F1 help` and `^c quit`, and the form draws its own key line (Setup,
+Settings, the Networks form).
+
+**Toolbar row.** Filter and sub-tab strips go through
+`widgets/sub_tabs.rs` (`sub_tab_strip`: every tab keeps its width, and
+the active one is bold and underlined, never bracketed). State that
+describes the view (the sort, a band, an AP focus, the feed state, a
+move in progress) goes through `widgets/toolbar.rs`: `toolbar::render`
+puts the strip on the left and a `toolbar::chip` against the right
+edge, and drops the right side when the row has no room. A chip shows
+the key that changes it. Row counts go in the screen title.
+
+**Writes** never touch the Controller from a screen. A screen returns
+an action and the App runs it:
+
+- `Action::Run { command, notice }` runs a `Command` through
+  `run_command`: a progress toast shows at once, a success calls
+  `full_refresh()` so the store has the change before the toast turns
+  into `notice.done`, and a failure becomes an error toast.
+- `Action::ShowConfirm(ConfirmRequest)` asks first. The request carries
+  the prompt, a `detail` line saying what yes costs, and the action to
+  dispatch on yes. `open_confirm` never replaces a pending confirm and
+  never opens over a prompt or the search bar: a confirm that arrives
+  late, from background work, is dropped with a toast to press the key
+  again.
+- `Action::OpenPrompt(PromptRequest)` asks for one value. The answer
+  comes back to the asking screen as `Action::PromptSubmitted`; the
+  screen remembers what it asked for, and reopens the prompt with a
+  hint when the value cannot be used.
+- The `Request*` actions (restart, block, fixed IP, port update, network
+  delete) are resolved App-side, where the store supplies names and
+  MACs. That is what keeps them correct under `--demo` redaction.
+- A write whose result the store can show is checked after the refresh,
+  not assumed: `app/rule_switch.rs` (firewall `E` and `L`),
+  `app/wifi/ssids.rs` (SSID writes, against the record read back), and
+  the port and fixed IP paths in `app/devices_clients.rs` report "the
+  controller accepted the change but still shows the old value" as an
+  error or warning.
+
+**Access** arrives once per connect as `Action::AccessUpdated(Access)`
+with three flags: `integration`, `session`, and `live_events`. Screens
+use them to explain an empty panel (waiting, nothing there, or not
+readable with this profile) and to skip fetches the controller would
+refuse. A demo fleet session reports full access.
 
 Key integration: the `ThemeSelector` widget from `opaline::widgets` is
 embedded as a settings overlay. It holds an `Arc<Theme>` snapshot at open
@@ -660,7 +750,11 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **Integration clients lack fields** the UI shows: `wireless`,
   `uplink_device_mac`, `vlan`, `tx_bytes`, `rx_bytes`, `hostname`. These
   must come from Session API. Hybrid merge is by IP-address match in
-  `controller::refresh::full_refresh`.
+  `controller::refresh::full_refresh`. Guest, authorized, and blocked
+  state is merged by MAC from `stat/sta` and `rest/user`, and block,
+  unblock, and kick go to `cmd/stamgr` whenever a session exists: a
+  blocked client that left the connected list has no Integration UUID
+  to act on.
 - **`stat/rogueap` uses epoch seconds**, not milliseconds. Passing
   millisecond-style values or assuming stats-report semantics returns empty
   data silently.
@@ -688,6 +782,30 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **Device `radios` come from the session `radio_table`**, merged with
   `radio_table_stats` by `convert.rs::parse_session_radios`. The
   Integration `interfaces` JSON is not the source.
+- **An Integration PUT replaces the whole record.** An update must send
+  back every field it fetched, including ones unifly does not model
+  (the flattened `extra` on the ACL types). An ACL rule written without
+  its `protocolFilter` matches every protocol. Unset optional fields are
+  left out, not sent as null.
+- **The Integration WiFi list is a summary** without `hidden`,
+  `client_isolation`, `band_steering`, `mlo_enabled`, or `fast_roaming`.
+  Those `WifiBroadcast` fields are `Option<bool>` and stay `None` until
+  the broadcast's detail is read. An SSID with per-network preshared
+  keys (`preshared_key_count > 0`) has no single passphrase to write.
+- **A fixed IP is keyed by the session network `_id`**, not the
+  Integration UUID. `controller/commands/fixed_ip.rs` maps a UUID
+  through `rest/networkconf`'s `external_id`, accepts an `_id` or a
+  name, and with no network picks the LAN whose subnet holds the
+  address.
+- **Pending devices come from `/v1/pending-devices`** on Integration
+  profiles, as an optional fetch, keyed `pending:<mac>` in the device
+  snapshot.
+- **Network writes are checked by kind.** Isolation, internet access,
+  mDNS, and IPv6 exist only on some network kinds and are refused on
+  the others. IPv6 can be turned off but not on (the API needs an
+  address assignment and a prefix source), an emptied DNS list removes
+  the override key, and delete sends `force` as a query parameter only
+  when set.
 
 ### CLI Quirks
 
@@ -718,9 +836,10 @@ Check them by hand only when bumping the version outside `release.yml`.
 - **`nat policies update`** uses `--name` or `--description` (mutually
   exclusive) for the display label. Both map to the v2 API `description`
   field. The `--name` flag is the user-friendly alias.
-- **`firewall policies patch`** is a fast partial-update path for toggling
-  `enabled`/`logging`/`reportFlowEnabled`; use it instead of `update` when
-  only those fields change.
+- **`firewall policies patch`** is the partial-update path for `logging`
+  and `reportFlowEnabled`, the only fields the controller's PATCH takes.
+  `patch --enabled` is sent as a full update (GET, then PUT of the whole
+  record), and `FirewallPolicyPatch` has no `enabled` field.
 - **`firewall groups`** uses the Session API (`rest/firewallgroup`), not
   Integration. The `external_id` (UUID) in group responses is what
   firewall policies reference. Policy create/update supports
@@ -793,15 +912,109 @@ remote-access suggest-port` and `vpn remote-access download-config
   `tracing_appender` with a `WorkerGuard` held by `launch()`.
 - **Panic hooks must be installed before terminal setup** so that panics
   restore the terminal state before crashing. `terminal::install_hooks`
-  handles this.
+  handles this. `event.rs::stop_signal` turns `SIGTERM`, `SIGHUP`,
+  `SIGINT`, and `SIGQUIT` into a normal quit, which restores it too.
 - **The data bridge auto-reconnects.** Failed connects retry with
   exponential backoff (2s doubling to a 30s cap, indefinitely), emitting
   `Reconnecting`/`Disconnected` actions so the status bar stays
   truthful. `Ctrl+r` forces an immediate retry while disconnected by
   cancelling the old bridge and spawning a fresh one. Bridge lifetimes
-  are serialized: each new bridge task first awaits its predecessor's
-  `JoinHandle`, so teardown always completes before the next connect
-  starts.
+  on one controller are serialized: each new bridge task first awaits
+  its predecessor's `JoinHandle`, so teardown always completes before
+  the next connect starts. A switch to another controller
+  (`apply_connection`) does not wait on the one being left, and sets
+  `Connecting` at once. While connected, `Ctrl+r` runs `full_refresh()`
+  instead; the `refreshing` flag makes a held key one refresh.
+- **`Reconnecting` has two meanings.** `unifly-api` publishes
+  `ConnectionState::Reconnecting` from the second failed periodic
+  refresh in a row (`refresh/periodic.rs`), with the clients still
+  installed, and any successful `full_refresh()` publishes `Connected`
+  again. So after a connect it means "the link is failing", and data,
+  fetches, and writes must carry on; before one it means "still
+  connecting". Screens tell the two apart with `screens/link.rs`
+  (`Link::Unsteady`), and the App with `controller_reachable()`. Only
+  `Disconnected`, `Connecting`, and `Failed` may refuse a write up
+  front. `full_refresh()` is single-flight (`refresh_gate`).
+- **`Tab` belongs to the App.** It always switches screens. Sub-tabs,
+  filters, and periods step with `h`/`l` and the left and right arrows
+  on every screen; never bind `Tab` in a list screen. A form may use it
+  for the next field, since it captures input.
+- **A screen that uses `Esc` must return an action** (`Action::Invalidate`
+  will do). `None` means the key was not used, and the App goes on to
+  its own `Esc`: dismiss a warning or error toast, then clear a kept
+  filter, then go back a screen.
+- **Paging keys reach list screens as vim keys.** `list_alias` turns
+  `PgDn`/`PgUp` into `Ctrl+d`/`Ctrl+u` and `Home`/`End` into `g`/`G`
+  unless the screen captures input, so bind the vim keys and the rest
+  follows.
+- **Chords are not letters, and pastes are not keys.** A `Ctrl` or `Alt`
+  chord is never forwarded to a list screen as its plain letter (only
+  `Ctrl+d` and `Ctrl+u` are). Global keys match the key code alone,
+  because terminals differ on reporting Shift with `?`. Bracketed paste
+  is on: text arrives as one event for the search bar, a prompt, or a
+  screen that captures input, and is dropped anywhere else.
+- **Help descriptions have about 24 columns** in the overlay, and key
+  labels have 12. A longer description wraps onto the next row and a
+  wider key takes a row of its own, so nothing is cut, but both cost
+  rows on an 80x24 terminal. Word them to fit; several screens have a
+  test that holds their keys and descriptions to the column.
+- **Do not close a form before its save lands.** The Networks save is
+  App-side: the form locks, closes once the refreshed data has arrived,
+  and stays open with the draft and the reason on a failure.
+- **Never write a prefilled value back unchanged.** Under redaction a
+  prompt's starting value is a stand-in, so an answer equal to it is a
+  no-op (the port rename does this).
+- **Firewall reordering is a draft.** `K`/`J` move the policy on screen
+  only; `Enter` sends one `Action::MovePolicy` with the net steps and
+  `Esc` drops the draft. Nothing is written per keypress.
+- **Background fetch failures belong in their panel**, not in a toast on
+  a timer. Stats, WiFi, and Alarms carry the error in the screen state.
+- **A late answer must not land on the wrong controller or the wrong
+  moment.** History, alarm, and stats results travel in
+  `Action::MonitorFetched { generation, .. }` and WiFi answers carry
+  the WiFi generation; a result from before a controller switch is
+  dropped where it is handled. A background check that ends in a
+  question (`Action::NetworkDeleteChecked`, the SSID visibility read)
+  asks only if the user is still on that row with nothing open.
+- **Refuse locally, with the reason.** A key the row or the profile's
+  access cannot serve returns an info toast from the screen (`refusal`,
+  `not_ours`, `NEEDS_SESSION`, `NEEDS_INTEGRATION`) and is left out of
+  `hints()` and `help()`. Do not confirm first and fail afterwards.
+- **An unknown setting is not `false`.** The WiFi list is a summary, so
+  the SSIDs tab reads each record (`screens/wifi/ssid_detail.rs`) and
+  draws `Setting::Reading`, `Unknown`, or `Absent` until it knows. A
+  toggle such as `H` reads the record before it asks which way to go.
+- **Locate state follows the controller's answer.** `locating` is
+  updated when the command succeeds, never before it runs, and is
+  cleared on a controller switch.
+- **`Action::ControllerChanged` clears everything a screen holds**: open
+  details, forms, drafts, and fetched data. Applying a connection from
+  Settings sends it.
+- **Onboarding and Settings save only what a test connected with.**
+  Both run `forms/probe.rs`: the test resolves the profile through
+  `resolve_session_connection` (a typed password ahead of
+  `UNIFI_PASSWORD`; Settings puts the launch flags on top, the wizard
+  prefills its steps from them instead), and fails a hybrid connect that
+  only warned. A launch flag stands down once the form changes a value
+  it covers, and `ApplyConnection` carries the `ConnectionOverrides`
+  the test ran under. `--timeout` and `--no-cache` stay session flags
+  and are never written. A save writes back what the form did not
+  change (`api_key_env`, `host_id_env`, unused-mode credentials) as
+  loaded. Each test has a generation; a cancelled or replaced one
+  reports nothing. The save runs after that check, off the UI loop, and
+  `ApplyConnection` carries the tested `ControllerConfig`, never one
+  rebuilt from the form. A sign-in test never reads the profile's
+  session cookie cache: it parks its cookie in a private cache
+  (`Handover`), and only a successful save moves it into the profile's,
+  which is how one MFA code serves both the test and the dashboard. A
+  discarded test logs its session out through
+  `Controller::logout_session()`, and `forms/parked.rs` sweeps parked
+  cookies whose owner process is gone at launch (not under
+  `--demo-fleet`). In a redacting session the wizard masks every value
+  (`OnboardingScreen::hide_values`). In a test build `ProbeSlot` starts
+  nothing, so unit tests hand the
+  screens results directly and never reach the network, the keyring, or
+  the real config.
 
 ---
 

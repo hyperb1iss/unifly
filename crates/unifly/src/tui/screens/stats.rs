@@ -11,9 +11,10 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use crate::tui::action::{Action, StatsPeriod};
+use crate::tui::action::{Access, Action, StatsPeriod};
 use crate::tui::component::Component;
-use crate::tui::widgets::click::{Click, HitMap};
+use crate::tui::screens::link::Link;
+use crate::tui::widgets::click::{Click, Hint, HitMap};
 
 pub struct StatsScreen {
     focused: bool,
@@ -27,10 +28,20 @@ pub struct StatsScreen {
     client_counts: Vec<(f64, f64)>,
     client_y_max: f64,
     bandwidth_peak: f64,
-    /// The next snapshot belongs to a newly selected period.
-    fresh_scale: bool,
+    /// The period the charts' data covers. While it differs from `period`
+    /// the charts are not drawn: old data under a new chip would mislead.
+    shown: Option<StatsPeriod>,
+    /// A fetch for `period` is in flight.
+    loading: bool,
+    /// Why the last fetch for `period` failed.
+    error: Option<String>,
     dpi_apps: Vec<(String, u64)>,
     dpi_categories: Vec<(String, u64)>,
+    /// Why application or category traffic could not be read.
+    dpi_error: Option<String>,
+    link: Link,
+    /// What the controller can reach, once it has said.
+    access: Option<Access>,
 }
 
 const BANDWIDTH_TICK_COUNT: usize = 4;
@@ -60,6 +71,17 @@ impl Component for StatsScreen {
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         self.render_screen(frame, area);
+    }
+
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("h/l \u{2190}/\u{2192}", "Shorter / longer period"),
+            ("r", "Reload this period"),
+        ]
+    }
+
+    fn hints(&self) -> Vec<(u8, Hint)> {
+        self.status_hints()
     }
 
     fn focused(&self) -> bool {

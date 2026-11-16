@@ -1,5 +1,6 @@
-//! The Events screen's "Events by hour" heatmap: a row per weekday, a cell
-//! per hour, and an hour axis whose labels sit over the cells they name.
+//! The Events screen's heatmap of events by hour: a row per weekday, a
+//! cell per hour, and an hour axis whose labels sit over the cells they
+//! name, with the density scale at its right end.
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -15,8 +16,8 @@ use unifly_api::Event;
 
 use crate::tui::theme;
 
-/// Rows the heatmap takes: the title, the hour axis, and seven weekdays.
-pub(super) const PUNCHCARD_HEIGHT: u16 = 9;
+/// Rows the heatmap takes: the hour axis and seven weekdays.
+pub(super) const PUNCHCARD_HEIGHT: u16 = 8;
 
 /// Cells left of the first hour, holding the weekday label ("  Mon ").
 const GUTTER: u16 = 6;
@@ -25,7 +26,29 @@ const GUTTER: u16 = 6;
 /// cells rather than a row of long bars.
 const MAX_HOUR_WIDTH: u16 = 8;
 
+/// Narrowest an hour cell may be for the legend to take room from the
+/// grid: at three columns a cell still keeps its gap.
+const MIN_HOUR_WIDTH_BESIDE_LEGEND: u16 = 3;
+
+/// The density scale, lightest to heaviest.
+const LEGEND: [&str; 3] = ["less ", "\u{2591}\u{2592}\u{2593}\u{2588}", " more"];
+
+/// Columns kept clear between the grid and the legend, and between the
+/// legend and the edge, where it lines up with the toolbar's right side.
+const LEGEND_GAP: u16 = 2;
+const LEGEND_MARGIN: u16 = 1;
+
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+fn legend_width() -> u16 {
+    u16::try_from(
+        LEGEND
+            .iter()
+            .map(|part| Span::raw(*part).width())
+            .sum::<usize>(),
+    )
+    .unwrap_or(u16::MAX)
+}
 
 pub(super) fn render_punchcard(events: &VecDeque<Arc<Event>>, frame: &mut Frame, area: Rect) {
     let buckets = event_punchcard(events, &Local);
@@ -36,15 +59,9 @@ pub(super) fn render_punchcard(events: &VecDeque<Arc<Event>>, frame: &mut Frame,
         .max()
         .unwrap_or_default()
         .max(1);
-    let width = hour_width(area.width);
+    let (width, legend) = hour_width(area.width);
 
-    let mut lines = vec![
-        title_line(),
-        Line::from(Span::styled(
-            hour_axis(width),
-            Style::default().fg(theme::text_muted()),
-        )),
-    ];
+    let mut lines = vec![axis_line(width, legend.then_some(area.width))];
     for (day, row) in WEEKDAYS.iter().zip(buckets.iter()) {
         let mut spans = vec![Span::styled(
             format!("  {day} "),
@@ -63,26 +80,42 @@ pub(super) fn render_punchcard(events: &VecDeque<Arc<Event>>, frame: &mut Frame,
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn title_line() -> Line<'static> {
-    let colors = theme::event_density_colors();
-    let key = |glyph: &'static str, label: &'static str, color: Color| {
-        [
-            Span::styled(glyph, Style::default().fg(color)),
-            Span::styled(label, Style::default().fg(theme::text_muted())),
-        ]
+/// The hour axis, with the density scale against the right edge of an
+/// area `legend_in` columns wide when there is room for it.
+fn axis_line(width: u16, legend_in: Option<u16>) -> Line<'static> {
+    let muted = Style::default().fg(theme::text_muted());
+    let axis = hour_axis(width);
+    let Some(area_width) = legend_in else {
+        return Line::from(Span::styled(axis, muted));
     };
-    let mut spans = vec![Span::styled("  Events by hour   ", theme::table_header())];
-    spans.extend(key("░", " none  ", theme::text_muted()));
-    spans.extend(key("▒", " some  ", colors[0]));
-    spans.extend(key("▓", " busy  ", colors[1]));
-    spans.extend(key("█", " peak", colors[2]));
+    let start = usize::from(area_width.saturating_sub(legend_width() + LEGEND_MARGIN));
+    let colors = theme::event_density_colors();
+    let [less, cells, more] = LEGEND;
+    let mut spans = vec![
+        Span::styled(format!("{axis:<start$}"), muted),
+        Span::styled(less, muted),
+    ];
+    let shades = [theme::text_muted(), colors[0], colors[1], colors[2]];
+    for (cell, color) in cells.chars().zip(shades) {
+        spans.push(Span::styled(cell.to_string(), Style::default().fg(color)));
+    }
+    spans.push(Span::styled(more, muted));
     Line::from(spans)
 }
 
-/// Cells per hour: the room right of the gutter split 24 ways, from one
-/// up to `MAX_HOUR_WIDTH`.
-fn hour_width(area_width: u16) -> u16 {
-    (area_width.saturating_sub(GUTTER) / 24).clamp(1, MAX_HOUR_WIDTH)
+/// Cells per hour, and whether the legend fits beside the grid. The room
+/// right of the gutter is split 24 ways, from one cell up to
+/// `MAX_HOUR_WIDTH`; the legend takes its room first wherever that still
+/// leaves cells wide enough to keep their gaps.
+fn hour_width(area_width: u16) -> (u16, bool) {
+    let cells = |room: u16| (room.saturating_sub(GUTTER) / 24).clamp(1, MAX_HOUR_WIDTH);
+    let legend = legend_width() + LEGEND_GAP + LEGEND_MARGIN;
+    let beside = cells(area_width.saturating_sub(legend));
+    if beside >= MIN_HOUR_WIDTH_BESIDE_LEGEND {
+        (beside, true)
+    } else {
+        (cells(area_width), false)
+    }
 }
 
 /// One hour's cell: its glyph across the cell, with the last column left
@@ -146,7 +179,7 @@ fn punchcard_cell(count: usize, max_count: usize) -> (&'static str, Color) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GUTTER, MAX_HOUR_WIDTH, hour_axis, hour_cell, hour_width};
+    use super::{GUTTER, MAX_HOUR_WIDTH, axis_line, hour_axis, hour_cell, hour_width};
 
     #[test]
     fn local_offset_moves_events_to_the_previous_weekday() {
@@ -164,12 +197,32 @@ mod tests {
     }
 
     #[test]
-    fn hour_cells_fill_the_room_beside_the_gutter() {
-        assert_eq!(hour_width(181), 7, "183-column terminal");
-        assert_eq!(hour_width(98), 3, "100-column terminal");
-        assert_eq!(hour_width(78), 3, "80-column terminal");
-        assert_eq!(hour_width(40), 1);
-        assert_eq!(hour_width(1000), MAX_HOUR_WIDTH);
+    fn hour_cells_fill_the_room_the_gutter_and_the_legend_leave() {
+        assert_eq!(hour_width(181), (6, true), "183-column terminal");
+        assert_eq!(hour_width(101), (3, true), "103-column terminal");
+        assert_eq!(hour_width(98), (3, true), "100-column terminal");
+        // The legend goes before the cells lose their gaps to it.
+        assert_eq!(hour_width(78), (3, false), "80-column terminal");
+        assert_eq!(hour_width(40), (1, false));
+        assert_eq!(hour_width(1000), (MAX_HOUR_WIDTH, true));
+    }
+
+    #[test]
+    fn the_legend_ends_the_axis_row_one_column_in_from_the_edge() {
+        for area in [95, 101, 181] {
+            let (width, legend) = hour_width(area);
+            assert!(legend, "{area}");
+            let row = axis_line(width, Some(area)).to_string();
+            assert!(
+                row.ends_with("less \u{2591}\u{2592}\u{2593}\u{2588} more"),
+                "{row}"
+            );
+            assert_eq!(row.chars().count(), usize::from(area) - 1, "{row}");
+            // The last hour label keeps clear of it.
+            assert!(row.contains("  less"), "{row}");
+        }
+        let bare = axis_line(3, None).to_string();
+        assert!(!bare.contains("less"), "{bare}");
     }
 
     #[test]
