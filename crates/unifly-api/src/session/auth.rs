@@ -27,6 +27,70 @@ struct MfaChallengeResponse {
     token: Option<String>,
 }
 
+/// Longest error detail taken from a login failure response.
+const MAX_LOGIN_FAILURE_DETAIL: usize = 200;
+
+/// The error message for a failed login: the status, plus the
+/// controller's own error code and message when the body carries them.
+///
+/// Only the error fields UniFi controllers send are read: `meta.msg`
+/// (classic), `code`/`message` and `error.code`/`error.message` (UniFi
+/// OS), and `errors[]` (SSO). The rest of the body is left out, so an
+/// HTML page from a proxy or captive portal, or a server that reflects
+/// the request with its password, never reaches stderr or the log.
+fn login_failure_message(prefix: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
+    match login_failure_detail(body) {
+        Some(detail) => format!("{prefix} (HTTP {status}): {detail}"),
+        None => format!("{prefix} (HTTP {status})"),
+    }
+}
+
+fn login_failure_detail(body: &[u8]) -> Option<String> {
+    use serde_json::Value;
+
+    fn text(field: Option<&Value>) -> Option<String> {
+        let text = match field? {
+            Value::String(text) => text.trim().to_owned(),
+            Value::Number(number) => number.to_string(),
+            _ => return None,
+        };
+        (!text.is_empty()).then_some(text)
+    }
+
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let errors = value.get("errors").and_then(Value::as_array);
+
+    let mut parts: Vec<String> = Vec::new();
+    for part in [
+        text(value.pointer("/meta/msg")),
+        text(value.get("code")),
+        text(value.get("message")),
+        text(value.pointer("/error/code")),
+        text(value.pointer("/error/message")),
+    ]
+    .into_iter()
+    .chain(errors.into_iter().flatten().map(|error| text(Some(error))))
+    .flatten()
+    {
+        if !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Controller text goes to a terminal: drop control characters.
+    Some(
+        parts
+            .join(": ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_LOGIN_FAILURE_DETAIL)
+            .collect(),
+    )
+}
+
 impl SessionClient {
     /// Authenticate with the controller using username/password.
     ///
@@ -90,9 +154,9 @@ impl SessionClient {
         }
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.bytes().await.unwrap_or_default();
             return Err(Error::Authentication {
-                message: format!("login failed (HTTP {status}): {body}"),
+                message: login_failure_message("login failed", status, &body),
             });
         }
 
@@ -136,10 +200,10 @@ impl SessionClient {
 
         if let Some(cookie_value) = challenge.token {
             if !cookie_value.starts_with("UBIC_2FA=") {
+                // The value is session material; name the cookie only.
+                let name = cookie_value.split_once('=').map_or("", |(name, _)| name);
                 return Err(Error::Authentication {
-                    message: format!(
-                        "unexpected MFA cookie format (expected UBIC_2FA=...): {cookie_value}"
-                    ),
+                    message: format!("unexpected MFA cookie {name:?} (expected UBIC_2FA=...)"),
                 });
             }
             self.add_cookie(&cookie_value, login_url)?;
@@ -164,9 +228,9 @@ impl SessionClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.bytes().await.unwrap_or_default();
             return Err(Error::Authentication {
-                message: format!("MFA login failed (HTTP {status}): {body}"),
+                message: login_failure_message("MFA login failed", status, &body),
             });
         }
 

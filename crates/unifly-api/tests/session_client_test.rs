@@ -954,6 +954,162 @@ async fn test_mfa_rejects_invalid_totp_format() {
     );
 }
 
+// ── Login errors must not echo secrets ──────────────────────────────
+
+fn auth_message(result: Result<(), Error>) -> String {
+    match result {
+        Err(Error::Authentication { message }) => message,
+        other => panic!("expected Authentication error, got: {other:?}"),
+    }
+}
+
+/// Fail the first login POST with `response` and return the error message.
+async fn failed_login_message(response: ResponseTemplate) -> String {
+    let (server, client) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(response)
+        .mount(&server)
+        .await;
+
+    let secret: secrecy::SecretString = "hunter2-password".to_string().into();
+    auth_message(client.login("admin", &secret, None).await)
+}
+
+#[tokio::test]
+async fn test_login_failure_reports_the_classic_controller_error_code() {
+    let message = failed_login_message(ResponseTemplate::new(400).set_body_json(json!({
+        "meta": { "rc": "error", "msg": "api.err.Invalid" },
+        "data": []
+    })))
+    .await;
+
+    assert_eq!(
+        message,
+        "login failed (HTTP 400 Bad Request): api.err.Invalid"
+    );
+}
+
+#[tokio::test]
+async fn test_login_failure_reports_the_unifi_os_code_and_message() {
+    let message = failed_login_message(ResponseTemplate::new(401).set_body_json(json!({
+        "code": "AUTHENTICATION_FAILED_INVALID_CREDENTIALS",
+        "message": "Invalid username or password",
+        "level": "debug"
+    })))
+    .await;
+
+    assert_eq!(
+        message,
+        "login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED_INVALID_CREDENTIALS: \
+         Invalid username or password"
+    );
+}
+
+#[tokio::test]
+async fn test_login_failure_reports_a_wrapped_unifi_os_error() {
+    let message = failed_login_message(ResponseTemplate::new(401).set_body_json(json!({
+        "error": { "code": 401, "message": "Unauthorized" }
+    })))
+    .await;
+
+    assert_eq!(
+        message,
+        "login failed (HTTP 401 Unauthorized): 401: Unauthorized"
+    );
+}
+
+#[tokio::test]
+async fn test_login_failure_reports_sso_errors() {
+    let message = failed_login_message(ResponseTemplate::new(403).set_body_json(json!({
+        "errors": ["account locked"]
+    })))
+    .await;
+
+    assert_eq!(message, "login failed (HTTP 403 Forbidden): account locked");
+}
+
+#[tokio::test]
+async fn test_login_failure_never_echoes_a_reflected_request_body() {
+    // A misbehaving proxy that reflects the request would hand the
+    // password straight back; only known error fields may surface.
+    let message = failed_login_message(ResponseTemplate::new(403).set_body_json(json!({
+        "username": "admin",
+        "password": "hunter2-password"
+    })))
+    .await;
+
+    assert_eq!(message, "login failed (HTTP 403 Forbidden)");
+}
+
+#[tokio::test]
+async fn test_login_failure_omits_an_unstructured_body() {
+    let message = failed_login_message(
+        ResponseTemplate::new(502).set_body_string("<html>password=hunter2-password</html>"),
+    )
+    .await;
+
+    assert_eq!(message, "login failed (HTTP 502 Bad Gateway)");
+}
+
+#[tokio::test]
+async fn test_mfa_login_failure_reports_only_the_error_code() {
+    let (server, client) = setup_with_jar().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .and(wiremock::matchers::body_string_contains("ubic_2fa_token"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "code": "AUTHENTICATION_FAILED",
+            "echo": "hunter2-password"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(499).set_body_json(json!({
+            "errors": ["ubic_2fa_token required"],
+            "token": "UBIC_2FA=eyJhbGciOiJIUzI1NiJ9"
+        })))
+        .mount(&server)
+        .await;
+
+    let secret: secrecy::SecretString = "hunter2-password".to_string().into();
+    let totp: secrecy::SecretString = "123456".to_string().into();
+    let message = auth_message(client.login("admin", &secret, Some(&totp)).await);
+
+    assert_eq!(
+        message,
+        "MFA login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED"
+    );
+}
+
+#[tokio::test]
+async fn test_unexpected_mfa_cookie_names_the_cookie_without_its_value() {
+    let (server, client) = setup_with_jar().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/login"))
+        .respond_with(ResponseTemplate::new(499).set_body_json(json!({
+            "errors": ["ubic_2fa_token required"],
+            "token": "OTHER_COOKIE=secret-session-material"
+        })))
+        .mount(&server)
+        .await;
+
+    let secret: secrecy::SecretString = "password".to_string().into();
+    let totp: secrecy::SecretString = "123456".to_string().into();
+    let message = auth_message(client.login("admin", &secret, Some(&totp)).await);
+
+    assert!(
+        message.contains("unexpected MFA cookie \"OTHER_COOKIE\""),
+        "{message}"
+    );
+    assert!(!message.contains("secret-session-material"), "{message}");
+}
+
 // ── Session re-authentication ───────────────────────────────────────
 
 /// A minimal successful `stat/health` body, used as the post-re-login
