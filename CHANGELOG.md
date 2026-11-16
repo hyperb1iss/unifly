@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-16
+
 ### Added
 
 - **The TUI can change the network, not only watch it.** Every screen was
@@ -1414,7 +1416,8 @@ same running notes. Each of those releases has its own notes on the
 - Config file permissions restricted to owner (0600) on Unix
 - Credential storage via OS keyring with plaintext fallback only when keyring is unavailable
 
-[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/hyperb1iss/unifly/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/hyperb1iss/unifly/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/hyperb1iss/unifly/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/hyperb1iss/unifly/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/hyperb1iss/unifly/compare/v0.11.0...v0.12.0
