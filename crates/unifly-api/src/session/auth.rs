@@ -27,68 +27,79 @@ struct MfaChallengeResponse {
     token: Option<String>,
 }
 
-/// Longest error detail taken from a login failure response.
-const MAX_LOGIN_FAILURE_DETAIL: usize = 200;
+/// Longest error token taken from a login failure response.
+const MAX_LOGIN_ERROR_TOKEN: usize = 64;
 
 /// The error message for a failed login: the status, plus the
-/// controller's own error code and message when the body carries them.
+/// controller's own error codes when the body carries them.
 ///
 /// Only the error fields UniFi controllers send are read: `meta.msg`
 /// (classic), `code`/`message` and `error.code`/`error.message` (UniFi
-/// OS), and `errors[]` (SSO). The rest of the body is left out, so an
-/// HTML page from a proxy or captive portal, or a server that reflects
-/// the request with its password, never reaches stderr or the log.
-fn login_failure_message(prefix: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
-    match login_failure_detail(body) {
+/// OS), and `errors[]` (SSO). Of those, only code-like values such as
+/// `api.err.Invalid` or `AUTHENTICATION_FAILED` are kept; free text is
+/// dropped, since a proxy or misbehaving server can quote the request,
+/// password included, back in it. Any value that still contains one of
+/// the submitted `secrets` is masked.
+fn login_failure_message(
+    prefix: &str,
+    status: reqwest::StatusCode,
+    body: &[u8],
+    secrets: &[&str],
+) -> String {
+    match login_failure_detail(body, secrets) {
         Some(detail) => format!("{prefix} (HTTP {status}): {detail}"),
         None => format!("{prefix} (HTTP {status})"),
     }
 }
 
-fn login_failure_detail(body: &[u8]) -> Option<String> {
+fn login_failure_detail(body: &[u8], secrets: &[&str]) -> Option<String> {
     use serde_json::Value;
 
-    fn text(field: Option<&Value>) -> Option<String> {
-        let text = match field? {
+    /// A short identifier-style value: no spaces, no free text.
+    fn error_code(field: &Value) -> Option<String> {
+        let code = match field {
             Value::String(text) => text.trim().to_owned(),
             Value::Number(number) => number.to_string(),
             _ => return None,
         };
-        (!text.is_empty()).then_some(text)
+        let code_like = !code.is_empty()
+            && code.len() <= MAX_LOGIN_ERROR_TOKEN
+            && code
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+        code_like.then_some(code)
     }
 
     let value: Value = serde_json::from_slice(body).ok()?;
     let errors = value.get("errors").and_then(Value::as_array);
 
-    let mut parts: Vec<String> = Vec::new();
-    for part in [
-        text(value.pointer("/meta/msg")),
-        text(value.get("code")),
-        text(value.get("message")),
-        text(value.pointer("/error/code")),
-        text(value.pointer("/error/message")),
+    let mut codes: Vec<String> = Vec::new();
+    for code in [
+        value.pointer("/meta/msg"),
+        value.get("code"),
+        value.get("message"),
+        value.pointer("/error/code"),
+        value.pointer("/error/message"),
     ]
     .into_iter()
-    .chain(errors.into_iter().flatten().map(|error| text(Some(error))))
     .flatten()
+    .chain(errors.into_iter().flatten())
+    .filter_map(error_code)
     {
-        if !parts.contains(&part) {
-            parts.push(part);
+        let leaks_secret = secrets
+            .iter()
+            .any(|secret| !secret.is_empty() && code.contains(secret));
+        let code = if leaks_secret {
+            "****".to_owned()
+        } else {
+            code
+        };
+        if !codes.contains(&code) {
+            codes.push(code);
         }
     }
-    if parts.is_empty() {
-        return None;
-    }
 
-    // Controller text goes to a terminal: drop control characters.
-    Some(
-        parts
-            .join(": ")
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(MAX_LOGIN_FAILURE_DETAIL)
-            .collect(),
-    )
+    (!codes.is_empty()).then(|| codes.join(": "))
 }
 
 impl SessionClient {
@@ -156,7 +167,12 @@ impl SessionClient {
         if !status.is_success() {
             let body = resp.bytes().await.unwrap_or_default();
             return Err(Error::Authentication {
-                message: login_failure_message("login failed", status, &body),
+                message: login_failure_message(
+                    "login failed",
+                    status,
+                    &body,
+                    &[password.expose_secret()],
+                ),
             });
         }
 
@@ -230,7 +246,12 @@ impl SessionClient {
         if !status.is_success() {
             let body = resp.bytes().await.unwrap_or_default();
             return Err(Error::Authentication {
-                message: login_failure_message("MFA login failed", status, &body),
+                message: login_failure_message(
+                    "MFA login failed",
+                    status,
+                    &body,
+                    &[password.expose_secret(), code],
+                ),
             });
         }
 

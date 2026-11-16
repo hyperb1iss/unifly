@@ -992,7 +992,7 @@ async fn test_login_failure_reports_the_classic_controller_error_code() {
 }
 
 #[tokio::test]
-async fn test_login_failure_reports_the_unifi_os_code_and_message() {
+async fn test_login_failure_reports_the_unifi_os_code_without_free_text() {
     let message = failed_login_message(ResponseTemplate::new(401).set_body_json(json!({
         "code": "AUTHENTICATION_FAILED_INVALID_CREDENTIALS",
         "message": "Invalid username or password",
@@ -1002,8 +1002,7 @@ async fn test_login_failure_reports_the_unifi_os_code_and_message() {
 
     assert_eq!(
         message,
-        "login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED_INVALID_CREDENTIALS: \
-         Invalid username or password"
+        "login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED_INVALID_CREDENTIALS"
     );
 }
 
@@ -1021,13 +1020,39 @@ async fn test_login_failure_reports_a_wrapped_unifi_os_error() {
 }
 
 #[tokio::test]
-async fn test_login_failure_reports_sso_errors() {
+async fn test_login_failure_reports_code_like_sso_errors_only() {
     let message = failed_login_message(ResponseTemplate::new(403).set_body_json(json!({
-        "errors": ["account locked"]
+        "errors": ["ACCOUNT_LOCKED", "account locked until tomorrow"]
     })))
     .await;
 
-    assert_eq!(message, "login failed (HTTP 403 Forbidden): account locked");
+    assert_eq!(message, "login failed (HTTP 403 Forbidden): ACCOUNT_LOCKED");
+}
+
+#[tokio::test]
+async fn test_login_failure_drops_a_password_reflected_in_a_message() {
+    // A recognized field is no guarantee of safe content: free text can
+    // quote the submitted password back.
+    let message = failed_login_message(ResponseTemplate::new(401).set_body_json(json!({
+        "code": "AUTHENTICATION_FAILED",
+        "message": "Invalid password: hunter2-password"
+    })))
+    .await;
+
+    assert_eq!(
+        message,
+        "login failed (HTTP 401 Unauthorized): AUTHENTICATION_FAILED"
+    );
+}
+
+#[tokio::test]
+async fn test_login_failure_masks_the_password_even_in_a_code() {
+    let message = failed_login_message(ResponseTemplate::new(401).set_body_json(json!({
+        "code": "hunter2-password"
+    })))
+    .await;
+
+    assert_eq!(message, "login failed (HTTP 401 Unauthorized): ****");
 }
 
 #[tokio::test]
