@@ -9,7 +9,7 @@ pub(crate) mod devices;
 pub(crate) mod history;
 mod policy;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use chrono::{DateTime, Utc};
 
@@ -18,8 +18,8 @@ use super::rng::DemoRng;
 use crate::model::common::DataSource;
 use crate::model::{
     AclRule, Client, Device, DhcpConfig, EntityId, EntityOrigin, Event, FirewallPolicy,
-    FirewallZone, Ipv6Mode, NatPolicy, Network, NetworkManagement, NetworkPurpose, Site,
-    WifiBroadcast,
+    FirewallZone, Ipv6Mode, Ipv6RaPriority, MacAddress, NatPolicy, Network, NetworkManagement,
+    NetworkPurpose, Site, WifiBroadcast,
 };
 use crate::session::models::RogueAp;
 
@@ -142,6 +142,72 @@ pub(crate) fn lan_ip(octet: u8, host: u8) -> Ipv4Addr {
     Ipv4Addr::new(10, 40, octet, host)
 }
 
+/// The fourth group of a network's IPv6 subnets: its VLAN number read as
+/// hex, so VLAN 10 lives in `2001:db8:4e48:10::/64`.
+fn vlan_group(vlan: u16) -> u16 {
+    u16::from_str_radix(&vlan.to_string(), 16).unwrap_or(vlan)
+}
+
+/// The delegated subnet and the unique local one of the network on `vlan`,
+/// as the gateway's address on each with the prefix length.
+pub(crate) fn lan_ipv6_subnets(vlan: u16) -> (String, String) {
+    let group = vlan_group(vlan);
+    (
+        format!(
+            "{}/64",
+            Ipv6Addr::new(0x2001, 0xdb8, 0x4e48, group, 0, 0, 0, 1)
+        ),
+        format!("{}/64", Ipv6Addr::new(0xfd4e, 0x4800, 0, group, 0, 0, 0, 1)),
+    )
+}
+
+/// The IPv6 addresses a host with `mac` takes by SLAAC on the network on
+/// `vlan`: global, unique local, and link-local, all sharing the modified
+/// EUI-64 interface identifier the MAC gives.
+pub(crate) fn lan_ipv6(vlan: u16, mac: &MacAddress) -> Vec<Ipv6Addr> {
+    let octets: Vec<u8> = mac
+        .as_str()
+        .split(':')
+        .filter_map(|octet| u8::from_str_radix(octet, 16).ok())
+        .collect();
+    let [first, rest @ ..] = octets.as_slice() else {
+        return Vec::new();
+    };
+    let &[second, third, fourth, fifth, sixth] = rest else {
+        return Vec::new();
+    };
+    // The universal/local bit flips, and ff:fe goes in the middle.
+    let identifier = [
+        first ^ 0x02,
+        second,
+        third,
+        0xff,
+        0xfe,
+        fourth,
+        fifth,
+        sixth,
+    ];
+    let group = vlan_group(vlan);
+    [
+        [0x20, 0x01, 0x0d, 0xb8, 0x4e, 0x48],
+        [0xfd, 0x4e, 0x48, 0x00, 0x00, 0x00],
+        [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00],
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, prefix)| {
+        let mut bytes = [0u8; 16];
+        bytes[..6].copy_from_slice(&prefix);
+        // Link-local addresses carry no subnet.
+        if index < 2 {
+            bytes[6..8].copy_from_slice(&group.to_be_bytes());
+        }
+        bytes[8..].copy_from_slice(&identifier);
+        Ipv6Addr::from(bytes)
+    })
+    .collect()
+}
+
 pub(crate) fn uuid_from(rng: &mut DemoRng) -> uuid::Uuid {
     let mut bytes = [0u8; 16];
     bytes[..8].copy_from_slice(&rng.next_u64().to_be_bytes());
@@ -162,9 +228,7 @@ pub(crate) fn dhcp_pool(spec: &NetworkSpec) -> (u8, u8) {
 fn build_network(spec: &NetworkSpec, rng: &mut DemoRng) -> Network {
     let gateway = lan_ip(spec.octet, 1);
     let (first, last) = dhcp_pool(spec);
-    let ipv6_prefix = spec
-        .ipv6
-        .then(|| format!("2001:db8:4e48:{}::/64", spec.vlan));
+    let (delegated, unique_local) = lan_ipv6_subnets(spec.vlan);
     Network {
         id: EntityId::Uuid(uuid_from(rng)),
         name: spec.name.into(),
@@ -190,9 +254,19 @@ fn build_network(spec: &NetworkSpec, rng: &mut DemoRng) -> Network {
         }),
         ipv6_enabled: spec.ipv6,
         ipv6_mode: spec.ipv6.then_some(Ipv6Mode::PrefixDelegation),
-        ipv6_prefix,
+        ipv6_prefix: spec.ipv6.then_some(delegated),
+        ipv6_additional_subnets: if spec.ipv6 {
+            vec![unique_local]
+        } else {
+            Vec::new()
+        },
         dhcpv6_enabled: false,
+        dhcpv6_range_start: None,
+        dhcpv6_range_stop: None,
         slaac_enabled: spec.ipv6,
+        ipv6_dns_servers: Vec::new(),
+        ipv6_ra_priority: spec.ipv6.then_some(Ipv6RaPriority::High),
+        ipv6_wan_id: None,
         ntp_server: None,
         pxe_enabled: spec.key == "render",
         tftp_server: (spec.key == "render").then(|| "10.40.20.41".to_owned()),

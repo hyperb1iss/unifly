@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+use crate::model::address::Ipv6Scope;
 use crate::model::common::EntityOrigin;
 
 pub(crate) fn parse_ip(raw: Option<&String>) -> Option<IpAddr> {
@@ -25,44 +26,37 @@ pub(crate) fn parse_iso(raw: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-fn parse_ipv6_text(raw: &str) -> Option<std::net::Ipv6Addr> {
-    let candidate = raw.trim().split('/').next().unwrap_or(raw).trim();
-    candidate.parse::<std::net::Ipv6Addr>().ok()
-}
-
-fn pick_ipv6_from_value(value: &Value) -> Option<String> {
-    let mut first_link_local: Option<String> = None;
-
-    let iter: Box<dyn Iterator<Item = &Value> + '_> = match value {
-        Value::Array(items) => Box::new(items.iter()),
-        _ => Box::new(std::iter::once(value)),
-    };
-
-    for item in iter {
-        if let Some(ipv6) = item.as_str().and_then(parse_ipv6_text) {
-            let ip_text = ipv6.to_string();
-            if !ipv6.is_unicast_link_local() {
-                return Some(ip_text);
-            }
-            if first_link_local.is_none() {
-                first_link_local = Some(ip_text);
+/// The IPv6 addresses in each of `values`, where each is one address or an
+/// array of them, possibly with a prefix length. Each address appears once,
+/// widest reach first and otherwise in the order reported.
+pub(crate) fn parse_ipv6_list<'a>(values: impl IntoIterator<Item = &'a Value>) -> Vec<Ipv6Addr> {
+    let mut found: Vec<Ipv6Addr> = Vec::new();
+    for value in values {
+        let items = match value {
+            Value::Array(items) => items.as_slice(),
+            single => std::slice::from_ref(single),
+        };
+        for text in items.iter().filter_map(Value::as_str) {
+            let address = text.split('/').next().unwrap_or(text).trim();
+            if let Ok(address) = address.parse::<Ipv6Addr>()
+                && !address.is_unspecified()
+                && !found.contains(&address)
+            {
+                found.push(address);
             }
         }
     }
-
-    first_link_local
+    found.sort_by_key(Ipv6Scope::of);
+    found
 }
 
-/// Pick the device's public IPv6 from `wan1.ipv6` first, then the top-level
-/// `ipv6` field. Either may be a string or an array of strings.
-pub(crate) fn parse_legacy_wan_ipv6(
-    wan1_ipv6: Option<&Value>,
-    ipv6: Option<&Value>,
-) -> Option<String> {
-    if let Some(v) = wan1_ipv6.and_then(pick_ipv6_from_value) {
-        return Some(v);
-    }
-    ipv6.and_then(pick_ipv6_from_value)
+/// The gateway's public IPv6 address on its primary WAN, from `wan1.ipv6`.
+/// A WAN holding only a link-local address has none.
+pub(crate) fn parse_wan_ipv6(wan1_ipv6: Option<&Value>) -> Option<String> {
+    parse_ipv6_list(wan1_ipv6)
+        .into_iter()
+        .find(|address| Ipv6Scope::of(address) != Ipv6Scope::LinkLocal)
+        .map(|address| address.to_string())
 }
 
 pub(crate) fn extra_frequencies(extra: &HashMap<String, Value>, key: &str) -> Vec<f32> {
@@ -123,4 +117,53 @@ pub(crate) fn resolve_event_templates(msg: &str, extra: &serde_json::Value) -> S
         );
     }
     result
+}
+
+#[cfg(test)]
+mod ipv6_tests {
+    use serde_json::json;
+
+    use super::{parse_ipv6_list, parse_wan_ipv6};
+
+    fn texts(value: &serde_json::Value) -> Vec<String> {
+        parse_ipv6_list(Some(value))
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn a_list_puts_the_widest_reach_first_and_names_each_address_once() {
+        let reported = json!([
+            "fe80::1c2d:3eff:fe4f:5a6b",
+            "fd00:c0de::9",
+            "2001:db8:3fa::9/64",
+            "2001:db8:3fa::a",
+            "2001:DB8:3FA::9",
+            "::",
+            "not an address",
+        ]);
+        assert_eq!(
+            texts(&reported),
+            [
+                "2001:db8:3fa::9",
+                "2001:db8:3fa::a",
+                "fd00:c0de::9",
+                "fe80::1c2d:3eff:fe4f:5a6b"
+            ]
+        );
+        assert_eq!(texts(&json!("2001:db8::1")), ["2001:db8::1"]);
+        assert_eq!(texts(&json!(42)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_wan_address_is_never_a_link_local_one() {
+        let wan = json!(["fe80::1", "2001:db8:4e48::1"]);
+        assert_eq!(
+            parse_wan_ipv6(Some(&wan)).as_deref(),
+            Some("2001:db8:4e48::1")
+        );
+        assert_eq!(parse_wan_ipv6(Some(&json!(["fe80::1"]))), None);
+        assert_eq!(parse_wan_ipv6(None), None);
+    }
 }

@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use crate::model::{Client, Device, MacAddress};
+use crate::model::{Client, Device, EntityId, Ipv6Mode, MacAddress, Network};
 
 /// Carry last known session-merged client fields from the stored record onto
 /// a fresh Integration client when the session fetch that supplies them
 /// failed this cycle, so a transient error does not blank them.
 ///
 /// The carried fields are exactly the ones `merge` fills from the session:
-/// hostname, network name, traffic counters, wireless info, uplink MAC, and
-/// switch port from the session clients fetch, plus DHCP reservation data from the
-/// session users fetch. Guest state follows the clients fetch and blocked
+/// hostname, IPv6 addresses, network name, traffic counters, wireless info,
+/// uplink MAC, and switch port from the session clients fetch, plus DHCP
+/// reservation data from the session users fetch. Guest state follows the clients fetch and blocked
 /// state the users fetch, which lists every blocked client. Integration's
 /// client conversion sets none of them but the guest state, and a field
 /// the fresh record does set is never overwritten. Link fields
@@ -34,6 +34,9 @@ pub(super) fn session_client_fields(
             fill(&mut client.network_name, previous.network_name.as_ref());
             fill(&mut client.tx_bytes, previous.tx_bytes.as_ref());
             fill(&mut client.rx_bytes, previous.rx_bytes.as_ref());
+            if client.ipv6_addresses.is_empty() {
+                client.ipv6_addresses.clone_from(&previous.ipv6_addresses);
+            }
             if previous.client_type == client.client_type {
                 fill(&mut client.wireless, previous.wireless.as_ref());
                 fill(
@@ -62,8 +65,8 @@ pub(super) fn session_client_fields(
 ///
 /// Mirrors `merge::merge_session_devices`: client count, WAN IPv6, uplink
 /// MAC, and uplink port fill only when the fresh record left them unset,
-/// and ports and radios only when Integration reported none, so
-/// Integration-sourced values always win.
+/// and ports, radios, and IPv6 addresses only when Integration reported
+/// none, so Integration-sourced values always win.
 pub(super) fn session_device_fields(
     devices: &mut [Device],
     stored: impl Fn(&MacAddress) -> Option<Arc<Device>>,
@@ -88,6 +91,25 @@ pub(super) fn session_device_fields(
         }
         if device.radios.is_empty() {
             device.radios.clone_from(&previous.radios);
+        }
+        if device.ipv6_addresses.is_empty() {
+            device.ipv6_addresses.clone_from(&previous.ipv6_addresses);
+        }
+    }
+}
+
+/// Carry the delegated subnet each network last showed when the session
+/// devices fetch, the only source of it, failed.
+pub(super) fn delegated_prefixes(
+    networks: &mut [Network],
+    stored: impl Fn(&EntityId) -> Option<Arc<Network>>,
+) {
+    for network in networks {
+        if network.ipv6_mode != Some(Ipv6Mode::PrefixDelegation) {
+            continue;
+        }
+        if let Some(previous) = stored(&network.id) {
+            fill(&mut network.ipv6_prefix, previous.ipv6_prefix.as_ref());
         }
     }
 }

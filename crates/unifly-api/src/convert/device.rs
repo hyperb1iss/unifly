@@ -6,7 +6,7 @@ use crate::model::device::{Device, DeviceState, DeviceStats, DeviceType, UplinkM
 use crate::model::entity_id::{EntityId, MacAddress};
 use crate::session::models::{SessionDevice, SessionUplink};
 
-use super::helpers::{epoch_to_datetime, parse_ip, parse_iso, parse_legacy_wan_ipv6};
+use super::helpers::{epoch_to_datetime, parse_ip, parse_ipv6_list, parse_iso, parse_wan_ipv6};
 use super::interface::{
     parse_integration_ports, parse_integration_radios, parse_session_ports, parse_session_radios,
 };
@@ -113,10 +113,8 @@ impl From<SessionDevice> for Device {
             id: EntityId::from(entity_id),
             mac: MacAddress::new(&d.mac),
             ip: parse_ip(d.ip.as_ref()),
-            wan_ipv6: parse_legacy_wan_ipv6(
-                d.wan1.as_ref().and_then(|wan| wan.ipv6.as_ref()),
-                d.ipv6.as_ref(),
-            ),
+            wan_ipv6: parse_wan_ipv6(d.wan1.as_ref().and_then(|wan| wan.ipv6.as_ref())),
+            ipv6_addresses: parse_ipv6_list(d.ipv6.as_ref()),
             name: d.name,
             model: d.model,
             device_type,
@@ -195,6 +193,7 @@ impl From<integration_types::DeviceResponse> for Device {
             mac: MacAddress::new(&d.mac_address),
             ip: d.ip_address.as_deref().and_then(|s| s.parse().ok()),
             wan_ipv6: None,
+            ipv6_addresses: Vec::new(),
             name: Some(d.name),
             model: Some(d.model),
             device_type,
@@ -270,6 +269,7 @@ pub(crate) fn pending_device_from_integration(
         id: EntityId::Legacy(format!("pending:{mac}")),
         ip: text("ipAddress").and_then(|ip| ip.parse().ok()),
         wan_ipv6: None,
+        ipv6_addresses: Vec::new(),
         name: (!model.is_empty()).then(|| model.clone()),
         device_type: infer_device_type_integration(&features, &model),
         model: (!model.is_empty()).then_some(model),
@@ -469,5 +469,31 @@ mod tests {
 
         assert!(device.uplink_device_mac.is_none());
         assert!(device.uplink_port_idx.is_none());
+    }
+
+    #[test]
+    fn only_a_wan_address_is_a_wan_address() {
+        let lan = json!(["fe80::2", "fd00:c0de::2", "2001:db8:3fa::2"]);
+        let switch: SessionDevice = serde_json::from_value(json!({
+            "mac": "6c:63:f8:36:53:42", "type": "usw", "state": 1, "ipv6": lan,
+        }))
+        .expect("deserialize");
+        let switch = Device::from(switch);
+        assert_eq!(switch.wan_ipv6, None);
+        let addresses: Vec<String> = switch
+            .ipv6_addresses
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(addresses, ["2001:db8:3fa::2", "fd00:c0de::2", "fe80::2"]);
+
+        let gateway: SessionDevice = serde_json::from_value(json!({
+            "mac": "6c:63:f8:38:d9:01", "type": "udm", "state": 1, "ipv6": lan,
+            "wan1": {"ipv6": ["fe80::1", "2001:db8:4e48::1"]},
+        }))
+        .expect("deserialize");
+        let gateway = Device::from(gateway);
+        assert_eq!(gateway.wan_ipv6.as_deref(), Some("2001:db8:4e48::1"));
+        assert_eq!(gateway.ipv6_addresses.len(), 3);
     }
 }

@@ -407,6 +407,7 @@ impl Simulation {
             id: EntityId::Uuid(uuid_from(&mut self.rng)),
             mac: MacAddress::new(self.rng.mac()),
             ip: Some(IpAddr::V4(ip)),
+            ipv6_addresses: Vec::new(),
             name: Some(name.into()),
             hostname: Some(name.into()),
             client_type: ClientType::Wired,

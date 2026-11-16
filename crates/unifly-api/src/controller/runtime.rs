@@ -7,7 +7,7 @@ use crate::store::DataStore;
 use crate::websocket::{DeviceSync, NumOrStr};
 
 use super::Controller;
-use super::support::parse_session_device_wan_ipv6;
+use crate::convert::{parse_ipv6_list, parse_wan_ipv6};
 
 /// Apply a `device:sync` WebSocket message to the DataStore.
 ///
@@ -73,10 +73,9 @@ pub(super) fn apply_device_sync(store: &DataStore, data: &DeviceSync) {
         .as_ref()
         .and_then(NumOrStr::as_u64)
         .map(|num_sta| u32::try_from(num_sta).unwrap_or(u32::MAX));
-    let wan_ipv6 = parse_session_device_wan_ipv6(
-        data.wan1.as_ref().and_then(|wan| wan.ipv6.as_ref()),
-        data.ipv6.as_ref(),
-    );
+    let wan_ipv6 = parse_wan_ipv6(data.wan1.as_ref().and_then(|wan| wan.ipv6.as_ref()));
+    // A frame that leaves the addresses out says nothing about them.
+    let ipv6_addresses = data.ipv6.as_ref().map(|ipv6| parse_ipv6_list(Some(ipv6)));
 
     // Merge under the key's lock: a full refresh replacing or removing this
     // device on another worker must not be undone by a stale copy.
@@ -108,6 +107,9 @@ pub(super) fn apply_device_sync(store: &DataStore, data: &DeviceSync) {
         }
         if wan_ipv6.is_some() {
             device.wan_ipv6.clone_from(&wan_ipv6);
+        }
+        if let Some(addresses) = &ipv6_addresses {
+            device.ipv6_addresses.clone_from(addresses);
         }
         device
     });

@@ -83,6 +83,11 @@ pub struct SessionDevice {
     /// Device-level IPv6 address(es): a string or an array of strings.
     #[serde(default)]
     pub ipv6: Option<serde_json::Value>,
+    /// A gateway's view of each network it routes: one object per network
+    /// with its `_id`, `name`, and the `ipv6_subnets` it serves there. Kept
+    /// raw so an unexpected shape cannot fail the whole device.
+    #[serde(default)]
+    pub network_table: Option<serde_json::Value>,
     /// Physical port table (switches and gateways).
     #[serde(default, deserialize_with = "null_as_empty")]
     pub port_table: Vec<SessionPortEntry>,
@@ -290,6 +295,13 @@ pub struct SessionClientEntry {
     pub hostname: Option<String>,
     #[serde(default)]
     pub ip: Option<String>,
+    /// The IPv6 addresses the station holds now: a string or an array.
+    #[serde(default)]
+    pub ipv6_addresses: Option<serde_json::Value>,
+    /// Every IPv6 address the gateway has seen the station use recently,
+    /// which can include the current ones.
+    #[serde(default)]
+    pub last_ipv6: Option<serde_json::Value>,
     #[serde(default)]
     pub oui: Option<String>,
     #[serde(default)]

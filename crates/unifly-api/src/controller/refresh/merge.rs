@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::model::{Client, Device, MacAddress};
+use crate::model::{Client, Device, EntityId, Ipv6Mode, Ipv6Scope, MacAddress, Network};
 use crate::session::models::{SessionClientEntry, SessionDevice, SessionUserEntry};
 
-use super::super::support::parse_session_device_wan_ipv6;
+use crate::convert::{parse_ipv6_list, parse_wan_ipv6};
 
 pub(super) fn merge_session_clients(
     clients: &mut [Client],
@@ -13,6 +13,42 @@ pub(super) fn merge_session_clients(
     merge_client_traffic(clients, session_clients);
     merge_user_reservations(clients, session_clients, session_users);
     super::client_state::merge(clients, session_clients, session_users);
+}
+
+/// Fill in the subnet each prefix-delegation network serves from the
+/// gateway's network table, which is the only place the controller says
+/// what the WAN was delegated. Networks are matched by record ID where the
+/// session one is the network's own, else by name.
+pub(super) fn merge_gateway_prefixes(networks: &mut [Network], session_devices: &[SessionDevice]) {
+    let rows = session_devices
+        .iter()
+        .filter_map(|device| device.network_table.as_ref()?.as_array())
+        .flatten();
+    for row in rows {
+        let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
+        let Some(network) = networks.iter_mut().find(|network| {
+            text("_id").is_some_and(|id| network.id == EntityId::Legacy(id.to_owned()))
+                || text("name").is_some_and(|name| network.name == name)
+        }) else {
+            continue;
+        };
+        if network.ipv6_mode != Some(Ipv6Mode::PrefixDelegation) || network.ipv6_prefix.is_some() {
+            continue;
+        }
+        network.ipv6_prefix = row
+            .get("ipv6_subnets")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .find(|subnet| {
+                let address = subnet.split('/').next().unwrap_or(subnet);
+                address
+                    .parse()
+                    .is_ok_and(|address| Ipv6Scope::of(&address) == Ipv6Scope::Global)
+            })
+            .map(String::from);
+    }
 }
 
 pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[SessionDevice]) {
@@ -32,13 +68,15 @@ pub(super) fn merge_session_devices(devices: &mut [Device], session_devices: &[S
                     .and_then(|count| count.try_into().ok());
             }
             if device.wan_ipv6.is_none() {
-                device.wan_ipv6 = parse_session_device_wan_ipv6(
+                device.wan_ipv6 = parse_wan_ipv6(
                     legacy_device
                         .wan1
                         .as_ref()
                         .and_then(|wan| wan.ipv6.as_ref()),
-                    legacy_device.ipv6.as_ref(),
                 );
+            }
+            if device.ipv6_addresses.is_empty() {
+                device.ipv6_addresses = parse_ipv6_list(legacy_device.ipv6.as_ref());
             }
             if device.ports.is_empty()
                 || device.radios.is_empty()
@@ -92,6 +130,14 @@ fn merge_client_traffic(clients: &mut [Client], session_clients: &[SessionClient
             }
             if client.hostname.is_none() {
                 client.hostname.clone_from(&session_client.hostname);
+            }
+            if client.ipv6_addresses.is_empty() {
+                client.ipv6_addresses = parse_ipv6_list(
+                    session_client
+                        .ipv6_addresses
+                        .iter()
+                        .chain(session_client.last_ipv6.iter()),
+                );
             }
             if client.network_name.is_none() {
                 client.network_name = session_client
@@ -166,36 +212,4 @@ fn merge_user_reservations(
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::integration_types::ClientResponse;
-    use crate::model::Client;
-    use crate::session::models::SessionClientEntry;
-
-    #[test]
-    fn hybrid_clients_take_the_session_network_name() {
-        let mut clients: Vec<Client> = vec![
-            ClientResponse {
-                id: uuid::Uuid::from_u128(1),
-                name: "render-07".into(),
-                client_type: "WIRED".into(),
-                ip_address: Some("10.40.20.17".into()),
-                connected_at: None,
-                mac_address: Some("3e:bf:ec:41:e9:0c".into()),
-                access: serde_json::json!({ "type": "DEFAULT" }),
-            }
-            .into(),
-        ];
-        let session: SessionClientEntry = serde_json::from_value(serde_json::json!({
-            "_id": "abc",
-            "mac": "3e:bf:ec:41:e9:0c",
-            "ip": "10.40.20.17",
-            "network": "Render",
-            "network_id": "5f1a2b3c4d5e6f7a8b9c0d1e"
-        }))
-        .expect("deserialize");
-
-        super::merge_session_clients(&mut clients, &[session], &[]);
-
-        assert_eq!(clients[0].network_name.as_deref(), Some("Render"));
-    }
-}
+mod tests;

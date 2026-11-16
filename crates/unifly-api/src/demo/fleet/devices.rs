@@ -1,10 +1,13 @@
 // ── Demo infrastructure: gateway, switches, access points ──
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use chrono::{DateTime, Duration, Utc};
 
-use super::{AP_BASE, DemoClient, Fleet, GATEWAY, SWITCH_BASE, lan_ip, uuid_from};
+use super::{
+    AP_BASE, DemoClient, Fleet, GATEWAY, SWITCH_BASE, lan_ip, lan_ipv6, lan_ipv6_subnets,
+    network_index, uuid_from,
+};
 use crate::demo::catalog::{
     self, AP_FIRMWARE, AP_FIRMWARE_OLD, APS, CHANNELS_5, CHANNELS_6, CHANNELS_24, GATEWAY_FIRMWARE,
     OFFLINE_AP, STALE_FIRMWARE_AP, SWITCH_FIRMWARE, UPGRADING_AP,
@@ -142,6 +145,7 @@ fn base_device(
         mac: MacAddress::new(rng.mac()),
         ip: None,
         wan_ipv6: None,
+        ipv6_addresses: Vec::new(),
         name: Some(name.into()),
         model: Some(model.into()),
         device_type,
@@ -173,10 +177,33 @@ fn base_device(
     }
 }
 
+/// A device's IPv6 addresses on the management network it lives on.
+fn mgmt_ipv6(mac: &MacAddress) -> Vec<Ipv6Addr> {
+    let mgmt = &catalog::NETWORKS[network_index("mgmt")];
+    if mgmt.ipv6 {
+        lan_ipv6(mgmt.vlan, mac)
+    } else {
+        Vec::new()
+    }
+}
+
 fn gateway(rng: &mut DemoRng, anchor: DateTime<Utc>) -> Device {
     let mut device = base_device(rng, anchor, "gw-harbor", "UDM Pro Max", DeviceType::Gateway);
     device.ip = catalog::WAN_IP.parse().ok();
     device.wan_ipv6 = Some(catalog::WAN_IPV6.into());
+    // The gateway holds the first address of each subnet it serves.
+    let mgmt = &catalog::NETWORKS[network_index("mgmt")];
+    let (delegated, unique_local) = lan_ipv6_subnets(mgmt.vlan);
+    let first = |subnet: &str| subnet.split('/').next()?.parse::<Ipv6Addr>().ok();
+    device.ipv6_addresses = [first(&delegated), first(&unique_local)]
+        .into_iter()
+        .flatten()
+        .chain(
+            mgmt_ipv6(&device.mac)
+                .into_iter()
+                .filter(Ipv6Addr::is_unicast_link_local),
+        )
+        .collect();
     device.firmware_version = Some(GATEWAY_FIRMWARE.into());
     device.has_switching = true;
     device.stats.uptime_secs = Some(41 * 86_400 + rng.range(0, 7_200));
@@ -213,6 +240,7 @@ fn switch(
 ) -> Device {
     let mut device = base_device(rng, anchor, name, model, DeviceType::Switch);
     device.ip = Some(IpAddr::V4(lan_ip(0, host)));
+    device.ipv6_addresses = mgmt_ipv6(&device.mac);
     device.firmware_version = Some(SWITCH_FIRMWARE.into());
     device.has_switching = true;
     device.stats.uptime_secs = Some(41 * 86_400 + rng.range(0, 7_200));
@@ -258,6 +286,7 @@ fn access_point(
     let mut device = base_device(rng, anchor, spec.name, spec.model, DeviceType::AccessPoint);
     let host = 11 + u8::try_from(index).unwrap_or_default();
     device.ip = Some(IpAddr::V4(lan_ip(0, host)));
+    device.ipv6_addresses = mgmt_ipv6(&device.mac);
     device.has_access_point = true;
     device.firmware_version = Some(AP_FIRMWARE.into());
     device.stats.uptime_secs = Some(rng.range(9, 41) * 86_400 + rng.range(0, 86_399));

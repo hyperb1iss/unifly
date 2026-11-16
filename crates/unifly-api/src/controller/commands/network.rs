@@ -42,20 +42,24 @@ pub(super) async fn route(
             }
             match update.ipv6_enabled {
                 // IPv6 is on when the network has an IPv6 configuration.
-                // One cannot be made up here: it needs an interface type,
-                // a client address assignment, and for prefix delegation
-                // the WAN interface the prefix comes from.
+                // Turned on here it takes what the controller's own form
+                // starts from: a prefix delegated from the WAN, handed out
+                // by SLAAC, with the gateway advertised as the router.
                 Some(true)
                     if extra
                         .get("ipv6Configuration")
                         .is_none_or(serde_json::Value::is_null) =>
                 {
-                    return Err(CoreError::ValidationFailed {
-                        message: "IPv6 cannot be turned on from here: it needs settings \
-                                  (address assignment and a prefix source) that only the \
-                                  controller's own interface collects"
-                            .into(),
-                    });
+                    let wan = delegating_wan(&ctx.store, ic, &sid).await?;
+                    extra.insert(
+                        "ipv6Configuration".into(),
+                        serde_json::json!({
+                            "interfaceType": "PREFIX_DELEGATION",
+                            "prefixDelegationWanInterfaceId": wan.to_string(),
+                            "clientAddressAssignment": { "slaacEnabled": true },
+                            "routerAdvertisement": { "priority": "HIGH" },
+                        }),
+                    );
                 }
                 Some(false) => {
                     extra.remove("ipv6Configuration");
@@ -115,6 +119,37 @@ pub(super) async fn route(
     }
 }
 
+/// The WAN a network given IPv6 here takes its prefix from: the one the
+/// site's other delegated networks use, else the first the controller
+/// lists, which is its primary.
+async fn delegating_wan(
+    store: &crate::store::DataStore,
+    integration: &crate::IntegrationClient,
+    site_id: &uuid::Uuid,
+) -> Result<uuid::Uuid, CoreError> {
+    if let Some(id) = wan_in_use(&store.networks_snapshot()) {
+        return Ok(id);
+    }
+    let wans = integration.list_wans(site_id, 0, 25).await?;
+    wans.data
+        .iter()
+        .find_map(|wan| wan.fields.get("id")?.as_str()?.parse().ok())
+        .ok_or_else(|| CoreError::ValidationFailed {
+            message: "IPv6 needs a WAN to delegate a prefix from, and the controller lists none"
+                .into(),
+        })
+}
+
+/// The WAN the site's delegated networks take their prefix from.
+fn wan_in_use(networks: &[std::sync::Arc<crate::model::Network>]) -> Option<uuid::Uuid> {
+    networks
+        .iter()
+        .find_map(|network| match &network.ipv6_wan_id {
+            Some(crate::model::EntityId::Uuid(id)) => Some(*id),
+            _ => None,
+        })
+}
+
 /// Refuse settings the network's kind has no field for. The controller
 /// keeps isolation for gateway- and switch-managed networks only, and
 /// internet access, mDNS forwarding, and IPv6 for gateway-managed ones.
@@ -146,5 +181,37 @@ fn reject_settings_the_network_cannot_take(
             message: format!("{kind} network has no {setting} setting"),
         }),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::model::Network;
+
+    fn network(name: &str, wan: Option<&str>) -> Arc<Network> {
+        let mut record = serde_json::json!({
+            "id": "8a1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a01", "name": name, "enabled": true,
+            "management": "GATEWAY", "vlanId": 30, "metadata": {"origin": "USER_DEFINED"},
+        });
+        if let Some(wan) = wan {
+            record["ipv6Configuration"] = serde_json::json!({
+                "interfaceType": "PREFIX_DELEGATION",
+                "prefixDelegationWanInterfaceId": wan,
+                "clientAddressAssignment": {"slaacEnabled": true},
+            });
+        }
+        let details: crate::integration_types::NetworkDetailsResponse =
+            serde_json::from_value(record).expect("network");
+        Arc::new(Network::from(details))
+    }
+
+    #[test]
+    fn ipv6_comes_from_the_wan_the_site_already_delegates_from() {
+        let second = "6b1e5f3c-2b4d-4e6f-9a0b-1c2d3e4f5a66";
+        let networks = [network("Guest", None), network("Home", Some(second))];
+        assert_eq!(super::wan_in_use(&networks), second.parse().ok());
+        assert_eq!(super::wan_in_use(&networks[..1]), None);
     }
 }

@@ -8,7 +8,7 @@ use crate::core_error::CoreError;
 use crate::demo::fleet::Fleet;
 use crate::demo::sim::Simulation;
 use crate::demo::{DEFAULT_DEMO_SEED, DemoFleetOptions};
-use crate::model::{EntityId, EntityOrigin, Network};
+use crate::model::{EntityId, EntityOrigin, Ipv6Mode, Ipv6RaPriority, Network};
 use crate::{Controller, DhcpUpdate};
 
 fn now() -> DateTime<Utc> {
@@ -346,7 +346,7 @@ fn turning_dhcp_off_drops_the_server_configuration() {
 }
 
 #[test]
-fn ipv6_turns_off_whole_and_cannot_be_made_from_nothing() {
+fn ipv6_turns_off_whole_and_back_on_as_prefix_delegation() {
     let mut sim = sim();
     let with_ipv6 = sim
         .fleet
@@ -364,9 +364,21 @@ fn ipv6_turns_off_whole_and_cannot_be_made_from_nothing() {
     let network = &sim.fleet.networks[with_ipv6];
     assert!(!network.ipv6_enabled && !network.slaac_enabled);
     assert!(network.ipv6_mode.is_none() && network.ipv6_prefix.is_none());
+    assert!(network.ipv6_additional_subnets.is_empty() && network.ipv6_ra_priority.is_none());
 
-    let refused = update(&mut sim, &id, ipv6(true)).expect("nothing to turn back on");
-    assert!(refused.to_string().contains("IPv6 cannot be turned on"));
+    assert!(update(&mut sim, &id, ipv6(true)).is_none());
+    let network = &sim.fleet.networks[with_ipv6];
+    assert!(network.ipv6_enabled && network.slaac_enabled && !network.dhcpv6_enabled);
+    assert_eq!(network.ipv6_mode, Some(Ipv6Mode::PrefixDelegation));
+    assert_eq!(network.ipv6_ra_priority, Some(Ipv6RaPriority::High));
+    assert!(
+        network
+            .ipv6_prefix
+            .as_deref()
+            .is_some_and(|prefix| prefix.ends_with("::1/64"))
+    );
+    let wan = sim.wans().into_iter().next().map(|wan| wan.id);
+    assert_eq!(network.ipv6_wan_id, wan);
 }
 
 #[test]

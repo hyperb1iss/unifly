@@ -7,7 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 
 use super::devices::{attach_wired, pick_ap};
 use super::{
-    DemoClient, Fleet, SWITCH_BASE, dhcp_pool, lan_ip, network_index, ssid_for_network, uuid_from,
+    DemoClient, Fleet, SWITCH_BASE, dhcp_pool, lan_ip, lan_ipv6, network_index, ssid_for_network,
+    uuid_from,
 };
 use crate::demo::catalog::{NETWORKS, PLACES, WIRED, WIRELESS_KINDS};
 use crate::demo::rng::{DemoRng, to_u64};
@@ -264,10 +265,17 @@ fn base_client(
     hostname: &str,
     network: &Network,
 ) -> Client {
+    let id = EntityId::Uuid(uuid_from(rng));
+    let mac = alloc.mac(rng);
+    let ipv6_addresses = match network.vlan_id {
+        Some(vlan) if network.ipv6_enabled => lan_ipv6(vlan, &mac),
+        _ => Vec::new(),
+    };
     Client {
-        id: EntityId::Uuid(uuid_from(rng)),
-        mac: alloc.mac(rng),
+        id,
+        mac,
         ip: None,
+        ipv6_addresses,
         name: None,
         hostname: Some(hostname.into()),
         client_type: ClientType::Wired,

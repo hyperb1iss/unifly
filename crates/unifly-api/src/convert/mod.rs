@@ -16,5 +16,6 @@ mod wifi;
 pub(crate) use device::{device_stats_from_integration, pending_device_from_integration};
 pub(crate) use dns::dns_policy_from_integration;
 pub use firewall::firewall_group_from_session;
+pub(crate) use helpers::{parse_ipv6_list, parse_wan_ipv6};
 pub(crate) use interface::enrich_radios_from_stats;
 pub use nat::nat_policy_from_v2;

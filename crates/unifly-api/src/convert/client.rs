@@ -6,7 +6,7 @@ use crate::model::common::DataSource;
 use crate::model::entity_id::{EntityId, MacAddress};
 use crate::session::models::{SessionClientEntry, SessionUserEntry};
 
-use super::helpers::{parse_ip, parse_iso};
+use super::helpers::{parse_ip, parse_ipv6_list, parse_iso};
 
 // ── Session API ──────────────────────────────────────────────────
 
@@ -78,6 +78,8 @@ impl From<SessionClientEntry> for Client {
             id: EntityId::from(c.id),
             mac: MacAddress::new(&c.mac),
             ip: parse_ip(c.ip.as_ref()),
+            // The current addresses lead; ones seen recently follow.
+            ipv6_addresses: parse_ipv6_list(c.ipv6_addresses.iter().chain(c.last_ipv6.iter())),
             name: c.name,
             hostname: c.hostname,
             client_type,
@@ -118,6 +120,7 @@ impl From<SessionUserEntry> for Client {
             id: EntityId::from(user.id),
             mac: MacAddress::new(&user.mac),
             ip: None,
+            ipv6_addresses: Vec::new(),
             name: user.name.filter(|name| !name.is_empty()),
             hostname: user.hostname.filter(|name| !name.is_empty()),
             client_type,
@@ -186,6 +189,7 @@ impl From<integration_types::ClientResponse> for Client {
             id: EntityId::Uuid(c.id),
             mac: MacAddress::new(mac_str),
             ip: c.ip_address.as_deref().and_then(|s| s.parse().ok()),
+            ipv6_addresses: Vec::new(),
             name: Some(c.name),
             hostname: None,
             client_type,
@@ -322,5 +326,35 @@ mod tests {
         .expect("deserialize");
         let client: Client = entry.into();
         assert!(client.switch_port.is_none());
+    }
+
+    #[test]
+    fn a_station_holds_its_current_ipv6_addresses_then_the_recent_ones() {
+        let entry: SessionClientEntry = serde_json::from_value(serde_json::json!({
+            "_id": "abc",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ip": "10.4.20.198",
+            "ipv6_addresses": ["fe80::9", "2001:db8:3fa::9"],
+            "last_ipv6": ["2001:db8:3fa::9", "fd00:c0de::9", "2001:db8:3fa::a"],
+        }))
+        .expect("deserialize");
+        let client = Client::from(entry);
+        let addresses: Vec<String> = client
+            .ipv6_addresses
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            addresses,
+            [
+                "2001:db8:3fa::9",
+                "2001:db8:3fa::a",
+                "fd00:c0de::9",
+                "fe80::9"
+            ]
+        );
+        assert!(client.has_address("fd00:c0de::9".parse().expect("address")));
+        assert!(client.has_address("10.4.20.198".parse().expect("address")));
+        assert!(!client.has_address("2001:db8:3fa::b".parse().expect("address")));
     }
 }
