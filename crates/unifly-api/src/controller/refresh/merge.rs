@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::model::{Client, Device, EntityId, Ipv6Mode, Ipv6Scope, MacAddress, Network};
+use crate::model::{Client, Device, Ipv6Mode, Ipv6Scope, MacAddress, Network};
 use crate::session::models::{SessionClientEntry, SessionDevice, SessionUserEntry};
 
 use crate::convert::{parse_ipv6_list, parse_wan_ipv6};
@@ -17,19 +17,20 @@ pub(super) fn merge_session_clients(
 
 /// Fill in the subnet each prefix-delegation network serves from the
 /// gateway's network table, which is the only place the controller says
-/// what the WAN was delegated. Networks are matched by record ID where the
-/// session one is the network's own, else by name.
+/// what the WAN was delegated. The table names each network as the
+/// Integration record does; its record IDs are session ones, which never
+/// match an Integration network's UUID.
 pub(super) fn merge_gateway_prefixes(networks: &mut [Network], session_devices: &[SessionDevice]) {
     let rows = session_devices
         .iter()
         .filter_map(|device| device.network_table.as_ref()?.as_array())
         .flatten();
     for row in rows {
-        let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
-        let Some(network) = networks.iter_mut().find(|network| {
-            text("_id").is_some_and(|id| network.id == EntityId::Legacy(id.to_owned()))
-                || text("name").is_some_and(|name| network.name == name)
-        }) else {
+        let name = row.get("name").and_then(serde_json::Value::as_str);
+        let Some(network) = networks
+            .iter_mut()
+            .find(|network| name.is_some_and(|name| network.name == name))
+        else {
             continue;
         };
         if network.ipv6_mode != Some(Ipv6Mode::PrefixDelegation) || network.ipv6_prefix.is_some() {
