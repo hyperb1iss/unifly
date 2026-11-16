@@ -172,9 +172,19 @@ unmanaged VLANs reject DHCP and IPv4 settings.
 Settings a network's kind has no field for are refused before anything is
 sent: isolation on an unmanaged network, and internet access, mDNS
 forwarding, and IPv6 on anything but a gateway-managed one.
-`ipv6_enabled: false` removes the network's whole IPv6 configuration;
-`true` is refused unless the network already has one, because unifly cannot
-supply the prefix source and address assignment it needs.
+`ipv6_enabled: false` (or `networks update --ipv6 false`) removes the
+network's whole IPv6 configuration. `true` on a network without one
+creates the setup the controller's own form starts from: a prefix delegated
+from the WAN the site's other IPv6 networks use (else the first WAN listed),
+handed out by SLAAC, with router advertisements at high priority. On a
+network that has IPv6 it changes nothing. A static prefix, DHCPv6, or other
+WAN still needs `--from-file` with a full `ipv6Configuration` or the console.
+`networks get` shows the IPv6 mode, the prefix the network serves (for
+prefix delegation, the one the gateway carved from its WAN's delegation),
+aliases such as a ULA, SLAAC and DHCPv6, RA priority, and IPv6 DNS servers.
+Clients and devices carry every IPv6 address in `ipv6_addresses`, widest
+reach first; any of them works as a `clients get` or `devices get`
+identifier. A device's `wan_ipv6` is set on gateways only.
 `dhcp.dns_servers` takes one to four IPv4 addresses; an empty list removes
 the override so the gateway's own servers are used.
 DHCP updates accept `dhcp.range_start` and `dhcp.range_stop` in file payloads.
