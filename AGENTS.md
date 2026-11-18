@@ -599,8 +599,8 @@ config when materializing `AuthCredentials`.
 `deny.toml` enforces:
 
 - Vulnerability advisories fail the build
-- License allowlist: MIT, Apache-2.0, BSD-2/3-Clause, ISC, Unicode-3.0,
-  Zlib, MPL-2.0
+- License allowlist: MIT, Apache-2.0, BSD-2/3-Clause, CDLA-Permissive-2.0,
+  ISC, Unicode-3.0, Zlib, MPL-2.0
 - Wildcards are denied
 - Git sources are denied by default (all deps must come from crates.io)
 
