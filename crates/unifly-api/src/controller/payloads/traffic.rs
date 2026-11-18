@@ -1,11 +1,13 @@
 use crate::command::requests::{PortSpec, TrafficFilterSpec};
 use crate::core_error::CoreError;
 
-fn parse_port(value: &str) -> Result<u16, CoreError> {
+/// Port 0 is reserved and never a valid filter target, so reject it here
+/// rather than let the controller store a rule that matches nothing.
+fn parse_port(value: &str) -> Result<std::num::NonZeroU16, CoreError> {
     value
-        .parse::<u16>()
+        .parse::<std::num::NonZeroU16>()
         .map_err(|_| CoreError::ValidationFailed {
-            message: format!("invalid port number {value:?} (expected 0-65535)"),
+            message: format!("invalid port number {value:?} (expected 1-65535)"),
         })
 }
 
@@ -18,12 +20,12 @@ fn build_port_item_json(p: &str) -> Result<serde_json::Value, CoreError> {
         let end = parse_port(end_str)?;
         Ok(serde_json::json!({
             "type": "PORT_NUMBER_RANGE",
-            "start": start,
-            "stop": end,
+            "start": start.get(),
+            "stop": end.get(),
         }))
     } else {
         let port = parse_port(p)?;
-        Ok(serde_json::json!({ "type": "PORT_NUMBER", "value": port }))
+        Ok(serde_json::json!({ "type": "PORT_NUMBER", "value": port.get() }))
     }
 }
 
@@ -175,7 +177,7 @@ pub(in super::super) fn traffic_matching_list_items(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_endpoint_json, traffic_matching_list_items};
+    use super::{build_endpoint_json, build_port_item_json, traffic_matching_list_items};
     use crate::command::requests::{PortSpec, TrafficFilterSpec};
     use crate::core_error::CoreError;
     use serde_json::json;
@@ -432,6 +434,27 @@ mod tests {
         assert_eq!(
             port_filter["trafficMatchingListId"].as_str(),
             Some("24740a56-9cb9-4890-a5ac-589d30914a55")
+        );
+    }
+
+    #[test]
+    fn port_items_reject_out_of_range_and_zero_ports() {
+        for bad in ["0", "65536", "-1", "abc", "0-80", "80-0", "80-65536"] {
+            assert!(
+                matches!(
+                    build_port_item_json(bad),
+                    Err(CoreError::ValidationFailed { .. })
+                ),
+                "{bad:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            build_port_item_json("1-65535").expect("full range"),
+            json!({"type": "PORT_NUMBER_RANGE", "start": 1, "stop": 65535})
+        );
+        assert_eq!(
+            build_port_item_json("443").expect("single port"),
+            json!({"type": "PORT_NUMBER", "value": 443})
         );
     }
 }
