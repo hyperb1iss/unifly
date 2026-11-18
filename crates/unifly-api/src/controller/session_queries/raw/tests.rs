@@ -184,3 +184,22 @@ async fn raw_integration_empty_success_is_distinct_from_invalid_json_and_failure
     );
     assert_eq!(server.received_requests().await.expect("requests").len(), 4);
 }
+
+#[tokio::test]
+async fn raw_integration_whitespace_only_success_body_is_null() {
+    let server = MockServer::start().await;
+    let controller = hybrid(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/proxy/network/integration/v1/action"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(" \n"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert_eq!(
+        controller
+            .raw_post("integration/v1/action", &json!({}))
+            .await
+            .expect("whitespace body is success"),
+        Value::Null
+    );
+}
