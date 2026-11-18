@@ -34,7 +34,7 @@ impl IntegrationClient {
             .text()
             .await
             .map_err(|error| Error::from_transport(error, self.timeout))?;
-        if body.is_empty() {
+        if body.trim().is_empty() {
             return Ok(Value::Null);
         }
         serde_json::from_str(&body).map_err(|error| Error::Deserialization {

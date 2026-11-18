@@ -362,8 +362,10 @@ fn serialize_port_value<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error
 where
     S: serde::Serializer,
 {
-    let port = value.parse::<u16>().map_err(serde::ser::Error::custom)?;
-    serializer.serialize_u16(port)
+    let port = value
+        .parse::<std::num::NonZeroU16>()
+        .map_err(serde::ser::Error::custom)?;
+    serializer.serialize_u16(port.get())
 }
 
 fn deserialize_port_value<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -826,5 +828,24 @@ mod tests {
             }
             other => panic!("unexpected filter: {other:?}"),
         }
+    }
+
+    #[test]
+    fn port_item_writes_refuse_port_zero_and_out_of_range() {
+        for bad in ["0", "65536", "-1"] {
+            let item = PortItem::Number { value: bad.into() };
+            assert!(
+                serde_json::to_value(&item).is_err(),
+                "{bad:?} must not serialize"
+            );
+        }
+        let item = PortItem::Range {
+            start_port: "1".into(),
+            end_port: "65535".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&item).unwrap(),
+            serde_json::json!({"type": "PORT_NUMBER_RANGE", "start": 1, "stop": 65535})
+        );
     }
 }
