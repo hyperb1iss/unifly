@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Port filters refuse port 0 (`1-65535`), on CLI input and on writes.
+- A raw Integration response of only whitespace counts as an empty
+  success, like an empty body.
+
 ## [0.15.0] - 2026-11-16
 
 ### Added
